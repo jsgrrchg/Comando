@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
-    AiSessionClosedEvent,
     AiSessionSnapshot,
     AiTrackedFile,
     AiRuntimeStatus,
@@ -58,6 +57,65 @@ describe("NativeAiGateway", () => {
             windowId: "window-1",
         });
         expect(payload.launch).toBeNull();
+    });
+
+    it("preserves the active turn start when a streaming session is prepared again", async () => {
+        const client = createClient();
+        client.request.mockResolvedValueOnce({
+            projectId: "project-1",
+            runtimeId: "opencode",
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-1",
+            status: "streaming",
+            title: "Renamed session",
+            updatedAt: "2026-07-09T20:05:00.000Z",
+            worktreeId: "worktree-1",
+        });
+        const gateway = createGateway(client);
+        const launch = createLaunch();
+        const activeTurnStartedAt = "2026-07-09T20:00:00.000Z";
+        const streamingLaunch = {
+            ...launch,
+            persistedSnapshot: {
+                ...launch.persistedSnapshot,
+                activeTurnStartedAt,
+                status: "streaming" as const,
+                updatedAt: "2026-07-09T20:04:00.000Z",
+            },
+        };
+
+        await expect(
+            gateway.prepareSession({
+                input: createPrepareInput(),
+                launch: streamingLaunch,
+            }),
+        ).resolves.toMatchObject({
+            activeTurnStartedAt,
+            status: "streaming",
+            updatedAt: "2026-07-09T20:05:00.000Z",
+        });
+    });
+
+    it("clears a historical closed marker when preparing a live session", async () => {
+        const client = createClient();
+        const gateway = createGateway(client);
+        const launch = {
+            ...createLaunch(),
+            persistedSnapshot: {
+                ...createLaunch().persistedSnapshot,
+                closedAt: "2026-07-09T20:00:00.000Z",
+            },
+        };
+
+        await expect(
+            gateway.prepareSession({
+                input: createPrepareInput(),
+                launch,
+            }),
+        ).resolves.toMatchObject({
+            closedAt: null,
+            status: "idle",
+        });
     });
 
     it("passes persisted history links when Rust owns runtime launch resolution", async () => {
@@ -178,6 +236,68 @@ describe("NativeAiGateway", () => {
                 kind: "message-delta",
                 messageId: "assistant-1",
                 sessionId: "session-1",
+            }),
+        );
+    });
+
+    it("ignores a stale close without forgetting the reopened session owner", async () => {
+        const client = createClient();
+        const onSessionEvent = vi.fn<NativeAiGatewayOptions["onSessionEvent"]>();
+        const gateway = createGateway(client, { onSessionEvent });
+        const launch = createLaunch();
+
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch,
+        });
+        client.request.mockResolvedValueOnce({
+            projectId: "project-1",
+            runtimeId: "opencode",
+            runtimeSessionId: "runtime-session-2",
+            sessionId: "session-1",
+            status: "streaming",
+            title: "Native session",
+            updatedAt: "2026-06-20T00:00:02.000Z",
+            worktreeId: "worktree-1",
+        });
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch,
+        });
+        onSessionEvent.mockClear();
+
+        client.emit({
+            eventName: "ai://session-closed",
+            payload: {
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-session-1",
+                sessionId: "session-1",
+                updatedAt: "2026-06-20T00:00:03.000Z",
+            },
+            type: "event",
+        });
+        client.emit({
+            eventName: "ai://message-delta",
+            payload: {
+                content: "Still streaming",
+                delta: "Still streaming",
+                messageId: "assistant-1",
+                messageKind: "assistant",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-session-2",
+                sessionId: "session-1",
+                updatedAt: "2026-06-20T00:00:04.000Z",
+            },
+            type: "event",
+        });
+
+        expect(onSessionEvent).toHaveBeenCalledTimes(1);
+        expect(onSessionEvent).toHaveBeenCalledWith(
+            "window-1",
+            expect.objectContaining({
+                content: "Still streaming",
+                kind: "message-delta",
+                runtimeSessionId: "runtime-session-2",
             }),
         );
     });
@@ -355,28 +475,17 @@ describe("NativeAiGateway", () => {
         });
 
         client.request.mockClear();
+        onSessionEvent.mockClear();
         await gateway.closeSession("session-1:subagent:runtime-child-1");
         expect(client.request).not.toHaveBeenCalled();
-        expect(onSessionEvent).toHaveBeenCalledWith(
-            "window-1",
-            expect.objectContaining({
-                kind: "session-closed",
-                parentSessionId: "session-1",
-                runtimeId: "opencode",
-                runtimeSessionId: "runtime-child-1",
-                sessionId: "session-1:subagent:runtime-child-1",
-            }),
-        );
-        const closedEvent = onSessionEvent.mock.calls
-            .map(([, event]) => event)
-            .find(
-                (event): event is AiSessionClosedEvent =>
-                    event.kind === "session-closed" &&
-                    event.sessionId === "session-1:subagent:runtime-child-1",
-            );
-        expect(closedEvent?.kind).toBe("session-closed");
-        expect(typeof closedEvent?.closedAt).toBe("string");
-        expect(typeof closedEvent?.updatedAt).toBe("string");
+        expect(onSessionEvent).not.toHaveBeenCalled();
+
+        await gateway.cancelSession("session-1:subagent:runtime-child-1");
+        expect(client.request).toHaveBeenCalledWith("ai_cancel_session", {
+            runtimeSessionId: "runtime-child-1",
+            sessionId: "session-1",
+            targetSessionId: "session-1:subagent:runtime-child-1",
+        });
     });
 
     it("hydrates persisted subagent mappings before child events arrive", async () => {
@@ -463,6 +572,70 @@ describe("NativeAiGateway", () => {
             runtimeSessionId: "runtime-child-1",
             sessionId: "session-1",
             targetSessionId: childSessionId,
+        });
+    });
+
+    it("routes nested descendants through the root backend session", async () => {
+        const client = createClient();
+        const onSessionEvent = vi.fn<NativeAiGatewayOptions["onSessionEvent"]>();
+        const gateway = createGateway(client, { onSessionEvent });
+        const childSessionId = "session-child";
+        const grandchildSessionId = "session-grandchild";
+        const launch = {
+            ...createLaunch(),
+            persistedSubagentSessionMappings: [
+                {
+                    appSessionId: childSessionId,
+                    parentAppSessionId: "session-1",
+                    parentRuntimeSessionId: "runtime-session-1",
+                    runtimeSessionId: "runtime-child",
+                },
+                {
+                    appSessionId: grandchildSessionId,
+                    parentAppSessionId: childSessionId,
+                    parentRuntimeSessionId: "runtime-child",
+                    runtimeSessionId: "runtime-grandchild",
+                },
+            ],
+        };
+
+        await gateway.prepareSession({
+            input: createPrepareInput(),
+            launch,
+        });
+
+        client.request.mockClear();
+        await gateway.sendPrompt({
+            input: {
+                ...createPromptInput(),
+                messageId: "user-message-grandchild",
+                sessionId: grandchildSessionId,
+            },
+            launch,
+        });
+        expect(client.request).toHaveBeenCalledWith("ai_send_prompt", {
+            messageId: "user-message-grandchild",
+            prompt: {
+                attachments: [],
+                displayText: "Implement the feature.",
+                text: "Implement the feature.",
+            },
+            runtimeSessionId: "runtime-grandchild",
+            sessionId: "session-1",
+            targetSessionId: grandchildSessionId,
+        });
+
+        client.request.mockClear();
+        onSessionEvent.mockClear();
+        await gateway.closeSession(childSessionId);
+        expect(client.request).not.toHaveBeenCalled();
+        expect(onSessionEvent).not.toHaveBeenCalled();
+
+        await gateway.cancelSession(grandchildSessionId);
+        expect(client.request).toHaveBeenCalledWith("ai_cancel_session", {
+            runtimeSessionId: "runtime-grandchild",
+            sessionId: "session-1",
+            targetSessionId: grandchildSessionId,
         });
     });
 
@@ -815,8 +988,8 @@ describe("NativeAiGateway", () => {
             "window-1",
             expect.objectContaining({
                 kind: "message-delta",
-                content: "Review \u200B«@new-note.md»\u200B",
-                delta: "Review \u200B«@new-note.md»\u200B",
+                content: "Review \u200B«file|new-note.md|new-note.md»\u200B",
+                delta: "Review \u200B«file|new-note.md|new-note.md»\u200B",
                 messageId: "user-message-1",
                 messageKind: "user",
             }),
@@ -825,7 +998,8 @@ describe("NativeAiGateway", () => {
             messageId: "user-message-1",
             prompt: {
                 attachments: [attachment],
-                displayText: "Review \u200B«@new-note.md»\u200B",
+                displayText:
+                    "Review \u200B«file|new-note.md|new-note.md»\u200B",
                 text: "Implement the feature.",
             },
             runtimeSessionId: null,

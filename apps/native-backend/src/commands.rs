@@ -5,7 +5,8 @@ use std::thread;
 use comando_ai::AiEngine;
 use comando_ai::events::{
     AI_ERROR_EVENT, AI_RUNTIME_STATUS_EVENT, AI_SESSION_CLOSED_EVENT, AI_SESSION_CREATED_EVENT,
-    AI_SESSION_UPDATED_EVENT, AiRuntimeEvent, session_closed, session_created, session_updated,
+    AI_SESSION_UPDATED_EVENT, AiRuntimeEvent, session_closed, session_created,
+    session_status_updated, session_updated,
 };
 use comando_ai::history::{
     AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
@@ -2230,18 +2231,7 @@ impl NativeBackend {
                 };
                 match self.ai_engine.send_prompt(input) {
                     Ok((output, summary)) => CommandResult {
-                        outputs: vec![
-                            response_ok(
-                                request.id,
-                                serde_json::to_value(output)
-                                    .expect("ai send prompt output serializes"),
-                            ),
-                            event(
-                                AI_SESSION_UPDATED_EVENT,
-                                serde_json::to_value(session_updated(&summary))
-                                    .expect("ai session updated event serializes"),
-                            ),
-                        ],
+                        outputs: send_prompt_outputs(request.id, output, summary),
                         should_shutdown: false,
                     },
                     Err(error) => error_only(request.id, error.to_native_error()),
@@ -2261,7 +2251,7 @@ impl NativeBackend {
                             ),
                             event(
                                 AI_SESSION_UPDATED_EVENT,
-                                serde_json::to_value(session_updated(&summary))
+                                serde_json::to_value(session_status_updated(&summary))
                                     .expect("ai session updated event serializes"),
                             ),
                         ],
@@ -3712,6 +3702,25 @@ fn response_only(id: RequestId, payload: Value) -> CommandResult {
     }
 }
 
+fn send_prompt_outputs(
+    request_id: RequestId,
+    output: native_ai::NativeAiSendPromptOutput,
+    summary: native_ai::NativeAiSessionSummary,
+) -> Vec<RpcOutput> {
+    // Publish the resolved title before the client hydrates the accepted user message.
+    vec![
+        event(
+            AI_SESSION_UPDATED_EVENT,
+            serde_json::to_value(session_updated(&summary))
+                .expect("ai session updated event serializes"),
+        ),
+        response_ok(
+            request_id,
+            serde_json::to_value(output).expect("ai send prompt output serializes"),
+        ),
+    ]
+}
+
 fn error_only(id: RequestId, error: NativeError) -> CommandResult {
     CommandResult {
         outputs: vec![error_response(Some(id), error)],
@@ -4425,7 +4434,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use comando_types::ids::RequestId;
+    use comando_types::ids::{RequestId, RuntimeId, SessionId};
 
     use crate::protocol::{RpcOutput, RpcRequest};
 
@@ -4460,6 +4469,39 @@ mod tests {
             result.outputs,
             vec![response_ok(RequestId::Number(1), capabilities_payload())]
         );
+    }
+
+    #[test]
+    fn emits_session_title_before_send_prompt_response() {
+        let outputs = send_prompt_outputs(
+            RequestId::Number(1),
+            native_ai::NativeAiSendPromptOutput {
+                accepted: true,
+                session_id: SessionId("session-1".to_string()),
+            },
+            native_ai::NativeAiSessionSummary {
+                session_id: SessionId("session-1".to_string()),
+                runtime_id: RuntimeId("codex".to_string()),
+                runtime_session_id: Some("runtime-1".into()),
+                project_id: None,
+                worktree_id: None,
+                title: "Review login flow".to_string(),
+                status: native_ai::NativeAiSessionStatus::Streaming,
+                updated_at: "2026-07-14T00:00:00.000Z".to_string(),
+            },
+        );
+
+        assert!(matches!(
+            outputs.first(),
+            Some(RpcOutput::Event(event)) if event.event_name == AI_SESSION_UPDATED_EVENT
+        ));
+        assert!(matches!(
+            outputs.get(1),
+            Some(RpcOutput::Response(response))
+                if response.ok && response.result.as_ref().is_some_and(|result| {
+                    result["sessionId"] == "session-1" && result["accepted"] == true
+                })
+        ));
     }
 
     #[test]

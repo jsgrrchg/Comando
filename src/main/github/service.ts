@@ -20,6 +20,7 @@ import type {
     GitHubCreatePullRequestInput,
     GitHubGetIssueInput,
     GitHubGetPullRequestInput,
+    GitHubGetPullRequestDiffInput,
     GitHubIssueDetail,
     GitHubListLabelsInput,
     GitHubListLabelsResult,
@@ -36,6 +37,7 @@ import type {
     GitHubPullRequestChecksInput,
     GitHubPullRequestChecksResult,
     GitHubPullRequestDetail,
+    GitHubPullRequestDiffResult,
     GitHubCreateReleaseInput,
     GitHubGeneratedReleaseNotes,
     GitHubGenerateReleaseNotesInput,
@@ -43,6 +45,8 @@ import type {
     GitHubReleaseSummary,
     GitHubRequestPullRequestReviewInput,
     GitHubSaveTokenInput,
+    GitHubSetIssueLabelsInput,
+    GitHubSetIssueLabelsResult,
     GitHubSetIssueStateInput,
     GitHubSetPullRequestDraftStateInput,
     GitHubUpdateCommentInput,
@@ -79,6 +83,9 @@ export interface GitHubGateway {
     ): Promise<GitHubPullRequestDetail>;
     createIssue(input: GitHubCreateIssueInput): Promise<GitHubIssueDetail>;
     updateIssue(input: GitHubUpdateIssueInput): Promise<GitHubIssueDetail>;
+    setIssueLabels(
+        input: GitHubSetIssueLabelsInput,
+    ): Promise<GitHubSetIssueLabelsResult>;
     createPullRequest(
         input: GitHubCreatePullRequestInput,
     ): Promise<GitHubPullRequestDetail>;
@@ -90,6 +97,9 @@ export interface GitHubGateway {
     getPullRequest(
         input: GitHubGetPullRequestInput,
     ): Promise<GitHubPullRequestDetail | null>;
+    getPullRequestDiff(
+        input: GitHubGetPullRequestDiffInput,
+    ): Promise<GitHubPullRequestDiffResult>;
     listIssues(input: GitHubListIssuesInput): Promise<GitHubListIssuesResult>;
     listLabels(input: GitHubListLabelsInput): Promise<GitHubListLabelsResult>;
     listPullRequests(
@@ -224,6 +234,16 @@ export class GitHubService implements GitHubGateway {
         );
     }
 
+    async setIssueLabels(
+        input: GitHubSetIssueLabelsInput,
+    ): Promise<GitHubSetIssueLabelsResult> {
+        return await this.#dedupeMutation(input.clientRequestId, async () =>
+            (await this.#createClient(input.repository.host)).setIssueLabels(
+                input,
+            ),
+        );
+    }
+
     async commentIssue(
         input: GitHubCommentIssueInput,
     ): Promise<GitHubCommentSummary> {
@@ -268,6 +288,14 @@ export class GitHubService implements GitHubGateway {
         return await (
             await this.#createClient(input.repository.host)
         ).getPullRequest(input);
+    }
+
+    async getPullRequestDiff(
+        input: GitHubGetPullRequestDiffInput,
+    ): Promise<GitHubPullRequestDiffResult> {
+        return await (
+            await this.#createClient(input.repository.host)
+        ).getPullRequestDiff(input);
     }
 
     async listPullRequestChecks(

@@ -19,6 +19,7 @@ import type {
     GitHubReleaseSummary,
     GitHubPullRequestChecksResult,
     GitHubPullRequestDetail,
+    GitHubPullRequestDiffResult,
     GitHubPullRequestSummary,
     GitHubRequestPullRequestReviewInput,
     GitHubRepositoryRef,
@@ -102,6 +103,10 @@ export interface GitHubStoreState {
         string,
         Record<string, GitHubPullRequestChecksResult | null>
     >;
+    readonly pullRequestDiffsByRepo: Record<
+        string,
+        Record<string, GitHubPullRequestDiffResult | null>
+    >;
     readonly pullRequestsByRepo: Record<
         string,
         readonly GitHubPullRequestSummary[]
@@ -174,6 +179,16 @@ export interface GitHubStoreState {
         number: number,
         input: GitHubUpdateIssueOptions,
     ) => Promise<GitHubIssueDetail>;
+    setIssueLabels: (
+        ref: GitHubRepositoryRef,
+        number: number,
+        labels: readonly string[],
+    ) => Promise<readonly GitHubLabelSummary[]>;
+    setPullRequestLabels: (
+        ref: GitHubRepositoryRef,
+        number: number,
+        labels: readonly string[],
+    ) => Promise<readonly GitHubLabelSummary[]>;
     createPullRequest: (
         ref: GitHubRepositoryRef,
         input: GitHubCreatePullRequestOptions,
@@ -188,6 +203,11 @@ export interface GitHubStoreState {
         number: number,
         options?: { readonly force?: boolean },
     ) => Promise<GitHubPullRequestDetail | null>;
+    ensurePullRequestDiff: (
+        ref: GitHubRepositoryRef,
+        number: number,
+        options?: { readonly force?: boolean },
+    ) => Promise<GitHubPullRequestDiffResult | null>;
     markPullRequestReady: (
         ref: GitHubRepositoryRef,
         number: number,
@@ -315,6 +335,7 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
     mutatingKeys: {},
     pullRequestDetailsByRepo: {},
     pullRequestChecksByRepo: {},
+    pullRequestDiffsByRepo: {},
     pullRequestListStateByRepo: {},
     pullRequestsByRepo: {},
     pullRequestsByRepoAndState: {},
@@ -351,6 +372,10 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
             ),
             pullRequestChecksByRepo: omitKey(
                 state.pullRequestChecksByRepo,
+                repoKey,
+            ),
+            pullRequestDiffsByRepo: omitKey(
+                state.pullRequestDiffsByRepo,
                 repoKey,
             ),
             pullRequestListStateByRepo: omitKey(
@@ -493,6 +518,40 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
             },
         ),
 
+    setIssueLabels: async (ref, number, labels) =>
+        dedupeMutation(
+            set,
+            getRepoKey(ref),
+            `issue:${number}:labels`,
+            async (clientRequestId) => {
+                const result = await getComandoApi().setGitHubIssueLabels({
+                    clientRequestId,
+                    labels,
+                    number,
+                    repository: ref,
+                });
+                setIssueLabelsInCache(set, ref, number, result.labels);
+                return result.labels;
+            },
+        ),
+
+    setPullRequestLabels: async (ref, number, labels) =>
+        dedupeMutation(
+            set,
+            getRepoKey(ref),
+            `pr:${number}:labels`,
+            async (clientRequestId) => {
+                const result = await getComandoApi().setGitHubIssueLabels({
+                    clientRequestId,
+                    labels,
+                    number,
+                    repository: ref,
+                });
+                setPullRequestLabelsInCache(set, ref, number, result.labels);
+                return result.labels;
+            },
+        ),
+
     createPullRequest: async (ref, input) =>
         dedupeMutation(
             set,
@@ -567,6 +626,40 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
                 upsertPullRequest(set, ref, detail);
             }
             return detail;
+        });
+    },
+
+    ensurePullRequestDiff: async (ref, number, options = {}) => {
+        const repoKey = getRepoKey(ref);
+        const detail = get().pullRequestDetailsByRepo[repoKey]?.[number];
+        const snapshotKey = getPullRequestDiffKey(
+            repoKey,
+            number,
+            detail?.base.sha ?? "",
+            detail?.head.sha ?? "",
+        );
+        const cached = get().pullRequestDiffsByRepo[repoKey]?.[snapshotKey];
+        if (!options.force && cached !== undefined) return cached;
+        return await withLoading(set, `${repoKey}:pr:${number}:diff`, async () => {
+            const diff = await getComandoApi().getGitHubPullRequestDiff({
+                number,
+                repository: ref,
+            });
+            set((state) => ({
+                pullRequestDiffsByRepo: {
+                    ...state.pullRequestDiffsByRepo,
+                    [repoKey]: {
+                        ...(state.pullRequestDiffsByRepo[repoKey] ?? {}),
+                        [getPullRequestDiffKey(
+                            repoKey,
+                            number,
+                            diff.baseSha,
+                            diff.headSha,
+                        )]: diff,
+                    },
+                },
+            }));
+            return diff;
         });
     },
 
@@ -940,17 +1033,26 @@ export const useGitHubStore = create<GitHubStoreState>((set, get) => ({
         }
 
         return await withLoading(set, `${repoKey}:labels`, async () => {
-            const result = await getComandoApi().listGitHubLabels({
-                limit: 100,
-                repository: ref,
-            });
+            const labels: GitHubLabelSummary[] = [];
+            let cursor: string | null = null;
+
+            do {
+                const result = await getComandoApi().listGitHubLabels({
+                    ...(cursor ? { cursor } : {}),
+                    limit: 100,
+                    repository: ref,
+                });
+                labels.push(...result.labels);
+                cursor = result.nextCursor;
+            } while (cursor);
+
             set((state) => ({
                 labelsByRepo: {
                     ...state.labelsByRepo,
-                    [repoKey]: result.labels,
+                    [repoKey]: labels,
                 },
             }));
-            return result.labels;
+            return labels;
         });
     },
 
@@ -1047,6 +1149,7 @@ export function resetGitHubStoreForTests(): void {
         mutatingKeys: {},
         pullRequestDetailsByRepo: {},
         pullRequestChecksByRepo: {},
+        pullRequestDiffsByRepo: {},
         pullRequestListStateByRepo: {},
         pullRequestsByRepo: {},
         pullRequestsByRepoAndState: {},
@@ -1068,6 +1171,15 @@ export function getGitHubPullRequestChecksKey(
     headSha: string,
 ): string {
     return getPullRequestChecksKey(getRepoKey(ref), headSha);
+}
+
+export function getGitHubPullRequestDiffKey(
+    ref: GitHubRepositoryRef,
+    number: number,
+    baseSha: string,
+    headSha: string,
+): string {
+    return getPullRequestDiffKey(getRepoKey(ref), number, baseSha, headSha);
 }
 
 export function getGitHubWorkflowRunsKey(
@@ -1254,6 +1366,42 @@ function setIssueDetail(
     }));
 }
 
+function setIssueLabelsInCache(
+    set: SetGitHubState,
+    ref: GitHubRepositoryRef,
+    number: number,
+    labels: readonly GitHubLabelSummary[],
+): void {
+    const repoKey = getRepoKey(ref);
+    set((state) => {
+        const detail = state.issueDetailsByRepo[repoKey]?.[number];
+        const issues = state.issuesByRepo[repoKey];
+
+        return {
+            issueDetailsByRepo: detail
+                ? {
+                      ...state.issueDetailsByRepo,
+                      [repoKey]: {
+                          ...(state.issueDetailsByRepo[repoKey] ?? {}),
+                          [number]: { ...detail, labels },
+                      },
+                  }
+                : state.issueDetailsByRepo,
+            issuesByRepo: issues
+                ? {
+                      ...state.issuesByRepo,
+                      [repoKey]: replaceLabelsByNumber(issues, number, labels),
+                  }
+                : state.issuesByRepo,
+            issuesByRepoAndState: updateIssueStateCaches(
+                state.issuesByRepoAndState,
+                repoKey,
+                (entries) => replaceLabelsByNumber(entries, number, labels),
+            ),
+        };
+    });
+}
+
 function appendIssueComment(
     set: SetGitHubState,
     ref: GitHubRepositoryRef,
@@ -1345,6 +1493,46 @@ function setPullRequestDetail(
             detail,
         ),
     }));
+}
+
+function setPullRequestLabelsInCache(
+    set: SetGitHubState,
+    ref: GitHubRepositoryRef,
+    number: number,
+    labels: readonly GitHubLabelSummary[],
+): void {
+    const repoKey = getRepoKey(ref);
+    set((state) => {
+        const detail = state.pullRequestDetailsByRepo[repoKey]?.[number];
+        const pullRequests = state.pullRequestsByRepo[repoKey];
+
+        return {
+            pullRequestDetailsByRepo: detail
+                ? {
+                      ...state.pullRequestDetailsByRepo,
+                      [repoKey]: {
+                          ...(state.pullRequestDetailsByRepo[repoKey] ?? {}),
+                          [number]: { ...detail, labels },
+                      },
+                  }
+                : state.pullRequestDetailsByRepo,
+            pullRequestsByRepo: pullRequests
+                ? {
+                      ...state.pullRequestsByRepo,
+                      [repoKey]: replaceLabelsByNumber(
+                          pullRequests,
+                          number,
+                          labels,
+                      ),
+                  }
+                : state.pullRequestsByRepo,
+            pullRequestsByRepoAndState: updatePullRequestStateCaches(
+                state.pullRequestsByRepoAndState,
+                repoKey,
+                (entries) => replaceLabelsByNumber(entries, number, labels),
+            ),
+        };
+    });
 }
 
 function appendPullRequestComment(
@@ -1602,6 +1790,26 @@ function upsertByNumber<T extends { readonly number: number }>(
     );
 }
 
+function replaceLabelsByNumber<
+    T extends {
+        readonly labels: readonly GitHubLabelSummary[];
+        readonly number: number;
+    },
+>(
+    entries: readonly T[],
+    number: number,
+    labels: readonly GitHubLabelSummary[],
+): readonly T[] {
+    const entryIndex = entries.findIndex((entry) => entry.number === number);
+    if (entryIndex < 0) {
+        return entries;
+    }
+
+    return entries.map((entry, index) =>
+        index === entryIndex ? { ...entry, labels } : entry,
+    );
+}
+
 function removeByNumber<T extends { readonly number: number }>(
     entries: readonly T[],
     number: number,
@@ -1652,6 +1860,15 @@ function getRepoKey(ref: GitHubRepositoryRef): string {
 
 function getPullRequestChecksKey(repoKey: string, headSha: string): string {
     return `${repoKey}:pr-checks:${headSha}`;
+}
+
+function getPullRequestDiffKey(
+    repoKey: string,
+    number: number,
+    baseSha: string,
+    headSha: string,
+): string {
+    return `${repoKey}:pr:${number}:diff:${baseSha || "unknown"}:${headSha || "unknown"}`;
 }
 
 function getWorkflowRunsKey(repoKey: string, headSha: string): string {

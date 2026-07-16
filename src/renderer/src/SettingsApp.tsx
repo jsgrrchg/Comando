@@ -489,6 +489,18 @@ export function SettingsApp() {
         void saveAppAppearanceSettings(nextAppearance);
     };
 
+    const handleAppChromeTransparencyChange = (
+        chromeTransparency: number,
+    ) => {
+        const nextAppearance = {
+            ...appAppearance,
+            chromeTransparency,
+        };
+
+        setAppAppearance(nextAppearance);
+        void saveAppAppearanceSettings(nextAppearance);
+    };
+
     const handleAppTransparencyEnabledChange = (
         transparencyEnabled: boolean,
     ) => {
@@ -834,7 +846,8 @@ export function SettingsApp() {
                 screenshotRetentionSeconds: aiChat.screenshotRetentionSeconds,
                 historyRetentionDays: aiChat.historyRetentionDays,
                 contextUsageBarEnabled: aiChat.contextUsageBarEnabled,
-                toolCardExpansionMode: aiChat.toolCardExpansionMode,
+                toolActivityDefaultExpansion:
+                    aiChat.toolActivityDefaultExpansion,
                 onChatFontFamilyChange: (id) =>
                     updateAiChat({
                         chatFontFamily: id as ChatFontFamily,
@@ -855,17 +868,19 @@ export function SettingsApp() {
                     updateAiChat({ historyRetentionDays: days }),
                 onContextUsageBarEnabledChange: (value) =>
                     updateAiChat({ contextUsageBarEnabled: value }),
-                onToolCardExpansionModeChange: (value) =>
-                    updateAiChat({ toolCardExpansionMode: value }),
+                onToolActivityDefaultExpansionChange: (value) =>
+                    updateAiChat({ toolActivityDefaultExpansion: value }),
             }}
             appAppearance={{
                 agentsSidebarScale: appAppearance.agentsSidebarScale,
                 boostCodeContrast: appAppearance.boostCodeContrast,
+                chromeTransparency: appAppearance.chromeTransparency,
                 fileTreeScale: appAppearance.fileTreeScale,
                 mode: appAppearance.themeMode,
                 onAgentsSidebarScaleChange:
                     handleAppAgentsSidebarScaleChange,
                 onBoostCodeContrastChange: handleAppBoostCodeContrastChange,
+                onChromeTransparencyChange: handleAppChromeTransparencyChange,
                 onFileTreeScaleChange: handleAppFileTreeScaleChange,
                 onModeChange: handleAppThemeModeChange,
                 onPresetChange: handleAppThemePresetChange,

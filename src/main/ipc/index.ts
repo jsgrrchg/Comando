@@ -27,6 +27,7 @@ import {
     type ClearProjectAppDataInput,
     type CloneRepositoryInput,
     type CloneRepositoryResult,
+    type ConfirmWorkspaceCloseInput,
     type CodexRuntimeSettingsInput,
     type CopyExternalProjectEntriesInput,
     type CopyProjectEntriesInput,
@@ -34,6 +35,7 @@ import {
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
     type FileBufferNotificationInput,
+    type EnqueueAiPromptInput,
     type GitBranchListInput,
     type GitBranchSummary as SharedGitBranchSummary,
     type GitChangeEntry as SharedGitChangeEntry,
@@ -62,6 +64,7 @@ import {
     type GitHubCreatePullRequestInput,
     type GitHubGetIssueInput,
     type GitHubGetPullRequestInput,
+    type GitHubGetPullRequestDiffInput,
     type GitHubIssueDetail,
     type GitHubListLabelsInput,
     type GitHubListLabelsResult,
@@ -78,6 +81,7 @@ import {
     type GitHubPullRequestChecksInput,
     type GitHubPullRequestChecksResult,
     type GitHubPullRequestDetail,
+    type GitHubPullRequestDiffResult,
     type GitHubCreateReleaseInput,
     type GitHubGeneratedReleaseNotes,
     type GitHubGenerateReleaseNotesInput,
@@ -85,6 +89,8 @@ import {
     type GitHubReleaseSummary,
     type GitHubRequestPullRequestReviewInput,
     type GitHubSaveTokenInput,
+    type GitHubSetIssueLabelsInput,
+    type GitHubSetIssueLabelsResult,
     type GitHubSetIssueStateInput,
     type GitHubSetPullRequestDraftStateInput,
     type GitHubUpdateCommentInput,
@@ -143,7 +149,8 @@ import {
     type ReadClaudeCodeTranscriptInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
-    type SendAiPromptInput,
+    type AiQueuedPromptMutationInput,
+    type UpdateAiQueuedPromptInput,
     type SettingsSnapshot,
     type SystemTheme,
     type ThemeMode,
@@ -151,9 +158,12 @@ import {
     type TsconfigResolutionSnapshot,
     type WindowContextSnapshot,
     type WriteTerminalInput,
-    type WorkspaceSnapshot,
+    type WorkspaceNavigationSnapshot,
+    type WorkspaceSurfaceContextRequest,
+    type WorkspaceSurfaceDragEvent,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
+import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
 
 import {
     BrowserWindow,
@@ -162,14 +172,19 @@ import {
     ipcMain,
     nativeTheme,
     shell,
+    type MessageBoxOptions,
     type OpenDialogOptions,
 } from "electron";
 
-import { forEachLiveWindow, refreshWindowsTitleBarOverlays } from "@main/window";
+import {
+    MAC_MAIN_TRAFFIC_LIGHT_POSITION,
+    refreshWindowsTitleBarOverlays,
+} from "@main/window";
 import { createIpcInFlightLimiter } from "@main/ipc/rate-limit";
 import { resolveSettingsSnapshotSaveEffects } from "@main/ipc/settings-save-effects";
 import { debugBenignError } from "@main/observability/logging";
 import { resolveCodexGeneratedImageFilePath } from "@main/file-preview-protocol";
+import { isNativeBackendOperationCancelled } from "@main/native-backend/client";
 
 import type { AiService } from "@main/ai/service";
 import {
@@ -205,13 +220,18 @@ import {
 } from "@main/privacy-access";
 import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
+import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
 
 interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
     readonly gitService: GitGateway;
     readonly githubService: GitHubGateway;
     readonly getSnapshot: () => AppBootstrapSnapshot;
-    readonly openProjectWindow: (input: OpenProjectWindowInput) => void;
+    readonly captureWorkspaceSurfaceContext: (
+        hostWindowId: string,
+        contextKey: string,
+    ) => Promise<WorkspaceNavigationSnapshot | null>;
+    readonly openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
     readonly persistenceService: PersistenceGateway;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
@@ -234,6 +254,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.revealGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
+    ipcMain.removeHandler(IPC_CHANNELS.confirmWorkspaceClose);
     ipcMain.removeHandler(IPC_CHANNELS.checkCommandAvailability);
     ipcMain.removeHandler(IPC_CHANNELS.readClaudeCodeTranscript);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
@@ -278,12 +299,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getGitHubIssue);
     ipcMain.removeHandler(IPC_CHANNELS.createGitHubIssue);
     ipcMain.removeHandler(IPC_CHANNELS.updateGitHubIssue);
+    ipcMain.removeHandler(IPC_CHANNELS.setGitHubIssueLabels);
     ipcMain.removeHandler(IPC_CHANNELS.commentGitHubIssue);
     ipcMain.removeHandler(IPC_CHANNELS.updateGitHubComment);
     ipcMain.removeHandler(IPC_CHANNELS.closeGitHubIssue);
     ipcMain.removeHandler(IPC_CHANNELS.reopenGitHubIssue);
     ipcMain.removeHandler(IPC_CHANNELS.listGitHubPullRequests);
     ipcMain.removeHandler(IPC_CHANNELS.getGitHubPullRequest);
+    ipcMain.removeHandler(IPC_CHANNELS.getGitHubPullRequestDiff);
     ipcMain.removeHandler(IPC_CHANNELS.listGitHubPullRequestChecks);
     ipcMain.removeHandler(IPC_CHANNELS.createGitHubPullRequest);
     ipcMain.removeHandler(IPC_CHANNELS.commentGitHubPullRequest);
@@ -328,6 +351,16 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.searchProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
+    ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
+    ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
+    ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
+    ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
+    ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
+    ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
+    ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
+    ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
+    ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
+    ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
     ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
     ipcMain.removeHandler(IPC_CHANNELS.getChatSessionState);
     ipcMain.removeHandler(IPC_CHANNELS.createTerminalSession);
@@ -340,7 +373,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.resyncAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.listAiSessionHistory);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionTranscriptPage);
-    ipcMain.removeHandler(IPC_CHANNELS.sendAiPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiPromptQueue);
+    ipcMain.removeHandler(IPC_CHANNELS.enqueueAiPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.removeAiQueuedPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.clearAiPromptQueue);
+    ipcMain.removeHandler(IPC_CHANNELS.beginEditAiQueuedPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.cancelEditAiQueuedPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.updateAiQueuedPrompt);
+    ipcMain.removeHandler(IPC_CHANNELS.steerAiQueuedPrompt);
     ipcMain.removeHandler(IPC_CHANNELS.refreshAiProjectScopes);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionMode);
     ipcMain.removeHandler(IPC_CHANNELS.setAiSessionModel);
@@ -398,7 +438,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             if (!context) {
                 return null;
             }
-            return options.persistenceService.loadSnapshot(context.windowId);
+            const snapshot = options.persistenceService.loadSnapshot(
+                getPersistenceOwnerId(context),
+            );
+            if (!workspaceSurfaceManager.isSurface(event.sender)) {
+                return snapshot;
+            }
+            return {
+                ...snapshot,
+                activeProjectId: context.projectId,
+                activeWorktreeId: context.worktreeId ?? null,
+                windowContext: context,
+            };
         },
     );
     ipcMain.handle(
@@ -449,8 +500,54 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.openProjectWindow,
-        (_event, input: OpenProjectWindowInput) => {
-            options.openProjectWindow(input);
+        (_event, input: OpenProjectWindowInput) =>
+            options.openProjectWindow(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.confirmWorkspaceClose,
+        async (event, input: ConfirmWorkspaceCloseInput): Promise<boolean> => {
+            if (
+                !input ||
+                typeof input.workspaceName !== "string" ||
+                !Number.isInteger(input.activeAgentCount) ||
+                !Number.isInteger(input.dirtyFileCount) ||
+                input.activeAgentCount < 0 ||
+                input.dirtyFileCount < 0
+            ) {
+                throw new TypeError("Expected a valid workspace close confirmation input.");
+            }
+
+            const ownerWindow =
+                BrowserWindow.fromWebContents(event.sender) ??
+                BrowserWindow.getFocusedWindow();
+            const details = [
+                input.activeAgentCount > 0
+                    ? `${input.activeAgentCount} ${input.activeAgentCount === 1 ? "agent is" : "agents are"} still working. ${input.activeAgentCount === 1 ? "It" : "They"} will continue running in the background if you close this workspace.`
+                    : null,
+                input.dirtyFileCount > 0
+                    ? `${input.dirtyFileCount} unsaved ${input.dirtyFileCount === 1 ? "file will" : "files will"} be discarded.`
+                    : null,
+            ]
+                .filter((detail): detail is string => Boolean(detail))
+                .join("\n\n");
+            const dialogOptions: MessageBoxOptions = {
+                buttons: ["Keep Workspace Open", "Close Workspace"],
+                cancelId: 0,
+                defaultId: 0,
+                detail: details,
+                message: `Close “${input.workspaceName}”?`,
+                noLink: true,
+                title:
+                    input.activeAgentCount > 0
+                        ? "Agents are still working"
+                        : "Unsaved changes",
+                type: "warning",
+            };
+            const result = ownerWindow
+                ? await dialog.showMessageBox(ownerWindow, dialogOptions)
+                : await dialog.showMessageBox(dialogOptions);
+
+            return result.response === 1;
         },
     );
     ipcMain.handle(
@@ -488,9 +585,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             if (effects.broadcastSettingsUpdated) {
                 const persisted = options.settingsService.loadSnapshot();
                 if (effects.applyAppZoom) {
-                    applyAppZoomToAllWindows(
-                        persisted.appearance?.zoomFactor ?? 1,
-                    );
+                    const zoomFactor = persisted.appearance?.zoomFactor ?? 1;
+                    applyAppZoomToAllWindows(zoomFactor);
+                    workspaceSurfaceManager.setZoomFactor(zoomFactor);
                 }
                 if (effects.applyWindowTransparency) {
                     applyWindowTransparencyToAllWindows(
@@ -530,12 +627,15 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveActiveProjectId,
         (event, projectId: string | null) => {
             const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
             options.persistenceService.saveActiveProjectId(
-                context.windowId,
+                getPersistenceOwnerId(context),
                 projectId,
             );
             windowRegistry.updateMainWindowProjectId(
-                context.windowId,
+                getPersistenceOwnerId(context),
                 projectId,
             );
             const ownerWindow = BrowserWindow.fromWebContents(event.sender);
@@ -550,16 +650,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveActiveWorktreeId,
         (event, worktreeId: string | null) => {
             const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
             const activeProjectId = context.projectId ?? null;
             const nextWorktreeId = activeProjectId ? worktreeId : null;
 
             options.persistenceService.saveActiveProjectId(
-                context.windowId,
+                getPersistenceOwnerId(context),
                 activeProjectId,
                 nextWorktreeId,
             );
             windowRegistry.updateMainWindowProjectId(
-                context.windowId,
+                getPersistenceOwnerId(context),
                 activeProjectId,
                 nextWorktreeId,
             );
@@ -569,8 +672,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.saveShellState,
         (event, shellState: PersistedShellState | null) => {
             const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
             options.persistenceService.saveShellState(
-                context.windowId,
+                getPersistenceOwnerId(context),
                 shellState,
             );
         },
@@ -581,7 +687,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const win = BrowserWindow.fromWebContents(event.sender);
             if (win && process.platform === "darwin") {
                 win.setWindowButtonPosition(
-                    visible ? { x: 18, y: 18 } : { x: -80, y: -80 },
+                    visible ? MAC_MAIN_TRAFFIC_LIGHT_POSITION : { x: -80, y: -80 },
                 );
             }
         },
@@ -1104,6 +1210,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             options.githubService.updateIssue(input),
     );
     ipcMain.handle(
+        IPC_CHANNELS.setGitHubIssueLabels,
+        async (
+            _event,
+            input: GitHubSetIssueLabelsInput,
+        ): Promise<GitHubSetIssueLabelsResult> =>
+            options.githubService.setIssueLabels(input),
+    );
+    ipcMain.handle(
         IPC_CHANNELS.commentGitHubIssue,
         async (
             _event,
@@ -1150,6 +1264,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             input: GitHubGetPullRequestInput,
         ): Promise<GitHubPullRequestDetail | null> =>
             options.githubService.getPullRequest(input),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getGitHubPullRequestDiff,
+        async (
+            _event,
+            input: GitHubGetPullRequestDiffInput,
+        ): Promise<GitHubPullRequestDiffResult> =>
+            options.githubService.getPullRequestDiff(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.listGitHubPullRequestChecks,
@@ -1320,14 +1442,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
 
         refreshWindowsTitleBarOverlays();
 
-        forEachLiveWindow((window) => {
-            window.webContents.send(IPC_EVENTS.themeUpdated, theme);
+        windowRegistry.forEachLiveWebContents((webContents) => {
+            webContents.send(IPC_EVENTS.themeUpdated, theme);
         });
     });
     const broadcastProjectsUpdated = () => {
         const projects = options.projectService.listProjects();
-        forEachLiveWindow((window) => {
-            window.webContents.send(IPC_EVENTS.projectsUpdated, projects);
+        windowRegistry.forEachLiveWebContents((webContents) => {
+            webContents.send(IPC_EVENTS.projectsUpdated, projects);
         });
         return projects;
     };
@@ -1431,8 +1553,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const result = await options.projectService.clearProjectAppData(
                 input.projectId,
             );
-            forEachLiveWindow((window) => {
-                window.webContents.send(
+            windowRegistry.forEachLiveWebContents((webContents) => {
+                webContents.send(
                     IPC_EVENTS.projectAppDataCleared,
                     input.projectId,
                 );
@@ -1615,23 +1737,305 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     const searchProjectEntriesLimiter = createIpcInFlightLimiter(8);
     ipcMain.handle(
         IPC_CHANNELS.searchProjectEntries,
-        (_event, input: SearchProjectEntriesInput) =>
-            searchProjectEntriesLimiter(() =>
-                options.projectService.searchProjectEntries(input),
-            ),
+        async (_event, input: SearchProjectEntriesInput) => {
+            try {
+                return await searchProjectEntriesLimiter(() =>
+                    options.projectService.searchProjectEntries(input),
+                );
+            } catch (error) {
+                if (isNativeBackendOperationCancelled(error)) {
+                    debugBenignError("projects.search-entries.cancelled", error);
+                    return [];
+                }
+                throw error;
+            }
+        },
     );
     ipcMain.handle(IPC_CHANNELS.getWorkspaceSnapshot, (event) => {
         const context = requireWindowContext(event.sender, "main");
-        return options.workspaceService.loadSnapshot(context.workspaceId!);
+        const surfaceSnapshot = workspaceSurfaceManager.getSurfaceSnapshot(
+            event.sender,
+        );
+        if (surfaceSnapshot) {
+            return surfaceSnapshot;
+        }
+        return Promise.resolve(
+            options.workspaceService.loadSnapshot(context.workspaceId!),
+        )
+            .then((record) => record.snapshot);
     });
     ipcMain.handle(
         IPC_CHANNELS.saveWorkspaceSnapshot,
-        (event, snapshot: WorkspaceSnapshot) => {
+        async (event, snapshot: WorkspaceNavigationSnapshot) => {
             const context = requireWindowContext(event.sender, "main");
-            return options.workspaceService.saveSnapshot(
-                context.workspaceId!,
+            const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
                 snapshot,
+            ).snapshot;
+            const surfaceUpdate = workspaceSurfaceManager.mergeSurfaceSnapshot(
+                event.sender,
+                normalizedSnapshot,
             );
+            if (surfaceUpdate) {
+                await options.workspaceService.saveSnapshot(
+                    context.workspaceId!,
+                    surfaceUpdate.snapshot,
+                );
+                workspaceSurfaceManager
+                    .getHostWebContents(surfaceUpdate.hostWindowId)
+                    ?.send(
+                        IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                        surfaceUpdate.snapshot,
+                    );
+                return;
+            }
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
+            const activeSurface = workspaceSurfaceManager.getActiveWebContents(
+                context.windowId,
+            );
+            const hostSnapshot =
+                workspaceSurfaceManager.getHostSnapshotForWindow(
+                    context.windowId,
+                );
+            const canUpdateActiveSurface =
+                activeSurface &&
+                hostSnapshot &&
+                hostSnapshot.activeContextKey === normalizedSnapshot.activeContextKey &&
+                hostSnapshot.openContextKeys.length ===
+                    normalizedSnapshot.openContextKeys.length &&
+                hostSnapshot.openContextKeys.every((key) =>
+                    normalizedSnapshot.openContextKeys.includes(key),
+                );
+            if (canUpdateActiveSurface) {
+                const surfaceUpdate = workspaceSurfaceManager.mergeSurfaceSnapshot(
+                    activeSurface,
+                    normalizedSnapshot,
+                );
+                if (surfaceUpdate) {
+                    await options.workspaceService.saveSnapshot(
+                        context.workspaceId!,
+                        surfaceUpdate.snapshot,
+                    );
+                    const surfaceSnapshot =
+                        workspaceSurfaceManager.getSurfaceSnapshot(activeSurface);
+                    if (surfaceSnapshot) {
+                        activeSurface.send(
+                            IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                            surfaceSnapshot,
+                        );
+                    }
+                    workspaceSurfaceManager
+                        .getHostWebContents(surfaceUpdate.hostWindowId)
+                        ?.send(
+                            IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                            surfaceUpdate.snapshot,
+                        );
+                    return;
+                }
+            }
+            await options.workspaceService.saveSnapshot(
+                context.workspaceId!,
+                normalizedSnapshot,
+            );
+            const activeContext = normalizedSnapshot.contexts.find(
+                (candidate) =>
+                    candidate.key === normalizedSnapshot.activeContextKey,
+            );
+            const projectId = activeContext?.projectId ?? null;
+            const worktreeId = activeContext?.worktreeId ?? null;
+            windowRegistry.updateMainWindowProjectId(
+                context.windowId,
+                projectId,
+                worktreeId,
+            );
+            const ownerWindow = BrowserWindow.fromWebContents(event.sender);
+            if (ownerWindow) {
+                ownerWindow.setTitle(
+                    buildMainWindowTitle(options.projectService, projectId),
+                );
+            }
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.initializeWorkspaceSurfaces,
+        async (event, snapshot: WorkspaceNavigationSnapshot) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
+            const hostWindow = BrowserWindow.fromWebContents(event.sender);
+            if (!hostWindow) {
+                throw new Error("The workspace host window is unavailable.");
+            }
+            const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
+                snapshot,
+            ).snapshot;
+            const mergedSnapshot = workspaceSurfaceManager.syncHost(
+                hostWindow,
+                context,
+                normalizedSnapshot,
+            );
+            await options.workspaceService.saveSnapshot(
+                context.workspaceId!,
+                mergedSnapshot,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.captureWorkspaceSurfaceContext,
+        async (event, contextKey: unknown) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return null;
+            }
+            if (typeof contextKey !== "string" || contextKey.length === 0) {
+                throw new Error("A workspace context key is required.");
+            }
+            const snapshot = await options.captureWorkspaceSurfaceContext(
+                context.windowId,
+                contextKey,
+            );
+            if (snapshot) {
+                await options.workspaceService.saveSnapshot(
+                    context.workspaceId!,
+                    snapshot,
+                );
+            }
+            return snapshot;
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.dispatchWorkspaceSurfaceDrag,
+        (event, payload: unknown) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
+            if (
+                !payload ||
+                typeof payload !== "object" ||
+                ((payload as { kind?: unknown }).kind !== "agent" &&
+                    (payload as { kind?: unknown }).kind !== "github") ||
+                typeof (payload as { detail?: unknown }).detail !== "object" ||
+                (payload as { detail: object | null }).detail === null
+            ) {
+                throw new Error("An agent or GitHub drag payload is required.");
+            }
+            workspaceSurfaceManager.dispatchActiveSurfaceDrag(
+                context.windowId,
+                payload as WorkspaceSurfaceDragEvent,
+            );
+        },
+    );
+    ipcMain.handle(IPC_CHANNELS.notifyWorkspaceSurfaceFocused, (event) => {
+        const surfaceContext = workspaceSurfaceManager.getSurfaceContext(
+            event.sender,
+        );
+        if (!surfaceContext?.hostWindowId) {
+            return;
+        }
+        workspaceSurfaceManager
+            .getHostWebContents(surfaceContext.hostWindowId)
+            ?.send(IPC_EVENTS.workspaceSurfaceFocused);
+    });
+    ipcMain.handle(
+        IPC_CHANNELS.activateWorkspaceSurface,
+        (event, contextKey: string) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
+            if (!workspaceSurfaceManager.activate(context.windowId, contextKey)) {
+                return;
+            }
+            const activeContext = workspaceSurfaceManager.getActiveContext(
+                context.windowId,
+            );
+            windowRegistry.updateMainWindowProjectId(
+                context.windowId,
+                activeContext?.projectId ?? null,
+                activeContext?.worktreeId ?? null,
+            );
+            const hostWindow = BrowserWindow.fromWebContents(event.sender);
+            if (hostWindow) {
+                hostWindow.setTitle(
+                    buildMainWindowTitle(
+                        options.projectService,
+                        activeContext?.projectId ?? null,
+                    ),
+                );
+            }
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.requestWorkspaceSurfaceContext,
+        (event, input: WorkspaceSurfaceContextRequest) => {
+            requireWindowContext(event.sender, "main");
+            const surfaceContext = workspaceSurfaceManager.getSurfaceContext(
+                event.sender,
+            );
+            if (
+                !surfaceContext ||
+                !surfaceContext.hostWindowId ||
+                !input ||
+                typeof input.projectId !== "string" ||
+                input.projectId.length === 0 ||
+                (input.worktreeId !== undefined &&
+                    input.worktreeId !== null &&
+                    typeof input.worktreeId !== "string") ||
+                (input.emptyLayout !== undefined &&
+                    typeof input.emptyLayout !== "boolean")
+            ) {
+                return;
+            }
+            workspaceSurfaceManager
+                .getHostWebContents(surfaceContext.hostWindowId)
+                ?.send(IPC_EVENTS.workspaceSurfaceContextRequested, input);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu,
+        (event, anchor: { readonly width: number; readonly x: number }) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
+            workspaceSurfaceManager.requestActiveGitScopeMenu(
+                context.windowId,
+                {
+                    width: Math.max(0, Math.round(anchor.width)),
+                    x: Math.max(0, Math.round(anchor.x)),
+                },
+            );
+        },
+    );
+    ipcMain.handle(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu, (event) => {
+        const context = requireWindowContext(event.sender, "main");
+        if (workspaceSurfaceManager.isSurface(event.sender)) {
+            return;
+        }
+        workspaceSurfaceManager.requestActiveProjectMenu(context.windowId);
+    });
+    ipcMain.handle(
+        IPC_CHANNELS.setWorkspaceSurfaceContentInset,
+        (event, height: number) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (!workspaceSurfaceManager.isSurface(event.sender)) {
+                workspaceSurfaceManager.setContentInset(context.windowId, height);
+            }
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset,
+        (event, width: number) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (!workspaceSurfaceManager.isSurface(event.sender)) {
+                workspaceSurfaceManager.setContentLeftInset(
+                    context.windowId,
+                    width,
+                );
+            }
         },
     );
     ipcMain.handle(
@@ -1737,11 +2141,60 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, input: GetAiSessionTranscriptPageInput) =>
             options.aiService.getSessionTranscriptPage(input),
     );
+    ipcMain.handle(IPC_CHANNELS.getAiPromptQueue, (event, sessionId: string) => {
+        const context = requireWindowContext(event.sender, "main");
+        return options.aiService.getPromptQueue(sessionId, context.windowId);
+    });
     ipcMain.handle(
-        IPC_CHANNELS.sendAiPrompt,
-        (event, input: SendAiPromptInput) => {
+        IPC_CHANNELS.enqueueAiPrompt,
+        (event, input: EnqueueAiPromptInput) => {
             const context = requireWindowContext(event.sender, "main");
-            return options.aiService.sendPrompt(input, context.windowId);
+            return options.aiService.enqueuePrompt(input, context.windowId);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.removeAiQueuedPrompt,
+        (event, input: AiQueuedPromptMutationInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            return options.aiService.removeQueuedPrompt(input, context.windowId);
+        },
+    );
+    ipcMain.handle(IPC_CHANNELS.clearAiPromptQueue, (event, sessionId: string) => {
+        const context = requireWindowContext(event.sender, "main");
+        return options.aiService.clearPromptQueue(sessionId, context.windowId);
+    });
+    ipcMain.handle(
+        IPC_CHANNELS.beginEditAiQueuedPrompt,
+        (event, input: AiQueuedPromptMutationInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            return options.aiService.beginEditQueuedPrompt(
+                input,
+                context.windowId,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.cancelEditAiQueuedPrompt,
+        (event, sessionId: string) => {
+            const context = requireWindowContext(event.sender, "main");
+            return options.aiService.cancelEditQueuedPrompt(
+                sessionId,
+                context.windowId,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.updateAiQueuedPrompt,
+        (event, input: UpdateAiQueuedPromptInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            return options.aiService.updateQueuedPrompt(input, context.windowId);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.steerAiQueuedPrompt,
+        (event, input: AiQueuedPromptMutationInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            return options.aiService.steerQueuedPrompt(input, context.windowId);
         },
     );
     ipcMain.handle(
@@ -1900,14 +2353,14 @@ async function resolveGeneratedImageIpcPath(imagePath: string): Promise<string> 
 function broadcastProjectSettingsUpdated(
     payload: ProjectSettingsUpdatedEvent,
 ): void {
-    forEachLiveWindow((window) => {
-        window.webContents.send(IPC_EVENTS.projectSettingsUpdated, payload);
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.projectSettingsUpdated, payload);
     });
 }
 
 function broadcastGitHubAuthUpdated(payload: GitHubAuthStatus): void {
-    forEachLiveWindow((window) => {
-        window.webContents.send(IPC_EVENTS.githubAuthUpdated, payload);
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.githubAuthUpdated, payload);
     });
 }
 
@@ -1923,6 +2376,10 @@ function requireWindowContext(
     }
 
     return context;
+}
+
+function getPersistenceOwnerId(context: WindowContextSnapshot): string {
+    return context.hostWindowId ?? context.windowId;
 }
 
 function buildMainWindowTitle(
@@ -2594,17 +3051,17 @@ function notifyGitSnapshot(
         worktreeId: snapshot.currentWorktreeId,
     };
 
-    forEachLiveWindow((window) => {
-        window.webContents.send(
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(
             IPC_EVENTS.gitRepositoryInvalidated,
             invalidation,
         );
-        window.webContents.send(
+        webContents.send(
             IPC_EVENTS.gitRepositorySnapshotUpdated,
             snapshot,
         );
         if (reason === "worktree") {
-            window.webContents.send(
+            webContents.send(
                 IPC_EVENTS.gitWorktreesUpdated,
                 invalidation,
             );

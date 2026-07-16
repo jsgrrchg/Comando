@@ -2,22 +2,23 @@ import {
     useCallback,
     useEffect,
     useEffectEvent,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
     type KeyboardEvent as ReactKeyboardEvent,
-    type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
-    type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 
 import type {
     AppUpdateState,
     ComandoApi,
+    GitRepositorySnapshot,
+    GitWorktreeSummary,
     PersistenceSnapshot,
-    ProjectTreeNode,
     ProjectSummary,
+    ProjectTreeNode,
     SettingsWindowCategory,
     SettingsSnapshot,
 } from "@shared/ipc";
@@ -32,6 +33,11 @@ import {
     findProjectTreeNodeByPath,
 } from "./app/projects/git-tree";
 import { createGitProjectRefreshScheduler } from "./app/git/refresh-scheduler";
+import {
+    areGitWorktreeIdsEquivalent,
+    getGitContextKey,
+    resolveProjectContextWorktreeId,
+} from "./app/git/context-key";
 import {
     reconcileFileTreeSelection,
     resolveActiveFileTreePath,
@@ -49,13 +55,13 @@ import {
     type ProjectQuickOpenMatch,
 } from "./app/projects/quick-open";
 import { filterProjectEntriesForTreeFilter } from "./app/projects/tree-filter";
+import { filterProjectEntriesInWorker } from "./app/projects/tree-filter-worker-client";
 import { getProjectContextKey } from "./app/projects/context-key";
-import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import {
-    edgePeekConfig,
-    isPointInsideInflatedRect,
-    type EdgePeekPointerPosition,
-} from "./app/layout/edge-peek";
+    resolveWorkspaceContextRefreshPlan,
+    runDeduplicatedContextRefresh,
+} from "./app/workspace/context-activation-refresh";
+import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import {
     COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
@@ -75,6 +81,7 @@ import { useProjectsStore } from "./app/store/projects-store";
 import { useSettingsStore } from "./app/store/settings-store";
 import { useShellStore } from "./app/store/shell-store";
 import {
+    flushWorkspacePersistenceNow,
     getBestMatchingChatTabId,
     useWorkspaceStore,
 } from "./app/store/workspace-store";
@@ -104,7 +111,6 @@ import {
     SidebarAgentsPanel,
     SidebarGitHubPanel,
     SidebarGitPanel,
-    SidebarGitScopePicker,
     type SidebarGitHubAddToChatRequest,
 } from "./components/sidebar";
 import {
@@ -130,8 +136,18 @@ import {
     createWorkspaceQuickFile,
 } from "./components/workspace/quick-create";
 import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
-import { closeWorkspaceTabsWithConfirmation } from "./components/workspace/workspaceCloseGuard";
-import { DesktopTopBar } from "./components/DesktopTopBar";
+import type { WorkspacePaneRecentProject } from "./components/workspace/WorkspacePaneEmptyState";
+import {
+    closeWorkspaceContextWithConfirmation,
+    closeWorkspaceTabsWithConfirmation,
+} from "./components/workspace/workspaceCloseGuard";
+import {
+    DesktopTopBar,
+    type ProjectContextMenuProject,
+    type ProjectContextTabItem,
+} from "./components/DesktopTopBar";
+import { SidebarGitScopePicker } from "./components/sidebar/SidebarGitScopePicker";
+import { WorkspaceSurfaceProjectContextMenu } from "./components/ProjectContextMenu";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 
@@ -145,6 +161,22 @@ type SidebarView = "files" | "git" | "agents" | "issues" | "pull_requests";
 
 const ROOT_NODE_KEY = "__root__";
 const PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
+const WORKSPACE_RECENT_PROJECTS_LIMIT = 6;
+const rendererWindowMode = new URLSearchParams(window.location.search).get(
+    "window",
+);
+const isWorkspaceHostRenderer = rendererWindowMode === "workspace-host";
+const isWorkspaceSurfaceRenderer =
+    rendererWindowMode === "workspace-surface";
+
+function getWorktreeDisplayLabel(worktree: GitWorktreeSummary): string {
+    if (worktree.branchName) {
+        return worktree.branchName;
+    }
+
+    const pathParts = worktree.rootPath.split(/[\\/]/).filter(Boolean);
+    return pathParts.at(-1) ?? "Detached worktree";
+}
 
 type FileTreeContextMenuPayload =
     | {
@@ -221,7 +253,43 @@ export function App() {
     const bootstrapError = useAppStore((state) => state.error);
     const hydrateBootstrap = useAppStore((state) => state.hydrate);
 
-    const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+    const persistedActiveProjectId = useProjectsStore(
+        (state) => state.activeProjectId,
+    );
+    const workspaceActiveContextKey = useWorkspaceStore(
+        (state) => state.activeContextKey,
+    );
+    const workspaceNavigationHydrated = useWorkspaceStore(
+        (state) => state.hydrated,
+    );
+    const workspaceContextsByKey = useWorkspaceStore(
+        (state) => state.contextsByKey,
+    );
+    const openWorkspaceContextKeys = useWorkspaceStore(
+        (state) => state.openContextKeys,
+    );
+    const workspaceSurfaceTopologyKey = useMemo(
+        () =>
+            JSON.stringify(
+                openWorkspaceContextKeys.map((contextKey) => {
+                    const context = workspaceContextsByKey[contextKey];
+                    return [
+                        contextKey,
+                        context?.projectId ?? null,
+                        context?.worktreeId ?? null,
+                    ];
+                }),
+            ),
+        [openWorkspaceContextKeys, workspaceContextsByKey],
+    );
+    const activeWorkspaceContext = useWorkspaceStore((state) =>
+        state.activeContextKey
+            ? (state.contextsByKey[state.activeContextKey] ?? null)
+            : null,
+    );
+    const activeProjectId =
+        activeWorkspaceContext?.projectId ??
+        (workspaceNavigationHydrated ? null : persistedActiveProjectId);
     const addProjects = useProjectsStore((state) => state.addProjects);
     const cloneRepository = useProjectsStore((state) => state.cloneRepository);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
@@ -247,9 +315,6 @@ export function App() {
     );
     const renameEntry = useProjectsStore((state) => state.renameEntry);
     const revealEntry = useProjectsStore((state) => state.revealEntry);
-    const setActiveProject = useProjectsStore(
-        (state) => state.setActiveProject,
-    );
     const toggleDirectory = useProjectsStore((state) => state.toggleDirectory);
     const treeNodes = useProjectsStore((state) => state.treeNodes);
     const expandedDirectories = useProjectsStore(
@@ -260,6 +325,10 @@ export function App() {
     const refreshGitHistory = useGitStore((state) => state.refreshHistory);
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const ingestGitSnapshot = useGitStore((state) => state.ingestSnapshot);
+    const gitSnapshots = useGitStore((state) => state.snapshots);
+    const gitWorktreesByProject = useGitStore(
+        (state) => state.worktreesByProject,
+    );
     const setActiveWorktree = useGitStore((state) => state.setActiveWorktree);
     const selectGitBranch = useGitStore((state) => state.selectBranch);
 
@@ -283,6 +352,108 @@ export function App() {
                 closeWorkspaceTab(tabId),
             ),
         [closeWorkspaceTab],
+    );
+    const requestCloseWorkspaceContext = useCallback(
+        async (contextKey: string) => {
+            const comandoApi = getComandoApi();
+            const flushSurfaceContext = async (): Promise<boolean> => {
+                if (!isWorkspaceHostRenderer || !comandoApi) {
+                    return true;
+                }
+                const snapshot = await comandoApi.captureWorkspaceSurfaceContext(
+                    contextKey,
+                );
+                if (snapshot) {
+                    useWorkspaceStore
+                        .getState()
+                        .applySurfaceNavigationSnapshot(snapshot);
+                }
+                return true;
+            };
+
+            if (!(await flushSurfaceContext())) {
+                return;
+            }
+
+            const workspaceState = useWorkspaceStore.getState();
+            const context = workspaceState.contextsByKey[contextKey];
+            if (!context) {
+                return;
+            }
+
+            const tabsById =
+                workspaceState.activeContextKey === contextKey
+                    ? workspaceState.tabsById
+                    : context.workspace.tabsById;
+            const workspaceName =
+                useProjectsStore
+                    .getState()
+                    .projects.find((project) => project.id === context.projectId)
+                    ?.name ?? "this workspace";
+            return closeWorkspaceContextWithConfirmation(
+                {
+                    projectId: context.projectId,
+                    sessions: useAiStore.getState().sessions,
+                    tabsById,
+                    worktreeId: context.worktreeId,
+                },
+                async () => {
+                    if (!(await flushSurfaceContext())) {
+                        return;
+                    }
+                    await useWorkspaceStore.getState().closeContext(contextKey);
+                },
+                {
+                    confirm: async (summary) => {
+                        if (!comandoApi) {
+                            return false;
+                        }
+
+                        return comandoApi.confirmWorkspaceClose({
+                            activeAgentCount: summary.activeAgentCount,
+                            dirtyFileCount: summary.dirtyFileCount,
+                            workspaceName,
+                        });
+                    },
+                },
+            );
+        },
+        [],
+    );
+    const requestMoveWorkspaceContextToNewWindow = useCallback(
+        (contextKey: string) => {
+            const workspaceState = useWorkspaceStore.getState();
+            const context = workspaceState.contextsByKey[contextKey];
+            const workspaceSnapshot =
+                workspaceState.getContextNavigationSnapshot(contextKey);
+            if (!context || !workspaceSnapshot) {
+                return Promise.resolve();
+            }
+
+            const tabsById =
+                workspaceState.activeContextKey === contextKey
+                    ? workspaceState.tabsById
+                    : context.workspace.tabsById;
+            return closeWorkspaceTabsWithConfirmation(
+                Object.keys(tabsById),
+                async () => {
+                    const comandoApi = getComandoApi();
+                    if (!comandoApi) {
+                        throw new Error("The desktop bridge is unavailable.");
+                    }
+
+                    await comandoApi.openProjectWindow({
+                        forceNewWindow: true,
+                        projectId: context.projectId,
+                        workspaceSnapshot,
+                        worktreeId: context.worktreeId,
+                    });
+                    await useWorkspaceStore.getState().closeContext(contextKey);
+                },
+                { tabsById },
+            );
+        },
+        [],
     );
     const requestCloseActiveWorkspaceTab = useEffectEvent(() => {
         const workspaceState = useWorkspaceStore.getState();
@@ -337,6 +508,9 @@ export function App() {
         (state) => state.applyRuntimeStatus,
     );
     const applyAiSessionEvent = useAiStore((state) => state.applySessionEvent);
+    const applyAiPromptQueueSnapshot = useAiStore(
+        (state) => state.applyPromptQueueSnapshot,
+    );
     const applyAiSessionUpdate = useAiStore(
         (state) => state.applySessionUpdate,
     );
@@ -380,8 +554,20 @@ export function App() {
     const [fileTreeMovePickerSelectedIndex, setFileTreeMovePickerSelectedIndex] =
         useState(0);
     const [persistenceReady, setPersistenceReady] = useState(false);
-    const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
-    const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
+    const [workspaceSurfaceGitScopeMenuRequest, setWorkspaceSurfaceGitScopeMenuRequest] =
+        useState<{
+            readonly id: number;
+            readonly width: number;
+            readonly x: number;
+        } | null>(null);
+    const [workspaceSurfaceProjectMenuRequest, setWorkspaceSurfaceProjectMenuRequest] =
+        useState<{ readonly id: number } | null>(null);
+    const pendingContextTreeRefreshesRef = useRef(
+        new Map<string, Promise<void>>(),
+    );
+    const pendingContextGitRefreshesRef = useRef(
+        new Map<string, Promise<GitRepositorySnapshot | null>>(),
+    );
     const [gitChangesFilter, setGitChangesFilter] = useState("");
     const [agentsFilter, setAgentsFilter] = useState("");
     const [issuesFilter, setIssuesFilter] = useState("");
@@ -474,14 +660,12 @@ export function App() {
         [setFileTreeEntryIndexByContext],
     );
     const fileTreeBackendSearchRequestRef = useRef(0);
-    const sidebarOverlayRef = useRef<HTMLDivElement | null>(null);
-    const sidebarPointerRef = useRef<EdgePeekPointerPosition | null>(null);
-    const sidebarDragActiveRef = useRef(false);
     const quickOpenSearchRequestRef = useRef(0);
     const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
     const sidebarScrollPositionsRef = useRef<SidebarScrollPositionStore>(
         new Map(),
     );
+    const workspaceHostTitleBarRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
         let isDisposed = false;
@@ -531,7 +715,10 @@ export function App() {
                         resolvedWorktreeId,
                     );
                 }
-                await workspaceHydrate();
+                await workspaceHydrate({
+                    activeProjectId: persistedProjectId,
+                    activeWorktreeId: persistedWorktreeId,
+                });
             } finally {
                 if (!isDisposed) {
                     setPersistenceReady(true);
@@ -553,6 +740,182 @@ export function App() {
         refreshProjectTree,
         workspaceHydrate,
     ]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer || !workspaceNavigationHydrated) {
+            return;
+        }
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        void comandoApi.initializeWorkspaceSurfaces(
+            useWorkspaceStore.getState().getNavigationSnapshot(),
+        );
+    }, [
+        workspaceActiveContextKey,
+        workspaceNavigationHydrated,
+        workspaceSurfaceTopologyKey,
+    ]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        return comandoApi.onWorkspaceSurfaceSnapshotUpdated((snapshot) => {
+            const currentContextKey =
+                useWorkspaceStore.getState().activeContextKey;
+            if (
+                snapshot.activeContextKey &&
+                snapshot.activeContextKey !== currentContextKey
+            ) {
+                void comandoApi.activateWorkspaceSurface(
+                    snapshot.activeContextKey,
+                );
+            }
+            useWorkspaceStore
+                .getState()
+                .applySurfaceNavigationSnapshot(snapshot);
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceContextRequested((input) => {
+            void useWorkspaceStore
+                .getState()
+                .openContext(input.projectId, input.worktreeId, {
+                    emptyLayout: input.emptyLayout,
+                });
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceSnapshotRequested(() =>
+            useWorkspaceStore.getState().getNavigationSnapshot(),
+        );
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceSnapshotUpdated((snapshot) => {
+            useWorkspaceStore
+                .getState()
+                .applySurfaceNavigationSnapshot(snapshot);
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceDrag((event) => {
+            window.dispatchEvent(
+                new CustomEvent(
+                    event.kind === "agent"
+                        ? SIDEBAR_AGENT_DRAG_EVENT
+                        : SIDEBAR_GITHUB_DRAG_EVENT,
+                    { detail: event.detail },
+                ),
+            );
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        const forwardDrag = (
+            kind: "agent" | "github",
+            event: CustomEvent<
+                SidebarAgentDragDetail | SidebarGitHubDragDetail
+            >,
+        ) => {
+            void comandoApi.dispatchWorkspaceSurfaceDrag({
+                detail: event.detail,
+                kind,
+            });
+        };
+        const handleAgentDrag = (event: Event) =>
+            forwardDrag(
+                "agent",
+                event as CustomEvent<SidebarAgentDragDetail>,
+            );
+        const handleGitHubDrag = (event: Event) =>
+            forwardDrag(
+                "github",
+                event as CustomEvent<SidebarGitHubDragDetail>,
+            );
+        window.addEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleAgentDrag);
+        window.addEventListener(SIDEBAR_GITHUB_DRAG_EVENT, handleGitHubDrag);
+        return () => {
+            window.removeEventListener(
+                SIDEBAR_AGENT_DRAG_EVENT,
+                handleAgentDrag,
+            );
+            window.removeEventListener(
+                SIDEBAR_GITHUB_DRAG_EVENT,
+                handleGitHubDrag,
+            );
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceProjectMenuRequested(() => {
+            setWorkspaceSurfaceProjectMenuRequest((current) => ({
+                id: (current?.id ?? 0) + 1,
+            }));
+        });
+    }, []);
+
+    useLayoutEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        const element = workspaceHostTitleBarRef.current;
+        const comandoApi = getComandoApi();
+        if (!element || !comandoApi) {
+            return;
+        }
+        const updateInset = () => {
+            void comandoApi.setWorkspaceSurfaceContentInset(
+                element.getBoundingClientRect().height,
+            );
+        };
+        updateInset();
+        const observer = new ResizeObserver(updateInset);
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, []);
+
+    useLayoutEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        void getComandoApi()?.setWorkspaceSurfaceContentLeftInset(
+            leftCollapsed
+                ? 0
+                : leftWidth + shellLayoutConstraints.handleWidth,
+        );
+    }, [leftCollapsed, leftWidth]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -651,10 +1014,6 @@ export function App() {
 
         const unsubscribe = comandoApi.onProjectWindowRequested((payload) => {
             void (async () => {
-                if (activeProjectId !== payload.projectId) {
-                    await setActiveProject(payload.projectId);
-                }
-
                 const requestedWorktreeId =
                     payload.worktreeId !== undefined
                         ? (payload.worktreeId ?? null)
@@ -662,12 +1021,9 @@ export function App() {
                               payload.projectId
                           ] ?? null);
 
-                if (payload.worktreeId !== undefined) {
-                    await setActiveWorktree(
-                        payload.projectId,
-                        requestedWorktreeId,
-                    );
-                }
+                await useWorkspaceStore
+                    .getState()
+                    .openContext(payload.projectId, requestedWorktreeId);
 
                 if (payload.branchName !== undefined) {
                     selectGitBranch(
@@ -677,22 +1033,12 @@ export function App() {
                     );
                 }
 
-                await refreshGitProject(payload.projectId, requestedWorktreeId);
-                await refreshProjectTree(
-                    payload.projectId,
-                    requestedWorktreeId,
-                );
             })();
         });
 
         return unsubscribe;
     }, [
-        activeProjectId,
-        refreshGitProject,
-        refreshProjectTree,
         selectGitBranch,
-        setActiveProject,
-        setActiveWorktree,
     ]);
 
     useEffect(() => {
@@ -768,6 +1114,20 @@ export function App() {
     }, []);
 
     useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceGitScopeMenuRequested(
+            (anchor) => {
+                setWorkspaceSurfaceGitScopeMenuRequest((current) => ({
+                    ...anchor,
+                    id: (current?.id ?? 0) + 1,
+                }));
+            },
+        );
+    }, []);
+
+    useEffect(() => {
         const comandoApi = getComandoApi();
         if (!comandoApi) {
             return;
@@ -783,13 +1143,22 @@ export function App() {
         const unsubscribeSession = comandoApi.onAiSessionSnapshot((update) => {
             applyAiSessionUpdate(update);
         });
+        const unsubscribePromptQueue = comandoApi.onAiPromptQueue((snapshot) => {
+            applyAiPromptQueueSnapshot(snapshot);
+        });
 
         return () => {
             unsubscribeRuntime();
             unsubscribeSessionEvent();
             unsubscribeSession();
+            unsubscribePromptQueue();
         };
-    }, [applyAiRuntimeStatus, applyAiSessionEvent, applyAiSessionUpdate]);
+    }, [
+        applyAiPromptQueueSnapshot,
+        applyAiRuntimeStatus,
+        applyAiSessionEvent,
+        applyAiSessionUpdate,
+    ]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -820,6 +1189,16 @@ export function App() {
             unsubscribe();
         };
     }, [reopenLastClosedTab]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        return comandoApi.onWorkspaceFlushRequested(
+            flushWorkspacePersistenceNow,
+        );
+    }, []);
 
     useEffect(() => {
         syncViewport(window.innerWidth);
@@ -860,27 +1239,81 @@ export function App() {
         sidebarView,
     ]);
 
-    useEffect(() => {
-        if (!persistenceReady || !window.comando) {
-            return;
-        }
-
-        void window.comando.saveActiveProjectId(activeProjectId);
-    }, [activeProjectId, persistenceReady]);
-
-    const activeWorktreeId = useGitStore((state) =>
+    const gitActiveWorktreeId = useGitStore((state) =>
         activeProjectId
             ? (state.activeWorktreeIds[activeProjectId] ?? null)
             : null,
     );
+    const activeWorktreeId = activeWorkspaceContext
+        ? // Macro contexts use null for the logical primary checkout, while
+          // scoped services persist and query its canonical worktree id.
+          resolveProjectContextWorktreeId(
+              activeWorkspaceContext.projectId,
+              activeWorkspaceContext.worktreeId,
+              gitActiveWorktreeId,
+          )
+        : workspaceNavigationHydrated
+          ? null
+          : gitActiveWorktreeId;
     const activeProjectContextKey = getProjectContextKey(
         activeProjectId,
         activeWorktreeId,
     );
-    const activeGitContextKey = getGitContextKey(
-        activeProjectId,
-        activeWorktreeId,
+    const activeGitContextKey = activeProjectId
+        ? getGitContextKey(activeProjectId, activeWorktreeId)
+        : null;
+    const activeGitChanges = useMemo(
+        () =>
+            activeGitContextKey
+                ? (gitSnapshots[activeGitContextKey]?.changes ?? [])
+                : [],
+        [activeGitContextKey, gitSnapshots],
     );
+
+    useEffect(() => {
+        if (!activeWorkspaceContext) {
+            return;
+        }
+
+        const { projectId, worktreeId } = activeWorkspaceContext;
+        void setActiveWorktree(projectId, worktreeId);
+
+        const projectContextKey = getProjectContextKey(projectId, worktreeId);
+        const gitContextKey = getGitContextKey(projectId, worktreeId);
+        const projectsState = useProjectsStore.getState();
+        const gitState = useGitStore.getState();
+        const refreshPlan = resolveWorkspaceContextRefreshPlan({
+            hasGitSnapshot: Object.hasOwn(gitState.snapshots, gitContextKey),
+            hasProjectTree: Object.hasOwn(
+                projectsState.treeNodes[projectContextKey] ?? {},
+                ROOT_NODE_KEY,
+            ),
+            sidebarView,
+            sidebarVisible: !leftCollapsed,
+        });
+
+        if (refreshPlan.projectTree) {
+            void runDeduplicatedContextRefresh(
+                pendingContextTreeRefreshesRef.current,
+                projectContextKey,
+                () => refreshProjectTree(projectId, worktreeId),
+            );
+        }
+        if (refreshPlan.gitSnapshot) {
+            void runDeduplicatedContextRefresh(
+                pendingContextGitRefreshesRef.current,
+                gitContextKey,
+                () => refreshGitProject(projectId, worktreeId),
+            );
+        }
+    }, [
+        activeWorkspaceContext,
+        leftCollapsed,
+        refreshGitProject,
+        refreshProjectTree,
+        setActiveWorktree,
+        sidebarView,
+    ]);
 
     useEffect(() => {
         return scheduleEffectStateUpdate(() => {
@@ -897,14 +1330,6 @@ export function App() {
             setQuickOpenSelectedIndex(0);
         });
     }, [activeProjectId, activeWorktreeId]);
-
-    useEffect(() => {
-        if (!persistenceReady || !window.comando) {
-            return;
-        }
-
-        void window.comando.saveActiveWorktreeId(activeWorktreeId);
-    }, [activeWorktreeId, persistenceReady]);
 
     useEffect(() => {
         if (!isFileTreeSearchOpen) {
@@ -1075,197 +1500,6 @@ export function App() {
         };
     }, [dragState, setResizingPanel]);
 
-    const cancelSidebarOverlayClose = useCallback(() => {
-        setSidebarOverlayClosing(false);
-    }, []);
-
-    const hideSidebarOverlayImmediately = useCallback(() => {
-        sidebarDragActiveRef.current = false;
-        setSidebarOverlayClosing(false);
-        setSidebarOverlayVisible(false);
-    }, []);
-
-    const rememberSidebarPointer = useCallback(
-        (event: ReactMouseEvent<HTMLDivElement>) => {
-            sidebarPointerRef.current = {
-                x: event.clientX,
-                y: event.clientY,
-            };
-        },
-        [],
-    );
-
-    const isSidebarPointerInSafeZone = useCallback(() => {
-        const rect = sidebarOverlayRef.current?.getBoundingClientRect() ?? null;
-        return isPointInsideInflatedRect(
-            sidebarPointerRef.current,
-            rect,
-            edgePeekConfig.safeGap,
-        );
-    }, []);
-
-    const showSidebarOverlay = useCallback(
-        (event: ReactMouseEvent<HTMLDivElement>) => {
-            rememberSidebarPointer(event);
-            cancelSidebarOverlayClose();
-            setSidebarOverlayVisible(true);
-        },
-        [cancelSidebarOverlayClose, rememberSidebarPointer],
-    );
-
-    const hideSidebarOverlayWithAnimation = useCallback(() => {
-        if (
-            sidebarDragActiveRef.current ||
-            sidebarOverlayClosing ||
-            isSidebarPointerInSafeZone()
-        ) {
-            return;
-        }
-
-        setSidebarOverlayClosing(true);
-    }, [isSidebarPointerInSafeZone, sidebarOverlayClosing]);
-
-    const startSidebarOriginDrag = useCallback(() => {
-        sidebarDragActiveRef.current = true;
-        cancelSidebarOverlayClose();
-        setSidebarOverlayVisible(true);
-    }, [cancelSidebarOverlayClose]);
-
-    const finishSidebarOriginDrag = useCallback(() => {
-        if (!sidebarDragActiveRef.current) {
-            return;
-        }
-
-        sidebarDragActiveRef.current = false;
-        if (leftCollapsed) {
-            hideSidebarOverlayWithAnimation();
-        }
-    }, [hideSidebarOverlayWithAnimation, leftCollapsed]);
-
-    const isPointInsideSidebarOverlay = useCallback(
-        (point: EdgePeekPointerPosition) => {
-            const rect =
-                sidebarOverlayRef.current?.getBoundingClientRect() ?? null;
-            if (!rect || (rect.width <= 0 && rect.height <= 0)) {
-                return false;
-            }
-
-            return (
-                point.x >= rect.left &&
-                point.x <= rect.right &&
-                point.y >= rect.top &&
-                point.y <= rect.bottom
-            );
-        },
-        [],
-    );
-
-    useEffect(() => {
-        const handleSidebarOriginDrag = (
-            detail: SidebarAgentDragDetail | SidebarGitHubDragDetail,
-        ) => {
-            if (!detail) {
-                return;
-            }
-
-            if (Number.isFinite(detail.x) && Number.isFinite(detail.y)) {
-                sidebarPointerRef.current = {
-                    x: detail.x,
-                    y: detail.y,
-                };
-            }
-
-            if (detail.phase === "start" || detail.phase === "move") {
-                const startedInsideSidebarOverlay =
-                    detail.phase === "start" &&
-                    leftCollapsed &&
-                    sidebarOverlayVisible &&
-                    isPointInsideSidebarOverlay({
-                        x: detail.x,
-                        y: detail.y,
-                    });
-
-                if (
-                    !sidebarDragActiveRef.current &&
-                    !startedInsideSidebarOverlay
-                ) {
-                    return;
-                }
-
-                startSidebarOriginDrag();
-                return;
-            }
-
-            if (detail.phase === "end" || detail.phase === "cancel") {
-                finishSidebarOriginDrag();
-            }
-        };
-
-        const handleSidebarAgentDrag = (event: Event) => {
-            handleSidebarOriginDrag(
-                (event as CustomEvent<SidebarAgentDragDetail>).detail,
-            );
-        };
-
-        const handleSidebarGitHubDrag = (event: Event) => {
-            handleSidebarOriginDrag(
-                (event as CustomEvent<SidebarGitHubDragDetail>).detail,
-            );
-        };
-
-        window.addEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleSidebarAgentDrag);
-        window.addEventListener(
-            SIDEBAR_GITHUB_DRAG_EVENT,
-            handleSidebarGitHubDrag,
-        );
-        return () => {
-            window.removeEventListener(
-                SIDEBAR_AGENT_DRAG_EVENT,
-                handleSidebarAgentDrag,
-            );
-            window.removeEventListener(
-                SIDEBAR_GITHUB_DRAG_EVENT,
-                handleSidebarGitHubDrag,
-            );
-        };
-    }, [
-        finishSidebarOriginDrag,
-        isPointInsideSidebarOverlay,
-        leftCollapsed,
-        sidebarOverlayVisible,
-        startSidebarOriginDrag,
-    ]);
-
-    useEffect(() => {
-        if (!sidebarOverlayVisible) {
-            return;
-        }
-
-        const handlePointerMove = (event: PointerEvent) => {
-            sidebarPointerRef.current = {
-                x: event.clientX,
-                y: event.clientY,
-            };
-
-            if (isSidebarPointerInSafeZone()) {
-                cancelSidebarOverlayClose();
-                return;
-            }
-
-            hideSidebarOverlayWithAnimation();
-        };
-
-        window.addEventListener("pointermove", handlePointerMove);
-        return () => {
-            window.removeEventListener("pointermove", handlePointerMove);
-        };
-    }, [
-        cancelSidebarOverlayClose,
-        hideSidebarOverlayWithAnimation,
-        isSidebarPointerInSafeZone,
-        sidebarOverlayVisible,
-    ]);
-
     const gridTemplateColumns = useMemo(() => {
         const leftCol = leftCollapsed ? 0 : leftWidth;
         const leftHandle = leftCollapsed
@@ -1276,6 +1510,135 @@ export function App() {
 
     const activeProject =
         projects.find((project) => project.id === activeProjectId) ?? null;
+    useEffect(() => {
+        document.title = activeProject
+            ? `${activeProject.name} — Comando`
+            : (bootstrap?.app.windowTitle ?? "Comando");
+    }, [activeProject, bootstrap?.app.windowTitle]);
+    const projectContextTabs = useMemo<readonly ProjectContextTabItem[]>(
+        () =>
+            openWorkspaceContextKeys.flatMap((contextKey) => {
+                const context = workspaceContextsByKey[contextKey];
+                const project = context
+                    ? projects.find((entry) => entry.id === context.projectId)
+                    : null;
+                if (!context) {
+                    return [];
+                }
+
+                const worktrees =
+                    gitWorktreesByProject[context.projectId] ?? [];
+                const worktree = worktrees.find((entry) =>
+                    areGitWorktreeIdsEquivalent(
+                        context.projectId,
+                        context.worktreeId,
+                        entry.isPrimary ? null : entry.id,
+                    ),
+                );
+                return [
+                    {
+                        fullPath: worktree?.rootPath ?? project?.rootPath ?? null,
+                        key: context.key,
+                        projectId: context.projectId,
+                        projectName: project?.name ?? "Missing project",
+                        worktreeId: context.worktreeId,
+                        worktreeLabel: worktree
+                            ? getWorktreeDisplayLabel(worktree)
+                            : context.worktreeId
+                              ? "Missing worktree"
+                              : "Main checkout",
+                    },
+                ];
+            }),
+        [
+            gitWorktreesByProject,
+            openWorkspaceContextKeys,
+            projects,
+            workspaceContextsByKey,
+        ],
+    );
+    const workspaceRecentProjects = useMemo<
+        readonly WorkspacePaneRecentProject[]
+    >(() => {
+        const lastOpenedTime = (project: ProjectSummary) =>
+            project.lastOpenedAt ? Date.parse(project.lastOpenedAt) : 0;
+        return projects
+            .filter((project) => project.id !== activeProjectId)
+            .toSorted((a, b) => lastOpenedTime(b) - lastOpenedTime(a))
+            .slice(0, WORKSPACE_RECENT_PROJECTS_LIMIT)
+            .map((project) => ({ id: project.id, name: project.name }));
+    }, [activeProjectId, projects]);
+    const projectContextMenuProjects = useMemo<
+        readonly ProjectContextMenuProject[]
+    >(() => {
+        const openContextIdentities = openWorkspaceContextKeys.flatMap(
+            (contextKey) => {
+                const context = workspaceContextsByKey[contextKey];
+                return context
+                    ? [
+                          {
+                              projectId: context.projectId,
+                              worktreeId: context.worktreeId,
+                          },
+                      ]
+                    : [];
+            },
+        );
+
+        return projects.map((project) => {
+            const primaryIsOpen = openContextIdentities.some(
+                (context) =>
+                    context.projectId === project.id &&
+                    areGitWorktreeIdsEquivalent(
+                        project.id,
+                        context.worktreeId,
+                        null,
+                    ),
+            );
+            const worktrees = (gitWorktreesByProject[project.id] ?? [])
+                .filter((worktree) => !worktree.isPrimary)
+                .map((worktree) => ({
+                    id: worktree.id,
+                    isActive:
+                        activeWorkspaceContext?.projectId === project.id &&
+                        areGitWorktreeIdsEquivalent(
+                            project.id,
+                            activeWorkspaceContext.worktreeId,
+                            worktree.id,
+                        ),
+                    isOpen: openContextIdentities.some(
+                        (context) =>
+                            context.projectId === project.id &&
+                            areGitWorktreeIdsEquivalent(
+                                project.id,
+                                context.worktreeId,
+                                worktree.id,
+                            ),
+                    ),
+                    label: getWorktreeDisplayLabel(worktree),
+                }));
+
+            return {
+                id: project.id,
+                mainIsActive:
+                    activeWorkspaceContext?.projectId === project.id &&
+                    areGitWorktreeIdsEquivalent(
+                        project.id,
+                        activeWorkspaceContext.worktreeId,
+                        null,
+                    ),
+                mainIsOpen: primaryIsOpen,
+                name: project.name,
+                worktrees,
+            };
+        });
+    }, [
+        activeWorkspaceContext,
+        gitWorktreesByProject,
+        openWorkspaceContextKeys,
+        projects,
+        workspaceContextsByKey,
+    ]);
     const activeTreeNodesByParent = useMemo(
         () => treeNodes[activeProjectContextKey] ?? {},
         [activeProjectContextKey, treeNodes],
@@ -1374,7 +1737,14 @@ export function App() {
         fileTreeBackendSearchResults,
         fileTreeFilterSource,
     ]);
-    const fileTreeFilterMatches = useMemo(() => {
+    const shouldFilterTreeInWorker =
+        fileTreeFilterSource?.kind === "full" &&
+        fileTreeFilterEntries.length >= 2_000 &&
+        typeof Worker !== "undefined";
+    const synchronousFileTreeFilterMatches = useMemo(() => {
+        if (shouldFilterTreeInWorker) {
+            return [];
+        }
         if (!fileTreeFilterSource) {
             return [];
         }
@@ -1390,14 +1760,64 @@ export function App() {
         fileTreeFilterEntries,
         fileTreeFilterSource,
         normalizedFileTreeFilter,
+        shouldFilterTreeInWorker,
     ]);
+    const [workerFileTreeFilterMatches, setWorkerFileTreeFilterMatches] =
+        useState<{
+            readonly entries: readonly ProjectTreeNode[];
+            readonly matches: readonly ProjectTreeNode[];
+            readonly query: string;
+        } | null>(null);
+    useEffect(() => {
+        if (!shouldFilterTreeInWorker || !fileTreeFilterSource) {
+            return;
+        }
+        const controller = new AbortController();
+        void filterProjectEntriesInWorker({
+            entries: fileTreeFilterEntries,
+            query: normalizedFileTreeFilter,
+            signal: controller.signal,
+            strategy: "substring",
+        }).then((matches) => {
+            if (!controller.signal.aborted) {
+                setWorkerFileTreeFilterMatches({
+                    entries: fileTreeFilterEntries,
+                    matches,
+                    query: normalizedFileTreeFilter,
+                });
+            }
+        });
+        return () => controller.abort();
+    }, [
+        fileTreeFilterEntries,
+        fileTreeFilterSource,
+        normalizedFileTreeFilter,
+        shouldFilterTreeInWorker,
+    ]);
+    const fileTreeFilterMatches = useMemo(
+        () =>
+            shouldFilterTreeInWorker
+                ? (workerFileTreeFilterMatches?.entries === fileTreeFilterEntries &&
+                  workerFileTreeFilterMatches.query === normalizedFileTreeFilter
+                      ? workerFileTreeFilterMatches.matches
+                      : [])
+                : synchronousFileTreeFilterMatches,
+        [
+            fileTreeFilterEntries,
+            normalizedFileTreeFilter,
+            shouldFilterTreeInWorker,
+            synchronousFileTreeFilterMatches,
+            workerFileTreeFilterMatches,
+        ],
+    );
     const fileTreeSearchTree = useMemo(
         () =>
             buildHierarchicalGitTreeNodesFromProjectEntries(
                 fileTreeFilterMatches,
                 fileTreeFilterEntries,
+                activeGitChanges,
             ),
-        [fileTreeFilterEntries, fileTreeFilterMatches],
+        [activeGitChanges, fileTreeFilterEntries, fileTreeFilterMatches],
     );
     const fileTreeSearchNodes = fileTreeSearchTree.nodes;
     const fileTreeSearchExpandedPaths = fileTreeSearchTree.expandedDirectoryPaths;
@@ -1434,13 +1854,10 @@ export function App() {
             }),
         [activeProjectId, activeWorkspaceTab, activeWorktreeId],
     );
-    const activeGitError = gitErrors[activeGitContextKey] ?? null;
+    const activeGitError = activeGitContextKey
+        ? (gitErrors[activeGitContextKey] ?? null)
+        : null;
     const isMac = bootstrap?.platform === "darwin";
-    const isWindows = bootstrap?.platform === "win32";
-    const isLinux = bootstrap?.platform === "linux";
-    const hasDesktopTitleBar = isWindows || isLinux;
-    const desktopTitleBarTitle =
-        activeProject?.name ?? bootstrap?.app.windowTitle ?? "Comando";
     const topStatus = [
         bootstrapError,
         projectsError,
@@ -1484,6 +1901,22 @@ export function App() {
         setGitHubSidebarSelectionResetSignal((signal) => signal + 1);
         setFileTreeContextMenu(null);
     }, [clearFileTreeSelection, focusSurface]);
+
+    const handleWorkspaceSurfacePointerDown = useCallback(() => {
+        focusWorkspaceSurface();
+        if (isWorkspaceSurfaceRenderer) {
+            void getComandoApi()?.notifyWorkspaceSurfaceFocused();
+        }
+    }, [focusWorkspaceSurface]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceFocused(
+            focusWorkspaceSurface,
+        );
+    }, [focusWorkspaceSurface]);
 
     const closeFileTreeContextMenu = useCallback(() => {
         const transientSelectionPath =
@@ -2199,7 +2632,11 @@ export function App() {
                 (tab) =>
                     tab.kind === "chat" &&
                     tab.projectId === activeProjectId &&
-                    (tab.worktreeId ?? null) === worktreeId,
+                    areGitWorktreeIdsEquivalent(
+                        activeProjectId,
+                        tab.worktreeId ?? null,
+                        worktreeId,
+                    ),
             );
 
             const attachContext = (sessionId: string) => {
@@ -2247,7 +2684,11 @@ export function App() {
                 (tab) =>
                     tab.kind === "chat" &&
                     tab.projectId === activeProjectId &&
-                    (tab.worktreeId ?? null) === worktreeId &&
+                    areGitWorktreeIdsEquivalent(
+                        activeProjectId,
+                        tab.worktreeId ?? null,
+                        worktreeId,
+                    ) &&
                     !existingTabIds.has(tab.id),
             );
 
@@ -2347,8 +2788,14 @@ export function App() {
                 activeProjectTree,
                 activeTreeNodesByParent,
                 activeExpandedDirectories,
+                activeGitChanges,
             ),
-        [activeExpandedDirectories, activeProjectTree, activeTreeNodesByParent],
+        [
+            activeExpandedDirectories,
+            activeGitChanges,
+            activeProjectTree,
+            activeTreeNodesByParent,
+        ],
     );
 
     const sidebarTreeNodes = useMemo(() => {
@@ -3062,22 +3509,16 @@ export function App() {
 
         setLeftCollapsed(false);
         setSidebarView("files");
-        hideSidebarOverlayImmediately();
         setFileTreeFilter("");
         setProjectRootExpandedByContext((currentState) => ({
             ...currentState,
             [targetProjectContextKey]: true,
         }));
 
-        if (activeProjectId !== targetProjectId) {
-            await setActiveProject(targetProjectId);
-        }
-
-        const currentTargetWorktreeId =
-            useGitStore.getState().activeWorktreeIds[targetProjectId] ?? null;
-
-        if (currentTargetWorktreeId !== targetWorktreeId) {
-            await setActiveWorktree(targetProjectId, targetWorktreeId);
+        if (workspaceActiveContextKey !== targetProjectContextKey) {
+            await useWorkspaceStore
+                .getState()
+                .openContext(targetProjectId, targetWorktreeId);
         }
 
         await revealPathInTree(targetProjectId, targetPath, targetWorktreeId);
@@ -3085,14 +3526,11 @@ export function App() {
             currentSignal === null ? 0 : currentSignal + 1,
         );
     }, [
-        activeProjectId,
         activeWorkspaceTab,
-        hideSidebarOverlayImmediately,
         revealPathInTree,
-        setActiveProject,
-        setActiveWorktree,
         setLeftCollapsed,
         setSidebarView,
+        workspaceActiveContextKey,
     ]);
 
     const handleSidebarViewChange = useCallback(
@@ -3331,22 +3769,87 @@ export function App() {
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "b" && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                toggleLeftCollapsed();
-                hideSidebarOverlayImmediately();
+            if (
+                event.defaultPrevented ||
+                !(event.metaKey || event.ctrlKey) ||
+                event.altKey ||
+                !event.shiftKey ||
+                event.key.toLowerCase() !== "w" ||
+                !workspaceActiveContextKey
+            ) {
+                return;
             }
-            if (event.key === "Escape") {
-                if (sidebarOverlayVisible) hideSidebarOverlayImmediately();
-            }
+
+            event.preventDefault();
+            void requestCloseWorkspaceContext(workspaceActiveContextKey);
         };
 
-        window.addEventListener("keydown", handleKeyDown);
-        return () => window.removeEventListener("keydown", handleKeyDown);
+        window.addEventListener("keydown", handleKeyDown, true);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown, true);
+        };
+    }, [requestCloseWorkspaceContext, workspaceActiveContextKey]);
+
+    useEffect(() => {
+        const isSupportedPlatform =
+            bootstrap?.platform === "darwin" ||
+            bootstrap?.platform === "linux" ||
+            bootstrap?.platform === "win32";
+        if (!isSupportedPlatform) {
+            return;
+        }
+
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (
+                event.defaultPrevented ||
+                event.shiftKey ||
+                !event.altKey ||
+                (isMac ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey)
+            ) {
+                return;
+            }
+
+            const direction =
+                event.code === "BracketRight"
+                    ? "next"
+                    : event.code === "BracketLeft"
+                      ? "previous"
+                      : null;
+            if (!direction || openWorkspaceContextKeys.length < 2) {
+                return;
+            }
+
+            const activeIndex = openWorkspaceContextKeys.indexOf(
+                workspaceActiveContextKey ?? "",
+            );
+            if (activeIndex < 0) {
+                return;
+            }
+
+            const targetIndex =
+                direction === "next"
+                    ? (activeIndex + 1) % openWorkspaceContextKeys.length
+                    : (activeIndex - 1 + openWorkspaceContextKeys.length) %
+                      openWorkspaceContextKeys.length;
+            const targetContextKey = openWorkspaceContextKeys[targetIndex];
+            if (!targetContextKey) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            void useWorkspaceStore.getState().activateContext(targetContextKey);
+        };
+
+        window.addEventListener("keydown", handleKeyDown, true);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown, true);
+        };
     }, [
-        hideSidebarOverlayImmediately,
-        sidebarOverlayVisible,
-        toggleLeftCollapsed,
+        bootstrap?.platform,
+        isMac,
+        openWorkspaceContextKeys,
+        workspaceActiveContextKey,
     ]);
 
     useEffect(() => {
@@ -3399,9 +3902,8 @@ export function App() {
 
     useEffect(() => {
         if (!isMac) return;
-        const visible = !leftCollapsed || sidebarOverlayVisible;
-        void window.comando?.setTrafficLightVisibility(visible);
-    }, [isMac, leftCollapsed, sidebarOverlayVisible]);
+        void window.comando?.setTrafficLightVisibility(true);
+    }, [isMac]);
 
     useEffect(() => {
         const platform = bootstrap?.platform;
@@ -3445,103 +3947,7 @@ export function App() {
 
     const sidebarContent = (
         <>
-            <div
-                className="app-drag relative px-2"
-                style={{
-                    paddingTop: isMac ? 42 : isWindows ? 0 : 8,
-                }}
-            >
-                {isMac && (
-                    <button
-                        className="sidebar-collapse-toggle app-no-drag"
-                        onClick={() => {
-                            toggleLeftCollapsed();
-                            hideSidebarOverlayImmediately();
-                        }}
-                        title={
-                            leftCollapsed
-                                ? "Expand sidebar"
-                                : "Collapse sidebar"
-                        }
-                        type="button"
-                    >
-                        <svg
-                            aria-hidden="true"
-                            fill="none"
-                            height="16"
-                            viewBox="0 0 16 16"
-                            width="16"
-                        >
-                            <rect
-                                x="1.5"
-                                y="2.5"
-                                width="13"
-                                height="11"
-                                rx="1.5"
-                                stroke="currentColor"
-                                strokeWidth="1.2"
-                            />
-                            <line
-                                x1="5.5"
-                                y1="2.5"
-                                x2="5.5"
-                                y2="13.5"
-                                stroke="currentColor"
-                                strokeWidth="1.2"
-                            />
-                        </svg>
-                    </button>
-                )}
-                <div className="mt-1 flex items-center gap-1">
-                    <div className="min-w-0 flex-1">
-                        <SidebarGitScopePicker
-                            projectId={activeProjectId}
-                            worktreeId={activeWorktreeId}
-                        />
-                    </div>
-                    {isWindows && (
-                        <button
-                            className="sidebar-collapse-toggle sidebar-collapse-toggle--inline app-no-drag"
-                            onClick={() => {
-                                toggleLeftCollapsed();
-                                hideSidebarOverlayImmediately();
-                            }}
-                            title={
-                                leftCollapsed
-                                    ? "Expand sidebar"
-                                    : "Collapse sidebar"
-                            }
-                            type="button"
-                        >
-                            <svg
-                                aria-hidden="true"
-                                fill="none"
-                                height="16"
-                                viewBox="0 0 16 16"
-                                width="16"
-                            >
-                                <rect
-                                    x="1.5"
-                                    y="2.5"
-                                    width="13"
-                                    height="11"
-                                    rx="1.5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.2"
-                                />
-                                <line
-                                    x1="5.5"
-                                    y1="2.5"
-                                    x2="5.5"
-                                    y2="13.5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.2"
-                                />
-                            </svg>
-                        </button>
-                    )}
-                </div>
-
+            <div className="app-drag px-2">
                 <div className="mt-1 flex items-center gap-1">
                     <button
                         className={[
@@ -4151,31 +4557,232 @@ export function App() {
                 )}
             </div>
 
-            <div className="border-t border-border/50 px-2 py-2">
-                <ProjectSwitcher
-                    activeProject={activeProject}
-                    appUpdateState={appUpdateState}
-                    onCloneRepository={(repositoryUrl) =>
-                        cloneRepository(repositoryUrl)
-                    }
-                    onOpenProjects={() => {
-                        void addProjects();
-                    }}
-                    onOpenSettings={openSettingsWindow}
-                    onSelectProject={(projectId) => {
-                        if (projectId === activeProjectId) {
-                            return;
-                        }
-
-                        void getComandoApi()?.openProjectWindow({
-                            projectId,
-                        });
-                    }}
-                    projects={projects}
-                />
-            </div>
         </>
     );
+
+    const handleOpenProject = (projectId: string) => {
+        void useWorkspaceStore.getState().openContext(projectId);
+    };
+
+    const handleOpenProjects = () => {
+        void (async () => {
+            const projectIds = await addProjects();
+            for (const projectId of projectIds) {
+                await useWorkspaceStore.getState().openContext(projectId);
+            }
+        })();
+    };
+
+    const activateWorkspaceContext = (contextKey: string) => {
+        if (isWorkspaceHostRenderer) {
+            void getComandoApi()?.activateWorkspaceSurface(contextKey);
+        }
+        void useWorkspaceStore.getState().activateContext(contextKey);
+    };
+    const workspaceSurfaceContentLeftInset = leftCollapsed
+        ? 0
+        : leftWidth + shellLayoutConstraints.handleWidth;
+    const openWorkspaceSurfaceGitScopeMenu = useCallback(
+        (anchor: { readonly width: number; readonly x: number }) => {
+            void getComandoApi()?.openWorkspaceSurfaceGitScopeMenu({
+                width: anchor.width,
+                x: Math.max(0, anchor.x - workspaceSurfaceContentLeftInset),
+            });
+        },
+        [workspaceSurfaceContentLeftInset],
+    );
+
+    const desktopTopBar = (
+        <DesktopTopBar
+            activeContextKey={workspaceActiveContextKey}
+            contexts={projectContextTabs}
+            leftSidebarCollapsed={leftCollapsed}
+            menuProjects={projectContextMenuProjects}
+            onOpenGitScopeMenu={
+                isWorkspaceHostRenderer
+                    ? openWorkspaceSurfaceGitScopeMenu
+                    : undefined
+            }
+            onOpenProjectMenu={
+                isWorkspaceHostRenderer && workspaceActiveContextKey
+                    ? () => {
+                          void getComandoApi()?.openWorkspaceSurfaceProjectMenu();
+                      }
+                    : undefined
+            }
+            onActivateContext={activateWorkspaceContext}
+            onCloneRepository={async (repositoryUrl) => {
+                const projectIds = await cloneRepository(repositoryUrl);
+                for (const projectId of projectIds) {
+                    await useWorkspaceStore.getState().openContext(projectId);
+                }
+                return projectIds.length > 0;
+            }}
+            onCloseContext={(contextKey) => {
+                void requestCloseWorkspaceContext(contextKey);
+            }}
+            onMoveContextToNewWindow={(contextKey) => {
+                void requestMoveWorkspaceContextToNewWindow(contextKey);
+            }}
+            onOpenProject={handleOpenProject}
+            onOpenProjects={handleOpenProjects}
+            onOpenSettings={(initialCategory) =>
+                openSettingsWindow(initialCategory)
+            }
+            onOpenWorktree={(projectId, worktreeId) => {
+                void useWorkspaceStore
+                    .getState()
+                    .openContext(projectId, worktreeId);
+            }}
+            onReorderContext={(contextKey, targetIndex) => {
+                void useWorkspaceStore
+                    .getState()
+                    .reorderContext(contextKey, targetIndex);
+            }}
+            onToggleLeftSidebar={toggleLeftCollapsed}
+            platform={bootstrap?.platform ?? null}
+            settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
+        />
+    );
+
+    if (isWorkspaceHostRenderer) {
+        return (
+            <div
+                className="relative flex h-screen min-h-0 flex-col text-text-primary"
+                data-platform={bootstrap?.platform ?? undefined}
+            >
+                <div ref={workspaceHostTitleBarRef}>{desktopTopBar}</div>
+                <div
+                    className="grid min-h-0 flex-1"
+                    style={{ gridTemplateColumns }}
+                >
+                    <aside
+                        className="app-sidebar flex min-h-0 flex-col"
+                        style={
+                            leftCollapsed ? { overflow: "hidden" } : undefined
+                        }
+                        data-active={activeSurface === "projects"}
+                        onClick={() => focusSurface("projects")}
+                        onFocus={() => focusSurface("projects")}
+                        tabIndex={0}
+                    >
+                        {!leftCollapsed && sidebarContent}
+                    </aside>
+
+                    <div
+                        style={
+                            leftCollapsed
+                                ? {
+                                      overflow: "hidden",
+                                      pointerEvents: "none",
+                                  }
+                                : undefined
+                        }
+                    >
+                        <SplitHandle
+                            label="Resize project sidebar"
+                            onPointerDown={(event) =>
+                                startDragging(
+                                    "left",
+                                    event,
+                                    leftWidth,
+                                    setDragState,
+                                )
+                            }
+                            onStepBackward={() =>
+                                nudgePanel(
+                                    "left",
+                                    -shellLayoutConstraints.keyboardStep,
+                                )
+                            }
+                            onStepForward={() =>
+                                nudgePanel(
+                                    "left",
+                                    shellLayoutConstraints.keyboardStep,
+                                )
+                            }
+                        />
+                    </div>
+                    <div className="min-h-0" />
+                </div>
+
+            </div>
+        );
+    }
+
+    if (isWorkspaceSurfaceRenderer) {
+        return (
+            <div
+                className="h-screen min-h-0 text-text-primary"
+                data-platform={bootstrap?.platform ?? undefined}
+            >
+                <SidebarGitScopePicker
+                    externalMenuRequest={workspaceSurfaceGitScopeMenuRequest}
+                    projectId={activeProjectId}
+                    triggerHidden
+                    worktreeId={activeWorktreeId}
+                />
+                <WorkspaceSurfaceProjectContextMenu
+                    externalMenuRequest={workspaceSurfaceProjectMenuRequest}
+                    onCloneRepository={async (repositoryUrl) => {
+                        const projectIds = await cloneRepository(repositoryUrl);
+                        for (const projectId of projectIds) {
+                            await useWorkspaceStore
+                                .getState()
+                                .openContext(projectId);
+                        }
+                        return projectIds.length > 0;
+                    }}
+                    onOpenProject={handleOpenProject}
+                    onOpenProjects={handleOpenProjects}
+                    onOpenSettings={(initialCategory) =>
+                        openSettingsWindow(initialCategory)
+                    }
+                    onOpenWorktree={(projectId, worktreeId) => {
+                        void useWorkspaceStore
+                            .getState()
+                            .openContext(projectId, worktreeId);
+                    }}
+                    projects={projectContextMenuProjects}
+                    settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
+                />
+                <main
+                    className="surface-focus h-full min-h-0 bg-bg-primary"
+                    data-active={activeSurface === "workspace"}
+                    onFocus={focusWorkspaceSurface}
+                    onPointerDown={handleWorkspaceSurfacePointerDown}
+                    tabIndex={0}
+                >
+                    <WorkspaceTerminalHost />
+                    <WorkspaceView
+                        defaultProjectId={activeProjectId}
+                        defaultWorktreeId={activeWorktreeId}
+                        onOpenProject={handleOpenProject}
+                        onOpenProjects={handleOpenProjects}
+                        onRequestCreateFile={() => {
+                            void handleCreateTreeEntry("file", null);
+                        }}
+                        recentProjects={workspaceRecentProjects}
+                    />
+                </main>
+                <QuickOpenFilePalette
+                    loading={isQuickOpenLoading}
+                    onChangeQuery={setQuickOpenQuery}
+                    onClose={closeQuickOpen}
+                    onHoverIndex={setQuickOpenSelectedIndex}
+                    onInputKeyDown={handleQuickOpenInputKeyDown}
+                    onSelect={(item) => {
+                        void handleQuickOpenSelect(item);
+                    }}
+                    open={isQuickOpenOpen}
+                    projectName={activeProject?.name ?? null}
+                    query={quickOpenQuery}
+                    results={quickOpenResults}
+                    selectedIndex={quickOpenSelectedIndex}
+                />
+            </div>
+        );
+    }
 
     return (
         <div
@@ -4184,9 +4791,7 @@ export function App() {
         >
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">
-                    {hasDesktopTitleBar && (
-                        <DesktopTopBar title={desktopTitleBarTitle} />
-                    )}
+                    {desktopTopBar}
                     <div
                         className="grid min-h-0 flex-1"
                         style={{
@@ -4257,80 +4862,17 @@ export function App() {
                             <WorkspaceView
                                 defaultProjectId={activeProjectId}
                                 defaultWorktreeId={activeWorktreeId}
+                                onOpenProject={handleOpenProject}
+                                onOpenProjects={handleOpenProjects}
                                 onRequestCreateFile={() => {
                                     void handleCreateTreeEntry("file", null);
                                 }}
+                                recentProjects={workspaceRecentProjects}
                             />
                         </main>
                     </div>
                 </div>
 
-                {leftCollapsed && (
-                    <div
-                        style={{
-                            position: "absolute",
-                            left: 0,
-                            top: 0,
-                            bottom: 0,
-                            width: sidebarOverlayVisible
-                                ? 0
-                                : edgePeekConfig.hotspotWidth,
-                            zIndex: 10,
-                        }}
-                        onMouseEnter={showSidebarOverlay}
-                    />
-                )}
-
-                {leftCollapsed && sidebarOverlayVisible && (
-                    <div
-                        ref={sidebarOverlayRef}
-                        className="flex min-h-0 flex-col bg-bg-panel"
-                        data-edge-peek-overlay="left"
-                        data-edge-peek-state={
-                            sidebarOverlayClosing ? "closing" : "opening"
-                        }
-                        style={{
-                            position: "absolute",
-                            left: 0,
-                            top: 0,
-                            bottom: 0,
-                            width: leftWidth,
-                            zIndex: 10,
-                            boxShadow: "var(--shadow-soft)",
-                            borderRight: "1px solid var(--color-border)",
-                        }}
-                        onMouseEnter={(event) => {
-                            rememberSidebarPointer(event);
-                            cancelSidebarOverlayClose();
-                        }}
-                        onMouseMove={rememberSidebarPointer}
-                        onMouseLeave={(event) => {
-                            rememberSidebarPointer(event);
-                            hideSidebarOverlayWithAnimation();
-                        }}
-                        onDragStartCapture={startSidebarOriginDrag}
-                        onDragEndCapture={(event) => {
-                            sidebarPointerRef.current = {
-                                x: event.clientX,
-                                y: event.clientY,
-                            };
-                            finishSidebarOriginDrag();
-                        }}
-                        onAnimationEnd={(event) => {
-                            if (
-                                event.currentTarget !== event.target ||
-                                !sidebarOverlayClosing
-                            ) {
-                                return;
-                            }
-
-                            setSidebarOverlayClosing(false);
-                            setSidebarOverlayVisible(false);
-                        }}
-                    >
-                        {sidebarContent}
-                    </div>
-                )}
             </div>
 
             {topStatus ? (
@@ -4646,9 +5188,7 @@ function createInitialAppUpdateState(): AppUpdateState {
     };
 }
 
-function getProjectSwitcherUpdateMenuLabel(
-    state: AppUpdateState,
-): string | null {
+function getSettingsUpdateMenuLabel(state: AppUpdateState): string | null {
     if (state.canInstallUpdate || state.status === "downloaded") {
         return "Settings · Update ready";
     }
@@ -4662,384 +5202,6 @@ function getProjectSwitcherUpdateMenuLabel(
     }
 
     return null;
-}
-
-function ProjectSwitcher({
-    activeProject,
-    appUpdateState,
-    onCloneRepository,
-    onOpenProjects,
-    onOpenSettings,
-    onSelectProject,
-    projects,
-}: {
-    readonly activeProject: ProjectSummary | null;
-    readonly appUpdateState: AppUpdateState;
-    readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
-    readonly onOpenProjects: () => void;
-    readonly onOpenSettings: (initialCategory?: SettingsWindowCategory) => void;
-    readonly onSelectProject: (projectId: string) => void;
-    readonly projects: readonly ProjectSummary[];
-}) {
-    const [open, setOpen] = useState(false);
-    const [search, setSearch] = useState("");
-    const [cloneMode, setCloneMode] = useState(false);
-    const [cloneUrl, setCloneUrl] = useState("");
-    const [cloneError, setCloneError] = useState<string | null>(null);
-    const [cloneSubmitting, setCloneSubmitting] = useState(false);
-    const ref = useRef<HTMLDivElement | null>(null);
-    const searchRef = useRef<HTMLInputElement | null>(null);
-    const cloneInputRef = useRef<HTMLInputElement | null>(null);
-    const normalizedSearch = search.trim().toLowerCase();
-    const filteredProjects = projects.filter((project) => {
-        if (!normalizedSearch) return true;
-        return (
-            project.name.toLowerCase().includes(normalizedSearch) ||
-            project.rootPath.toLowerCase().includes(normalizedSearch)
-        );
-    });
-    const updateMenuLabel = getProjectSwitcherUpdateMenuLabel(appUpdateState);
-    const hasUpdateNotice = updateMenuLabel !== null;
-
-    const resetMenuState = () => {
-        setOpen(false);
-        setSearch("");
-        setCloneMode(false);
-        setCloneUrl("");
-        setCloneError(null);
-        setCloneSubmitting(false);
-    };
-
-    useEffect(() => {
-        if (!open) return;
-        if (cloneMode) {
-            cloneInputRef.current?.focus();
-        } else {
-            searchRef.current?.focus();
-        }
-        const handleDown = (e: MouseEvent) => {
-            if (ref.current && !ref.current.contains(e.target as Node)) {
-                resetMenuState();
-            }
-        };
-        const handleKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") {
-                if (cloneMode) {
-                    setCloneMode(false);
-                    setCloneUrl("");
-                    setCloneError(null);
-                    return;
-                }
-                resetMenuState();
-            }
-        };
-        document.addEventListener("mousedown", handleDown);
-        document.addEventListener("keydown", handleKey);
-        return () => {
-            document.removeEventListener("mousedown", handleDown);
-            document.removeEventListener("keydown", handleKey);
-        };
-    }, [open, cloneMode]);
-
-    const handleAction = (action: () => void) => {
-        resetMenuState();
-        queueMicrotask(action);
-    };
-
-    const handleCloneSubmit = async () => {
-        const trimmedUrl = cloneUrl.trim();
-        if (!trimmedUrl) {
-            setCloneError("Paste a repository URL before cloning.");
-            return;
-        }
-
-        setCloneSubmitting(true);
-        setCloneError(null);
-        try {
-            const completed = await onCloneRepository(trimmedUrl);
-            if (completed) {
-                resetMenuState();
-            } else {
-                setCloneSubmitting(false);
-            }
-        } catch (error) {
-            setCloneSubmitting(false);
-            setCloneError(
-                error instanceof Error
-                    ? error.message
-                    : "Could not clone the repository.",
-            );
-        }
-    };
-
-    const menuItem = (
-        label: string,
-        action: () => void,
-        checked = false,
-        muted = false,
-        trailing?: ReactNode,
-    ) => (
-        <button
-            className="project-switcher-menu-item"
-            key={label}
-            onClick={() => handleAction(action)}
-            type="button"
-        >
-            <span className="project-switcher-check">{checked ? "✓" : ""}</span>
-            <span
-                className="truncate"
-                style={{
-                    color: muted
-                        ? "var(--color-text-secondary)"
-                        : "var(--color-text-primary)",
-                }}
-            >
-                {label}
-            </span>
-            {trailing}
-        </button>
-    );
-
-    return (
-        <div ref={ref} style={{ position: "relative" }}>
-            {open && (
-                <div className="project-switcher-menu">
-                    {cloneMode ? (
-                        <div className="project-switcher-clone">
-                            <div className="project-switcher-clone-label">
-                                Clone repository
-                            </div>
-                            <input
-                                autoCapitalize="off"
-                                autoCorrect="off"
-                                className="project-switcher-clone-input"
-                                disabled={cloneSubmitting}
-                                onChange={(e) => {
-                                    setCloneUrl(e.target.value);
-                                    if (cloneError) setCloneError(null);
-                                }}
-                                onKeyDown={(e) => {
-                                    e.stopPropagation();
-                                    if (e.key === "Enter") {
-                                        e.preventDefault();
-                                        void handleCloneSubmit();
-                                    }
-                                }}
-                                placeholder="https://github.com/user/repo.git"
-                                ref={cloneInputRef}
-                                spellCheck={false}
-                                value={cloneUrl}
-                            />
-                            {cloneError && (
-                                <div className="project-switcher-clone-error">
-                                    {cloneError}
-                                </div>
-                            )}
-                            <div className="project-switcher-clone-actions">
-                                <button
-                                    className="project-switcher-clone-btn"
-                                    disabled={cloneSubmitting}
-                                    onClick={() => {
-                                        setCloneMode(false);
-                                        setCloneUrl("");
-                                        setCloneError(null);
-                                    }}
-                                    type="button"
-                                >
-                                    Back
-                                </button>
-                                <button
-                                    className="project-switcher-clone-btn project-switcher-clone-btn-primary"
-                                    disabled={
-                                        cloneSubmitting || !cloneUrl.trim()
-                                    }
-                                    onClick={() => {
-                                        void handleCloneSubmit();
-                                    }}
-                                    type="button"
-                                >
-                                    {cloneSubmitting
-                                        ? "Cloning…"
-                                        : "Choose folder & clone"}
-                                </button>
-                            </div>
-                        </div>
-                    ) : (
-                        <>
-                            {projects.length > 0 && (
-                                <div className="project-switcher-search">
-                                    <svg
-                                        fill="none"
-                                        height="12"
-                                        style={{
-                                            opacity: 0.4,
-                                            flexShrink: 0,
-                                        }}
-                                        viewBox="0 0 16 16"
-                                        width="12"
-                                    >
-                                        <circle
-                                            cx="7"
-                                            cy="7"
-                                            r="5"
-                                            stroke="currentColor"
-                                            strokeWidth="1.5"
-                                        />
-                                        <path
-                                            d="m13 13-2.5-2.5"
-                                            stroke="currentColor"
-                                            strokeLinecap="round"
-                                            strokeWidth="1.5"
-                                        />
-                                    </svg>
-                                    <input
-                                        autoCapitalize="off"
-                                        autoCorrect="off"
-                                        className="project-switcher-search-input"
-                                        onChange={(e) =>
-                                            setSearch(e.target.value)
-                                        }
-                                        onKeyDown={(e) => e.stopPropagation()}
-                                        placeholder="Search projects…"
-                                        ref={searchRef}
-                                        spellCheck={false}
-                                        value={search}
-                                    />
-                                    <span className="project-switcher-search-count">
-                                        {filteredProjects.length}/
-                                        {projects.length}
-                                    </span>
-                                </div>
-                            )}
-                            <div className="project-switcher-list">
-                                {projects.length > 0 &&
-                                filteredProjects.length === 0 ? (
-                                    <div className="project-switcher-empty">
-                                        No projects match your search.
-                                    </div>
-                                ) : (
-                                    filteredProjects.map((project) =>
-                                        menuItem(
-                                            project.name,
-                                            () => onSelectProject(project.id),
-                                            project.id === activeProject?.id,
-                                        ),
-                                    )
-                                )}
-                            </div>
-                            {projects.length > 0 && (
-                                <div className="project-switcher-sep" />
-                            )}
-                            {menuItem(
-                                "Open folder…",
-                                onOpenProjects,
-                                false,
-                                true,
-                            )}
-                            <button
-                                className="project-switcher-menu-item"
-                                onClick={() => {
-                                    setCloneMode(true);
-                                    setCloneError(null);
-                                    setCloneUrl("");
-                                }}
-                                type="button"
-                            >
-                                <span className="project-switcher-check" />
-                                <span
-                                    className="truncate"
-                                    style={{
-                                        color: "var(--color-text-secondary)",
-                                    }}
-                                >
-                                    Clone repository…
-                                </span>
-                            </button>
-                            {menuItem(
-                                updateMenuLabel ?? "Settings",
-                                () =>
-                                    onOpenSettings(
-                                        hasUpdateNotice
-                                            ? "updates"
-                                            : undefined,
-                                    ),
-                                false,
-                                true,
-                                hasUpdateNotice ? (
-                                    <span
-                                        aria-hidden="true"
-                                        className="project-switcher-update-dot"
-                                    />
-                                ) : undefined,
-                            )}
-                        </>
-                    )}
-                </div>
-            )}
-
-            <button
-                className="sidebar-action-row sidebar-action-row--switcher app-no-drag w-full"
-                onClick={() => setOpen((v) => !v)}
-                type="button"
-            >
-                <svg
-                    aria-hidden="true"
-                    fill="none"
-                    height="13"
-                    style={{ flexShrink: 0 }}
-                    viewBox="0 0 16 16"
-                    width="13"
-                >
-                    <path
-                        d="M6.73 1.2H9.27L9.58 2.77C10.01 2.9 10.42 3.07 10.8 3.3L12.18 2.49L13.97 4.28L13.16 5.66C13.39 6.04 13.56 6.45 13.69 6.88L15.26 7.19V9.73L13.69 10.04C13.56 10.47 13.39 10.88 13.16 11.26L13.97 12.64L12.18 14.43L10.8 13.62C10.42 13.85 10.01 14.02 9.58 14.15L9.27 15.72H6.73L6.42 14.15C5.99 14.02 5.58 13.85 5.2 13.62L3.82 14.43L2.03 12.64L2.84 11.26C2.61 10.88 2.44 10.47 2.31 10.04L0.74 9.73V7.19L2.31 6.88C2.44 6.45 2.61 6.04 2.84 5.66L2.03 4.28L3.82 2.49L5.2 3.3C5.58 3.07 5.99 2.9 6.42 2.77L6.73 1.2Z"
-                        stroke="currentColor"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="1"
-                    />
-                    <circle
-                        cx="8"
-                        cy="8"
-                        r="2.1"
-                        stroke="currentColor"
-                        strokeWidth="1.4"
-                    />
-                </svg>
-                <span
-                    className="flex-1 truncate text-left"
-                    style={{
-                        color: "var(--color-text-primary)",
-                        fontWeight: 500,
-                    }}
-                >
-                    {activeProject?.name ?? "Open project"}
-                </span>
-                <svg
-                    aria-hidden="true"
-                    fill="none"
-                    height="10"
-                    style={{ flexShrink: 0 }}
-                    viewBox="0 0 16 16"
-                    width="10"
-                >
-                    <path
-                        d="M5 6l3-3 3 3M5 10l3 3 3-3"
-                        stroke="currentColor"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="1.5"
-                    />
-                </svg>
-            </button>
-        </div>
-    );
-}
-
-function getGitContextKey(
-    projectId: string | null,
-    worktreeId: string | null,
-): string {
-    return `${projectId ?? "__none__"}::${worktreeId ?? "__primary__"}`;
 }
 
 function joinProjectPath(rootPath: string, relativePath: string): string {

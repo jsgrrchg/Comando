@@ -30,6 +30,8 @@ interface ParsedLineRange {
 const FILE_PROTOCOL = "file://";
 const HASH_LINE_RE = /^#L?(\d+)(?:-L?(\d+))?$/;
 const TRAILING_LINE_RE = /^(.*?):(\d+)(?:-(\d+))?(?::\d+)?$/;
+const NATURAL_LINE_RE =
+    /^(.*?)\s*(?:\((?:line|lines)\s+(\d+)(?:\s*[-–]\s*(\d+))?\)|,\s*(?:line|lines)\s+(\d+)(?:\s*[-–]\s*(\d+))?)$/i;
 const WINDOWS_DRIVE_RE = /^[A-Za-z]:[\\/]/;
 
 export function isLikelyProjectFileReference(target: string): boolean {
@@ -195,7 +197,22 @@ function parsePlainTarget(target: string): ParsedProjectFileReference | null {
         return null;
     }
 
-    const parsedLine = parseTrailingLineRange(pathPart);
+    const naturalLineMatch = pathPart.match(NATURAL_LINE_RE);
+    const naturalStartLine = Number(
+        naturalLineMatch?.[2] ?? naturalLineMatch?.[4] ?? NaN,
+    );
+    const naturalEndLine = Number(
+        naturalLineMatch?.[3] ?? naturalLineMatch?.[5] ?? NaN,
+    );
+    const parsedLine = naturalLineMatch
+        ? {
+              endLine: Number.isFinite(naturalEndLine)
+                  ? naturalEndLine
+                  : naturalStartLine,
+              path: naturalLineMatch[1]?.trim() ?? "",
+              startLine: naturalStartLine,
+          }
+        : parseTrailingLineRange(pathPart);
     const candidatePath = parsedLine.path;
     const isAbsolute = looksAbsolutePath(candidatePath);
 

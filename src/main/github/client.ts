@@ -12,6 +12,7 @@ import type {
     GitHubErrorCode,
     GitHubGetIssueInput,
     GitHubGetPullRequestInput,
+    GitHubGetPullRequestDiffInput,
     GitHubIssueDetail,
     GitHubIssueState,
     GitHubIssueStateReason,
@@ -42,9 +43,11 @@ import type {
     GitHubNotificationsResult,
     GitHubPullRequestBranchRef,
     GitHubPullRequestDetail,
+    GitHubPullRequestDiffResult,
     GitHubPullRequestState,
     GitHubPullRequestSummary,
     GitHubRequestPullRequestReviewInput,
+    GitRevisionFileDiff,
     GitHubRepositoryRef,
     GitHubCreateReleaseInput,
     GitHubGeneratedReleaseNotes,
@@ -52,6 +55,8 @@ import type {
     GitHubPublishReleaseInput,
     GitHubReleaseSummary,
     GitHubSetIssueStateInput,
+    GitHubSetIssueLabelsInput,
+    GitHubSetIssueLabelsResult,
     GitHubSetPullRequestDraftStateInput,
     GitHubUpdateCommentInput,
     GitHubUpdateIssueInput,
@@ -72,11 +77,15 @@ import type {
     GitHubWorkflowRunStatus,
     GitHubWorkflowRunSummary,
 } from "@shared/ipc";
+import { parseUnifiedDiffHunks } from "@shared/diff/unified-diff";
 
 // Skip per-commit stats enrichment for PRs above this size to avoid
 // flooding the GitHub API with N detail requests for very large PRs.
 const PR_COMMIT_STATS_LIMIT = 50;
 const GITHUB_REQUEST_TIMEOUT_MS = 15_000;
+const PULL_REQUEST_FILES_PAGE_SIZE = 100;
+const PULL_REQUEST_FILES_MAX_COUNT = 3_000;
+const PULL_REQUEST_PATCH_MAX_BYTES = 20 * 1024 * 1024;
 
 export type GitHubFetch = (
     input: string | URL,
@@ -231,6 +240,15 @@ interface RawGitHubPullRequest {
     readonly title?: string;
     readonly updated_at?: string;
     readonly user?: RawGitHubUser | null;
+}
+
+interface RawGitHubPullRequestFile {
+    readonly additions?: number;
+    readonly deletions?: number;
+    readonly filename?: string;
+    readonly patch?: string;
+    readonly previous_filename?: string;
+    readonly status?: string;
 }
 
 interface RawGitHubCommitStatus {
@@ -574,6 +592,24 @@ export class GitHubApiClient {
         return updated;
     }
 
+    async setIssueLabels(
+        input: GitHubSetIssueLabelsInput,
+    ): Promise<GitHubSetIssueLabelsResult> {
+        const response = await this.#requestJson<readonly RawGitHubLabel[]>(
+            input.repository.host,
+            repoPath(input.repository, `/issues/${input.number}/labels`),
+            {
+                body: { labels: input.labels },
+                method: "PUT",
+            },
+        );
+
+        return {
+            labels: response.data.map(mapLabel),
+            number: input.number,
+        };
+    }
+
     async commentIssue(input: {
         readonly body: string;
         readonly number: number;
@@ -681,6 +717,71 @@ export class GitHubApiClient {
             comments,
             commits,
         );
+    }
+
+    async getPullRequestDiff(
+        input: GitHubGetPullRequestDiffInput,
+    ): Promise<GitHubPullRequestDiffResult> {
+        const pullRequest = await this.#requestJson<RawGitHubPullRequest>(
+            input.repository.host,
+            repoPath(input.repository, `/pulls/${input.number}`),
+        );
+        const files: RawGitHubPullRequestFile[] = [];
+        const seenCursors = new Set<string>();
+        let cursor: string | null = "1";
+        let patchBytes = 0;
+        let patchLimitReached = false;
+
+        while (cursor && files.length < PULL_REQUEST_FILES_MAX_COUNT) {
+            if (seenCursors.has(cursor)) break;
+            seenCursors.add(cursor);
+            const page = await this.#requestJson<readonly RawGitHubPullRequestFile[]>(
+                input.repository.host,
+                repoPath(input.repository, `/pulls/${input.number}/files`),
+                { query: { page: cursor, per_page: PULL_REQUEST_FILES_PAGE_SIZE } },
+            );
+            for (const file of page.data) {
+                if (files.length >= PULL_REQUEST_FILES_MAX_COUNT) break;
+                const patch = file.patch ?? "";
+                const canIncludePatch =
+                    !patchLimitReached &&
+                    patchBytes + Buffer.byteLength(patch, "utf8") <=
+                        PULL_REQUEST_PATCH_MAX_BYTES;
+                if (patch && !canIncludePatch) patchLimitReached = true;
+                if (canIncludePatch) patchBytes += Buffer.byteLength(patch, "utf8");
+                files.push(canIncludePatch ? file : { ...file, patch: undefined });
+            }
+            cursor = readNextPageCursor(page.headers);
+        }
+
+        const summary = mapPullRequestSummary(pullRequest.data, input.repository);
+        const totalFileCount = summary.changedFileCount ?? files.length;
+        const fileListComplete = files.length >= totalFileCount && !cursor;
+        const mappedFiles = files.map((file, index) => mapPullRequestDiffFile(file, index));
+        const unavailableCount = mappedFiles.filter(
+            (file) => file.contentState === "unavailable",
+        ).length;
+        const reasons: string[] = [];
+        if (!fileListComplete) {
+            reasons.push(`GitHub returned ${files.length} of ${totalFileCount} changed files.`);
+        }
+        if (patchLimitReached) reasons.push("Diff content exceeded the local size limit.");
+        if (unavailableCount > 0) {
+            reasons.push(`Diff content is unavailable for ${unavailableCount} files.`);
+        }
+
+        return {
+            additions: summary.additions ?? mappedFiles.reduce((sum, file) => sum + (file.additions ?? 0), 0),
+            baseSha: summary.base.sha,
+            contentComplete: !patchLimitReached && unavailableCount === 0,
+            deletions: summary.deletions ?? mappedFiles.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
+            fileListComplete,
+            files: mappedFiles,
+            headSha: summary.head.sha,
+            incompleteReason: reasons.length > 0 ? reasons.join(" ") : null,
+            number: input.number,
+            totalFileCount,
+        };
     }
 
     async listPullRequestChecks(
@@ -1722,6 +1823,50 @@ function mapPullRequestDetail(
         comments,
         commits,
         mergeable: pullRequest.mergeable ?? null,
+    };
+}
+
+function mapPullRequestDiffFile(
+    file: RawGitHubPullRequestFile,
+    index: number,
+): GitRevisionFileDiff {
+    const status = file.status?.toLowerCase() ?? "modified";
+    const kind =
+        status === "added" || status === "copied"
+            ? "create"
+            : status === "removed"
+              ? "delete"
+              : status === "renamed"
+                ? "move"
+                : "update";
+    const path = file.filename ?? `unknown-file-${index}`;
+    const patch = file.patch?.trim() ?? "";
+    const hunks = patch
+        ? parseUnifiedDiffHunks(patch, `github-pr:${index}:${path}`)
+        : [];
+    const contentState = hunks.length > 0 ? "available" : "unavailable";
+    return {
+        additions: file.additions ?? null,
+        contentState,
+        deletions: file.deletions ?? null,
+        hunks,
+        isText: contentState === "available",
+        kind,
+        newText: null,
+        oldText: null,
+        path,
+        previousPath: file.previous_filename ?? null,
+        reversible: false,
+        statusLabel:
+            status === "copied"
+                ? "copied"
+                : kind === "create"
+                  ? "added"
+                  : kind === "delete"
+                    ? "deleted"
+                    : kind === "move"
+                      ? "renamed"
+                      : "modified",
     };
 }
 

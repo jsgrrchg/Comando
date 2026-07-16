@@ -6,6 +6,8 @@ import type {
     AiMessage,
     AiPermissionResponseInput,
     AiPromptResult,
+    AiPromptQueueSnapshot,
+    AiQueuedPromptMutationInput,
     PrepareAiSessionInput,
     AiRuntimeAuthLaunchInput,
     AiRuntimeAuthDisconnectInput,
@@ -39,7 +41,9 @@ import type {
     ListAiSessionHistoryInput,
     OpenCodeRuntimeSettingsInput,
     SecretValuePatch,
+    EnqueueAiPromptInput,
     SendAiPromptInput,
+    UpdateAiQueuedPromptInput,
 } from "@shared/ipc";
 import {
     computeDiffHunks,
@@ -74,13 +78,16 @@ import type {
     SecretStoreGateway,
 } from "@main/ai/secret-store";
 import { debugBenignError } from "@main/observability/logging";
+import { NativeBackendError } from "@main/native-backend/client";
 
 import {
     createEmptyAiSessionSnapshot,
     type AiPersistenceGateway,
     type PersistedRuntimeCatalogSnapshot,
+    type PersistedRuntimeSelectionPreferences,
 } from "./persistence";
 import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
+import { AiPromptQueue } from "./prompt-queue";
 import { listOpenFileBuffers } from "./openFileBuffers";
 import {
     type AiReviewMutationResult,
@@ -108,6 +115,7 @@ import {
     isPathInsideRoot,
     isSamePath,
     normalizeAdditionalRoots,
+    normalizeAiSessionHierarchy,
     normalizeRestoredAiSessionSnapshot,
     resolveSessionScopedPath,
     setConfigOptionOnSnapshot,
@@ -219,6 +227,7 @@ const DEFAULT_AI_SESSION_RETENTION_CONFIG: AiSessionRetentionConfig = {
     maxHotSessionsPerWindow: 6,
 };
 const RECENT_NATIVE_REVIEW_CONTEXT_TTL_MS = 60_000;
+const RETENTION_CLOSE_EVENT_GRACE_MS = 60_000;
 
 function isResyncEligibleAiSessionStatus(
     status: AiSessionSnapshot["status"],
@@ -267,6 +276,15 @@ interface AiSessionRetentionSkippedRecord {
     readonly sessionId: string;
     readonly skippedAtMs: number;
     readonly skippedReason: AiSessionFreezeSkippedReason;
+}
+
+interface AiSessionRetentionCandidate {
+    readonly reason: AiSessionFreezeReason;
+    readonly sessionId: string;
+    readonly touch: {
+        readonly lastUsedAtMs: number;
+        readonly order: number;
+    };
 }
 
 interface AiSchedulerTask<T> {
@@ -431,6 +449,14 @@ interface PendingNativeCatalogPatch {
 export class AiService {
     readonly #deletedSessionIds = new Set<string>();
     readonly #freezingSessionIds = new Set<string>();
+    readonly #frozenSessionIds = new Set<string>();
+    readonly #retentionCloseEventSessionIds = new Set<string>();
+    readonly #retentionCloseRuntimeSessionIds = new Map<string, Set<string>>();
+    readonly #retentionCloseRuntimeSessionTimers = new Map<
+        string,
+        ReturnType<typeof setTimeout>
+    >();
+    readonly #retentionFreezePromises = new Map<string, Promise<void>>();
     readonly #lastRetentionCloseRecords: AiSessionRetentionCloseRecord[] = [];
     readonly #lastRetentionSkippedRecords: AiSessionRetentionSkippedRecord[] = [];
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
@@ -446,6 +472,7 @@ export class AiService {
         string,
         CapturedRuntimeDefaults
     >();
+    readonly #selectionMutationChains = new Map<string, Promise<void>>();
     #nativeAi: NativeAiGateway | null;
     readonly #nativeAuthMigratedRuntimeIds = new Set<AiRuntimeId>();
     readonly #nativeChildParentSessionIds = new Map<string, string>();
@@ -470,6 +497,7 @@ export class AiService {
         ownerWindowId: string,
         update: AiSessionUpdate,
     ) => void;
+    readonly #promptQueue: AiPromptQueue;
     readonly #persistence: AiPersistenceGateway;
     readonly #projectService: ProjectService;
     readonly #retentionConfig: AiSessionRetentionConfig;
@@ -498,6 +526,23 @@ export class AiService {
         this.#scheduler = new AiWorkScheduler(options.aiScheduler);
         this.#secretStore = options.secretStore;
         this.#settingsService = options.settingsService;
+        this.#promptQueue = new AiPromptQueue({
+            cancelSession: (sessionId) => this.#cancelNativeSession(sessionId),
+            dispatchPrompt: (input, ownerWindowId) =>
+                this.sendPrompt(
+                    input,
+                    this.#liveSessionContexts.get(input.sessionId)
+                        ?.ownerWindowId ?? ownerWindowId,
+                ),
+            getSessionSnapshot: (sessionId) =>
+                this.#liveSnapshots.get(sessionId) ?? null,
+            loadSnapshots: () =>
+                this.#persistence.loadPromptQueueSnapshots?.() ?? [],
+            onSnapshot: (ownerWindowId, snapshot) =>
+                options.onPromptQueueSnapshot?.(ownerWindowId, snapshot),
+            saveSnapshots: (snapshots) =>
+                this.#persistence.savePromptQueueSnapshots?.(snapshots),
+        });
     }
 
     setNativeAiGateway(nativeAi: NativeAiGateway | null): void {
@@ -518,6 +563,9 @@ export class AiService {
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
         this.#liveSessionTouches.clear();
+        for (const sessionId of this.#retentionCloseRuntimeSessionIds.keys()) {
+            this.#forgetRetentionCloseRuntimeSessions(sessionId);
+        }
     }
 
     getSchedulerDiagnostics(): AiSchedulerDiagnostics {
@@ -592,7 +640,7 @@ export class AiService {
     }
 
     handleNativeRuntimeStatus(status: AiRuntimeStatus): void {
-        this.#onRuntimeStatus(status);
+        this.#onRuntimeStatus(this.#withPersistedRuntimeCatalog(status));
     }
 
     handleNativeSessionClosed(payload: {
@@ -634,6 +682,7 @@ export class AiService {
             ownerWindowId,
         );
         this.#persistence.saveSessionSnapshot(cachedSnapshot);
+        this.#promptQueue.handleSessionSnapshot(cachedSnapshot);
         this.#onSessionSnapshot(
             ownerWindowId,
             buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
@@ -651,6 +700,14 @@ export class AiService {
         event: AiSessionDomainEvent,
     ): void {
         if (this.#deletedSessionIds.has(event.sessionId)) {
+            return;
+        }
+
+        // The runtime can deliver its close event after a retained session has
+        // already been prepared again. Consume the close for the specific old
+        // runtime session before it reaches snapshots, the renderer, or the
+        // prompt queue.
+        if (this.#consumeRetentionCloseEvent(event)) {
             return;
         }
 
@@ -685,6 +742,10 @@ export class AiService {
         }
 
         if (event.kind === "subagent-created") {
+            this.#nativeChildParentSessionIds.set(
+                event.childSessionId,
+                event.parentSessionId,
+            );
             this.#inheritNativeReviewContext(
                 event.parentSessionId,
                 event.childSessionId,
@@ -735,10 +796,6 @@ export class AiService {
                     ownerWindowId,
                 );
                 this.#nativeSessionIds.add(event.childSessionId);
-                this.#nativeChildParentSessionIds.set(
-                    event.childSessionId,
-                    event.parentSessionId,
-                );
                 this.#onSessionSnapshot(ownerWindowId, {
                     kind: "snapshot",
                     snapshot: cachedChildSnapshot,
@@ -746,6 +803,7 @@ export class AiService {
             }
         }
 
+        this.#promptQueue.handleSessionEvent(event);
         this.#onSessionEvent(ownerWindowId, event);
     }
 
@@ -1279,17 +1337,92 @@ export class AiService {
         void projectId;
     }
 
+    getPromptQueue(
+        sessionId: string,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.getSnapshot(sessionId, ownerWindowId);
+    }
+
+    enqueuePrompt(
+        input: EnqueueAiPromptInput,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        // Count the user's action before the asynchronous queue dispatcher
+        // starts. This prevents a stale retention candidate from closing the
+        // session just as a new prompt is being queued.
+        this.#touchLiveSession(input.sessionId);
+        return this.#promptQueue.enqueue(input, ownerWindowId);
+    }
+
+    removeQueuedPrompt(
+        input: AiQueuedPromptMutationInput,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.remove(
+            input.sessionId,
+            input.promptId,
+            ownerWindowId,
+        );
+    }
+
+    clearPromptQueue(
+        sessionId: string,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.clear(sessionId, ownerWindowId);
+    }
+
+    beginEditQueuedPrompt(
+        input: AiQueuedPromptMutationInput,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.beginEdit(
+            input.sessionId,
+            input.promptId,
+            ownerWindowId,
+        );
+    }
+
+    cancelEditQueuedPrompt(
+        sessionId: string,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.cancelEdit(sessionId, ownerWindowId);
+    }
+
+    updateQueuedPrompt(
+        input: UpdateAiQueuedPromptInput,
+        ownerWindowId: string,
+    ): AiPromptQueueSnapshot {
+        return this.#promptQueue.update(input, ownerWindowId);
+    }
+
+    async steerQueuedPrompt(
+        input: AiQueuedPromptMutationInput,
+        ownerWindowId: string,
+    ): Promise<AiPromptQueueSnapshot> {
+        return await this.#promptQueue.steer(
+            input.sessionId,
+            input.promptId,
+            ownerWindowId,
+        );
+    }
+
     async sendPrompt(
         input: SendAiPromptInput,
         ownerWindowId: string,
     ): Promise<AiPromptResult> {
         await this.#waitForReviewMutations(input.sessionId);
+        await this.#waitForRetentionFreeze(input.sessionId);
         const launch = await this.#buildNativeSessionLaunchInput(
             input,
             ownerWindowId,
         );
         if (
             launch.persistedSnapshot.parentSessionId &&
+            launch.persistedSnapshot.parentSessionId !==
+                launch.persistedSnapshot.sessionId &&
             launch.persistedSnapshot.closedAt
         ) {
             throw new Error(
@@ -1381,10 +1514,32 @@ export class AiService {
                                 input.messageId,
                             );
                     }
-                    const promptResult = await nativeAi.sendPrompt({
-                        input,
-                        launch,
-                    });
+                    let promptResult: AiPromptResult;
+                    try {
+                        promptResult = await nativeAi.sendPrompt({
+                            input,
+                            launch,
+                        });
+                    } catch (error) {
+                        if (!isNativeAiSessionNotFoundError(error)) {
+                            throw error;
+                        }
+
+                        // A runtime can evict an otherwise live session. The
+                        // not-found response is definitive, so recreate once
+                        // and retry this exact prompt without duplicating it.
+                        debugBenignError("ai.service.recoverPrompt", error);
+                        await this.#recoverMissingLiveSession(input.sessionId);
+                        const recoveredLaunch =
+                            await this.#buildNativeSessionLaunchInput(
+                                input,
+                                ownerWindowId,
+                            );
+                        promptResult = await nativeAi.sendPrompt({
+                            input,
+                            launch: recoveredLaunch,
+                        });
+                    }
                     if (promptResult.stopReason === "accepted") {
                         const terminalStatusAlreadySeen =
                             this.#markNativeReviewPromptAccepted(
@@ -1434,7 +1589,10 @@ export class AiService {
     }
 
     async setSessionMode(input: AiSessionModeMutationInput): Promise<void> {
-        await this.#setSessionMode(input, { rememberRuntimePreference: true });
+        this.#cancelCapturedRuntimeDefaults(input.sessionId);
+        await this.#enqueueSelectionMutation(input.sessionId, () =>
+            this.#setSessionMode(input, { rememberRuntimePreference: true }),
+        );
     }
 
     async #setSessionMode(
@@ -1453,7 +1611,9 @@ export class AiService {
             return;
         }
 
-        await this.#requireNativeAiGateway().setSessionMode(input);
+        await this.#runLiveSessionControlMutation(input.sessionId, () =>
+            this.#requireNativeAiGateway().setSessionMode(input),
+        );
         const snapshot = await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
@@ -1465,7 +1625,10 @@ export class AiService {
     }
 
     async setSessionModel(input: AiSessionModelMutationInput): Promise<void> {
-        await this.#setSessionModel(input, { rememberRuntimePreference: true });
+        this.#cancelCapturedRuntimeDefaults(input.sessionId);
+        await this.#enqueueSelectionMutation(input.sessionId, () =>
+            this.#setSessionModel(input, { rememberRuntimePreference: true }),
+        );
     }
 
     async #setSessionModel(
@@ -1484,7 +1647,9 @@ export class AiService {
             return;
         }
 
-        await this.#requireNativeAiGateway().setSessionModel(input);
+        await this.#runLiveSessionControlMutation(input.sessionId, () =>
+            this.#requireNativeAiGateway().setSessionModel(input),
+        );
         const snapshot = await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
@@ -1498,9 +1663,38 @@ export class AiService {
     async setSessionConfigOption(
         input: AiSessionConfigOptionMutationInput,
     ): Promise<void> {
-        await this.#setSessionConfigOption(input, {
-            rememberRuntimePreference: true,
-        });
+        this.#cancelCapturedRuntimeDefaults(input.sessionId);
+        await this.#enqueueSelectionMutation(input.sessionId, () =>
+            this.#setSessionConfigOption(input, {
+                rememberRuntimePreference: true,
+            }),
+        );
+    }
+
+    #cancelCapturedRuntimeDefaults(sessionId: string): void {
+        this.#capturedRuntimeDefaultsBySessionId.delete(sessionId);
+    }
+
+    async #enqueueSelectionMutation<T>(
+        sessionId: string,
+        mutation: () => Promise<T>,
+    ): Promise<T> {
+        const previous =
+            this.#selectionMutationChains.get(sessionId) ?? Promise.resolve();
+        const current = previous.catch(() => undefined).then(mutation);
+        const tail = current.then(
+            () => undefined,
+            () => undefined,
+        );
+        this.#selectionMutationChains.set(sessionId, tail);
+
+        try {
+            return await current;
+        } finally {
+            if (this.#selectionMutationChains.get(sessionId) === tail) {
+                this.#selectionMutationChains.delete(sessionId);
+            }
+        }
     }
 
     async #setSessionConfigOption(
@@ -1527,7 +1721,9 @@ export class AiService {
             return;
         }
 
-        await this.#requireNativeAiGateway().setSessionConfigOption(input);
+        await this.#runLiveSessionControlMutation(input.sessionId, () =>
+            this.#requireNativeAiGateway().setSessionConfigOption(input),
+        );
         const snapshot = await this.#updateSessionSnapshot(
             input.sessionId,
             (currentSnapshot) =>
@@ -1544,6 +1740,52 @@ export class AiService {
                 input.value,
             );
         }
+    }
+
+    async #runLiveSessionControlMutation(
+        sessionId: string,
+        mutation: () => Promise<void>,
+    ): Promise<void> {
+        try {
+            await mutation();
+            return;
+        } catch (error) {
+            if (!isNativeAiSessionNotFoundError(error)) {
+                throw error;
+            }
+
+            // The runtime can evict a session after the main process cached it.
+            // Recreate it once here so every renderer uses the same recovery path.
+            debugBenignError("ai.service.recoverSessionControl", error);
+            await this.#recoverMissingLiveSession(sessionId);
+        }
+
+        await mutation();
+    }
+
+    async #recoverMissingLiveSession(sessionId: string): Promise<void> {
+        const context = this.#liveSessionContexts.get(sessionId);
+        const snapshot = this.#liveSnapshots.get(sessionId);
+        if (!context || !snapshot) {
+            throw new Error("The AI session was not found.");
+        }
+
+        this.#cancelCapturedRuntimeDefaults(sessionId);
+        const rootSnapshot = await this.#resolveNativeRootSessionSnapshot(
+            snapshot,
+        );
+        this.#nativeSessionIds.delete(sessionId);
+        this.#nativeSessionIds.delete(rootSnapshot.sessionId);
+        await this.prepareSession(
+            {
+                projectId: snapshot.projectId,
+                runtimeId: snapshot.runtimeId,
+                sessionId,
+                title: snapshot.title,
+                worktreeId: snapshot.worktreeId ?? null,
+            },
+            context.ownerWindowId,
+        );
     }
 
     #rememberRuntimeModePreference(
@@ -1632,6 +1874,11 @@ export class AiService {
     }
 
     async cancelSession(sessionId: string): Promise<void> {
+        this.#promptQueue.pause(sessionId);
+        await this.#cancelNativeSession(sessionId);
+    }
+
+    async #cancelNativeSession(sessionId: string): Promise<void> {
         if (!this.#liveSessionContexts.has(sessionId)) {
             return;
         }
@@ -1645,31 +1892,59 @@ export class AiService {
         }
 
         await this.#requireNativeAiGateway().closeSession(sessionId);
+        if (this.#nativeChildParentSessionIds.has(sessionId)) {
+            this.#detachLiveSession(sessionId);
+            return;
+        }
         this.#clearLiveSession(sessionId);
     }
 
     async deleteSession(sessionId: string): Promise<void> {
-        this.#deletedSessionIds.add(sessionId);
+        this.#frozenSessionIds.delete(sessionId);
+        this.#retentionCloseEventSessionIds.delete(sessionId);
+        this.#forgetRetentionCloseRuntimeSessions(sessionId);
+        const subtreeSessionIds = await this.#collectSessionSubtreeIds(sessionId);
+        for (const subtreeSessionId of subtreeSessionIds) {
+            this.#frozenSessionIds.delete(subtreeSessionId);
+            this.#retentionCloseEventSessionIds.delete(subtreeSessionId);
+            this.#forgetRetentionCloseRuntimeSessions(subtreeSessionId);
+            this.#deletedSessionIds.add(subtreeSessionId);
+        }
         try {
-            if (this.#liveSessionContexts.has(sessionId)) {
+            for (const subtreeSessionId of [...subtreeSessionIds].reverse()) {
+                if (!this.#liveSessionContexts.has(subtreeSessionId)) {
+                    continue;
+                }
                 try {
-                    await this.cancelSession(sessionId);
+                    await this.cancelSession(subtreeSessionId);
                 } catch (error) {
-                    // Closing and deleting the local session state is still safe.
+                    // Deleting the persisted session tree is still safe after an interrupt failure.
                     debugBenignError("ai.service.deleteSession.cancel", error);
                 }
+            }
 
+            if (
+                this.#liveSessionContexts.has(sessionId) &&
+                !this.#nativeChildParentSessionIds.has(sessionId)
+            ) {
                 await this.closeSession(sessionId);
             }
 
             this.#clearLiveSession(sessionId);
+            for (const subtreeSessionId of subtreeSessionIds) {
+                this.#promptQueue.deleteSession(subtreeSessionId);
+            }
             if (this.#nativeAi?.shouldHandleHistory()) {
                 await this.#nativeAi.deleteSession(sessionId);
                 return;
             }
-            await this.#persistence.deleteSession(sessionId);
+            for (const subtreeSessionId of [...subtreeSessionIds].reverse()) {
+                await this.#persistence.deleteSession(subtreeSessionId);
+            }
         } catch (error) {
-            this.#deletedSessionIds.delete(sessionId);
+            for (const subtreeSessionId of subtreeSessionIds) {
+                this.#deletedSessionIds.delete(subtreeSessionId);
+            }
             throw error;
         }
     }
@@ -1993,7 +2268,9 @@ export class AiService {
             return null;
         }
 
-        return await nativeAi.saveRuntimeSettings(input);
+        return this.#withPersistedRuntimeCatalog(
+            await nativeAi.saveRuntimeSettings(input),
+        );
     }
 
     async #migrateNativeRuntimeSettingsIfNeeded(
@@ -2195,7 +2472,9 @@ export class AiService {
         snapshot: AiSessionSnapshot,
         ownerWindowId: string,
     ): AiSessionSnapshot {
-        const cachedSnapshot = normalizeLiveSnapshotReviewState(snapshot);
+        const cachedSnapshot = normalizeLiveSnapshotReviewState(
+            normalizeAiSessionHierarchy(snapshot),
+        );
         this.#liveSnapshots.set(cachedSnapshot.sessionId, cachedSnapshot);
         this.#touchLiveSession(cachedSnapshot.sessionId);
         const context = this.#liveSessionContexts.get(cachedSnapshot.sessionId);
@@ -2235,13 +2514,39 @@ export class AiService {
     }
 
     #clearLiveSession(sessionId: string): void {
-        const childSessionIds = [...this.#nativeChildParentSessionIds.entries()]
-            .filter(([, parentSessionId]) => parentSessionId === sessionId)
-            .map(([childSessionId]) => childSessionId);
-        for (const childSessionId of childSessionIds) {
-            this.#clearLiveSession(childSessionId);
+        const pendingSessionIds = [sessionId];
+        const sessionIdsToClear: string[] = [];
+        const visitedSessionIds = new Set<string>();
+        while (pendingSessionIds.length > 0) {
+            const currentSessionId = pendingSessionIds.shift();
+            if (!currentSessionId || visitedSessionIds.has(currentSessionId)) {
+                continue;
+            }
+            visitedSessionIds.add(currentSessionId);
+            sessionIdsToClear.push(currentSessionId);
+            for (const [childSessionId, parentSessionId] of this
+                .#nativeChildParentSessionIds) {
+                if (parentSessionId === currentSessionId) {
+                    pendingSessionIds.push(childSessionId);
+                }
+            }
         }
-        this.#nativeChildParentSessionIds.delete(sessionId);
+        for (const currentSessionId of sessionIdsToClear) {
+            this.#nativeChildParentSessionIds.delete(currentSessionId);
+            this.#liveSnapshots.delete(currentSessionId);
+            this.#liveSessionContexts.delete(currentSessionId);
+            this.#liveSessionTouches.delete(currentSessionId);
+            this.#freezingSessionIds.delete(currentSessionId);
+            this.#nativeReviewBaselines.delete(currentSessionId);
+            this.#recentNativeReviewContexts.delete(currentSessionId);
+            this.#resolvedReviewVersions.delete(currentSessionId);
+            this.#reviewMutationChains.delete(currentSessionId);
+            this.#nativeSessionIds.delete(currentSessionId);
+        }
+        this.#scheduleSessionRetentionTimer();
+    }
+
+    #detachLiveSession(sessionId: string): void {
         this.#liveSnapshots.delete(sessionId);
         this.#liveSessionContexts.delete(sessionId);
         this.#liveSessionTouches.delete(sessionId);
@@ -2250,7 +2555,7 @@ export class AiService {
         this.#recentNativeReviewContexts.delete(sessionId);
         this.#resolvedReviewVersions.delete(sessionId);
         this.#reviewMutationChains.delete(sessionId);
-        this.#nativeSessionIds.delete(sessionId);
+        // Keep the child-to-parent mapping so future runtime events retain their owner.
         this.#scheduleSessionRetentionTimer();
     }
 
@@ -2287,23 +2592,21 @@ export class AiService {
     async #runSessionRetentionSweep(): Promise<void> {
         const candidates = this.#selectRetentionCandidates();
         for (const candidate of candidates) {
-            await this.#freezeSessionForRetention(
-                candidate.sessionId,
-                candidate.reason,
-            );
+            await this.#freezeSessionForRetention(candidate);
         }
     }
 
-    #selectRetentionCandidates(): readonly {
-        readonly reason: AiSessionFreezeReason;
-        readonly sessionId: string;
-    }[] {
-        const candidates = new Map<string, AiSessionFreezeReason>();
+    #selectRetentionCandidates(): readonly AiSessionRetentionCandidate[] {
+        const candidates = new Map<string, AiSessionRetentionCandidate>();
         const now = Date.now();
         if (this.#retentionConfig.idleTtlMs >= 0) {
             for (const [sessionId, touch] of this.#liveSessionTouches) {
                 if (now - touch.lastUsedAtMs >= this.#retentionConfig.idleTtlMs) {
-                    candidates.set(sessionId, "ttl");
+                    candidates.set(sessionId, {
+                        reason: "ttl",
+                        sessionId,
+                        touch,
+                    });
                 }
             }
         }
@@ -2328,22 +2631,25 @@ export class AiService {
                 index < ordered.length;
                 index += 1
             ) {
-                if (!candidates.has(ordered[index].sessionId)) {
-                    candidates.set(ordered[index].sessionId, "budget");
+                const session = ordered[index];
+                const touch = this.#liveSessionTouches.get(session.sessionId);
+                if (!candidates.has(session.sessionId) && touch) {
+                    candidates.set(session.sessionId, {
+                        reason: "budget",
+                        sessionId: session.sessionId,
+                        touch,
+                    });
                 }
             }
         }
 
-        return [...candidates.entries()].map(([sessionId, reason]) => ({
-            reason,
-            sessionId,
-        }));
+        return [...candidates.values()];
     }
 
     async #freezeSessionForRetention(
-        sessionId: string,
-        reason: AiSessionFreezeReason,
+        candidate: AiSessionRetentionCandidate,
     ): Promise<void> {
+        const { reason, sessionId, touch: selectedTouch } = candidate;
         if (
             this.#freezingSessionIds.has(sessionId) ||
             !this.#liveSessionContexts.has(sessionId)
@@ -2351,7 +2657,17 @@ export class AiService {
             return;
         }
 
+        const currentTouch = this.#liveSessionTouches.get(sessionId);
+        if (
+            !currentTouch ||
+            currentTouch.lastUsedAtMs !== selectedTouch.lastUsedAtMs ||
+            currentTouch.order !== selectedTouch.order
+        ) {
+            return;
+        }
+
         const snapshot = this.#liveSnapshots.get(sessionId) ?? null;
+        const retentionRuntimeSessionId = snapshot?.runtimeSessionId ?? null;
         const localSkippedReason = snapshot
             ? getRetentionSkippedReasonFromSnapshot(snapshot)
             : null;
@@ -2360,16 +2676,128 @@ export class AiService {
             return;
         }
 
+        let resolveFreeze: () => void = () => undefined;
+        const freezeComplete = new Promise<void>((resolve) => {
+            resolveFreeze = resolve;
+        });
         this.#freezingSessionIds.add(sessionId);
+        this.#frozenSessionIds.add(sessionId);
+        if (retentionRuntimeSessionId) {
+            this.#rememberRetentionCloseRuntimeSession(
+                sessionId,
+                retentionRuntimeSessionId,
+            );
+        }
+        this.#retentionFreezePromises.set(sessionId, freezeComplete);
         try {
-            await this.#requireNativeAiGateway().closeSession(sessionId);
+            await this.closeSession(sessionId);
             this.#recordRetentionClose(sessionId, reason);
-            this.#clearLiveSession(sessionId);
         } catch (error) {
+            this.#frozenSessionIds.delete(sessionId);
+            if (retentionRuntimeSessionId) {
+                this.#forgetRetentionCloseRuntimeSession(
+                    sessionId,
+                    retentionRuntimeSessionId,
+                );
+            }
             this.#deferSessionRetentionRetry(sessionId);
             debugBenignError("ai.service.freezeNativeSession", error);
         } finally {
             this.#freezingSessionIds.delete(sessionId);
+            if (this.#retentionCloseEventSessionIds.delete(sessionId)) {
+                this.#frozenSessionIds.delete(sessionId);
+            }
+            if (this.#retentionFreezePromises.get(sessionId) === freezeComplete) {
+                this.#retentionFreezePromises.delete(sessionId);
+            }
+            resolveFreeze();
+        }
+    }
+
+    async #waitForRetentionFreeze(sessionId: string): Promise<void> {
+        await this.#retentionFreezePromises.get(sessionId);
+    }
+
+    #consumeRetentionCloseEvent(event: AiSessionDomainEvent): boolean {
+        if (event.kind !== "session-closed") {
+            return false;
+        }
+
+        const expectedRuntimeSessionIds =
+            this.#retentionCloseRuntimeSessionIds.get(event.sessionId) ?? null;
+        const matchesRetainedRuntime =
+            expectedRuntimeSessionIds !== null &&
+            event.runtimeSessionId !== null &&
+            expectedRuntimeSessionIds.has(event.runtimeSessionId);
+        const closingWithoutRuntimeIdentity =
+            event.runtimeSessionId === null &&
+            (this.#freezingSessionIds.has(event.sessionId) ||
+                this.#frozenSessionIds.has(event.sessionId));
+        if (!matchesRetainedRuntime && !closingWithoutRuntimeIdentity) {
+            return false;
+        }
+
+        if (matchesRetainedRuntime) {
+            this.#forgetRetentionCloseRuntimeSession(
+                event.sessionId,
+                event.runtimeSessionId,
+            );
+        } else if (closingWithoutRuntimeIdentity) {
+            this.#forgetRetentionCloseRuntimeSessions(event.sessionId);
+        }
+        if (this.#freezingSessionIds.has(event.sessionId)) {
+            this.#retentionCloseEventSessionIds.add(event.sessionId);
+        } else {
+            this.#frozenSessionIds.delete(event.sessionId);
+        }
+        return true;
+    }
+
+    #rememberRetentionCloseRuntimeSession(
+        sessionId: string,
+        runtimeSessionId: string,
+    ): void {
+        const runtimeSessionIds =
+            this.#retentionCloseRuntimeSessionIds.get(sessionId) ??
+            new Set<string>();
+        runtimeSessionIds.add(runtimeSessionId);
+        this.#retentionCloseRuntimeSessionIds.set(sessionId, runtimeSessionIds);
+
+        const previousTimer =
+            this.#retentionCloseRuntimeSessionTimers.get(sessionId);
+        if (previousTimer) {
+            clearTimeout(previousTimer);
+        }
+        const timer = setTimeout(() => {
+            this.#retentionCloseRuntimeSessionTimers.delete(sessionId);
+            this.#retentionCloseRuntimeSessionIds.delete(sessionId);
+        }, RETENTION_CLOSE_EVENT_GRACE_MS);
+        unrefTimer(timer);
+        this.#retentionCloseRuntimeSessionTimers.set(sessionId, timer);
+    }
+
+    #forgetRetentionCloseRuntimeSessions(sessionId: string): void {
+        this.#retentionCloseRuntimeSessionIds.delete(sessionId);
+        const timer = this.#retentionCloseRuntimeSessionTimers.get(sessionId);
+        if (timer) {
+            clearTimeout(timer);
+            this.#retentionCloseRuntimeSessionTimers.delete(sessionId);
+        }
+    }
+
+    #forgetRetentionCloseRuntimeSession(
+        sessionId: string,
+        runtimeSessionId: string,
+    ): void {
+        const runtimeSessionIds =
+            this.#retentionCloseRuntimeSessionIds.get(sessionId);
+        if (!runtimeSessionIds) {
+            return;
+        }
+
+        runtimeSessionIds.delete(runtimeSessionId);
+        if (runtimeSessionIds.size === 0) {
+            this.#forgetRetentionCloseRuntimeSessions(sessionId);
         }
     }
 
@@ -2530,6 +2958,8 @@ export class AiService {
         if (!this.#isNativeAiSession(cachedSnapshot.sessionId)) {
             this.#persistence.saveSessionSnapshot(cachedSnapshot);
         }
+        this.#promptQueue.handleSessionSnapshot(cachedSnapshot);
+        this.#frozenSessionIds.delete(cachedSnapshot.sessionId);
         return cachedSnapshot;
     }
 
@@ -2549,38 +2979,50 @@ export class AiService {
         const canApplyCapturedDefaults =
             this.#capturedRuntimeDefaultsBySessionId.has(sessionId);
         const modelConfig = getModelConfigOption(snapshot.configOptions);
+        const capturedModelId = capturedDefaults.modelId;
         if (
             !modelConfig &&
-            canApplyCapturedDefaults &&
-            capturedDefaults.modelId &&
-            capturedDefaults.modelId !== snapshot.modelId &&
-            snapshot.models.some((model) => model.id === capturedDefaults.modelId)
+            this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults) &&
+            capturedModelId &&
+            capturedModelId !== snapshot.modelId &&
+            snapshot.models.some((model) => model.id === capturedModelId)
         ) {
-            await this.#setSessionModel(
-                {
-                    modelId: capturedDefaults.modelId,
-                    sessionId,
-                },
-                { rememberRuntimePreference: false },
-            );
+            await this.#enqueueSelectionMutation(sessionId, async () => {
+                if (!this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults)) {
+                    return;
+                }
+                await this.#setSessionModel(
+                    {
+                        modelId: capturedModelId,
+                        sessionId,
+                    },
+                    { rememberRuntimePreference: false },
+                );
+            });
             snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
         }
 
         const modeConfig = getModeConfigOption(snapshot.configOptions);
+        const capturedModeId = capturedDefaults.modeId;
         if (
             !modeConfig &&
-            canApplyCapturedDefaults &&
-            capturedDefaults.modeId &&
-            capturedDefaults.modeId !== snapshot.modeId &&
-            snapshot.modes.some((mode) => mode.id === capturedDefaults.modeId)
+            this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults) &&
+            capturedModeId &&
+            capturedModeId !== snapshot.modeId &&
+            snapshot.modes.some((mode) => mode.id === capturedModeId)
         ) {
-            await this.#setSessionMode(
-                {
-                    modeId: capturedDefaults.modeId,
-                    sessionId,
-                },
-                { rememberRuntimePreference: false },
-            );
+            await this.#enqueueSelectionMutation(sessionId, async () => {
+                if (!this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults)) {
+                    return;
+                }
+                await this.#setSessionMode(
+                    {
+                        modeId: capturedModeId,
+                        sessionId,
+                    },
+                    { rememberRuntimePreference: false },
+                );
+            });
             snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
         }
 
@@ -2592,25 +3034,43 @@ export class AiService {
             },
         );
         for (const mutation of mutations) {
-            await this.#setSessionConfigOption(
-                {
-                    optionId: mutation.optionId,
-                    sessionId,
-                    value: mutation.value,
-                },
-                { rememberRuntimePreference: false },
-            );
+            if (!this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults)) {
+                break;
+            }
+            await this.#enqueueSelectionMutation(sessionId, async () => {
+                if (!this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults)) {
+                    return;
+                }
+                await this.#setSessionConfigOption(
+                    {
+                        optionId: mutation.optionId,
+                        sessionId,
+                        value: mutation.value,
+                    },
+                    { rememberRuntimePreference: false },
+                );
+            });
             snapshot = this.#liveSnapshots.get(sessionId) ?? snapshot;
         }
 
         if (
-            canApplyCapturedDefaults &&
+            this.#hasCapturedRuntimeDefaults(sessionId, capturedDefaults) &&
             snapshotHasEffectiveSelections(snapshot)
         ) {
             this.#capturedRuntimeDefaultsBySessionId.delete(sessionId);
         }
 
         return snapshot;
+    }
+
+    #hasCapturedRuntimeDefaults(
+        sessionId: string,
+        capturedDefaults: CapturedRuntimeDefaults,
+    ): boolean {
+        return (
+            this.#capturedRuntimeDefaultsBySessionId.get(sessionId) ===
+            capturedDefaults
+        );
     }
 
     #scheduleCapturedRuntimeDefaultsApplication(
@@ -2813,6 +3273,30 @@ export class AiService {
             };
         }
 
+        if (event.kind === "subagent-created") {
+            const baseChildSnapshot: AiSessionSnapshot = {
+                ...base,
+                parentSessionId: event.parentSessionId,
+                runtimeSessionId:
+                    event.childRuntimeSessionId ?? event.runtimeSessionId,
+                title: event.title,
+            };
+            const withModel = event.modelId
+                ? setModelOnSnapshot(
+                      baseChildSnapshot,
+                      event.modelId,
+                      event.updatedAt,
+                  )
+                : baseChildSnapshot;
+            return event.reasoningEffort
+                ? setReasoningEffortOnSnapshot(
+                      withModel,
+                      event.reasoningEffort,
+                      event.updatedAt,
+                  )
+                : withModel;
+        }
+
         if (event.kind === "tool-activity") {
             const nextSnapshot = {
                 ...base,
@@ -2864,24 +3348,26 @@ export class AiService {
             };
         }
 
-        if (event.kind === "subagent-breadcrumb") {
-            return {
-                ...base,
-                toolActivity: snapshot.toolActivity.map((activity) =>
-                    activity.id === event.toolCallId
-                        ? {
-                              ...activity,
-                              action: {
-                                  kind: "open_session",
-                                  sessionId: event.childSessionId,
-                              },
-                          }
-                        : activity,
-                ),
-            };
+        if (event.kind === "turn-status") {
+            // Turn completion controls the main-owned prompt queue. It does
+            // not independently mutate the transcript snapshot.
+            return base;
         }
 
-        return base;
+        return {
+            ...base,
+            toolActivity: snapshot.toolActivity.map((activity) =>
+                activity.id === event.toolCallId
+                    ? {
+                          ...activity,
+                          action: {
+                              kind: "open_session",
+                              sessionId: event.childSessionId,
+                          },
+                      }
+                    : activity,
+            ),
+        };
     }
 
     async #captureNativeReviewBaseline(
@@ -3369,6 +3855,35 @@ export class AiService {
         return mappings;
     }
 
+    async #collectSessionSubtreeIds(sessionId: string): Promise<readonly string[]> {
+        const sessionIds = new Set<string>([sessionId]);
+        const pendingSessionIds = [sessionId];
+        while (pendingSessionIds.length > 0) {
+            const currentSessionId = pendingSessionIds.shift();
+            if (!currentSessionId) {
+                continue;
+            }
+            for (const [childSessionId, parentSessionId] of this
+                .#nativeChildParentSessionIds) {
+                if (
+                    parentSessionId === currentSessionId &&
+                    !sessionIds.has(childSessionId)
+                ) {
+                    sessionIds.add(childSessionId);
+                    pendingSessionIds.push(childSessionId);
+                }
+            }
+        }
+
+        for (const mapping of await this.#listPersistedRuntimeMappingsForParent(
+            sessionId,
+        )) {
+            sessionIds.add(mapping.appSessionId);
+        }
+
+        return [...sessionIds];
+    }
+
     async #buildNativePrepareLaunchForSession(
         input: SessionDescriptor,
         ownerWindowId: string,
@@ -3377,37 +3892,56 @@ export class AiService {
         readonly input: SessionDescriptor;
         readonly launch: AiSessionLaunchInput;
     }> {
-        const parentSessionId = launch.persistedSnapshot.parentSessionId ?? null;
-        if (!parentSessionId) {
+        const rootSnapshot = await this.#resolveNativeRootSessionSnapshot(
+            launch.persistedSnapshot,
+        );
+        if (rootSnapshot.sessionId === launch.persistedSnapshot.sessionId) {
             return { input, launch };
         }
 
-        const parentSnapshot =
-            this.#liveSnapshots.get(parentSessionId) ??
-            (await this.#loadPersistedSessionSnapshot(parentSessionId));
-        if (!parentSnapshot) {
-            throw new Error(
-                "The parent session could not be loaded for this subagent.",
-            );
-        }
-
-        const parentInput: SessionDescriptor = {
+        const rootInput: SessionDescriptor = {
             additionalRoots: input.additionalRoots,
-            projectId: parentSnapshot.projectId,
-            runtimeId: parentSnapshot.runtimeId,
-            sessionId: parentSessionId,
-            title: parentSnapshot.title,
-            worktreeId: parentSnapshot.worktreeId ?? null,
+            projectId: rootSnapshot.projectId,
+            runtimeId: rootSnapshot.runtimeId,
+            sessionId: rootSnapshot.sessionId,
+            title: rootSnapshot.title,
+            worktreeId: rootSnapshot.worktreeId ?? null,
         };
 
         return {
-            input: parentInput,
+            input: rootInput,
             launch: await this.#buildNativeSessionLaunchInput(
-                parentInput,
+                rootInput,
                 ownerWindowId,
-                parentSnapshot,
+                rootSnapshot,
             ),
         };
+    }
+
+    async #resolveNativeRootSessionSnapshot(
+        snapshot: AiSessionSnapshot,
+    ): Promise<AiSessionSnapshot> {
+        let rootSnapshot = snapshot;
+        const visitedSessionIds = new Set([snapshot.sessionId]);
+        while (rootSnapshot.parentSessionId) {
+            const parentSessionId = rootSnapshot.parentSessionId;
+            if (visitedSessionIds.has(parentSessionId)) {
+                throw new Error(
+                    "The subagent hierarchy contains a parent cycle.",
+                );
+            }
+            visitedSessionIds.add(parentSessionId);
+            const parentSnapshot =
+                this.#liveSnapshots.get(parentSessionId) ??
+                (await this.#loadPersistedSessionSnapshot(parentSessionId));
+            if (!parentSnapshot) {
+                throw new Error(
+                    "An ancestor session could not be loaded for this subagent.",
+                );
+            }
+            rootSnapshot = parentSnapshot;
+        }
+        return rootSnapshot;
     }
 
     #adoptNativeSubagentSnapshot(
@@ -4639,12 +5173,19 @@ export class AiService {
         const catalog = this.#persistence.loadLatestRuntimeCatalog(
             status.runtimeId,
         );
-
-        if (!catalog) {
-            return status;
+        const catalogMergedStatus = catalog
+            ? mergePersistedCatalogIntoRuntimeStatus(status, catalog)
+            : status;
+        const loadPreferences = (
+            this.#persistence as Partial<AiPersistenceGateway>
+        ).loadRuntimeSelectionPreferences;
+        if (!loadPreferences) {
+            return catalogMergedStatus;
         }
-
-        return mergePersistedCatalogIntoRuntimeStatus(status, catalog);
+        return applyRuntimeSelectionPreferencesToStatus(
+            catalogMergedStatus,
+            loadPreferences.call(this.#persistence, status.runtimeId),
+        );
     }
 
     #hydrateSnapshotRuntimeCatalog(snapshot: AiSessionSnapshot): AiSessionSnapshot {
@@ -5125,6 +5666,69 @@ function mergePersistedCatalogIntoRuntimeStatus(
     };
 }
 
+function applyRuntimeSelectionPreferencesToStatus(
+    status: AiRuntimeStatus,
+    preferences: PersistedRuntimeSelectionPreferences,
+): AiRuntimeStatus {
+    const configOptions = status.configOptions ?? [];
+    const preferredModeId = resolveAvailableRuntimeSelectionPreference(
+        preferences.modeId,
+        preferences.configOptions,
+        configOptions,
+        (status.modes ?? []).map((mode) => mode.id),
+        isModeConfigOption,
+    );
+    const preferredModelId = resolveAvailableRuntimeSelectionPreference(
+        preferences.modelId,
+        preferences.configOptions,
+        configOptions,
+        (status.models ?? []).map((model) => model.id),
+        isModelConfigOption,
+    );
+
+    return {
+        ...status,
+        configOptions: applyCapturedRuntimeDefaultsToConfigOptions(
+            configOptions,
+            preferences.configOptions,
+            preferredModeId,
+            preferredModelId,
+        ),
+        modeId: preferredModeId ?? status.modeId,
+        modelId: preferredModelId ?? status.modelId,
+    };
+}
+
+function resolveAvailableRuntimeSelectionPreference(
+    topLevelPreference: string | null,
+    configPreferences: Record<string, boolean | string>,
+    configOptions: readonly AiSessionConfigOption[],
+    availableIds: readonly string[],
+    matchesOption: (option: AiSessionConfigOption) => boolean,
+): string | null {
+    const configPreference = getPreferredConfigSelectionId(
+        configPreferences,
+        configOptions,
+        matchesOption,
+    );
+    const matchingConfig = configOptions.find(matchesOption) ?? null;
+
+    for (const candidate of [topLevelPreference, configPreference]) {
+        if (!candidate) {
+            continue;
+        }
+        if (
+            availableIds.includes(candidate) ||
+            (matchingConfig?.type === "select" &&
+                hasSelectConfigValue(matchingConfig, candidate))
+        ) {
+            return candidate;
+        }
+    }
+
+    return null;
+}
+
 function buildPersistedRuntimeCatalogPatch(
     snapshot: AiSessionSnapshot,
     patch: NormalizedSessionCatalogPayload,
@@ -5578,6 +6182,13 @@ function isNativeTrackedFilesPatch(update: AiSessionUpdate): boolean {
             update.patch.changes,
             "trackedFiles",
         )
+    );
+}
+
+function isNativeAiSessionNotFoundError(error: unknown): boolean {
+    return (
+        error instanceof NativeBackendError &&
+        error.code === "ai_session_not_found"
     );
 }
 

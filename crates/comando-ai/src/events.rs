@@ -82,6 +82,17 @@ pub fn session_updated(session: &NativeAiSessionSummary) -> NativeAiSessionUpdat
     }
 }
 
+pub fn session_status_updated(session: &NativeAiSessionSummary) -> NativeAiSessionUpdatedPayload {
+    NativeAiSessionUpdatedPayload {
+        session_id: session.session_id.clone(),
+        runtime_id: session.runtime_id.clone(),
+        runtime_session_id: session.runtime_session_id.clone(),
+        status: session.status.clone(),
+        title: None,
+        updated_at: session.updated_at.clone(),
+    }
+}
+
 pub fn session_closed(session: &NativeAiSessionSummary) -> NativeAiSessionClosedPayload {
     NativeAiSessionClosedPayload {
         session_id: session.session_id.clone(),
@@ -165,6 +176,35 @@ pub fn status_event(
         status: status.into(),
         title: title.into(),
         detail,
+        turn_id: None,
+    }
+}
+
+pub fn turn_status_event(
+    session: &NativeAiSessionSummary,
+    turn_id: impl Into<String>,
+    status: impl Into<String>,
+    detail: Option<String>,
+) -> NativeAiStatusEventPayload {
+    let turn_id = turn_id.into();
+    let status = status.into();
+    NativeAiStatusEventPayload {
+        base: event_base(
+            &session.session_id,
+            &session.runtime_id,
+            session.runtime_session_id.clone(),
+            now_iso8601(),
+        ),
+        event_id: format!("comando:turn:{turn_id}:{status}"),
+        title: match status.as_str() {
+            "cancelled" => "Cancelled",
+            "failed" => "Failed",
+            _ => "Completed",
+        }
+        .to_string(),
+        status,
+        detail,
+        turn_id: Some(turn_id),
     }
 }
 

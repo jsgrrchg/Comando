@@ -9,6 +9,7 @@ function resetShellStore(): void {
     useShellStore.setState({
         activeSurface: "workspace",
         leftCollapsed: false,
+        leftCollapsedChangedLocally: false,
         leftWidth: shellLayoutConstraints.defaultLeftWidth,
         sidebarView: "files",
         viewportWidth: 1440,
@@ -36,5 +37,19 @@ describe("shell-store", () => {
             leftWidth: shellLayoutConstraints.maxLeftWidth,
             sidebarView: "git",
         });
+    });
+
+    it("preserva un toggle del sidebar ocurrido antes de la hidratación", () => {
+        useShellStore.getState().toggleLeftCollapsed();
+
+        useShellStore.getState().hydrate({
+            activeSurface: "workspace",
+            leftCollapsed: false,
+            leftWidth: 280,
+            rightCollapsed: true,
+            rightWidth: 420,
+        } as PersistedShellState);
+
+        expect(useShellStore.getState().leftCollapsed).toBe(true);
     });
 });

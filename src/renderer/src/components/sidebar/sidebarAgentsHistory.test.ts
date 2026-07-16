@@ -79,6 +79,24 @@ function createSnapshot(
 }
 
 describe("applySessionUpdateToSidebarHistory", () => {
+    it("includes primary sessions stored with null in a canonical primary scope", () => {
+        const result = applySessionUpdateToSidebarHistory({
+            limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+            scope: {
+                projectId: "project-1",
+                worktreeId: "project-1:primary",
+            },
+            sessions: [],
+            update: {
+                kind: "snapshot",
+                snapshot: createSnapshot({ worktreeId: null }),
+            },
+        });
+
+        expect(result.sessions).toHaveLength(1);
+        expect(result.sessions[0]?.worktreeId).toBeNull();
+    });
+
     it("applies a patch locally for a known session without forcing reload", () => {
         const sessions = [
             createSummary({

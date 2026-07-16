@@ -22,6 +22,7 @@ import type {
     WorkspaceTerminalTab,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
+import { areGitWorktreeIdsEquivalent } from "../git/context-key";
 
 export type SplitDirection = "down" | "left" | "right" | "up";
 export type MoveDirection = "next" | "previous";
@@ -351,6 +352,10 @@ export function selectPaneTab(
         activePaneId: paneId,
         rootNode: replaceNode(state.rootNode, paneId, (node) => {
             if (node.type !== "pane") {
+                return node;
+            }
+
+            if (node.activeTabId === tabId) {
                 return node;
             }
 
@@ -863,8 +868,11 @@ export function closeWorkspaceTabsForProjectPath(
             (tab): tab is RuntimeWorkspaceFileTab =>
                 tab.kind === "file" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId) &&
+                areGitWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ) &&
                 matchesProjectPath(tab.relativePath, relativePath, kind),
         )
         .map((tab) => tab.id);
@@ -888,8 +896,11 @@ export function renameWorkspaceTabsForProjectPath(
             if (
                 tab.kind !== "file" ||
                 tab.projectId !== projectId ||
-                normalizeWorktreeId(tab.worktreeId) !==
-                    normalizeWorktreeId(worktreeId) ||
+                !areGitWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ) ||
                 !matchesProjectPath(
                     tab.relativePath,
                     previousRelativePath,
@@ -1317,12 +1328,19 @@ function replaceNode(
         return node;
     }
 
-    return {
-        ...node,
-        children: node.children.map((child) =>
-            replaceNode(child, targetId, updater),
-        ),
-    };
+    for (let index = 0; index < node.children.length; index += 1) {
+        const child = node.children[index];
+        const nextChild = replaceNode(child, targetId, updater);
+        if (nextChild === child) {
+            continue;
+        }
+
+        const nextChildren = [...node.children];
+        nextChildren[index] = nextChild;
+        return { ...node, children: nextChildren };
+    }
+
+    return node;
 }
 
 function removePane(node: WorkspaceNode, paneId: string): WorkspaceNode | null {
@@ -1605,16 +1623,13 @@ function matchesSameWorkspaceFile(
 ): boolean {
     return (
         left.projectId === right.projectId &&
-        normalizeWorktreeId(left.worktreeId) ===
-            normalizeWorktreeId(right.worktreeId) &&
+        areGitWorktreeIdsEquivalent(
+            left.projectId,
+            left.worktreeId ?? null,
+            right.worktreeId ?? null,
+        ) &&
         left.relativePath === right.relativePath
     );
-}
-
-function normalizeWorktreeId(
-    worktreeId: string | null | undefined,
-): string | null {
-    return worktreeId ?? null;
 }
 
 function rebaseAbsolutePath(

@@ -6,8 +6,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 
-import { ToolActivityItem } from "./ToolActivityItem";
-import { isFileToolActivity } from "./toolActivityKinds";
+import {
+    shouldShowCompactActivitySummary,
+    ToolActivityItem,
+} from "./ToolActivityItem";
+import {
+    isFileToolActivity,
+    isStatusToolActivity,
+} from "./toolActivityKinds";
 
 const mockAiStoreState = vi.hoisted(() => ({
     current: {
@@ -52,7 +58,6 @@ vi.mock("@renderer/app/hooks/use-ai-chat-settings", () => ({
         reviewDiffZoom: 0.72,
         screenshotRetentionSeconds: 0,
         historyRetentionDays: 0,
-        toolCardExpansionMode: "collapsed",
     }),
 }));
 
@@ -147,6 +152,7 @@ const mountedRoots: Root[] = [];
 const mountedContainers: HTMLElement[] = [];
 
 beforeEach(() => {
+    mockAiStoreState.current.sessions = {};
     mockProjectFileIndexState.paths = new Set(
         DEFAULT_PROJECT_FILE_INDEX_PATHS,
     );
@@ -182,6 +188,163 @@ function renderInteractiveToolActivityItem(
 }
 
 describe("ToolActivityItem", () => {
+    it("hides the redundant terminal output availability summary", () => {
+        expect(
+            shouldShowCompactActivitySummary(
+                "Terminal output available.",
+                "command",
+                true,
+            ),
+        ).toBe(false);
+        expect(
+            shouldShowCompactActivitySummary(
+                "Command failed before producing output.",
+                "command",
+                true,
+            ),
+        ).toBe(true);
+        expect(
+            shouldShowCompactActivitySummary(
+                "Terminal output available.",
+                "command",
+                false,
+            ),
+        ).toBe(true);
+    });
+
+    it.each(["unknown", "mcp"])(
+        "uses the hammer icon for %s tools",
+        (kind) => {
+            const markup = renderToStaticMarkup(
+                createElement(ToolActivityItem, {
+                    activity: createActivity({ kind, summary: null }),
+                    onOpenFile: async () => {},
+                    projectId: "project-1",
+                    surface: "rail-row",
+                    trackedFiles: [],
+                    worktreeId: null,
+                }),
+            );
+
+            expect(markup).toContain('data-tool-icon="hammer"');
+        },
+    );
+
+    it("renders safe file activity as a dense rail row without raw details", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    kind: "read",
+                    locations: [],
+                    rawInputJson: JSON.stringify({
+                        file_path: "src/app.ts",
+                        secret: "raw-secret",
+                    }),
+                    summary: null,
+                    title: "Read file",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                surface: "rail-row",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain('data-tool-activity-surface="rail-row"');
+        expect(markup).toContain("Read file");
+        expect(markup).toContain("src/app.ts");
+        expect(markup).not.toContain("raw-secret");
+        expect(markup).not.toContain("rounded-lg");
+    });
+
+    it("renders successful terminal activity as a dense completed row", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    exitCode: 0,
+                    kind: "shell",
+                    locations: [],
+                    rawInputJson: JSON.stringify({ command: "pnpm test" }),
+                    status: "completed",
+                    summary: null,
+                    terminalOutput: "Tests passed\n",
+                    title: "Run pnpm test",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                surface: "rail-row",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain('data-tool-activity-surface="rail-row"');
+        expect(markup).toContain("Run pnpm test");
+        expect(markup).toContain("Done");
+        expect(markup).not.toContain("Tests passed");
+        expect(markup).not.toContain("var(--diff-add)");
+    });
+
+    it("reveals dense rail row details only through its disclosure", () => {
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "search",
+                locations: [],
+                rawInputJson: JSON.stringify({ query: "activity-segment" }),
+                rawOutputJson: JSON.stringify("3 matches"),
+                summary: null,
+                title: "Search activity-segment",
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            surface: "rail-row",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const disclosure = container.querySelector<HTMLButtonElement>(
+            'button[aria-label="Expand details"]',
+        );
+
+        expect(container.textContent).not.toContain("3 matches");
+        act(() => disclosure?.click());
+        expect(disclosure?.getAttribute("aria-expanded")).toBe("true");
+        expect(container.textContent).toContain("3 matches");
+    });
+
+    it("preserves file navigation from a dense rail row", () => {
+        const onOpenFileReference = vi.fn();
+        const reference = {
+            endLine: null,
+            isAbsolute: false,
+            path: "src/app.ts",
+            relativePath: "src/app.ts",
+            startLine: null,
+        };
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                kind: "read",
+                locations: [],
+                rawInputJson: JSON.stringify({ file_path: "src/app.ts" }),
+                summary: null,
+                title: "Read src/app.ts",
+            }),
+            onOpenFile: async () => {},
+            onOpenFileReference,
+            projectId: "project-1",
+            resolveFileReference: () => reference,
+            surface: "rail-row",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+        const openButton = Array.from(
+            container.querySelectorAll<HTMLButtonElement>("button"),
+        ).find((button) => button.textContent === "Read src/app.ts");
+
+        act(() => openButton?.click());
+        expect(onOpenFileReference).toHaveBeenCalledWith(reference);
+    });
+
     it("classifies native read_file activity as a file tool card", () => {
         expect(
             isFileToolActivity(
@@ -271,10 +434,88 @@ describe("ToolActivityItem", () => {
             }),
         );
 
-        expect(markup).toContain("Edited app.ts");
-        expect(markup).toContain("font-weight:400");
+        expect(markup).toContain(">Edited<");
+        expect(markup).toContain(">app.ts<");
+        expect(markup).toContain('data-change-review-surface="rail-row"');
         expect(markup).not.toContain("Accept");
         expect(markup).not.toContain("Reject");
+    });
+
+    it("uses the review rail while a file edit is waiting for its diff", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    diffs: [],
+                    status: "in_progress",
+                    title: "Write src/app.ts",
+                }),
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain('data-change-review-pending="true"');
+        expect(markup).not.toContain("border-radius:0.5rem");
+    });
+
+    it("keeps change review behind the compact rail disclosure", () => {
+        const container = renderInteractiveToolActivityItem({
+            activity: createActivity({
+                diffs: [
+                    {
+                        hunks: [
+                            {
+                                id: "hunk-1",
+                                lines: [
+                                    {
+                                        id: "line-1",
+                                        text: "const before = true;",
+                                        type: "remove",
+                                    },
+                                    {
+                                        id: "line-2",
+                                        text: "const after = true;",
+                                        type: "add",
+                                    },
+                                ],
+                                newCount: 1,
+                                newStart: 8,
+                                oldCount: 1,
+                                oldStart: 8,
+                            },
+                        ],
+                        isText: true,
+                        kind: "update",
+                        newText: "const after = true;\n",
+                        oldText: "const before = true;\n",
+                        path: "src/app.ts",
+                        previousPath: null,
+                        reversible: true,
+                    },
+                ],
+                kind: "edit",
+                title: "Edit src/app.ts",
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            surface: "rail-row",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+
+        expect(container.querySelector("[data-change-review-surface]")).toBeNull();
+        act(() =>
+            container
+                .querySelector<HTMLButtonElement>(
+                    'button[aria-label="Expand details"]',
+                )
+                ?.click(),
+        );
+        expect(
+            container.querySelector('[data-change-review-surface="rail-row"]'),
+        ).not.toBeNull();
     });
 
     it("renders activity-only diffs with the rich preview instead of a summary card", () => {
@@ -314,7 +555,6 @@ describe("ToolActivityItem", () => {
                         },
                     ],
                 }),
-                expansionMode: "expanded",
                 onOpenFile: async () => {},
                 projectId: "project-1",
                 trackedFiles: [],
@@ -322,10 +562,11 @@ describe("ToolActivityItem", () => {
             }),
         );
 
-        expect(markup).toContain("Edited app.ts");
-        expect(markup).toContain("change-review-panel:");
-        expect(markup).toContain("const before = true;");
-        expect(markup).toContain("const after = true;");
+        expect(markup).toContain(">Edited<");
+        expect(markup).toContain(">app.ts<");
+        expect(markup).not.toContain("change-review-panel:");
+        expect(markup).not.toContain("const before = true;");
+        expect(markup).not.toContain("const after = true;");
         expect(markup).not.toContain("Updates 1 line(s).");
         expect(markup).not.toContain("Accept");
         expect(markup).not.toContain("Reject");
@@ -372,7 +613,6 @@ describe("ToolActivityItem", () => {
                     terminalOutput: "patched src/app.ts\n",
                     title: "Run node patch.js",
                 }),
-                expansionMode: "expanded",
                 onOpenFile: async () => {},
                 projectId: "project-1",
                 trackedFiles: [],
@@ -381,9 +621,9 @@ describe("ToolActivityItem", () => {
         );
 
         expect(markup).toContain("Run node patch.js");
-        expect(markup).toContain("change-review-panel:");
-        expect(markup).toContain("const before = true;");
-        expect(markup).toContain("const after = true;");
+        expect(markup).not.toContain("change-review-panel:");
+        expect(markup).not.toContain("const before = true;");
+        expect(markup).not.toContain("const after = true;");
     });
 
     it("falls back to file tool card when no reviewable preview exists", () => {
@@ -435,7 +675,6 @@ describe("ToolActivityItem", () => {
                         },
                     ],
                 }),
-                expansionMode: "expanded",
                 onOpenFile: async () => {},
                 projectId: "project-1",
                 trackedFiles: [],
@@ -443,120 +682,11 @@ describe("ToolActivityItem", () => {
             }),
         );
 
-        expect(markup).toContain("Edited app.ts");
-        expect(markup).toContain("change-review-panel:");
+        expect(markup).toContain(">Edited<");
+        expect(markup).toContain(">app.ts<");
+        expect(markup).not.toContain("change-review-panel:");
         expect(markup).not.toContain("Accept");
         expect(markup).not.toContain("Reject");
-    });
-
-    it("expands file tool details when the card policy is always expanded", () => {
-        const markup = renderToStaticMarkup(
-            createElement(ToolActivityItem, {
-                activity: createActivity(),
-                expansionMode: "expanded",
-                onOpenFile: async () => {},
-                projectId: "project-1",
-                trackedFiles: [],
-                worktreeId: null,
-            }),
-        );
-
-        expect(markup).toContain("Updated src/app.ts");
-    });
-
-    it("does not expand read tool details when the card policy is always expanded", () => {
-        const markup = renderToStaticMarkup(
-            createElement(ToolActivityItem, {
-                activity: createActivity({
-                    kind: "read",
-                    summary: "Read-only details stay collapsed.",
-                    title: "Read src/app.ts",
-                }),
-                expansionMode: "expanded",
-                onOpenFile: async () => {},
-                projectId: "project-1",
-                trackedFiles: [],
-                worktreeId: null,
-            }),
-        );
-
-        expect(markup).toContain("Read ");
-        expect(markup).toContain("src/app.ts");
-        expect(markup).not.toContain("Read-only details stay collapsed.");
-    });
-
-    it("does not expand terminal tool details when the card policy is always expanded", () => {
-        const markup = renderToStaticMarkup(
-            createElement(ToolActivityItem, {
-                activity: createActivity({
-                    kind: "shell",
-                    rawInputJson: JSON.stringify({ command: "echo hidden" }),
-                    summary: null,
-                    terminalOutput: "terminal hidden output\n",
-                    title: "Run echo",
-                }),
-                expansionMode: "expanded",
-                onOpenFile: async () => {},
-                projectId: "project-1",
-                trackedFiles: [],
-                worktreeId: null,
-            }),
-        );
-
-        expect(markup).toContain("Run echo");
-        expect(markup).not.toContain("terminal hidden output");
-    });
-
-    it("does not expand generic tool details when the card policy is always expanded", () => {
-        const markup = renderToStaticMarkup(
-            createElement(ToolActivityItem, {
-                activity: createActivity({
-                    kind: "unknown",
-                    locations: [],
-                    rawInputJson: JSON.stringify({ value: "generic hidden" }),
-                    summary: "Generic hidden summary.",
-                    title: "Run generic tool",
-                }),
-                expansionMode: "expanded",
-                onOpenFile: async () => {},
-                projectId: "project-1",
-                trackedFiles: [],
-                worktreeId: null,
-            }),
-        );
-
-        expect(markup).toContain("Run generic tool");
-        expect(markup).not.toContain("Generic hidden summary.");
-        expect(markup).not.toContain("generic hidden");
-    });
-
-    it("only expands latest live tool details for the latest policy", () => {
-        const historyMarkup = renderToStaticMarkup(
-            createElement(ToolActivityItem, {
-                activity: createActivity(),
-                expansionMode: "latest",
-                isLatestStreamingTool: false,
-                onOpenFile: async () => {},
-                projectId: "project-1",
-                trackedFiles: [],
-                worktreeId: null,
-            }),
-        );
-        const liveMarkup = renderToStaticMarkup(
-            createElement(ToolActivityItem, {
-                activity: createActivity(),
-                expansionMode: "latest",
-                isLatestStreamingTool: true,
-                onOpenFile: async () => {},
-                projectId: "project-1",
-                trackedFiles: [],
-                worktreeId: null,
-            }),
-        );
-
-        expect(historyMarkup).not.toContain("Updated src/app.ts");
-        expect(liveMarkup).toContain("Updated src/app.ts");
-        expect(liveMarkup).toContain("cursor:pointer");
     });
 
     it("renders read tool titles as clickable internal links when they target a project file", () => {
@@ -1118,7 +1248,7 @@ describe("ToolActivityItem", () => {
         expect(codeBlock?.textContent).toBe('"hello"');
     });
 
-    it("renders turn_started as a subtle Codex ACP-style divider", () => {
+    it("does not render turn_started activities", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity({
@@ -1134,9 +1264,32 @@ describe("ToolActivityItem", () => {
             }),
         );
 
-        expect(markup).toContain('data-testid="turn-start-divider"');
-        expect(markup).toContain("New turn");
-        expect(markup).not.toContain("Context window: 128000");
+        expect(markup).toBe("");
+    });
+
+    it("renders lifecycle statuses as compact rows instead of generic tools", () => {
+        const activity = createActivity({
+            id: "codex-acp:status:item:compact-1",
+            kind: "other",
+            rawInputJson: JSON.stringify({ internal: true }),
+            summary: "Context window was compacted.",
+            title: "Compacting context",
+        });
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity,
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(isStatusToolActivity(activity)).toBe(true);
+        expect(markup).toContain('data-testid="status-activity-item"');
+        expect(markup).toContain("Compacting context");
+        expect(markup).toContain("Context window was compacted.");
+        expect(markup).not.toContain("internal");
     });
 
     it("renders open-session actions for subagent breadcrumbs", () => {
@@ -1155,6 +1308,7 @@ describe("ToolActivityItem", () => {
                 onOpenFile: async () => {},
                 onOpenSession: async () => {},
                 projectId: "project-1",
+                surface: "rail-row",
                 trackedFiles: [],
                 worktreeId: null,
             }),
@@ -1162,6 +1316,37 @@ describe("ToolActivityItem", () => {
 
         expect(markup).toContain("Open Galileo");
         expect(markup).toContain("app-no-drag");
+        expect(markup).toContain('data-tool-activity-surface="rail-row"');
+    });
+
+    it("uses the child session title for subagent breadcrumbs", () => {
+        mockAiStoreState.current.sessions = {
+            "child-session": {
+                snapshot: { title: "Kierkegaard" },
+            },
+        };
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    action: {
+                        kind: "open_session",
+                        sessionId: "child-session",
+                    },
+                    kind: "unknown",
+                    locations: [],
+                    summary: null,
+                    title: "Started saludo_nuevo_tres",
+                }),
+                onOpenFile: async () => {},
+                onOpenSession: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Open Kierkegaard");
+        expect(markup).not.toContain("Open saludo_nuevo_tres");
     });
 
     it("highlights structured payloads and terminal output in details", () => {
@@ -1192,7 +1377,7 @@ describe("ToolActivityItem", () => {
         );
     });
 
-    it("keeps failed terminal cards compact when there is no output to show", () => {
+    it("renders failed terminals as compact rail rows without empty output", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity({
@@ -1214,12 +1399,16 @@ describe("ToolActivityItem", () => {
         );
 
         expect(markup).toContain("Run pnpm run typecheck");
-        expect(markup).not.toContain("exit 1");
+        expect(markup).toContain("exit 1");
+        expect(markup).toContain(
+            'data-terminal-activity-surface="rail-row"',
+        );
+        expect(markup).not.toContain("rounded-lg");
         expect(markup).not.toContain("space-y-1");
         expect(markup).not.toContain("cm-static-code");
     });
 
-    it("colors successful terminal cards green without rendering an exit badge", () => {
+    it("colors successful terminal rows green without rendering an exit badge", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity({
@@ -1244,7 +1433,7 @@ describe("ToolActivityItem", () => {
         expect(markup).not.toContain("exit 0");
     });
 
-    it("colors non-zero terminal exits red without rendering an exit badge", () => {
+    it("colors non-zero terminal rows red and renders the exit status", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity({
@@ -1266,10 +1455,10 @@ describe("ToolActivityItem", () => {
 
         expect(markup).toContain("Run false");
         expect(markup).toContain("#ef4444");
-        expect(markup).not.toContain("exit 1");
+        expect(markup).toContain("exit 1");
     });
 
-    it("keeps in-progress terminal cards neutral and shows the live indicator", () => {
+    it("keeps in-progress terminal rows neutral and shows the live indicator", () => {
         const markup = renderToStaticMarkup(
             createElement(ToolActivityItem, {
                 activity: createActivity({
@@ -1315,10 +1504,35 @@ describe("ToolActivityItem", () => {
         );
 
         expect(markup).toContain("Tests failed");
-        expect(markup).toContain(
-            "color-mix(in srgb, #ef4444 6%, var(--color-bg-tertiary))",
-        );
+        expect(markup).toContain("background-color:transparent");
+        expect(markup).toContain("border:none");
         expect(markup).toContain("color:#ef4444");
+    });
+
+    it("keeps failed terminal output collapsed in compact contexts", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivityItem, {
+                activity: createActivity({
+                    exitCode: 1,
+                    kind: "shell",
+                    locations: [],
+                    rawInputJson: JSON.stringify({ command: "pnpm test" }),
+                    status: "completed",
+                    summary: null,
+                    terminalOutput: "Tests failed\n",
+                    title: "Run pnpm test",
+                }),
+                compactTerminal: true,
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                trackedFiles: [],
+                worktreeId: null,
+            }),
+        );
+
+        expect(markup).toContain("Run pnpm test");
+        expect(markup).toContain("exit 1");
+        expect(markup).not.toContain("Tests failed");
     });
 
     it("does not repeat duplicated terminal commands in expanded output", () => {

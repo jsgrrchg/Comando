@@ -22,6 +22,7 @@ export const IPC_CHANNELS = {
     openGeneratedImage: "app:open-generated-image",
     revealGeneratedImage: "app:reveal-generated-image",
     openProjectWindow: "app:open-project-window",
+    confirmWorkspaceClose: "workspace:confirm-close",
     checkCommandAvailability: "app:check-command-availability",
     readClaudeCodeTranscript: "app:read-claude-code-transcript",
     getSettingsSnapshot: "settings:get-snapshot",
@@ -72,12 +73,14 @@ export const IPC_CHANNELS = {
     getGitHubIssue: "github:get-issue",
     createGitHubIssue: "github:create-issue",
     updateGitHubIssue: "github:update-issue",
+    setGitHubIssueLabels: "github:set-issue-labels",
     commentGitHubIssue: "github:comment-issue",
     updateGitHubComment: "github:update-comment",
     closeGitHubIssue: "github:close-issue",
     reopenGitHubIssue: "github:reopen-issue",
     listGitHubPullRequests: "github:list-pull-requests",
     getGitHubPullRequest: "github:get-pull-request",
+    getGitHubPullRequestDiff: "github:get-pull-request-diff",
     listGitHubPullRequestChecks: "github:list-pull-request-checks",
     createGitHubPullRequest: "github:create-pull-request",
     updateGitHubPullRequest: "github:update-pull-request",
@@ -124,6 +127,16 @@ export const IPC_CHANNELS = {
     searchProjectEntries: "projects:search-entries",
     getWorkspaceSnapshot: "workspace:get-snapshot",
     saveWorkspaceSnapshot: "workspace:save-snapshot",
+    initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
+    activateWorkspaceSurface: "workspace:activate-surface",
+    captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
+    dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
+    notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
+    requestWorkspaceSurfaceContext: "workspace:request-surface-context",
+    openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
+    openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
+    setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
+    setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
     notifyFileBuffer: "workspace:notify-file-buffer",
     getChatSessionState: "workspace:get-chat-session-state",
     createTerminalSession: "terminals:create-session",
@@ -138,7 +151,14 @@ export const IPC_CHANNELS = {
     getAiSessionSnapshot: "ai:get-session-snapshot",
     resyncAiSession: "ai:resync-session",
     getAiSessionTranscriptPage: "ai:get-session-transcript-page",
-    sendAiPrompt: "ai:send-prompt",
+    getAiPromptQueue: "ai:get-prompt-queue",
+    enqueueAiPrompt: "ai:enqueue-prompt",
+    removeAiQueuedPrompt: "ai:remove-queued-prompt",
+    clearAiPromptQueue: "ai:clear-prompt-queue",
+    beginEditAiQueuedPrompt: "ai:begin-edit-queued-prompt",
+    cancelEditAiQueuedPrompt: "ai:cancel-edit-queued-prompt",
+    updateAiQueuedPrompt: "ai:update-queued-prompt",
+    steerAiQueuedPrompt: "ai:steer-queued-prompt",
     setAiSessionMode: "ai:set-session-mode",
     setAiSessionModel: "ai:set-session-model",
     setAiSessionConfigOption: "ai:set-session-config-option",
@@ -173,6 +193,17 @@ export const IPC_EVENTS = {
     projectSettingsUpdated: "settings:project-updated",
     workspaceCloseActiveTab: "workspace:close-active-tab",
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
+    workspaceFlushRequested: "workspace:flush-requested",
+    workspaceFlushAcknowledged: "workspace:flush-acknowledged",
+    workspaceSurfaceSnapshotRequested: "workspace:surface-snapshot-requested",
+    workspaceSurfaceSnapshotCaptured: "workspace:surface-snapshot-captured",
+    workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
+    workspaceSurfaceFocused: "workspace:surface-focused",
+    workspaceSurfaceContextRequested: "workspace:surface-context-requested",
+    workspaceSurfaceDrag: "workspace:surface-drag",
+    workspaceSurfaceGitScopeMenuRequested:
+        "workspace:surface-git-scope-menu-requested",
+    workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
@@ -182,9 +213,15 @@ export const IPC_EVENTS = {
     aiRuntimeStatus: "ai:runtime-status",
     aiSessionSnapshot: "ai:session-snapshot",
     aiSessionEvent: "ai:session-event",
+    aiPromptQueue: "ai:prompt-queue",
     aiSessionStreamPort: "ai:session-stream-port",
     nativeBackendEvent: "native-backend:event",
 } as const;
+
+export interface WorkspaceSurfaceDragEvent {
+    readonly detail: object;
+    readonly kind: "agent" | "github";
+}
 
 export interface SystemTheme {
     readonly isDark: boolean;
@@ -215,7 +252,7 @@ export type ThemePreset =
     | "claude"
     | "codex";
 
-export type AiToolCardExpansionMode = "collapsed" | "latest" | "expanded";
+export type AiToolActivityDefaultExpansion = "collapsed" | "expanded";
 
 export interface AppAiChatSettings {
     readonly chatFontFamily: ChatFontFamily;
@@ -227,12 +264,13 @@ export interface AppAiChatSettings {
     readonly screenshotRetentionSeconds: number;
     readonly historyRetentionDays: number;
     readonly contextUsageBarEnabled: boolean;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
+    readonly toolActivityDefaultExpansion: AiToolActivityDefaultExpansion;
 }
 
 export interface AppAppearanceSettings {
     readonly agentsSidebarScale: number;
     readonly boostCodeContrast: boolean;
+    readonly chromeTransparency: number;
     readonly fileTreeScale: number;
     readonly stickyFoldersEnabled: boolean;
     readonly themeMode: ThemeMode;
@@ -567,6 +605,8 @@ export interface PersistedWindowState {
 export type AppWindowKind = "main" | "settings";
 
 export interface WindowContextSnapshot {
+    /** The physical BrowserWindow that hosts an embedded workspace surface. */
+    readonly hostWindowId?: string | null;
     readonly projectId: string | null;
     readonly windowId: string;
     readonly windowKind: AppWindowKind;
@@ -666,6 +706,7 @@ export interface OpenProjectWindowInput {
     readonly branchName?: string | null;
     readonly forceNewWindow?: boolean;
     readonly projectId: string;
+    readonly workspaceSnapshot?: WorkspaceNavigationSnapshot;
     readonly worktreeId?: string | null;
 }
 
@@ -831,11 +872,15 @@ export interface GitFileDiff {
     readonly reversible: boolean;
 }
 
-export interface GitCommitFileDiff extends GitFileDiff {
+export interface GitRevisionFileDiff extends GitFileDiff {
     readonly additions: number | null;
+    /** Missing only when the value came from an older native backend. */
+    readonly contentState?: "available" | "unavailable";
     readonly deletions: number | null;
     readonly statusLabel: string | null;
 }
+
+export type GitCommitFileDiff = GitRevisionFileDiff;
 
 export interface GitRepositoryStatusSummary {
     readonly conflictedCount: number;
@@ -1208,6 +1253,21 @@ export interface GitHubUpdateIssueInput
     readonly title?: string | null;
 }
 
+/**
+ * Uses GitHub's issue-label endpoint, which also manages labels on pull requests.
+ */
+export interface GitHubSetIssueLabelsInput
+    extends GitHubRepositoryInput,
+        GitHubMutationInput {
+    readonly labels: readonly string[];
+    readonly number: number;
+}
+
+export interface GitHubSetIssueLabelsResult {
+    readonly labels: readonly GitHubLabelSummary[];
+    readonly number: number;
+}
+
 export interface GitHubCommentIssueInput
     extends GitHubRepositoryInput,
         GitHubMutationInput {
@@ -1281,6 +1341,19 @@ export interface GitHubPullRequestDetail extends GitHubPullRequestSummary {
     readonly mergeable: boolean | null;
 }
 
+export interface GitHubPullRequestDiffResult {
+    readonly additions: number;
+    readonly baseSha: string;
+    readonly contentComplete: boolean;
+    readonly deletions: number;
+    readonly fileListComplete: boolean;
+    readonly files: readonly GitRevisionFileDiff[];
+    readonly headSha: string;
+    readonly incompleteReason: string | null;
+    readonly number: number;
+    readonly totalFileCount: number;
+}
+
 export type GitHubPullRequestChecksState =
     | "failure"
     | "pending"
@@ -1346,6 +1419,11 @@ export interface GitHubListPullRequestsResult {
 }
 
 export interface GitHubGetPullRequestInput extends GitHubRepositoryInput {
+    readonly number: number;
+}
+
+export interface GitHubGetPullRequestDiffInput
+    extends GitHubRepositoryInput {
     readonly number: number;
 }
 
@@ -2061,11 +2139,48 @@ export type WorkspaceTab =
     | WorkspaceReviewTab
     | WorkspaceTerminalTab;
 
-export interface WorkspaceSnapshot {
+export interface WorkspaceLayoutSnapshot {
     readonly activePaneId: string;
     readonly rootNode: WorkspaceNode;
     readonly tabs: readonly WorkspaceTab[];
 }
+
+// Kept as an alias while persisted v1 layouts are migrated to navigation v2.
+export type WorkspaceSnapshot = WorkspaceLayoutSnapshot;
+
+export type WorkspaceContextKey = string;
+
+export interface PersistedWorkspaceContext {
+    readonly key: WorkspaceContextKey;
+    readonly lastActivatedAt: string;
+    readonly projectId: string;
+    readonly workspace: WorkspaceLayoutSnapshot;
+    readonly worktreeId: string | null;
+}
+
+export interface WorkspaceNavigationSnapshot {
+    readonly activeContextKey: WorkspaceContextKey | null;
+    readonly contexts: readonly PersistedWorkspaceContext[];
+    readonly openContextKeys: readonly WorkspaceContextKey[];
+    readonly version: 3;
+}
+
+export interface WorkspaceSurfaceContextRequest {
+    readonly emptyLayout?: boolean;
+    readonly projectId: string;
+    readonly worktreeId?: string | null;
+}
+
+export interface WindowWorkspaceRestoreRecord {
+    readonly revision: number;
+    readonly schemaVersion: 1;
+    readonly snapshot: WorkspaceNavigationSnapshot;
+    readonly updatedAt: string;
+}
+
+export type PersistedWorkspaceSnapshot =
+    | WorkspaceLayoutSnapshot
+    | WorkspaceNavigationSnapshot;
 
 export interface PersistedChatSessionState {
     readonly draft: string;
@@ -2489,6 +2604,7 @@ export interface AiSessionDomainEventBase {
         | "thinking-started"
         | "token-usage"
         | "tool-activity"
+        | "turn-status"
         | "user-input-request";
     readonly origin: AiSessionEventOrigin;
     readonly parentSessionId: string | null;
@@ -2551,6 +2667,15 @@ export interface AiSessionStatusEvent extends AiSessionDomainEventBase {
     readonly lastError: string | null;
     readonly status: AiSessionStatus;
     readonly title?: string | null;
+}
+
+export type AiTurnStatus = "cancelled" | "completed" | "failed";
+
+export interface AiSessionTurnStatusEvent extends AiSessionDomainEventBase {
+    readonly error: string | null;
+    readonly kind: "turn-status";
+    readonly status: AiTurnStatus;
+    readonly turnId: string;
 }
 
 export interface AiSessionClosedEvent extends AiSessionDomainEventBase {
@@ -2635,6 +2760,7 @@ export type AiSessionDomainEvent =
     | AiSessionThinkingStartedEvent
     | AiSessionTokenUsageEvent
     | AiSessionToolActivityEvent
+    | AiSessionTurnStatusEvent
     | AiSessionUserInputRequestEvent;
 
 export type AiSessionStreamPayload = AiSessionDomainEvent | AiSessionUpdate;
@@ -2667,6 +2793,55 @@ export interface SendAiPromptInput {
     readonly sessionId: string;
     readonly title: string;
     readonly worktreeId?: string | null;
+}
+
+export type AiQueuedPromptStatus =
+    | "editing"
+    | "failed"
+    | "pending_dispatch"
+    | "queued"
+    | "running"
+    | "sending";
+
+export interface AiQueuedPrompt {
+    readonly additionalRoots?: readonly string[];
+    readonly attachments: readonly AiImageAttachment[];
+    readonly composerPartsSnapshot: readonly AiComposerMessagePart[];
+    readonly createdAt: string;
+    readonly error: string | null;
+    readonly fileContextsSnapshot: readonly AiFileContextAttachment[];
+    readonly id: string;
+    readonly messageId: string;
+    readonly optimisticMessageId?: string;
+    readonly projectId: string | null;
+    readonly prompt: string;
+    readonly runtimeId: AiRuntimeId;
+    readonly sessionId: string;
+    readonly status: AiQueuedPromptStatus;
+    readonly title: string;
+    readonly worktreeId: string | null;
+}
+
+export interface AiPromptQueueSnapshot {
+    readonly activeItem: AiQueuedPrompt | null;
+    readonly editingItem: AiQueuedPrompt | null;
+    readonly items: readonly AiQueuedPrompt[];
+    readonly paused: boolean;
+    readonly revision: number;
+    readonly sessionId: string;
+}
+
+export interface EnqueueAiPromptInput extends SendAiPromptInput {
+    readonly fileContextsSnapshot?: readonly AiFileContextAttachment[];
+}
+
+export interface AiQueuedPromptMutationInput {
+    readonly promptId: string;
+    readonly sessionId: string;
+}
+
+export interface UpdateAiQueuedPromptInput extends EnqueueAiPromptInput {
+    readonly promptId: string;
 }
 
 export interface PrepareAiSessionInput {
@@ -2794,6 +2969,12 @@ export interface AiTrackedFileHunkMutationInput {
     readonly trackedFileId?: string | null;
 }
 
+export interface ConfirmWorkspaceCloseInput {
+    readonly activeAgentCount: number;
+    readonly dirtyFileCount: number;
+    readonly workspaceName: string;
+}
+
 export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getAppUpdateState: () => Promise<AppUpdateState>;
@@ -2810,6 +2991,9 @@ export interface ComandoApi {
     openGeneratedImage: (path: string) => Promise<void>;
     revealGeneratedImage: (path: string) => Promise<void>;
     openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
+    confirmWorkspaceClose: (
+        input: ConfirmWorkspaceCloseInput,
+    ) => Promise<boolean>;
     checkCommandAvailability: (
         input: CheckCommandAvailabilityInput,
     ) => Promise<CheckCommandAvailabilityResult>;
@@ -2827,6 +3011,20 @@ export interface ComandoApi {
     saveActiveProjectId: (projectId: string | null) => Promise<void>;
     saveActiveWorktreeId: (worktreeId: string | null) => Promise<void>;
     saveShellState: (snapshot: PersistedShellState | null) => Promise<void>;
+    initializeWorkspaceSurfaces: (
+        snapshot: WorkspaceNavigationSnapshot,
+    ) => Promise<void>;
+    activateWorkspaceSurface: (contextKey: string) => Promise<void>;
+    requestWorkspaceSurfaceContext: (
+        input: WorkspaceSurfaceContextRequest,
+    ) => Promise<void>;
+    openWorkspaceSurfaceGitScopeMenu: (anchor: {
+        readonly width: number;
+        readonly x: number;
+    }) => Promise<void>;
+    openWorkspaceSurfaceProjectMenu: () => Promise<void>;
+    setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
+    setWorkspaceSurfaceContentLeftInset: (width: number) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;
     setNativeAppearance: (mode: ThemeMode) => Promise<void>;
     resolveTsconfigForPath: (
@@ -2914,6 +3112,9 @@ export interface ComandoApi {
     updateGitHubIssue: (
         input: GitHubUpdateIssueInput,
     ) => Promise<GitHubIssueDetail>;
+    setGitHubIssueLabels: (
+        input: GitHubSetIssueLabelsInput,
+    ) => Promise<GitHubSetIssueLabelsResult>;
     commentGitHubIssue: (
         input: GitHubCommentIssueInput,
     ) => Promise<GitHubCommentSummary>;
@@ -2932,6 +3133,9 @@ export interface ComandoApi {
     getGitHubPullRequest: (
         input: GitHubGetPullRequestInput,
     ) => Promise<GitHubPullRequestDetail | null>;
+    getGitHubPullRequestDiff: (
+        input: GitHubGetPullRequestDiffInput,
+    ) => Promise<GitHubPullRequestDiffResult>;
     listGitHubPullRequestChecks: (
         input: GitHubPullRequestChecksInput,
     ) => Promise<GitHubPullRequestChecksResult>;
@@ -3050,8 +3254,20 @@ export interface ComandoApi {
         input: OpenProjectEntryExternallyInput,
     ) => Promise<void>;
     revealProjectEntry: (input: RevealProjectEntryInput) => Promise<void>;
-    getWorkspaceSnapshot: () => Promise<WorkspaceSnapshot>;
-    saveWorkspaceSnapshot: (snapshot: WorkspaceSnapshot) => Promise<void>;
+    getWorkspaceSnapshot: () => Promise<PersistedWorkspaceSnapshot>;
+    saveWorkspaceSnapshot: (
+        snapshot: WorkspaceNavigationSnapshot,
+    ) => Promise<void>;
+    captureWorkspaceSurfaceContext: (
+        contextKey: WorkspaceContextKey,
+    ) => Promise<WorkspaceNavigationSnapshot | null>;
+    dispatchWorkspaceSurfaceDrag: (
+        event: WorkspaceSurfaceDragEvent,
+    ) => Promise<void>;
+    notifyWorkspaceSurfaceFocused: () => Promise<void>;
+    onWorkspaceSurfaceSnapshotRequested: (
+        listener: () => WorkspaceNavigationSnapshot,
+    ) => () => void;
     notifyFileBuffer: (input: FileBufferNotificationInput) => Promise<void>;
     getChatSessionState: (
         sessionId: string,
@@ -3072,7 +3288,26 @@ export interface ComandoApi {
     getAiSessionTranscriptPage: (
         input: GetAiSessionTranscriptPageInput,
     ) => Promise<AiSessionTranscriptPage>;
-    sendAiPrompt: (input: SendAiPromptInput) => Promise<AiPromptResult>;
+    getAiPromptQueue: (sessionId: string) => Promise<AiPromptQueueSnapshot>;
+    enqueueAiPrompt: (
+        input: EnqueueAiPromptInput,
+    ) => Promise<AiPromptQueueSnapshot>;
+    removeAiQueuedPrompt: (
+        input: AiQueuedPromptMutationInput,
+    ) => Promise<AiPromptQueueSnapshot>;
+    clearAiPromptQueue: (sessionId: string) => Promise<AiPromptQueueSnapshot>;
+    beginEditAiQueuedPrompt: (
+        input: AiQueuedPromptMutationInput,
+    ) => Promise<AiPromptQueueSnapshot>;
+    cancelEditAiQueuedPrompt: (
+        sessionId: string,
+    ) => Promise<AiPromptQueueSnapshot>;
+    updateAiQueuedPrompt: (
+        input: UpdateAiQueuedPromptInput,
+    ) => Promise<AiPromptQueueSnapshot>;
+    steerAiQueuedPrompt: (
+        input: AiQueuedPromptMutationInput,
+    ) => Promise<AiPromptQueueSnapshot>;
     setAiSessionMode: (input: AiSessionModeMutationInput) => Promise<void>;
     setAiSessionModel: (input: AiSessionModelMutationInput) => Promise<void>;
     setAiSessionConfigOption: (
@@ -3157,6 +3392,23 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceCloseActiveTab: (listener: () => void) => () => void;
     onWorkspaceReopenLastClosedTab: (listener: () => void) => () => void;
+    onWorkspaceFlushRequested: (
+        listener: () => Promise<void> | void,
+    ) => () => void;
+    onWorkspaceSurfaceSnapshotUpdated: (
+        listener: (snapshot: WorkspaceNavigationSnapshot) => void,
+    ) => () => void;
+    onWorkspaceSurfaceFocused: (listener: () => void) => () => void;
+    onWorkspaceSurfaceContextRequested: (
+        listener: (input: WorkspaceSurfaceContextRequest) => void,
+    ) => () => void;
+    onWorkspaceSurfaceDrag: (
+        listener: (event: WorkspaceSurfaceDragEvent) => void,
+    ) => () => void;
+    onWorkspaceSurfaceGitScopeMenuRequested: (
+        listener: (anchor: { readonly width: number; readonly x: number }) => void,
+    ) => () => void;
+    onWorkspaceSurfaceProjectMenuRequested: (listener: () => void) => () => void;
     onTerminalData: (
         listener: (event: TerminalDataEvent) => void,
     ) => () => void;
@@ -3171,5 +3423,8 @@ export interface ComandoApi {
     ) => () => void;
     onAiSessionEvent?: (
         listener: (event: AiSessionDomainEvent) => void,
+    ) => () => void;
+    onAiPromptQueue: (
+        listener: (snapshot: AiPromptQueueSnapshot) => void,
     ) => () => void;
 }

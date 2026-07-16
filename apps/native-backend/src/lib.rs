@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_noisy_git_index_watch_events() {
+    fn emits_status_invalidation_for_git_index_watch_events() {
         let (sender, receiver) = mpsc::channel();
         let output = Arc::new(Mutex::new(Vec::new()));
         let writer = SharedWriter {
@@ -322,10 +322,16 @@ mod tests {
             Duration::from_secs(2)
         ));
 
+        assert!(
+            wait_for_output(&output, "\"reason\":\"status\"", Duration::from_secs(3)),
+            "{}",
+            String::from_utf8_lossy(&output.lock().expect("output lock"))
+        );
+
         thread::sleep(Duration::from_millis(450));
         let snapshot = String::from_utf8_lossy(&output.lock().expect("output lock")).to_string();
         assert!(
-            !snapshot.contains("git://repository-invalidated"),
+            snapshot.contains("git://repository-invalidated"),
             "{snapshot}"
         );
         assert!(

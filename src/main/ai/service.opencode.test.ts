@@ -2606,7 +2606,7 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
-    it("prepares the native parent before sending to a persisted child", async () => {
+    it("prepares the native root before sending to a persisted nested descendant", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-native-child-"),
         );
@@ -2627,6 +2627,13 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-child",
                 title: "Child",
             };
+            const grandchildSnapshot: AiSessionSnapshot = {
+                ...createSessionSnapshot(),
+                parentSessionId: "session-child",
+                runtimeSessionId: "runtime-grandchild",
+                sessionId: "session-grandchild",
+                title: "Grandchild",
+            };
             const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
                 ({ launch }) =>
                     Promise.resolve({
@@ -2638,7 +2645,7 @@ describe("AiService OpenCode branch", () => {
             );
             const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(() =>
                 Promise.resolve({
-                    sessionId: "session-child",
+                    sessionId: "session-grandchild",
                     stopReason: "accepted",
                 }),
             );
@@ -2681,6 +2688,12 @@ describe("AiService OpenCode branch", () => {
                                       parentRuntimeSessionId: "runtime-parent",
                                       runtimeSessionId: "runtime-child",
                                   },
+                                  {
+                                      appSessionId: "session-grandchild",
+                                      parentAppSessionId: "session-child",
+                                      parentRuntimeSessionId: "runtime-child",
+                                      runtimeSessionId: "runtime-grandchild",
+                                  },
                               ]
                             : [],
                     ),
@@ -2690,6 +2703,9 @@ describe("AiService OpenCode branch", () => {
                         }
                         if (sessionId === "session-child") {
                             return childSnapshot;
+                        }
+                        if (sessionId === "session-grandchild") {
+                            return grandchildSnapshot;
                         }
                         return null;
                     }),
@@ -2713,8 +2729,8 @@ describe("AiService OpenCode branch", () => {
                     projectId: null,
                     prompt: "Continue the child task.",
                     runtimeId: "opencode",
-                    sessionId: "session-child",
-                    title: "Child",
+                    sessionId: "session-grandchild",
+                    title: "Grandchild",
                     worktreeId: null,
                 },
                 "window-1",
@@ -2726,27 +2742,27 @@ describe("AiService OpenCode branch", () => {
             );
             expect(sendPrompt).toHaveBeenCalledTimes(1);
             expect(sendPrompt.mock.calls[0]?.[0].input.sessionId).toBe(
-                "session-child",
+                "session-grandchild",
             );
             expect(
                 sendPrompt.mock.calls[0]?.[0].launch.persistedSnapshot
                     .parentSessionId,
-            ).toBe("session-parent");
+            ).toBe("session-child");
 
             service.handleNativeSessionEvent("window-1", {
                 activeTurnStartedAt: "2026-06-20T00:00:01.000Z",
                 kind: "status",
                 lastError: null,
                 origin: "live",
-                parentSessionId: "session-parent",
+                parentSessionId: "session-child",
                 runtimeId: "opencode",
-                runtimeSessionId: "runtime-child",
-                sessionId: "session-child",
+                runtimeSessionId: "runtime-grandchild",
+                sessionId: "session-grandchild",
                 status: "streaming",
                 updatedAt: "2026-06-20T00:00:01.000Z",
             });
             expect(saveSessionSnapshot).not.toHaveBeenCalledWith(
-                expect.objectContaining({ sessionId: "session-child" }),
+                expect.objectContaining({ sessionId: "session-grandchild" }),
             );
             const snapshotCall = onSessionSnapshot.mock.calls.at(-1);
             expect(snapshotCall?.[0]).toBe("window-1");
@@ -2755,11 +2771,11 @@ describe("AiService OpenCode branch", () => {
             if (update?.kind !== "patch") {
                 throw new Error("Expected a patch update.");
             }
-            expect(update.patch.sessionId).toBe("session-child");
+            expect(update.patch.sessionId).toBe("session-grandchild");
             expect(update.patch.changes.status).toBe("streaming");
 
-            await service.cancelSession("session-child");
-            expect(cancelSession).toHaveBeenCalledWith("session-child");
+            await service.cancelSession("session-grandchild");
+            expect(cancelSession).toHaveBeenCalledWith("session-grandchild");
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -3987,6 +4003,30 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-parent:subagent:runtime-child",
                 title: "Child",
                 updatedAt: "2026-06-20T00:00:01.000Z",
+            });
+            service.handleNativeSessionEvent("window-1", {
+                childRuntimeSessionId: "runtime-child",
+                childSessionId: "session-parent:subagent:runtime-child",
+                kind: "subagent-created",
+                modelId: "gpt-5.6",
+                origin: "live",
+                parentSessionId: "session-parent",
+                reasoningEffort: "high",
+                runtimeId: "opencode",
+                runtimeSessionId: "runtime-child",
+                sessionId: "session-parent:subagent:runtime-child",
+                title: "Galileo",
+                updatedAt: "2026-06-20T00:00:01.500Z",
+            });
+            expect(
+                service.getLiveSessionSnapshotForWindow(
+                    "window-1",
+                    "session-parent:subagent:runtime-child",
+                ),
+            ).toMatchObject({
+                modelId: "gpt-5.6",
+                reasoningEffort: "high",
+                title: "Galileo",
             });
             service.handleNativeSessionEvent("window-1", {
                 activity: {

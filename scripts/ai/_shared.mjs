@@ -8,6 +8,9 @@ const scriptDir = fileURLToPath(new URL(".", import.meta.url));
 export const repoRoot = path.resolve(scriptDir, "../..");
 export const isWindows = process.platform === "win32";
 export const codexBinaryName = isWindows ? "codex-acp.exe" : "codex-acp";
+export const codexCodeModeHostBinaryName = isWindows
+    ? "codex-code-mode-host.exe"
+    : "codex-code-mode-host";
 export const claudeBinaryName = isWindows
     ? "claude-agent-acp.exe"
     : "claude-agent-acp";
@@ -28,10 +31,20 @@ export const codexTargetReleaseBinary = path.join(
     "release",
     codexBinaryName,
 );
+export const codexTargetReleaseCodeModeHostBinary = path.join(
+    codexTargetDir,
+    "release",
+    codexCodeModeHostBinaryName,
+);
 export const codexTargetDebugBinary = path.join(
     codexTargetDir,
     "debug",
     codexBinaryName,
+);
+export const codexTargetDebugCodeModeHostBinary = path.join(
+    codexTargetDir,
+    "debug",
+    codexCodeModeHostBinaryName,
 );
 export const codexLegacyVendorTargetDir = path.join(codexVendorDir, "target");
 export const codexLegacyVendorReleaseBinary = path.join(
@@ -39,12 +52,26 @@ export const codexLegacyVendorReleaseBinary = path.join(
     "release",
     codexBinaryName,
 );
+export const codexLegacyVendorReleaseCodeModeHostBinary = path.join(
+    codexLegacyVendorTargetDir,
+    "release",
+    codexCodeModeHostBinaryName,
+);
 export const codexLegacyVendorDebugBinary = path.join(
     codexLegacyVendorTargetDir,
     "debug",
     codexBinaryName,
 );
+export const codexLegacyVendorDebugCodeModeHostBinary = path.join(
+    codexLegacyVendorTargetDir,
+    "debug",
+    codexCodeModeHostBinaryName,
+);
 export const codexBundledBinary = path.join(aiBinariesDir, codexBinaryName);
+export const codexBundledCodeModeHostBinary = path.join(
+    aiBinariesDir,
+    codexCodeModeHostBinaryName,
+);
 export const claudeBundledBinary = path.join(aiBinariesDir, claudeBinaryName);
 export const claudeEmbeddedRoot = path.join(aiEmbeddedDir, "claude-agent-acp");
 export const claudeEmbeddedDist = path.join(claudeEmbeddedRoot, "dist");

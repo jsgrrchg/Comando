@@ -20,6 +20,7 @@ interface ShellStore extends ShellLayoutDimensions {
     readonly activeSurface: ShellSurface;
     readonly isResizingPanel: boolean;
     readonly leftCollapsed: boolean;
+    readonly leftCollapsedChangedLocally: boolean;
     readonly sidebarView: SidebarView;
     readonly viewportWidth: number;
     focusSurface: (surface: ShellSurface) => void;
@@ -67,6 +68,7 @@ export const useShellStore = create<ShellStore>((set) => ({
     activeSurface: "workspace",
     isResizingPanel: false,
     leftCollapsed: false,
+    leftCollapsedChangedLocally: false,
     leftWidth: initialLayout.leftWidth,
     sidebarView: "files",
     viewportWidth: 1440,
@@ -80,7 +82,11 @@ export const useShellStore = create<ShellStore>((set) => ({
 
         set((state) => ({
             activeSurface: normalizeActiveSurface(legacySnapshot.activeSurface),
-            leftCollapsed: legacySnapshot.leftCollapsed ?? false,
+            // The host stays interactive while persistence is loading. Do not
+            // let a late snapshot undo a sidebar toggle made during startup.
+            leftCollapsed: state.leftCollapsedChangedLocally
+                ? state.leftCollapsed
+                : (legacySnapshot.leftCollapsed ?? false),
             sidebarView: normalizeSidebarView(legacySnapshot.sidebarView),
             viewportWidth: state.viewportWidth,
             ...normalizeShellLayout(
@@ -100,10 +106,14 @@ export const useShellStore = create<ShellStore>((set) => ({
             nudgeShellPanel(state, side, delta, state.viewportWidth),
         ),
     setResizingPanel: (resizing) => set({ isResizingPanel: resizing }),
-    setLeftCollapsed: (collapsed) => set({ leftCollapsed: collapsed }),
+    setLeftCollapsed: (collapsed) =>
+        set({ leftCollapsed: collapsed, leftCollapsedChangedLocally: true }),
     setSidebarView: (view) => set({ sidebarView: view }),
     toggleLeftCollapsed: () =>
-        set((state) => ({ leftCollapsed: !state.leftCollapsed })),
+        set((state) => ({
+            leftCollapsed: !state.leftCollapsed,
+            leftCollapsedChangedLocally: true,
+        })),
     toggleSidebarView: () =>
         set((state) => ({
             sidebarView: state.sidebarView === "files" ? "git" : "files",

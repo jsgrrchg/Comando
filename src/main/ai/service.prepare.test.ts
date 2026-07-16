@@ -9,6 +9,7 @@ import type {
 } from "@shared/ipc";
 
 import type { NativeAiGateway } from "./contracts";
+import { NativeBackendError } from "../native-backend/client";
 
 const readyStatus: AiRuntimeStatus = {
     authMethod: "chatgpt",
@@ -198,6 +199,428 @@ describe("AiService prepareSession", () => {
         expect(runtimeStatusEvents.at(-1)).toEqual(readyStatus);
     });
 
+    it("prepares and dispatches a queued prompt from persisted history", async () => {
+        const persistedSnapshot = createSnapshot({
+            runtimeSessionId: "runtime-session-history",
+            sessionId: "session-history",
+            title: "Saved chat",
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            ({ launch }) =>
+                Promise.resolve({
+                    ...launch.persistedSnapshot,
+                    runtimeSessionId: "runtime-session-history",
+                    status: "idle",
+                }),
+        );
+        const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
+            Promise.resolve({
+                sessionId: input.sessionId,
+                stopReason: "accepted",
+            }),
+        );
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                captureReviewBaseline: vi.fn(() => Promise.resolve(true)),
+                loadSessionSnapshot: vi.fn(() =>
+                    Promise.resolve(persistedSnapshot),
+                ),
+                prepareSession,
+                sendPrompt,
+            }),
+        });
+
+        service.enqueuePrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Continue.", type: "text" }],
+                fileContextsSnapshot: [],
+                messageId: "message-history-1",
+                projectId: null,
+                prompt: "Continue.",
+                runtimeId: "codex",
+                sessionId: "session-history",
+                title: "Saved chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await vi.waitFor(() => {
+            const queue = service.getPromptQueue(
+                "session-history",
+                "window-1",
+            );
+            expect(queue.activeItem?.status ?? queue.items[0]?.error).toBe(
+                "running",
+            );
+        });
+
+        expect(sendPrompt).toHaveBeenCalledTimes(1);
+        expect(prepareSession).toHaveBeenCalledTimes(1);
+        expect(sendPrompt.mock.calls[0]?.[0]).toMatchObject({
+            input: {
+                messageId: "message-history-1",
+                sessionId: "session-history",
+            },
+            launch: {
+                ownerWindowId: "window-1",
+                persistedSnapshot,
+            },
+        });
+        expect(
+            service.getPromptQueue("session-history", "window-1"),
+        ).toMatchObject({
+            activeItem: {
+                messageId: "message-history-1",
+                status: "running",
+            },
+            items: [],
+            paused: false,
+        });
+    });
+
+    it("reopens a session frozen by retention and dispatches its first queued prompt", async () => {
+        const persistedSnapshot = createSnapshot({
+            runtimeSessionId: "runtime-session-retained",
+            sessionId: "session-retained",
+            title: "Retained chat",
+        });
+        let releaseClose!: () => void;
+        const closeSession = vi.fn<NativeAiGateway["closeSession"]>(() =>
+            new Promise<void>((resolve) => {
+                releaseClose = resolve;
+            }),
+        );
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockImplementation(({ launch }) =>
+                Promise.resolve({
+                    ...launch.persistedSnapshot,
+                    runtimeSessionId: `runtime-${prepareSession.mock.calls.length}`,
+                    status:
+                        prepareSession.mock.calls.length === 1
+                            ? "idle"
+                            : "streaming",
+                }),
+            );
+        const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(
+            ({ input }) =>
+                Promise.resolve({
+                    sessionId: input.sessionId,
+                    stopReason: "accepted",
+                }),
+        );
+        const service = createPrepareService({
+            aiSessionRetention: {
+                idleTtlMs: -1,
+                maxHotSessionsPerWindow: 0,
+            },
+            nativeAi: createNativeAi({
+                closeSession,
+                loadSessionSnapshot: vi.fn(() =>
+                    Promise.resolve(persistedSnapshot),
+                ),
+                prepareSession,
+                sendPrompt,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-retained",
+                title: "Retained chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await vi.waitFor(() => expect(closeSession).toHaveBeenCalledTimes(1));
+
+        // Retention's close event used to terminalize this existing queue.
+        service.getPromptQueue("session-retained", "window-1");
+        service.handleNativeSessionEvent("window-1", {
+            closedAt: "2026-07-13T00:00:01.000Z",
+            kind: "session-closed",
+            origin: "live",
+            parentSessionId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-1",
+            sessionId: "session-retained",
+            updatedAt: "2026-07-13T00:00:01.000Z",
+        });
+        releaseClose();
+
+        service.enqueuePrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Continue.", type: "text" }],
+                fileContextsSnapshot: [],
+                messageId: "message-retained-1",
+                projectId: null,
+                prompt: "Continue.",
+                runtimeId: "codex",
+                sessionId: "session-retained",
+                title: "Retained chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
+        expect(prepareSession).toHaveBeenCalledTimes(2);
+        expect(sendPrompt.mock.calls[0]?.[0].input).toMatchObject({
+            messageId: "message-retained-1",
+            sessionId: "session-retained",
+        });
+    });
+
+    it("ignores a retained runtime close event that arrives after reopening", async () => {
+        const persistedSnapshot = createSnapshot({
+            runtimeSessionId: "runtime-session-retained",
+            sessionId: "session-retained-late-close",
+            title: "Retained chat",
+        });
+        const closeSession = vi.fn<NativeAiGateway["closeSession"]>(() =>
+            Promise.resolve(),
+        );
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockImplementation(({ launch }) =>
+                Promise.resolve({
+                    ...launch.persistedSnapshot,
+                    runtimeSessionId: `runtime-${prepareSession.mock.calls.length}`,
+                    status:
+                        prepareSession.mock.calls.length === 1
+                            ? "idle"
+                            : "streaming",
+                }),
+            );
+        const sendPrompt = vi.fn<NativeAiGateway["sendPrompt"]>(({ input }) =>
+            Promise.resolve({
+                sessionId: input.sessionId,
+                stopReason: "accepted",
+            }),
+        );
+        const service = createPrepareService({
+            aiSessionRetention: {
+                idleTtlMs: -1,
+                maxHotSessionsPerWindow: 0,
+            },
+            nativeAi: createNativeAi({
+                closeSession,
+                loadSessionSnapshot: vi.fn(() =>
+                    Promise.resolve(persistedSnapshot),
+                ),
+                prepareSession,
+                sendPrompt,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-retained-late-close",
+                title: "Retained chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await vi.waitFor(() => expect(closeSession).toHaveBeenCalledTimes(1));
+
+        service.enqueuePrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Continue.", type: "text" }],
+                fileContextsSnapshot: [],
+                messageId: "message-retained-late-close-1",
+                projectId: null,
+                prompt: "Continue.",
+                runtimeId: "codex",
+                sessionId: "session-retained-late-close",
+                title: "Retained chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledTimes(1));
+
+        service.handleNativeSessionEvent("window-1", {
+            closedAt: "2026-07-13T00:00:01.000Z",
+            kind: "session-closed",
+            origin: "live",
+            parentSessionId: null,
+            runtimeId: "codex",
+            runtimeSessionId: "runtime-1",
+            sessionId: "session-retained-late-close",
+            updatedAt: "2026-07-13T00:00:01.000Z",
+        });
+
+        expect(
+            service.getPromptQueue("session-retained-late-close", "window-1"),
+        ).toMatchObject({
+            activeItem: {
+                messageId: "message-retained-late-close-1",
+                status: "running",
+            },
+            items: [],
+            paused: false,
+        });
+    });
+
+    it("reprepares and retries a prompt once when the runtime evicts its session", async () => {
+        const snapshot = createSnapshot({
+            runtimeSessionId: "runtime-session-1",
+            sessionId: "session-retry",
+            title: "Retry chat",
+        });
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockResolvedValueOnce(snapshot)
+            .mockResolvedValueOnce({
+                ...snapshot,
+                runtimeSessionId: "runtime-session-2",
+            });
+        const sendPrompt = vi
+            .fn<NativeAiGateway["sendPrompt"]>()
+            .mockRejectedValueOnce(
+                new NativeBackendError({
+                    code: "ai_session_not_found",
+                    details: null,
+                    message: "The AI session was not found.",
+                    retryable: false,
+                }),
+            )
+            .mockResolvedValueOnce({
+                sessionId: "session-retry",
+                stopReason: "accepted",
+            });
+        const service = createPrepareService({
+            nativeAi: createNativeAi({ prepareSession, sendPrompt }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-retry",
+                title: "Retry chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.sendPrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Retry this.", type: "text" }],
+                messageId: "message-retry-1",
+                projectId: null,
+                prompt: "Retry this.",
+                runtimeId: "codex",
+                sessionId: "session-retry",
+                title: "Retry chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(prepareSession).toHaveBeenCalledTimes(2);
+        expect(sendPrompt).toHaveBeenCalledTimes(2);
+        expect(
+            sendPrompt.mock.calls.map(
+                ([request]) => request.input.messageId,
+            ),
+        ).toEqual(["message-retry-1", "message-retry-1"]);
+    });
+
+    it("reprepares the root before retrying an evicted subagent prompt", async () => {
+        const parentSnapshot = createSnapshot({
+            runtimeSessionId: "runtime-parent-1",
+            sessionId: "session-parent",
+            title: "Parent chat",
+        });
+        const childSnapshot = createSnapshot({
+            parentSessionId: "session-parent",
+            runtimeSessionId: "runtime-child-1",
+            sessionId: "session-child",
+            title: "Child chat",
+        });
+        const loadSessionSnapshot = vi.fn<NativeAiGateway["loadSessionSnapshot"]>(
+            (sessionId) =>
+                Promise.resolve(
+                    sessionId === "session-child"
+                        ? childSnapshot
+                        : parentSnapshot,
+                ),
+        );
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockResolvedValueOnce(parentSnapshot)
+            .mockResolvedValueOnce({
+                ...parentSnapshot,
+                runtimeSessionId: "runtime-parent-2",
+            });
+        const sendPrompt = vi
+            .fn<NativeAiGateway["sendPrompt"]>()
+            .mockRejectedValueOnce(
+                new NativeBackendError({
+                    code: "ai_session_not_found",
+                    details: null,
+                    message: "The AI session was not found.",
+                    retryable: false,
+                }),
+            )
+            .mockResolvedValueOnce({
+                sessionId: "session-child",
+                stopReason: "accepted",
+            });
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                loadSessionSnapshot,
+                prepareSession,
+                sendPrompt,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-child",
+                title: "Child chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+        await service.sendPrompt(
+            {
+                attachments: [],
+                composerParts: [{ text: "Continue.", type: "text" }],
+                messageId: "message-child-retry-1",
+                projectId: null,
+                prompt: "Continue.",
+                runtimeId: "codex",
+                sessionId: "session-child",
+                title: "Child chat",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        expect(prepareSession).toHaveBeenCalledTimes(2);
+        expect(
+            prepareSession.mock.calls.map(
+                ([request]) => request.input.sessionId,
+            ),
+        ).toEqual(["session-parent", "session-parent"]);
+        expect(sendPrompt).toHaveBeenCalledTimes(2);
+        expect(
+            sendPrompt.mock.calls[1]?.[0].launch.persistedSnapshot.sessionId,
+        ).toBe("session-child");
+    });
+
     it("hydrates newly prepared native sessions with persisted ACP catalog controls", async () => {
         const nativeSnapshot: AiSessionSnapshot = {
             availableCommands: [],
@@ -352,6 +775,79 @@ describe("AiService prepareSession", () => {
             configOptions: runtimeCatalog.configOptions,
             modelId: "gpt-5.5",
         });
+    });
+
+    it("projects saved selections over the persisted runtime catalog", async () => {
+        const runtimeCatalog = {
+            availableCommands: [],
+            configOptions: [
+                createModelConfig("gpt-5.4-mini"),
+                createReasoningConfig("low"),
+            ],
+            modeId: "default",
+            modes: [
+                {
+                    description: null,
+                    id: "default",
+                    name: "Default",
+                },
+                {
+                    description: null,
+                    id: "full-access",
+                    name: "Full Access",
+                },
+            ],
+            modelId: "gpt-5.4-mini",
+            models: [
+                {
+                    description: null,
+                    id: "gpt-5.4-mini",
+                    name: "GPT 5.4 Mini",
+                },
+                {
+                    description: null,
+                    id: "gpt-5.5",
+                    name: "GPT 5.5",
+                },
+            ],
+        };
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                getRuntimeStatus: vi.fn(() => Promise.resolve(readyStatus)),
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => runtimeCatalog),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {
+                        model: "gpt-5.5",
+                        reasoning_effort: "high",
+                    },
+                    modeId: "full-access",
+                    modelId: "gpt-5.5",
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        const status = await service.getRuntimeStatus("codex");
+
+        expect(status).toMatchObject({
+            modeId: "full-access",
+            modelId: "gpt-5.5",
+        });
+        expect(
+            status.configOptions?.find((option) => option.id === "model")
+                ?.value,
+        ).toBe("gpt-5.5");
+        expect(
+            status.configOptions?.find(
+                (option) => option.id === "reasoning_effort",
+            )?.value,
+        ).toBe("high");
     });
 
     it("normalizes restored active snapshots before native startup", async () => {
@@ -903,6 +1399,108 @@ describe("AiService prepareSession", () => {
         expect(onSessionSnapshot.mock.lastCall?.[0]).toBe("window-1");
     });
 
+    it("reprepares a live session once when a control mutation loses its runtime session", async () => {
+        const snapshot = createSnapshot({
+            configOptions: [createReasoningConfig("low")],
+            runtimeSessionId: "runtime-session-1",
+        });
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockResolvedValueOnce(snapshot)
+            .mockResolvedValueOnce({
+                ...snapshot,
+                runtimeSessionId: "runtime-session-2",
+            });
+        const setSessionConfigOption = vi
+            .fn<NativeAiGateway["setSessionConfigOption"]>()
+            .mockRejectedValueOnce(
+                new NativeBackendError({
+                    code: "ai_session_not_found",
+                    details: null,
+                    message: "The AI session was not found.",
+                    retryable: false,
+                }),
+            )
+            .mockResolvedValueOnce(undefined);
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+                setSessionConfigOption,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await service.setSessionConfigOption({
+            optionId: "reasoning_effort",
+            sessionId: "session-1",
+            value: "high",
+        });
+
+        expect(prepareSession).toHaveBeenCalledTimes(2);
+        expect(setSessionConfigOption).toHaveBeenCalledTimes(2);
+        expect(await service.getSessionSnapshot("session-1")).toMatchObject({
+            runtimeSessionId: "runtime-session-2",
+        });
+    });
+
+    it("does not reprepare a live session for another control mutation failure", async () => {
+        const snapshot = createSnapshot({
+            configOptions: [createReasoningConfig("low")],
+            runtimeSessionId: "runtime-session-1",
+        });
+        const prepareSession = vi
+            .fn<NativeAiGateway["prepareSession"]>()
+            .mockResolvedValue(snapshot);
+        const setSessionConfigOption = vi
+            .fn<NativeAiGateway["setSessionConfigOption"]>()
+            .mockRejectedValue(
+                new NativeBackendError({
+                    code: "ai_runtime_exited",
+                    details: null,
+                    message: "The runtime exited.",
+                    retryable: false,
+                }),
+            );
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+                setSessionConfigOption,
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        await expect(
+            service.setSessionConfigOption({
+                optionId: "reasoning_effort",
+                sessionId: "session-1",
+                value: "high",
+            }),
+        ).rejects.toThrow("The runtime exited.");
+
+        expect(prepareSession).toHaveBeenCalledTimes(1);
+        expect(setSessionConfigOption).toHaveBeenCalledTimes(1);
+    });
+
     it("keeps live reasoning config option changes in the main snapshot", async () => {
         const snapshot = createSnapshot({
             configOptions: [createReasoningConfig("low")],
@@ -1271,6 +1869,99 @@ describe("AiService prepareSession", () => {
         expect(loadRuntimeSelectionPreferences).toHaveBeenCalledTimes(1);
     });
 
+    it("stops applying captured defaults after a manual selection", async () => {
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            ({ launch }) => Promise.resolve(launch.persistedSnapshot),
+        );
+        let resolveModelMutation!: () => void;
+        const modelMutationPending = new Promise<void>((resolve) => {
+            resolveModelMutation = resolve;
+        });
+        const setSessionConfigOption = vi.fn<
+            NativeAiGateway["setSessionConfigOption"]
+        >((input) =>
+            input.optionId === "model"
+                ? modelMutationPending
+                : Promise.resolve(),
+        );
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+                setSessionConfigOption,
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {
+                        model: "gpt-5.5",
+                        reasoning_effort: "low",
+                    },
+                    modeId: null,
+                    modelId: "gpt-5.5",
+                })),
+                loadSessionSnapshot: vi.fn(() => null),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Codex 1",
+                worktreeId: null,
+            },
+            "window-1",
+        );
+
+        service.handleNativeSessionCatalogPatch(
+            "window-1",
+            "session-1",
+            {
+                configOptions: [
+                    createModelConfig("gpt-5.4-mini"),
+                    createReasoningConfig("medium"),
+                ],
+            },
+            "2026-04-15T22:24:13.719838Z",
+        );
+        await vi.waitFor(() => {
+            expect(setSessionConfigOption).toHaveBeenCalledWith({
+                optionId: "model",
+                sessionId: "session-1",
+                value: "gpt-5.5",
+            });
+        });
+
+        const manualModelMutation = service.setSessionConfigOption({
+            optionId: "model",
+            sessionId: "session-1",
+            value: "gpt-5.4-mini",
+        });
+        resolveModelMutation();
+        await manualModelMutation;
+
+        expect(setSessionConfigOption).not.toHaveBeenCalledWith({
+            optionId: "reasoning_effort",
+            sessionId: "session-1",
+            value: "low",
+        });
+        expect(setSessionConfigOption).toHaveBeenCalledWith({
+            optionId: "model",
+            sessionId: "session-1",
+            value: "gpt-5.4-mini",
+        });
+        const updatedSnapshot = await service.getSessionSnapshot("session-1");
+        expect(
+            updatedSnapshot?.configOptions.find((option) => option.id === "model")
+                ?.value,
+        ).toBe("gpt-5.4-mini");
+    });
+
     it("does not apply runtime preferences to restored sessions without their own selections", async () => {
         const runtimeCatalog = createSnapshot({
             configOptions: [createReasoningConfig("medium")],
@@ -1348,13 +2039,23 @@ describe("AiService prepareSession", () => {
             reasoningEffort: "high",
             sessionId: "session-parent:subagent:runtime-child",
         });
+        const parentSnapshot = createSnapshot({
+            configOptions: [createReasoningConfig("medium")],
+            parentSessionId: null,
+            reasoningEffort: "medium",
+            sessionId: "session-parent",
+        });
         const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
             ({ launch }) => Promise.resolve(launch.persistedSnapshot),
         );
         const service = createPrepareService({
             nativeAi: createNativeAi({
-                loadSessionSnapshot: vi.fn(() =>
-                    Promise.resolve(persistedSnapshot),
+                loadSessionSnapshot: vi.fn((sessionId) =>
+                    Promise.resolve(
+                        sessionId === "session-parent"
+                            ? parentSnapshot
+                            : persistedSnapshot,
+                    ),
                 ),
                 prepareSession,
             }),
@@ -1374,7 +2075,11 @@ describe("AiService prepareSession", () => {
                     modeId: null,
                     modelId: null,
                 })),
-                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                loadSessionSnapshot: vi.fn((sessionId) =>
+                    sessionId === "session-parent"
+                        ? parentSnapshot
+                        : persistedSnapshot,
+                ),
                 saveRuntimeSelectionPreferenceOption: vi.fn(),
                 saveRuntimeModePreference: vi.fn(),
                 saveRuntimeModelPreference: vi.fn(),
@@ -1382,7 +2087,7 @@ describe("AiService prepareSession", () => {
             } as never,
         });
 
-        await service.prepareSession(
+        const prepared = await service.prepareSession(
             {
                 projectId: null,
                 runtimeId: "codex",
@@ -1399,7 +2104,8 @@ describe("AiService prepareSession", () => {
             desiredSelections?.configOptions.find(
                 (option) => option.id === "reasoning_effort",
             )?.value,
-        ).toBe("high");
+        ).toBe("medium");
+        expect(prepared.reasoningEffort).toBe("high");
     });
 
     it("keeps Codex subagents on inherited config instead of runtime preferences", async () => {
@@ -1412,6 +2118,12 @@ describe("AiService prepareSession", () => {
             reasoningEffort: null,
             sessionId: "session-parent:subagent:runtime-child",
         });
+        const parentSnapshot = createSnapshot({
+            configOptions: [createReasoningConfig("medium")],
+            parentSessionId: null,
+            reasoningEffort: "medium",
+            sessionId: "session-parent",
+        });
         const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
             ({ launch }) => Promise.resolve(launch.persistedSnapshot),
         );
@@ -1420,8 +2132,12 @@ describe("AiService prepareSession", () => {
         >(() => Promise.resolve());
         const service = createPrepareService({
             nativeAi: createNativeAi({
-                loadSessionSnapshot: vi.fn(() =>
-                    Promise.resolve(persistedSnapshot),
+                loadSessionSnapshot: vi.fn((sessionId) =>
+                    Promise.resolve(
+                        sessionId === "session-parent"
+                            ? parentSnapshot
+                            : persistedSnapshot,
+                    ),
                 ),
                 prepareSession,
                 setSessionConfigOption,
@@ -1442,7 +2158,11 @@ describe("AiService prepareSession", () => {
                     modeId: null,
                     modelId: null,
                 })),
-                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                loadSessionSnapshot: vi.fn((sessionId) =>
+                    sessionId === "session-parent"
+                        ? parentSnapshot
+                        : persistedSnapshot,
+                ),
                 saveRuntimeSelectionPreferenceOption: vi.fn(),
                 saveRuntimeModePreference: vi.fn(),
                 saveRuntimeModelPreference: vi.fn(),
@@ -1761,6 +2481,7 @@ function createNativeAi(
 ): NativeAiGateway {
     return {
         cancelSession: vi.fn(),
+        captureReviewBaseline: vi.fn(),
         close: vi.fn(),
         closeOwnedByWindow: vi.fn(),
         closeSession: vi.fn(),
@@ -1874,6 +2595,9 @@ function createReasoningConfig(value: string): AiSessionConfigOption {
 
 function createPrepareService(
     options: {
+        readonly aiSessionRetention?: ConstructorParameters<
+            typeof AiService
+        >[0]["aiSessionRetention"];
         readonly nativeAi?: NativeAiGateway;
         readonly onSessionSnapshot?: (
             ownerWindowId: string,
@@ -1885,6 +2609,7 @@ function createPrepareService(
     } = {},
 ): InstanceType<typeof AiService> {
     return new AiService({
+        aiSessionRetention: options.aiSessionRetention,
         nativeAi: options.nativeAi ?? createNativeAi(),
         onRuntimeStatus: vi.fn(),
         onSessionSnapshot: options.onSessionSnapshot ?? vi.fn(),

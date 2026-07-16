@@ -5,10 +5,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AiSessionSnapshot } from "@shared/ipc";
+import type { AiSessionSnapshot, AiToolActivity } from "@shared/ipc";
 import { useShellStore } from "@renderer/app/store/shell-store";
 
-import type { ChatTimelineRow } from "./chatTimelineModel";
+import {
+    reconcileChatTimelineModel,
+    type ChatTimelineRow,
+} from "./chatTimelineModel";
+import { createChatPerformanceFixtureById } from "./chatPerformanceFixtures";
 import {
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
     CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
@@ -22,7 +26,9 @@ interface MeasuredVirtualListMockSnapshot {
     readonly hasOnRangeChange: boolean;
     readonly hasOnReady: boolean;
     readonly itemCount: number;
+    readonly observeMeasurements?: boolean;
     readonly overscan?: number;
+    readonly preserveScrollAnchorOnItemsChange?: boolean;
     readonly preserveScrollAnchorOnMeasure?: boolean;
     readonly scrollMarginTop?: number;
 }
@@ -50,7 +56,9 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             items,
             onRangeChange,
             onReady,
+            observeMeasurements,
             overscan,
+            preserveScrollAnchorOnItemsChange,
             preserveScrollAnchorOnMeasure,
             renderItem,
             scrollMarginTop,
@@ -64,7 +72,9 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             readonly items: readonly T[];
             readonly onRangeChange?: () => void;
             readonly onReady?: () => void;
+            readonly observeMeasurements?: boolean;
             readonly overscan?: number;
+            readonly preserveScrollAnchorOnItemsChange?: boolean;
             readonly preserveScrollAnchorOnMeasure?: boolean;
             readonly renderItem: (params: {
                 readonly index: number;
@@ -84,7 +94,9 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
                 hasOnRangeChange: typeof onRangeChange === "function",
                 hasOnReady: typeof onReady === "function",
                 itemCount: items.length,
+                observeMeasurements,
                 overscan,
+                preserveScrollAnchorOnItemsChange,
                 preserveScrollAnchorOnMeasure,
                 scrollMarginTop,
             });
@@ -144,17 +156,74 @@ function createRows(count: number): ChatTimelineRow[] {
     });
 }
 
-function renderHistoryRows(historyRows: readonly ChatTimelineRow[]) {
+function createSegmentRow(entryCount = 1): ChatTimelineRow {
+    const activities: AiToolActivity[] = Array.from(
+        { length: entryCount },
+        (_, index) => ({
+            action: null,
+            createdAt: "2026-04-14T00:00:00.000Z",
+            diffs: [],
+            exitCode: null,
+            id: `read-${index + 1}`,
+            kind: "read",
+            locations: [],
+            rawInputJson: JSON.stringify({ file_path: "src/app.ts" }),
+            rawOutputJson: null,
+            sessionId: "session-1",
+            status: "completed",
+            summary: null,
+            terminalOutput: null,
+            title: "Read src/app.ts",
+            updatedAt: "2026-04-14T00:00:00.000Z",
+        }),
+    );
+    const firstActivity = activities[0];
+    const latestActivity = activities.at(-1)!;
+    const entries = activities.map((activity) => ({
+        policy: "groupable" as const,
+        reviewEntry: {
+            activity,
+            hasPendingTrackedFiles: false,
+            pendingTrackedFiles: [],
+            trackedFiles: [],
+        },
+    }));
+
+    return {
+        changeStats: { additions: 0, approximate: false, deletions: 0 },
+        entries,
+        id: "activity-segment:session-1:read-1",
+        items: entries.map((entry) => ({ entry, kind: "tool" })),
+        kind: "activity-segment",
+        summary: {
+            actionCount: entryCount,
+            changeCount: 0,
+            changedFileCount: 0,
+            commandCount: 0,
+            failureCount: 0,
+            fileCount: 1,
+            hiddenActivityCount: entryCount,
+            isInProgress: false,
+            latestActivityId: latestActivity.id,
+            latestTitle: "Read src/app.ts",
+            searchCount: 0,
+            startedAt: firstActivity.createdAt,
+            updatedAt: latestActivity.updatedAt,
+        },
+    };
+}
+
+function renderHistoryRows(
+    historyRows: readonly ChatTimelineRow[],
+    active = true,
+) {
     return renderToStaticMarkup(
         <ChatTimelineHistoryRows
+            active={active}
             historyRows={historyRows}
-            latestStreamingEditedFileToolRowId={null}
             onVirtualRangeChange={() => {}}
-            renderRow={({ isLatestStreamingTool, row }) => (
+            renderRow={({ row }) => (
                 <div
-                    data-latest-streaming-tool={
-                        isLatestStreamingTool ? "true" : "false"
-                    }
                     data-row-id={row.id}
                     key={row.id}
                 >
@@ -162,7 +231,6 @@ function renderHistoryRows(historyRows: readonly ChatTimelineRow[]) {
                 </div>
             )}
             scrollRef={{ current: null }}
-            toolCardExpansionMode="collapsed"
         />,
     );
 }
@@ -194,14 +262,12 @@ function mountHistoryRows(
         root.render(
             <ChatTimelineHistoryRows
                 historyRows={historyRows}
-                latestStreamingEditedFileToolRowId={null}
                 renderRow={({ row }) => (
                     <div data-row-id={row.id} key={row.id}>
                         {row.id}
                     </div>
                 )}
                 scrollRef={scrollRef}
-                toolCardExpansionMode="collapsed"
             />,
         );
     });
@@ -304,7 +370,9 @@ describe("ChatTimelineHistoryRows", () => {
                 hasOnRangeChange: true,
                 hasOnReady: true,
                 itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+                observeMeasurements: true,
                 overscan: 10,
+                preserveScrollAnchorOnItemsChange: true,
                 preserveScrollAnchorOnMeasure: true,
                 scrollMarginTop: 0,
             }),
@@ -317,6 +385,69 @@ describe("ChatTimelineHistoryRows", () => {
             `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1}`,
         );
         expect(markup.match(/padding-bottom:8px/g)).toHaveLength(1);
+    });
+
+    it("keeps the ten-thousand-message fixture DOM-bounded in the main timeline", () => {
+        const fixture = createChatPerformanceFixtureById("chat-long");
+        const timeline = reconcileChatTimelineModel(null, fixture.snapshot);
+        const markup = renderHistoryRows(timeline.historyRows);
+
+        expect(timeline.historyRows).toHaveLength(10_000);
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({ itemCount: 10_000 }),
+        );
+        expect(markup).toContain("message:message-1");
+        expect(markup).toContain("message:message-10000");
+        expect(markup.match(/data-row-id=/g)).toHaveLength(2);
+    });
+
+    it("keeps virtual layout but stops row measurements while retained and hidden", () => {
+        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+
+        const markup = renderHistoryRows(rows, false);
+
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+                observeMeasurements: false,
+            }),
+        );
+        expect(markup).toContain("mock-measured-virtual-list");
+    });
+
+    it("passes activity segments through the virtual list with their stable id", () => {
+        const rows = [
+            createSegmentRow(),
+            ...createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1),
+        ];
+        const markup = renderHistoryRows(rows);
+        const firstCall = measuredVirtualListMock.mock.calls[0]?.[0];
+
+        expect(firstCall).toMatchObject({
+            firstEstimate: 48,
+            firstKey: "activity-segment:session-1:read-1",
+            itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+        });
+        expect(firstCall?.firstMeasurementKey).toContain(
+            "activity-segment:session-1:read-1",
+        );
+        expect(markup).toContain("activity-segment:session-1:read-1");
+    });
+
+    it("virtualizes the outer timeline for an activity-heavy segment", () => {
+        const rows = [
+            createSegmentRow(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD),
+        ];
+        const markup = renderHistoryRows(rows);
+
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                firstKey: "activity-segment:session-1:read-1",
+                itemCount: 1,
+            }),
+        );
+        expect(markup).toContain("activity-segment:session-1:read-1");
+        expect(markup).toContain("mock-measured-virtual-list");
     });
 
     it("freezes content width during panel resize and re-syncs on release", () => {

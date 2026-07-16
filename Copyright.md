@@ -169,10 +169,10 @@ was checked with `cargo metadata --format-version=1 --locked`.
 | Vendored path | `vendor/Claude-agent-acp-upstream` |
 | Staged path | `resources/ai/embedded/claude-agent-acp` |
 | Upstream package | `@agentclientprotocol/claude-agent-acp` |
-| Upstream baseline | `0.57.0`, commit `2bf865eb42bbe744c476d38a005444eab8f4b624` |
+| Upstream baseline | `0.59.0`, commit `30b7c06f7640fb6a0530ba18f85e26fe2bc08882` |
 | Package license | Apache-2.0 |
-| ACP SDK dependency | `@agentclientprotocol/sdk` `1.2.0`, Apache-2.0, vendored inside the Claude runtime only |
-| Claude Agent SDK dependency | `@anthropic-ai/claude-agent-sdk` `0.3.202`, Anthropic legal terms |
+| ACP SDK dependency | `@agentclientprotocol/sdk` `1.2.1`, Apache-2.0, vendored inside the Claude runtime only |
+| Claude Agent SDK dependency | `@anthropic-ai/claude-agent-sdk` `0.3.207`, Anthropic legal terms |
 
 The Claude ACP adapter itself is Apache-2.0. Its runtime dependency
 `@anthropic-ai/claude-agent-sdk` and the platform-specific
@@ -224,16 +224,18 @@ The currently tracked local delta includes:
 | File | Nature of changes |
 | ---- | ----------------- |
 | `Cargo.toml` | Pins and dependency alignment required by the embedded Codex runtime |
+| `Cargo.lock` | Resolved dependency graph for the embedded Codex runtime |
 | `src/lib.rs` | Library wiring required by Comando's build and runtime integration |
 | `src/codex_agent.rs` | ACP metadata, model, auth, session, image-generation, and runtime compatibility changes |
 | `src/prompt_args.rs` | Custom slash-prompt discovery and expansion support |
 | `src/subagents.rs` | Subagent session registration and breadcrumb projection |
 | `src/thread.rs` | Review-flow metadata, streamed tool diffs, user-input routing, and session synchronization |
+| `vendor/codex-utils-pty` | Local patched PTY helper aligned with the embedded OpenAI Codex Rust runtime |
 
 ### `vendor/Claude-agent-acp-upstream` - Agent Client Protocol Claude ACP
 
 The vendored Claude ACP runtime is based on upstream
-`@agentclientprotocol/claude-agent-acp` `0.57.0`. The Claude vendor source does
+`@agentclientprotocol/claude-agent-acp` `0.59.0`. The Claude vendor source does
 not carry Comando-specific review metadata. Claude PostToolUse structured patch
 responses are translated inside Comando's internal review adapter so review
 snippets can retain real line anchors while keeping the vendored runtime aligned

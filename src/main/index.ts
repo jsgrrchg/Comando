@@ -1,8 +1,10 @@
 import {
     app,
     BrowserWindow,
+    ipcMain,
     MessageChannelMain,
     type MessagePortMain,
+    type WebContents,
 } from "electron";
 import path from "node:path";
 
@@ -10,6 +12,7 @@ import { APP_ZOOM_FACTOR_DEFAULT, stepAppZoomFactor } from "@shared/app-zoom";
 import {
     IPC_EVENTS,
     type AiRuntimeStatus,
+    type AiPromptQueueSnapshot,
     type AiSessionDomainEvent,
     type AiSessionStreamMessage,
     type AiSessionStreamPayload,
@@ -23,6 +26,7 @@ import {
     type TerminalDataEvent,
     type TerminalExitEvent,
     type WindowContextSnapshot,
+    type WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
 import {
     nativeProjectTreeInvalidationToIpc,
@@ -94,6 +98,7 @@ import {
     forEachLiveWindow,
 } from "./window";
 import { windowRegistry } from "./windows/registry";
+import { workspaceSurfaceManager } from "./workspace/surface-manager";
 import type { WorkspaceGateway } from "./workspace/service";
 
 import { initReviewEngine } from "@shared/ai-review-engine/reviewEngine";
@@ -116,9 +121,57 @@ let terminalService: TerminalGateway | null = null;
 let nativeBackendClient: NativeBackendClient | null = null;
 let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
+let isWorkspaceQuitReady = false;
+let pendingWorkspaceQuit: Promise<void> | null = null;
 let isFinalizingQuit = false;
 let hasRequestedNativeBackendTestEvent = false;
 let pendingShutdown: Promise<void> | null = null;
+let nextWorkspaceFlushRequestId = 0;
+const pendingWorkspaceFlushes = new Map<
+    string,
+    { readonly senderId: number; readonly resolve: () => void }
+>();
+const pendingWorkspaceSurfaceCaptures = new Map<
+    string,
+    {
+        readonly resolve: (snapshot: WorkspaceNavigationSnapshot | null) => void;
+        readonly senderId: number;
+    }
+>();
+
+ipcMain.on(
+    IPC_EVENTS.workspaceFlushAcknowledged,
+    (event, requestId: unknown) => {
+        if (typeof requestId !== "string") {
+            return;
+        }
+        const pending = pendingWorkspaceFlushes.get(requestId);
+        if (!pending || pending.senderId !== event.sender.id) {
+            return;
+        }
+        pendingWorkspaceFlushes.delete(requestId);
+        pending.resolve();
+    },
+);
+
+ipcMain.on(
+    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
+    (event, requestId: unknown, snapshot: unknown) => {
+        if (typeof requestId !== "string") {
+            return;
+        }
+        const pending = pendingWorkspaceSurfaceCaptures.get(requestId);
+        if (!pending || pending.senderId !== event.sender.id) {
+            return;
+        }
+        pendingWorkspaceSurfaceCaptures.delete(requestId);
+        pending.resolve(
+            snapshot && typeof snapshot === "object"
+                ? (snapshot as WorkspaceNavigationSnapshot)
+                : null,
+        );
+    },
+);
 
 const AI_SESSION_STREAM_ACK_STALE_MS = 10_000;
 const AI_SESSION_STREAM_HEARTBEAT_MS = 1_000;
@@ -253,6 +306,7 @@ if (!hasSingleInstanceLock) {
                     },
                 }),
                 onRuntimeStatus: broadcastAiRuntimeStatus,
+                onPromptQueueSnapshot: broadcastAiPromptQueueSnapshot,
                 onSessionEvent: broadcastAiSessionEvent,
                 onSessionSnapshot: broadcastAiSessionSnapshot,
                 persistence: nativeAppDataClient.aiPersistence,
@@ -268,6 +322,16 @@ if (!hasSingleInstanceLock) {
                 settingsService,
             });
             workspaceService = nativeAppDataClient.workspace;
+            workspaceSurfaceManager.setLifecycleHandlers({
+                onSurfaceCreated: (webContents, ownerId) => {
+                    attachAiSessionStream(webContents, ownerId);
+                },
+                onSurfaceDestroyed: (ownerId) => {
+                    detachAiSessionStream(ownerId);
+                    terminalService?.closeOwnedByWindow(ownerId);
+                    aiService?.closeOwnedByWindow(ownerId);
+                },
+            });
 
             bootstrapSnapshot = {
                 app: appIdentity,
@@ -283,6 +347,8 @@ if (!hasSingleInstanceLock) {
 
             registerIpcHandlers({
                 aiService,
+                captureWorkspaceSurfaceContext:
+                    requestWorkspaceSurfaceContextCapture,
                 getSnapshot: () => {
                     if (!bootstrapSnapshot) {
                         throw new Error(
@@ -295,9 +361,7 @@ if (!hasSingleInstanceLock) {
                 persistenceService,
                 gitService,
                 githubService,
-                openProjectWindow: (input) => {
-                    openOrFocusProjectWindow(input);
-                },
+                openProjectWindow: openOrFocusProjectWindow,
                 projectService,
                 settingsService,
                 terminalService,
@@ -317,7 +381,11 @@ if (!hasSingleInstanceLock) {
                     const context =
                         windowRegistry.getContextByBrowserWindow(focusedWindow);
                     if (context?.windowKind === "main") {
-                        focusedWindow.webContents.send(
+                        const targetContents =
+                            workspaceSurfaceManager.getActiveWebContents(
+                                context.windowId,
+                            ) ?? focusedWindow.webContents;
+                        targetContents.send(
                             IPC_EVENTS.workspaceCloseActiveTab,
                         );
                         return;
@@ -346,7 +414,19 @@ if (!hasSingleInstanceLock) {
                 },
                 reopenLastClosedTab: () => {
                     const focusedWindow = windowRegistry.getFocusedMainWindow();
-                    focusedWindow?.webContents.send(
+                    if (!focusedWindow) {
+                        return;
+                    }
+
+                    const context =
+                        windowRegistry.getContextByBrowserWindow(focusedWindow);
+                    const targetContents =
+                        context?.windowKind === "main"
+                            ? (workspaceSurfaceManager.getActiveWebContents(
+                                  context.windowId,
+                              ) ?? focusedWindow.webContents)
+                            : focusedWindow.webContents;
+                    targetContents.send(
                         IPC_EVENTS.workspaceReopenLastClosedTab,
                     );
                 },
@@ -385,8 +465,19 @@ app.on("window-all-closed", () => {
     }
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
     isQuitting = true;
+    if (isWorkspaceQuitReady) {
+        return;
+    }
+    event.preventDefault();
+    if (!pendingWorkspaceQuit) {
+        pendingWorkspaceQuit = flushAllWorkspaceWindowsForQuit().finally(() => {
+            pendingWorkspaceQuit = null;
+            isWorkspaceQuitReady = true;
+            app.quit();
+        });
+    }
 });
 
 app.on("will-quit", (event) => {
@@ -639,19 +730,8 @@ function restoreMainWindows(): void {
 function filterRestorableMainWindowSnapshots(
     snapshots: readonly PersistenceSnapshot[],
 ): readonly PersistenceSnapshot[] {
-    if (
-        !snapshots.some((snapshot) => getSnapshotProjectId(snapshot) !== null)
-    ) {
-        return snapshots;
-    }
-
-    return snapshots.filter(
-        (snapshot) => getSnapshotProjectId(snapshot) !== null,
-    );
-}
-
-function getSnapshotProjectId(snapshot: PersistenceSnapshot): string | null {
-    return snapshot.windowContext?.projectId ?? null;
+    // A projectless window is still a user-owned workspace and must survive restart.
+    return snapshots;
 }
 
 async function openNewMainWindow(projectId: string | null): Promise<void> {
@@ -660,18 +740,25 @@ async function openNewMainWindow(projectId: string | null): Promise<void> {
     });
 }
 
-function openOrFocusProjectWindow(input: OpenProjectWindowInput): void {
+async function openOrFocusProjectWindow(
+    input: OpenProjectWindowInput,
+): Promise<void> {
     if (!persistenceService) {
-        return;
+        throw new Error("The persistence service is unavailable.");
     }
 
     const existingWindow = input.forceNewWindow
         ? null
-        : windowRegistry.getMainWindowByProjectId(input.projectId);
+        : (windowRegistry.getMainWindowByProjectId(input.projectId) ??
+          workspaceSurfaceManager.activateProject(
+              input.projectId,
+              input.worktreeId,
+          ));
     if (!existingWindow) {
-        void openNewMainWindowWithOptions({
+        await openNewMainWindowWithOptions({
             forceNewWindow: input.forceNewWindow,
             projectId: input.projectId,
+            workspaceSnapshot: input.workspaceSnapshot,
             worktreeId: input.worktreeId,
         });
         return;
@@ -709,16 +796,20 @@ function openOrFocusProjectWindow(input: OpenProjectWindowInput): void {
 async function openNewMainWindowWithOptions(input: {
     readonly forceNewWindow?: boolean;
     readonly projectId: string | null;
+    readonly workspaceSnapshot?: WorkspaceNavigationSnapshot;
     readonly worktreeId?: string | null;
 }): Promise<void> {
     if (!persistenceService) {
-        return;
+        throw new Error("The persistence service is unavailable.");
     }
 
     if (input.projectId && !input.forceNewWindow) {
-        const existingWindow = windowRegistry.getMainWindowByProjectId(
-            input.projectId,
-        );
+        const existingWindow =
+            windowRegistry.getMainWindowByProjectId(input.projectId) ??
+            workspaceSurfaceManager.activateProject(
+                input.projectId,
+                input.worktreeId,
+            );
         if (existingWindow) {
             focusExistingWindow(existingWindow);
             return;
@@ -758,6 +849,15 @@ async function openNewMainWindowWithOptions(input: {
               },
     );
 
+    const workspaceId = snapshot.windowContext?.workspaceId;
+    if (input.workspaceSnapshot) {
+        if (!workspaceService || !workspaceId) {
+            throw new Error("The workspace service is unavailable.");
+        }
+        // Persist before the renderer hydrates so it restores the transferred layout.
+        await workspaceService.saveSnapshot(workspaceId, input.workspaceSnapshot);
+    }
+
     createTrackedMainWindow(snapshot);
 }
 
@@ -782,7 +882,7 @@ function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
         void requestNativeBackendTestEventOnce();
     });
     window.webContents.on("did-finish-load", () => {
-        attachAiSessionStream(window, context.windowId);
+        attachAiSessionStream(window.webContents, context.windowId);
     });
 
     applyAppZoomToWindow(window, loadCurrentAppZoomFactor());
@@ -822,6 +922,7 @@ function persistAppAppearanceSettings(): void {
                 appearance.transparencyEnabled,
             );
         });
+        workspaceSurfaceManager.setZoomFactor(appearance.zoomFactor);
     }
 
     broadcastSettingsUpdated(
@@ -850,6 +951,8 @@ function attachMainWindowLifecycle(
     context: WindowContextSnapshot,
 ): void {
     let timeout: NodeJS.Timeout | null = null;
+    let closeFlushComplete = false;
+    let closeFlushInFlight = false;
 
     const persistWindowState = () => {
         if (!persistenceService) {
@@ -891,8 +994,27 @@ function attachMainWindowLifecycle(
     window.on("unmaximize", schedulePersist);
     window.on("enter-full-screen", schedulePersist);
     window.on("leave-full-screen", schedulePersist);
-    window.on("close", () => {
+    window.on("close", (event) => {
         persistWindowState();
+
+        if (
+            !isWorkspaceQuitReady &&
+            !closeFlushComplete &&
+            !window.webContents.isDestroyed()
+        ) {
+            event.preventDefault();
+            if (!closeFlushInFlight) {
+                closeFlushInFlight = true;
+                void requestWorkspaceFlushesForHost(window, context.windowId).finally(() => {
+                    closeFlushComplete = true;
+                    closeFlushInFlight = false;
+                    if (!window.isDestroyed()) {
+                        window.close();
+                    }
+                });
+            }
+            return;
+        }
 
         if (isClosingLastAppWindow()) {
             isQuitting = true;
@@ -904,6 +1026,7 @@ function attachMainWindowLifecycle(
         }
 
         detachAiSessionStream(context.windowId);
+        workspaceSurfaceManager.disposeHost(context.windowId);
 
         if (!isQuitting) {
             persistenceService?.markWindowClosed(context.windowId);
@@ -928,6 +1051,99 @@ function attachMainWindowLifecycle(
     });
 
     persistWindowState();
+}
+
+async function requestWorkspaceFlush(webContents: WebContents): Promise<void> {
+    const requestId = `${webContents.id}:${++nextWorkspaceFlushRequestId}`;
+    await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            pendingWorkspaceFlushes.delete(requestId);
+            resolve();
+        };
+        const timer = setTimeout(finish, 1_500);
+        pendingWorkspaceFlushes.set(requestId, {
+            resolve: finish,
+            senderId: webContents.id,
+        });
+        webContents.send(
+            IPC_EVENTS.workspaceFlushRequested,
+            requestId,
+        );
+    });
+}
+
+async function requestWorkspaceFlushesForHost(
+    window: BrowserWindow,
+    hostWindowId: string,
+): Promise<void> {
+    const surfaces = workspaceSurfaceManager.getWebContentsForHost(hostWindowId);
+    await Promise.all([
+        requestWorkspaceFlush(window.webContents),
+        ...surfaces.map((webContents) => requestWorkspaceFlush(webContents)),
+    ]);
+}
+
+async function requestWorkspaceSurfaceContextCapture(
+    hostWindowId: string,
+    contextKey: string,
+): Promise<WorkspaceNavigationSnapshot | null> {
+    const surface = workspaceSurfaceManager.getSurfaceWebContents(
+        hostWindowId,
+        contextKey,
+    );
+    if (!surface) {
+        return workspaceSurfaceManager.getHostSnapshotForWindow(hostWindowId);
+    }
+    const snapshot = await requestWorkspaceSurfaceSnapshot(surface);
+    if (!snapshot) {
+        return null;
+    }
+    return workspaceSurfaceManager.mergeSurfaceSnapshot(surface, snapshot)?.snapshot ?? null;
+}
+
+async function requestWorkspaceSurfaceSnapshot(
+    webContents: WebContents,
+): Promise<WorkspaceNavigationSnapshot | null> {
+    const requestId = `snapshot:${webContents.id}:${++nextWorkspaceFlushRequestId}`;
+    return await new Promise<WorkspaceNavigationSnapshot | null>((resolve) => {
+        const timer = setTimeout(() => {
+            pendingWorkspaceSurfaceCaptures.delete(requestId);
+            resolve(null);
+        }, 500);
+        pendingWorkspaceSurfaceCaptures.set(requestId, {
+            resolve: (snapshot) => {
+                clearTimeout(timer);
+                resolve(snapshot);
+            },
+            senderId: webContents.id,
+        });
+        webContents.send(
+            IPC_EVENTS.workspaceSurfaceSnapshotRequested,
+            requestId,
+        );
+    });
+}
+
+async function flushAllWorkspaceWindowsForQuit(): Promise<void> {
+    const windows = BrowserWindow.getAllWindows().filter((window) => {
+        if (window.isDestroyed() || window.webContents.isDestroyed()) {
+            return false;
+        }
+        return windowRegistry.getContextByBrowserWindow(window)?.windowKind === "main";
+    });
+    await Promise.all(
+        windows.map((window) => {
+            const context = windowRegistry.getContextByBrowserWindow(window);
+            return requestWorkspaceFlushesForHost(
+                window,
+                context?.windowId ?? `${window.id}`,
+            );
+        }),
+    );
 }
 
 function isClosingLastAppWindow(): boolean {
@@ -973,8 +1189,8 @@ function focusExistingWindow(window: BrowserWindow): void {
 function broadcastProjectTreeInvalidation(
     payload: ProjectTreeInvalidation,
 ): void {
-    forEachLiveWindow((window) => {
-        window.webContents.send(IPC_EVENTS.projectTreeInvalidated, payload);
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.projectTreeInvalidated, payload);
     });
 }
 
@@ -1027,16 +1243,16 @@ function clearLegacyGitCacheIfAny(rootPath: string): void {
 function broadcastGitRepositoryInvalidated(
     payload: GitRepositoryInvalidation,
 ): void {
-    forEachLiveWindow((window) => {
-        window.webContents.send(IPC_EVENTS.gitRepositoryInvalidated, payload);
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.gitRepositoryInvalidated, payload);
     });
 }
 
 export function broadcastGitRepositorySnapshotUpdated(
     payload: GitRepositorySnapshot,
 ): void {
-    forEachLiveWindow((window) => {
-        window.webContents.send(
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(
             IPC_EVENTS.gitRepositorySnapshotUpdated,
             payload,
         );
@@ -1046,8 +1262,8 @@ export function broadcastGitRepositorySnapshotUpdated(
 export function broadcastGitWorktreesUpdated(
     payload: GitRepositoryInvalidation,
 ): void {
-    forEachLiveWindow((window) => {
-        window.webContents.send(IPC_EVENTS.gitWorktreesUpdated, payload);
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.gitWorktreesUpdated, payload);
     });
 }
 
@@ -1072,15 +1288,31 @@ function broadcastNativeBackendEvent(event: NativeBackendEvent): void {
         debugBenignError("nativeBackend.gitInvalidation", error);
     }
 
-    forEachLiveWindow((window) => {
-        window.webContents.send(IPC_EVENTS.nativeBackendEvent, event);
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.nativeBackendEvent, event);
     });
 }
 
 function broadcastAiRuntimeStatus(payload: AiRuntimeStatus): void {
-    forEachLiveWindow((window) => {
-        window.webContents.send(IPC_EVENTS.aiRuntimeStatus, payload);
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.aiRuntimeStatus, payload);
     });
+}
+
+function broadcastAiPromptQueueSnapshot(
+    ownerWindowId: string,
+    payload: AiPromptQueueSnapshot,
+): void {
+    const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
+    if (targetContents) {
+        targetContents.send(IPC_EVENTS.aiPromptQueue, payload);
+    }
+    const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
+        ownerWindowId,
+    );
+    if (hostContents && hostContents !== targetContents) {
+        hostContents.send(IPC_EVENTS.aiPromptQueue, payload);
+    }
 }
 
 function broadcastAiSessionSnapshot(
@@ -1090,15 +1322,21 @@ function broadcastAiSessionSnapshot(
     mainProcessPerformance.recordAiSessionUpdate(payload);
 
     if (!ownerWindowId) {
-        forEachLiveWindow((window) => {
-            dispatchAiSessionSnapshot(window, payload);
+        windowRegistry.forEachLiveWebContents((webContents) => {
+            dispatchAiSessionSnapshot(webContents, payload);
         });
         return;
     }
 
-    const targetWindow = windowRegistry.getWindowByStableId(ownerWindowId);
-    if (targetWindow) {
-        dispatchAiSessionSnapshot(targetWindow, payload, ownerWindowId);
+    const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
+    if (targetContents) {
+        dispatchAiSessionSnapshot(targetContents, payload, ownerWindowId);
+    }
+    const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
+        ownerWindowId,
+    );
+    if (hostContents && hostContents !== targetContents) {
+        dispatchAiSessionSnapshot(hostContents, payload, ownerWindowId, false);
     }
 }
 
@@ -1107,20 +1345,26 @@ function broadcastAiSessionEvent(
     payload: AiSessionDomainEvent,
 ): void {
     if (!ownerWindowId) {
-        forEachLiveWindow((window) => {
-            dispatchAiSessionEvent(window, payload);
+        windowRegistry.forEachLiveWebContents((webContents) => {
+            dispatchAiSessionEvent(webContents, payload);
         });
         return;
     }
 
-    const targetWindow = windowRegistry.getWindowByStableId(ownerWindowId);
-    if (targetWindow) {
-        dispatchAiSessionEvent(targetWindow, payload, ownerWindowId);
+    const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
+    if (targetContents) {
+        dispatchAiSessionEvent(targetContents, payload, ownerWindowId);
+    }
+    const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
+        ownerWindowId,
+    );
+    if (hostContents && hostContents !== targetContents) {
+        dispatchAiSessionEvent(hostContents, payload, ownerWindowId, false);
     }
 }
 
-function attachAiSessionStream(window: BrowserWindow, windowId: string): void {
-    if (window.isDestroyed()) {
+function attachAiSessionStream(webContents: WebContents, windowId: string): void {
+    if (webContents.isDestroyed()) {
         detachAiSessionStream(windowId);
         return;
     }
@@ -1133,12 +1377,12 @@ function attachAiSessionStream(window: BrowserWindow, windowId: string): void {
         // Re-check `isDestroyed` atomically next to the `postMessage` call so
         // a teardown that lands between the outer guard and this line cannot
         // leak the transferred port into a dead renderer.
-        if (window.isDestroyed()) {
+        if (webContents.isDestroyed()) {
             channel.port1.close();
             channel.port2.close();
             return;
         }
-        window.webContents.postMessage(IPC_EVENTS.aiSessionStreamPort, null, [
+        webContents.postMessage(IPC_EVENTS.aiSessionStreamPort, null, [
             channel.port2,
         ]);
         const now = Date.now();
@@ -1339,15 +1583,17 @@ function recoverAiSessionStreamPort(
     reason: AiSessionStreamRecoveryReason,
 ): void {
     const state = aiSessionStreamPorts.get(windowId);
-    const targetWindow = windowRegistry.getWindowByStableId(windowId);
+    const targetContents = windowRegistry.getWebContentsByOwnerId(windowId);
     const pendingPreservedPayloadCount =
         state?.pendingPreservedPayloads.size ?? 0;
-    const canSendFallback = Boolean(targetWindow && !targetWindow.isDestroyed());
+    const canSendFallback = Boolean(
+        targetContents && !targetContents.isDestroyed(),
+    );
     const resyncSnapshots = canSendFallback
         ? (aiService?.getLiveSessionSnapshotsForWindow(windowId) ?? [])
         : [];
 
-    if (targetWindow && canSendFallback) {
+    if (targetContents && canSendFallback) {
         const fallbackPayloads = buildAiSessionStreamRecoveryFallbackPayloads({
             pendingPreservedPayloads: state
                 ? [...state.pendingPreservedPayloads.values()]
@@ -1356,7 +1602,7 @@ function recoverAiSessionStreamPort(
         });
         state?.pendingPreservedPayloads.clear();
         for (const payload of fallbackPayloads) {
-            sendAiSessionStreamPayloadOverIpc(targetWindow, payload);
+            sendAiSessionStreamPayloadOverIpc(targetContents, payload);
         }
     }
 
@@ -1373,19 +1619,19 @@ function recoverAiSessionStreamPort(
         : reason;
     debugBenignError("aiSessionStreamPort.recover", new Error(message));
     detachAiSessionStream(windowId);
-    if (targetWindow && !targetWindow.isDestroyed()) {
-        attachAiSessionStream(targetWindow, windowId);
+    if (targetContents && !targetContents.isDestroyed()) {
+        attachAiSessionStream(targetContents, windowId);
     }
 }
 
 function sendAiSessionStreamPayloadOverIpc(
-    window: BrowserWindow,
+    webContents: WebContents,
     payload: AiSessionStreamPayload,
 ): void {
     if (isAiSessionUpdate(payload)) {
-        window.webContents.send(IPC_EVENTS.aiSessionSnapshot, payload);
+        webContents.send(IPC_EVENTS.aiSessionSnapshot, payload);
     } else {
-        window.webContents.send(IPC_EVENTS.aiSessionEvent, payload);
+        webContents.send(IPC_EVENTS.aiSessionEvent, payload);
     }
 }
 
@@ -1424,55 +1670,59 @@ function postAiSessionStreamPayload(
 }
 
 function dispatchAiSessionSnapshot(
-    window: BrowserWindow,
+    webContents: WebContents,
     payload: AiSessionUpdate,
     windowId?: string,
+    preferStream = true,
 ): void {
     const stableWindowId =
         windowId ??
-        windowRegistry.getContextByBrowserWindow(window)?.windowId ??
+        windowRegistry.getContextByWebContents(webContents)?.windowId ??
         null;
 
-    if (stableWindowId) {
+    if (stableWindowId && preferStream) {
         if (postAiSessionStreamPayload(stableWindowId, payload)) {
             return;
         }
     }
 
-    window.webContents.send(IPC_EVENTS.aiSessionSnapshot, payload);
+    webContents.send(IPC_EVENTS.aiSessionSnapshot, payload);
 }
 
 function dispatchAiSessionEvent(
-    window: BrowserWindow,
+    webContents: WebContents,
     payload: AiSessionDomainEvent,
     windowId?: string,
+    preferStream = true,
 ): void {
     const stableWindowId =
         windowId ??
-        windowRegistry.getContextByBrowserWindow(window)?.windowId ??
+        windowRegistry.getContextByWebContents(webContents)?.windowId ??
         null;
 
-    if (stableWindowId) {
+    if (stableWindowId && preferStream) {
         if (postAiSessionStreamPayload(stableWindowId, payload)) {
             return;
         }
     }
 
-    window.webContents.send(IPC_EVENTS.aiSessionEvent, payload);
+    webContents.send(IPC_EVENTS.aiSessionEvent, payload);
 }
 
 function broadcastTerminalData(
     ownerWindowId: string,
     payload: TerminalDataEvent,
 ): void {
-    const targetWindow = windowRegistry.getWindowByStableId(ownerWindowId);
-    targetWindow?.webContents.send(IPC_EVENTS.terminalData, payload);
+    windowRegistry
+        .getWebContentsByOwnerId(ownerWindowId)
+        ?.send(IPC_EVENTS.terminalData, payload);
 }
 
 function broadcastTerminalExit(
     ownerWindowId: string,
     payload: TerminalExitEvent,
 ): void {
-    const targetWindow = windowRegistry.getWindowByStableId(ownerWindowId);
-    targetWindow?.webContents.send(IPC_EVENTS.terminalExit, payload);
+    windowRegistry
+        .getWebContentsByOwnerId(ownerWindowId)
+        ?.send(IPC_EVENTS.terminalExit, payload);
 }

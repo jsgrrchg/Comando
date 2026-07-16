@@ -10,7 +10,11 @@ export function getProjectContextKey(
     projectId: string | null,
     worktreeId: string | null,
 ): string {
+    const normalizedWorktreeId =
+        projectId && worktreeId === `${projectId}:primary`
+            ? PROJECT_TREE_PRIMARY_CONTEXT
+            : (worktreeId ?? PROJECT_TREE_PRIMARY_CONTEXT);
     return `${projectId ?? NO_PROJECT_CONTEXT}::${
-        worktreeId ?? PROJECT_TREE_PRIMARY_CONTEXT
+        normalizedWorktreeId
     }`;
 }

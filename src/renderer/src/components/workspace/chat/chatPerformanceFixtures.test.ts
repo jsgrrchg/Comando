@@ -1,0 +1,90 @@
+import { describe, expect, it } from "vitest";
+
+import {
+    CHAT_PERFORMANCE_FIXTURES,
+    createChatPerformanceFixture,
+    createChatPerformanceFixtureById,
+    createChatPerformanceWorkspaceFixture,
+} from "./chatPerformanceFixtures";
+
+describe("chatPerformanceFixtures", () => {
+    it("declares the long-chat datasets used by the performance plan", () => {
+        expect(CHAT_PERFORMANCE_FIXTURES).toEqual([
+            {
+                id: "chat-short",
+                messageCount: 30,
+                toolActivityCount: 10,
+                trackedFileCount: 2,
+            },
+            {
+                id: "chat-long",
+                messageCount: 10_000,
+                toolActivityCount: 0,
+                trackedFileCount: 0,
+            },
+            {
+                id: "chat-tool-heavy",
+                messageCount: 1_000,
+                toolActivityCount: 20_000,
+                trackedFileCount: 2_000,
+            },
+        ]);
+    });
+
+    it("creates deterministic snapshots with stable ids and review relationships", () => {
+        const fixture = createChatPerformanceFixture({
+            id: "deterministic",
+            messageCount: 4,
+            toolActivityCount: 3,
+            trackedFileCount: 5,
+        });
+        const repeatedFixture = createChatPerformanceFixture({
+            id: "deterministic",
+            messageCount: 4,
+            toolActivityCount: 3,
+            trackedFileCount: 5,
+        });
+
+        expect(fixture).toEqual(repeatedFixture);
+        expect(fixture.snapshot.messages.map((message) => message.id)).toEqual([
+            "message-1",
+            "message-2",
+            "message-3",
+            "message-4",
+        ]);
+        expect(fixture.snapshot.toolActivity.map((activity) => activity.id)).toEqual([
+            "tool-1",
+            "tool-2",
+            "tool-3",
+        ]);
+        expect(
+            fixture.snapshot.trackedFiles.map((file) => file.toolCallId),
+        ).toEqual(["tool-1", "tool-2", "tool-3", "tool-1", "tool-2"]);
+    });
+
+    it("creates the configured stress fixtures only when explicitly requested", () => {
+        const fixture = createChatPerformanceFixtureById("chat-long");
+
+        expect(fixture.snapshot.messages).toHaveLength(10_000);
+        expect(fixture.snapshot.toolActivity).toHaveLength(0);
+        expect(fixture.snapshot.trackedFiles).toHaveLength(0);
+    });
+
+    it("models the retained chats and concurrent streams of a multipane workspace", () => {
+        const fixture = createChatPerformanceWorkspaceFixture();
+
+        expect(fixture.panes).toHaveLength(4);
+        expect(
+            fixture.panes.every((pane) =>
+                pane.retainedSessionIds.includes(pane.activeSessionId),
+            ),
+        ).toBe(true);
+        expect(fixture.panes.flatMap((pane) => pane.retainedSessionIds)).toHaveLength(
+            16,
+        );
+        expect(fixture.activeStreamingSessionIds).toEqual([
+            "workspace-pane-1-session-1",
+            "workspace-pane-2-session-1",
+        ]);
+    });
+});

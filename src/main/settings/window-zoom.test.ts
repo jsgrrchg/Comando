@@ -31,6 +31,7 @@ describe("broadcastSettingsUpdated", () => {
             {
                 agentsSidebarScale: 1,
                 boostCodeContrast: true,
+                chromeTransparency: 45,
                 fileTreeScale: 1,
                 stickyFoldersEnabled: true,
                 themeMode: "dark",
@@ -58,7 +59,7 @@ describe("broadcastSettingsUpdated", () => {
                 requireCmdEnterToSend: false,
                 reviewDiffZoom: 0.96,
                 screenshotRetentionSeconds: 0,
-                toolCardExpansionMode: "collapsed",
+                toolActivityDefaultExpansion: "collapsed",
             },
             DEFAULT_APP_TERMINAL_SETTINGS,
         );
@@ -74,11 +75,12 @@ describe("broadcastSettingsUpdated", () => {
                 requireCmdEnterToSend: false,
                 reviewDiffZoom: 0.96,
                 screenshotRetentionSeconds: 0,
-                toolCardExpansionMode: "collapsed",
+                toolActivityDefaultExpansion: "collapsed",
             },
             appearance: {
                 agentsSidebarScale: 1,
                 boostCodeContrast: true,
+                chromeTransparency: 45,
                 fileTreeScale: 1,
                 stickyFoldersEnabled: true,
                 themeMode: "dark",

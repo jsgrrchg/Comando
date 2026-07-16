@@ -1,13 +1,13 @@
 import { memo } from "react";
 
 import type {
-    AiToolCardExpansionMode,
     AiToolActivity,
     AiToolActivityLocation,
     AiTrackedFile,
 } from "@shared/ipc";
 import { isAiTrackedFileUnresolved } from "@shared/ai-tracked-file";
 import { FIXED_PENDING_REVIEW_CARD_TEXT_ZOOM } from "@renderer/app/ai/sessionReviewContracts";
+import { useAiStore } from "@renderer/app/store/ai-store";
 import {
     normalizeIndexPath,
     useFileReferenceValidator,
@@ -29,7 +29,14 @@ import {
 } from "../projectFileReferences";
 import { ChangeReviewPanel } from "./ChangeReviewPanel";
 import {
+    getToolActivityDescriptor,
+    getStructuredToolCommand,
+    getStructuredToolTarget,
+} from "./toolActivityDescriptor";
+import {
+    isEditedFileToolActivity,
     isFileToolActivity,
+    isStatusToolActivity,
     isTerminalToolActivity,
     isTurnStartedActivity,
 } from "./toolActivityKinds";
@@ -110,7 +117,41 @@ function ExecuteIcon() {
     );
 }
 
-function DefaultIcon() {
+function HammerIcon() {
+    return (
+        <svg
+            data-tool-icon="hammer"
+            fill="none"
+            height="13"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            viewBox="0 0 24 24"
+            width="13"
+        >
+            <path d="m14 4 6 6" />
+            <path d="m12.5 5.5 3-3 6 6-3 3" />
+            <path d="m14.5 10.5-9 9a2.12 2.12 0 0 1-3-3l9-9" />
+        </svg>
+    );
+}
+
+function SubagentIcon() {
+    return (
+        <svg
+            fill="currentColor"
+            height="13"
+            stroke="none"
+            viewBox="0 0 24 24"
+            width="13"
+        >
+            <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z" />
+        </svg>
+    );
+}
+
+function StatusIcon() {
     return (
         <svg
             fill="none"
@@ -122,13 +163,28 @@ function DefaultIcon() {
             viewBox="0 0 24 24"
             width="13"
         >
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 7v5l3 2" />
         </svg>
     );
 }
 
-function Chevron({ expanded }: { readonly expanded: boolean }) {
+function Chevron({
+    expanded,
+    variant = "vertical",
+}: {
+    readonly expanded: boolean;
+    readonly variant?: "disclosure" | "vertical";
+}) {
+    const transform =
+        variant === "disclosure"
+            ? expanded
+                ? "rotate(0deg)"
+                : "rotate(-90deg)"
+            : expanded
+              ? "rotate(180deg)"
+              : "rotate(0deg)";
+
     return (
         <svg
             fill="none"
@@ -139,7 +195,7 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
             strokeWidth="2"
             style={{
                 opacity: 0.6,
-                transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
+                transform,
                 transition: "transform 0.15s ease",
             }}
             viewBox="0 0 24 24"
@@ -152,16 +208,6 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
 
 /* ─── Helpers ─── */
 
-const EDITED_FILE_TOOL_KINDS = new Set([
-    "create",
-    "delete",
-    "edit",
-    "move",
-    "remove",
-    "rename",
-    "update",
-    "write",
-]);
 const TOOL_TITLE_TARGET_MAX_LENGTH = 72;
 
 function getToolAccent(kind: string): string {
@@ -170,8 +216,9 @@ function getToolAccent(kind: string): string {
     return "#6b7280";
 }
 
-function getToolIcon(kind: string) {
-    const lk = kind.toLowerCase();
+function getToolIcon(activity: AiToolActivity) {
+    if (activity.action?.kind === "open_session") return <SubagentIcon />;
+    const lk = activity.kind.toLowerCase();
     if (lk === "read" || lk === "search") return <ReadIcon />;
     if (lk === "delete" || lk === "remove") return <DeleteIcon />;
     if (lk === "execute" || lk === "bash" || lk === "shell")
@@ -184,16 +231,7 @@ function getToolIcon(kind: string) {
         lk === "update"
     )
         return <EditIcon />;
-    return <DefaultIcon />;
-}
-
-export function isEditedFileToolActivity(
-    activity: AiToolActivity,
-    trackedFiles: readonly AiTrackedFile[],
-): boolean {
-    if (trackedFiles.length > 0) return true;
-    if (activity.diffs.length > 0) return true;
-    return EDITED_FILE_TOOL_KINDS.has(activity.kind.toLowerCase());
+    return <HammerIcon />;
 }
 
 function summarizeDiff(oldText: string | null, newText: string | null): string {
@@ -240,20 +278,6 @@ function parseToolTitleReference(
 
 function isPlaceholderToolTarget(target: string): boolean {
     return /^\.{2,}$/.test(target.trim());
-}
-
-function isRecordValue(value: unknown): value is Record<string, unknown> {
-    return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function readRecordString(
-    record: Record<string, unknown>,
-    key: string,
-): string | null {
-    const value = record[key];
-    return typeof value === "string" && value.trim().length > 0
-        ? value.trim()
-        : null;
 }
 
 function getToolActionPrefix(kind: string): string {
@@ -340,41 +364,6 @@ function compactToolTitleTarget(target: string): string {
             (candidate) => candidate.length <= TOOL_TITLE_TARGET_MAX_LENGTH,
         ) ?? candidates.at(-1) ?? trimmedTarget
     );
-}
-
-function parseToolRawInputJson(
-    rawInputJson: string | null,
-): Record<string, unknown> | null {
-    if (!rawInputJson) {
-        return null;
-    }
-
-    try {
-        const value = parseJsonValue(rawInputJson);
-        return isRecordValue(value) ? value : null;
-    } catch {
-        return null;
-    }
-}
-
-function getStructuredToolTarget(activity: AiToolActivity): string | null {
-    const rawInput = parseToolRawInputJson(activity.rawInputJson);
-    const rawInputPath = rawInput
-        ? (readRecordString(rawInput, "file_path") ??
-          readRecordString(rawInput, "filePath") ??
-          readRecordString(rawInput, "path") ??
-          readRecordString(rawInput, "target"))
-        : null;
-    const locationPath = activity.locations.find(
-        (location) => location.path.trim().length > 0,
-    )?.path;
-    if (locationPath && hasPathSeparator(locationPath)) {
-        return locationPath.trim();
-    }
-    if (rawInputPath) {
-        return rawInputPath;
-    }
-    return locationPath?.trim() ?? null;
 }
 
 function getToolTitleReference(
@@ -868,113 +857,60 @@ function ToolDetailSummary({
     );
 }
 
-function TurnStartedDivider({
+function StatusActivityItem({
     activity,
 }: {
     readonly activity: AiToolActivity;
 }) {
+    const isFailed = activity.status === "failed";
+    const isInProgress = activity.status === "in_progress";
+    const isCompleted = activity.status === "completed";
+
     return (
         <div
-            className="min-w-0 max-w-full py-2"
-            data-testid="turn-start-divider"
+            className="flex min-w-0 max-w-full select-none items-center gap-2 py-0.5"
+            data-testid="status-activity-item"
+            style={{
+                color: isFailed
+                    ? "#ef4444"
+                    : "var(--color-text-secondary)",
+                fontSize: "0.82em",
+                opacity: isCompleted ? 0.72 : 0.88,
+                transition: "opacity 0.2s ease",
+            }}
         >
-            <div className="flex min-w-0 max-w-full items-center gap-3">
-                <div
-                    className="h-px flex-1"
-                    style={{
-                        backgroundColor: "var(--color-border)",
-                        opacity: 0.5,
-                    }}
-                />
-                <span
-                    className="shrink-0 uppercase tracking-[0.14em]"
-                    style={{
-                        color: "var(--color-text-secondary)",
-                        fontSize: "0.68em",
-                        opacity: 0.7,
-                    }}
-                >
-                    {activity.title}
+            <span className="shrink-0">
+                <StatusIcon />
+            </span>
+            <span
+                className="min-w-0 truncate"
+                style={{ color: "var(--color-text-primary)" }}
+            >
+                {activity.title}
+            </span>
+            {activity.summary ? (
+                <span className="min-w-0 flex-1 truncate opacity-75">
+                    {activity.summary}
                 </span>
-                <div
-                    className="h-px flex-1"
-                    style={{
-                        backgroundColor: "var(--color-border)",
-                        opacity: 0.5,
-                    }}
+            ) : (
+                <span className="min-w-0 flex-1" />
+            )}
+            {isInProgress ? (
+                <span
+                    className="inline-block h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
+                    style={{ backgroundColor: "var(--color-accent)" }}
                 />
-            </div>
+            ) : null}
         </div>
     );
 }
 
 /* ─── File tool message (card style) ─── */
 
-function getToolCardExpansionState({
-    defaultExpanded,
-    expansionMode,
-    isLatestStreamingTool,
-}: {
-    readonly defaultExpanded: boolean;
-    readonly expansionMode: AiToolCardExpansionMode;
-    readonly isLatestStreamingTool: boolean;
-}) {
-    if (expansionMode === "expanded") {
-        return { defaultExpanded: true, forceExpanded: true };
-    }
-
-    if (expansionMode === "latest") {
-        return {
-            defaultExpanded: isLatestStreamingTool,
-            forceExpanded: false,
-        };
-    }
-
-    return { defaultExpanded, forceExpanded: false };
-}
-
-function useSyncedToolExpansion({
-    defaultExpanded,
-    forceExpanded,
-    resetKey,
-}: {
-    readonly defaultExpanded: boolean;
-    readonly forceExpanded: boolean;
-    readonly resetKey: string;
-}) {
-    const [expanded, setExpanded] = usePersistentToolExpansion(
-        resetKey,
-        defaultExpanded,
-    );
-
-    return {
-        expanded: forceExpanded ? true : expanded,
-        toggleExpanded: () => {
-            if (forceExpanded) {
-                return;
-            }
-
-            setExpanded((previous) => !previous);
-        },
-    };
-}
-
-function getToolExpansionResetKey(
-    activityId: string,
-    expansionMode: AiToolCardExpansionMode,
-    isLatestStreamingTool: boolean,
-): string {
-    return `${activityId}:${expansionMode}:${
-        isLatestStreamingTool ? "latest" : "history"
-    }`;
-}
-
 function FileToolMessage({
     activity,
     canRenderFileReference,
-    expansionMode,
     fileIndex,
-    isLatestStreamingTool,
     onOpenFile,
     onOpenFileReference,
     pendingTrackedFiles,
@@ -987,9 +923,7 @@ function FileToolMessage({
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
-    readonly expansionMode: AiToolCardExpansionMode;
     readonly fileIndex?: ReadonlySet<string> | null;
-    readonly isLatestStreamingTool: boolean;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -1043,27 +977,16 @@ function FileToolMessage({
         activity.locations.length > 0 ||
         activity.diffs.length > 0 ||
         pendingTrackedFiles.length > 0;
-    const expansionState = getToolCardExpansionState({
-        defaultExpanded: false,
-        expansionMode,
-        isLatestStreamingTool,
-    });
-    const { expanded, toggleExpanded: toggleSyncedExpanded } =
-        useSyncedToolExpansion({
-            defaultExpanded: expansionState.defaultExpanded,
-            forceExpanded: expansionState.forceExpanded,
-            resetKey: getToolExpansionResetKey(
-                activity.id,
-                expansionMode,
-                isLatestStreamingTool,
-            ),
-        });
+    const [expanded, setExpanded] = usePersistentToolExpansion(
+        activity.id,
+        false,
+    );
     const toggleExpanded = () => {
         if (!hasDetail) {
             return;
         }
 
-        toggleSyncedExpanded();
+        setExpanded((previous) => !previous);
     };
     const openTitleReference = () => {
         if (!titleReference || !titleIsLink) {
@@ -1096,7 +1019,7 @@ function FileToolMessage({
             style={{
                 backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-secondary))`,
                 border: `1px solid color-mix(in srgb, ${accent} 25%, var(--color-border))`,
-                opacity: isCompleted ? 0.65 : 1,
+                opacity: isCompleted ? 0.72 : 1,
                 transition: "opacity 0.2s ease",
             }}
         >
@@ -1131,16 +1054,14 @@ function FileToolMessage({
                     color: accent,
                     cursor:
                         shouldOpenOnHeaderClick ||
-                        (hasDetail && !expansionState.forceExpanded)
-                            ? "pointer"
-                            : "default",
+                        hasDetail ? "pointer" : "default",
                     fontSize: "0.83em",
                 }}
                 tabIndex={
                     hasDetail || shouldOpenOnHeaderClick ? 0 : undefined
                 }
             >
-                <span className="shrink-0">{getToolIcon(activity.kind)}</span>
+                <span className="shrink-0">{getToolIcon(activity)}</span>
                 <span
                     className="flex min-w-0 flex-1 items-baseline"
                     style={{
@@ -1253,10 +1174,7 @@ function FileToolMessage({
                             background: "none",
                             border: "none",
                             color: "inherit",
-                            cursor:
-                                expansionState.forceExpanded
-                                    ? "default"
-                                    : "pointer",
+                            cursor: "pointer",
                             display: "inline-flex",
                             margin: 0,
                             padding: 0,
@@ -1453,24 +1371,6 @@ function parseJsonValue(raw: string): unknown {
     return JSON.parse(raw) as unknown;
 }
 
-function extractCommand(rawInputJson: string | null): string | null {
-    if (!rawInputJson) return null;
-    try {
-        const parsed = parseJsonValue(rawInputJson);
-        if (
-            typeof parsed === "object" &&
-            parsed !== null &&
-            "command" in parsed &&
-            typeof parsed.command === "string"
-        ) {
-            return parsed.command;
-        }
-    } catch {
-        /* ignore */
-    }
-    return null;
-}
-
 function isCommandDuplicatedByTitle(title: string, command: string): boolean {
     const normalizedTitle = title.trim();
     const normalizedCommand = command.trim();
@@ -1512,8 +1412,10 @@ function getTerminalToolToneColor(tone: TerminalToolTone): string {
 
 function TerminalToolMessage({
     activity,
+    compactByDefault,
 }: {
     readonly activity: AiToolActivity;
+    readonly compactByDefault: boolean;
 }) {
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
@@ -1521,49 +1423,45 @@ function TerminalToolMessage({
     const terminalTone = getTerminalToolTone(activity);
     const isDangerTone = terminalTone === "danger";
     const accent = getTerminalToolToneColor(terminalTone);
-    const command = extractCommand(activity.rawInputJson);
+    const command = getStructuredToolCommand(activity);
     const shouldShowCommand =
         !!command && !isCommandDuplicatedByTitle(activity.title, command);
     const hasTerminalOutput = !!activity.terminalOutput;
     const hasDetail = shouldShowCommand || hasTerminalOutput;
     const [expanded, setExpanded] = usePersistentToolExpansion(
         `${activity.id}:terminal`,
-        isDangerTone && hasTerminalOutput,
+        !compactByDefault && isDangerTone && hasTerminalOutput,
     );
+    const failureLabel = isDangerTone
+        ? activity.exitCode !== null && activity.exitCode !== 0
+            ? `exit ${activity.exitCode}`
+            : "Failed"
+        : null;
 
     return (
         <div
-            className="min-w-0 max-w-full select-none overflow-hidden rounded-lg"
+            className="min-w-0 max-w-full select-none"
+            data-terminal-activity-surface="rail-row"
             style={{
-                backgroundColor: `color-mix(in srgb, ${accent} 4%, var(--color-bg-secondary))`,
-                border: `1px solid color-mix(in srgb, ${accent} 25%, var(--color-border))`,
-                opacity: isCompleted ? 0.65 : 1,
+                color: "var(--color-text-secondary)",
+                fontFamily: "var(--font-mono), ui-monospace, monospace",
+                fontSize: "0.82em",
+                opacity: isCompleted ? 0.72 : 1,
                 transition: "opacity 0.2s ease",
             }}
         >
-            <button
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left"
-                onClick={() => hasDetail && setExpanded(!expanded)}
-                style={{
-                    background: "none",
-                    border: "none",
-                    borderBottom: expanded
-                        ? `1px solid color-mix(in srgb, ${accent} 15%, var(--color-border))`
-                        : "1px solid transparent",
-                    color: accent,
-                    cursor: hasDetail ? "pointer" : "default",
-                    fontSize: "0.83em",
-                }}
-                type="button"
-            >
-                <span className="shrink-0">
+            <div className="flex min-h-7 w-full min-w-0 items-center gap-2">
+                <span
+                    aria-hidden="true"
+                    className="shrink-0"
+                    style={{ color: accent }}
+                >
                     <ExecuteIcon />
                 </span>
                 <span
                     className="min-w-0 flex-1 truncate"
                     style={{
                         color: "var(--color-text-primary)",
-                        fontWeight: 400,
                     }}
                 >
                     {activity.title}
@@ -1574,30 +1472,39 @@ function TerminalToolMessage({
                         style={{ backgroundColor: "var(--color-accent)" }}
                     />
                 ) : null}
-                {hasDetail ? (
-                    <span className="shrink-0">
-                        <Chevron expanded={expanded} />
+                {failureLabel ? (
+                    <span
+                        className="shrink-0 text-[10px] font-medium"
+                        style={{ color: accent }}
+                    >
+                        {failureLabel}
                     </span>
                 ) : null}
-            </button>
+                {hasDetail ? (
+                    <button
+                        aria-label={
+                            expanded
+                                ? "Collapse terminal output"
+                                : "Expand terminal output"
+                        }
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-secondary hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--color-accent)]"
+                        onClick={() => setExpanded(!expanded)}
+                        type="button"
+                    >
+                        <Chevron expanded={expanded} variant="disclosure" />
+                    </button>
+                ) : null}
+            </div>
 
             {expanded && hasDetail ? (
                 <div
-                    className="space-y-1 px-3 py-1.5"
+                    className="ml-5 mt-1 space-y-1 overflow-hidden border-l border-border pl-2"
                     style={{ fontSize: "0.78em" }}
                 >
                     {activity.terminalOutput ? (
                         <ToolDetailCodeBlock
-                            accentBorder={
-                                isDangerTone
-                                    ? "1px solid color-mix(in srgb, #ef4444 20%, var(--color-border))"
-                                    : "1px solid var(--color-border)"
-                            }
-                            backgroundColor={
-                                isDangerTone
-                                    ? "color-mix(in srgb, #ef4444 6%, var(--color-bg-tertiary))"
-                                    : "var(--color-bg-tertiary)"
-                            }
+                            accentBorder="none"
+                            backgroundColor="transparent"
                             color={
                                 isDangerTone
                                     ? "#ef4444"
@@ -1609,8 +1516,8 @@ function TerminalToolMessage({
                     ) : null}
                     {shouldShowCommand ? (
                         <ToolDetailCodeBlock
-                            accentBorder={`1px solid color-mix(in srgb, ${accent} 10%, var(--color-border))`}
-                            backgroundColor={`color-mix(in srgb, ${accent} 4%, var(--color-bg-tertiary))`}
+                            accentBorder="none"
+                            backgroundColor="transparent"
                             color="var(--color-text-primary)"
                             content={command}
                             languageInfo="shell"
@@ -1634,15 +1541,23 @@ function formatRawJson(raw: string): string {
     }
 }
 
-function getOpenSessionActionLabel(activity: AiToolActivity): string {
-    const name = activity.title
-        .replace(/^(spawned|started|opened)\s+/i, "")
-        .trim();
+function getOpenSessionActionLabel(
+    activity: AiToolActivity,
+    targetSessionTitle: string | null,
+): string {
+    const name =
+        targetSessionTitle?.trim() ||
+        activity.title
+            .replace(/^(spawned|started|opened)\s+/i, "")
+            .trim();
     return name.length > 0 && name.length <= 28 ? `Open ${name}` : "Open";
 }
 
-function getOpenSessionActionTitle(activity: AiToolActivity): string {
-    const label = getOpenSessionActionLabel(activity);
+function getOpenSessionActionTitle(
+    activity: AiToolActivity,
+    targetSessionTitle: string | null,
+): string {
+    const label = getOpenSessionActionLabel(activity, targetSessionTitle);
     return label === "Open" ? "Open session" : label;
 }
 
@@ -1651,6 +1566,7 @@ function GenericToolMessage({
     canRenderFileReference,
     onOpenFileReference,
     onOpenSession,
+    openSessionTitle,
     resolveFileReference,
 }: {
     readonly activity: AiToolActivity;
@@ -1662,6 +1578,7 @@ function GenericToolMessage({
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+    readonly openSessionTitle: string | null;
     readonly resolveFileReference?: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
@@ -1687,7 +1604,7 @@ function GenericToolMessage({
             style={{
                 color: isFailed ? "#ef4444" : "var(--color-text-secondary)",
                 fontSize: "0.85em",
-                opacity: isCompleted ? 0.45 : 0.7,
+                opacity: isCompleted ? 0.72 : 0.88,
                 transition: "opacity 0.2s ease",
             }}
         >
@@ -1704,7 +1621,7 @@ function GenericToolMessage({
                     type="button"
                 >
                     <span className="shrink-0">
-                        {getToolIcon(activity.kind)}
+                        {getToolIcon(activity)}
                     </span>
                     <span className="min-w-0 flex-1 truncate">
                         {activity.title}
@@ -1727,10 +1644,16 @@ function GenericToolMessage({
                         onClick={() =>
                             void onOpenSession(openSessionAction.sessionId)
                         }
-                        title={getOpenSessionActionTitle(activity)}
+                        title={getOpenSessionActionTitle(
+                            activity,
+                            openSessionTitle,
+                        )}
                         type="button"
                     >
-                        {getOpenSessionActionLabel(activity)}
+                        {getOpenSessionActionLabel(
+                            activity,
+                            openSessionTitle,
+                        )}
                     </button>
                 ) : null}
             </div>
@@ -1785,26 +1708,320 @@ function GenericToolMessage({
 
 /* ─── Public component ─── */
 
-export const ToolActivityItem = memo(function ToolActivityItem({
+export type ToolActivitySurface = "card" | "rail-row";
+
+function getCompactActivityStatus(
+    activity: AiToolActivity,
+    category: ReturnType<typeof getToolActivityDescriptor>["category"],
+): string | null {
+    if (activity.status === "pending") {
+        return "Queued";
+    }
+    if (activity.status === "in_progress") {
+        return "Running";
+    }
+    if (
+        category === "command" &&
+        activity.status === "completed" &&
+        activity.exitCode === 0
+    ) {
+        return "Done";
+    }
+    return null;
+}
+
+export function shouldShowCompactActivitySummary(
+    summary: string | null,
+    category: ReturnType<typeof getToolActivityDescriptor>["category"],
+    hasTerminalOutput: boolean,
+): boolean {
+    if (summary === null) {
+        return false;
+    }
+
+    return !(
+        category === "command" &&
+        hasTerminalOutput &&
+        summary.trim().toLocaleLowerCase() === "terminal output available."
+    );
+}
+
+function CompactToolActivityRow({
     activity,
-    canRenderFileReference: canRenderFileReferenceOverride,
-    expansionMode = "collapsed",
-    isLatestStreamingTool = false,
+    canRenderFileReference,
+    fileIndex,
     onOpenFile,
     onOpenFileReference,
     onOpenSession,
-    trackedFiles = [],
+    openSessionTitle,
     projectId,
     resolveFileReference,
-    worktreeId = null,
+    trackedFiles,
+    worktreeId,
 }: {
     readonly activity: AiToolActivity;
     readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
     ) => boolean;
-    readonly expansionMode?: AiToolCardExpansionMode;
-    readonly isLatestStreamingTool?: boolean;
+    readonly fileIndex: ReadonlySet<string> | null;
+    readonly onOpenFile: ToolActivityItemProps["onOpenFile"];
+    readonly onOpenFileReference?: (
+        reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+    readonly openSessionTitle: string | null;
+    readonly projectId: string | null;
+    readonly resolveFileReference?: (
+        reference: string,
+    ) => ResolvedProjectFileReference | null;
+    readonly trackedFiles: readonly AiTrackedFile[];
+    readonly worktreeId: string | null;
+}) {
+    const descriptor = getToolActivityDescriptor(activity);
+    const rawTarget =
+        descriptor.category === "file" ? descriptor.target : null;
+    const canOpenReference =
+        rawTarget !== null &&
+        canOpenToolFileReference({
+            canRenderFileReference,
+            fileIndex,
+            projectId,
+            resolveFileReference,
+            target: rawTarget,
+        });
+    const displayTarget =
+        descriptor.target &&
+        !activity.title
+            .toLocaleLowerCase()
+            .includes(descriptor.target.toLocaleLowerCase())
+            ? descriptor.target
+            : null;
+    const hasRawInput = activity.rawInputJson !== null;
+    const hasRawOutput = activity.rawOutputJson !== null;
+    const hasTerminalOutput = activity.terminalOutput !== null;
+    const shouldShowSummary = shouldShowCompactActivitySummary(
+        activity.summary,
+        descriptor.category,
+        hasTerminalOutput,
+    );
+    const hasLocations = activity.locations.length > 0;
+    const hasInlineReview =
+        trackedFiles.length > 0 || activity.diffs.length > 0;
+    const hasDetail =
+        shouldShowSummary ||
+        hasLocations ||
+        hasRawInput ||
+        hasRawOutput ||
+        hasTerminalOutput ||
+        hasInlineReview;
+    const [expanded, setExpanded] = usePersistentToolExpansion(
+        `${activity.sessionId}:${activity.id}:rail-row`,
+        false,
+    );
+    const detailId = `${activity.sessionId}:${activity.id}:rail-row-details`;
+    const status = getCompactActivityStatus(activity, descriptor.category);
+    const openSessionAction =
+        activity.action?.kind === "open_session" ? activity.action : null;
+
+    return (
+        <div
+            className="min-w-0 max-w-full select-none text-text-secondary"
+            data-tool-activity-surface="rail-row"
+            style={{
+                fontSize: "0.82em",
+                opacity: activity.status === "completed" ? 0.74 : 0.92,
+            }}
+        >
+            <div className="flex min-h-7 w-full items-center gap-2">
+                <span className="shrink-0 opacity-75" aria-hidden="true">
+                    {getToolIcon(activity)}
+                </span>
+                {canOpenReference && rawTarget ? (
+                    <button
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left text-text-primary hover:underline focus-visible:rounded-sm focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--color-accent)]"
+                        onClick={() =>
+                            openToolFileReference({
+                                canRenderFileReference,
+                                fileIndex,
+                                onOpenFile,
+                                onOpenFileReference,
+                                projectId,
+                                resolveFileReference,
+                                target: rawTarget,
+                                worktreeId,
+                            })
+                        }
+                        title={rawTarget ?? activity.title}
+                        type="button"
+                    >
+                        <span className="min-w-0 truncate">
+                            {activity.title}
+                        </span>
+                        {displayTarget ? (
+                            <span className="min-w-0 truncate font-mono text-[10px] text-text-secondary">
+                                {displayTarget}
+                            </span>
+                        ) : null}
+                    </button>
+                ) : (
+                    <span
+                        className="flex min-w-0 flex-1 items-center gap-2 text-text-primary"
+                        title={activity.title}
+                    >
+                        <span className="min-w-0 truncate">
+                            {activity.title}
+                        </span>
+                        {displayTarget ? (
+                            <span className="min-w-0 truncate font-mono text-[10px] text-text-secondary">
+                                {displayTarget}
+                            </span>
+                        ) : null}
+                    </span>
+                )}
+                {status ? (
+                    <span className="shrink-0 text-[10px] font-medium text-text-secondary">
+                        {status}
+                    </span>
+                ) : null}
+                {openSessionAction && onOpenSession ? (
+                    <button
+                        className="app-no-drag shrink-0 rounded border border-border/70 px-1.5 py-0.5 text-[10px] font-medium text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                        onClick={() =>
+                            void onOpenSession(openSessionAction.sessionId)
+                        }
+                        title={getOpenSessionActionTitle(
+                            activity,
+                            openSessionTitle,
+                        )}
+                        type="button"
+                    >
+                        {getOpenSessionActionLabel(activity, openSessionTitle)}
+                    </button>
+                ) : null}
+                {hasDetail ? (
+                    <button
+                        aria-controls={detailId}
+                        aria-expanded={expanded}
+                        aria-label={
+                            expanded ? "Collapse details" : "Expand details"
+                        }
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-secondary hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--color-accent)]"
+                        onClick={() => setExpanded((current) => !current)}
+                        type="button"
+                    >
+                        <Chevron expanded={expanded} />
+                    </button>
+                ) : null}
+            </div>
+
+            {expanded ? (
+                <div
+                    aria-label={`${activity.title} details`}
+                    className="mb-1 ml-5 space-y-1"
+                    id={detailId}
+                    role="region"
+                >
+                    {shouldShowSummary && activity.summary ? (
+                        <ToolDetailSummary
+                            backgroundColor="var(--color-bg-tertiary)"
+                            canRenderFileReference={canRenderFileReference}
+                            content={activity.summary}
+                            onOpenFileReference={onOpenFileReference}
+                            resolveFileReference={resolveFileReference}
+                        />
+                    ) : null}
+                    {hasLocations ? (
+                        <div className="flex flex-wrap gap-1">
+                            {activity.locations.map((location) => {
+                                const target =
+                                    formatToolLocationReference(location);
+                                const canOpen = canOpenToolFileReference({
+                                    canRenderFileReference,
+                                    fileIndex,
+                                    projectId,
+                                    resolveFileReference,
+                                    target,
+                                });
+
+                                return (
+                                    <button
+                                        className="app-no-drag rounded-md px-2 py-0.5 text-text-secondary hover:bg-bg-tertiary hover:text-text-primary disabled:cursor-default disabled:opacity-60"
+                                        disabled={!canOpen}
+                                        key={target}
+                                        onClick={() => {
+                                            if (canOpen) {
+                                                openToolFileReference({
+                                                    canRenderFileReference,
+                                                    fileIndex,
+                                                    onOpenFile,
+                                                    onOpenFileReference,
+                                                    projectId,
+                                                    resolveFileReference,
+                                                    target,
+                                                    worktreeId,
+                                                });
+                                            }
+                                        }}
+                                        type="button"
+                                    >
+                                        {target}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    ) : null}
+                    {activity.terminalOutput ? (
+                        <ToolDetailCodeBlock
+                            backgroundColor="var(--color-bg-tertiary)"
+                            color="var(--color-text-secondary)"
+                            content={activity.terminalOutput}
+                            languageInfo={
+                                descriptor.category === "command"
+                                    ? "shell"
+                                    : null
+                            }
+                        />
+                    ) : null}
+                    {hasRawInput ? (
+                        <ToolDetailCodeBlock
+                            backgroundColor="var(--color-bg-tertiary)"
+                            color="var(--color-text-secondary)"
+                            content={formatRawJson(activity.rawInputJson ?? "")}
+                            languageInfo="json"
+                        />
+                    ) : null}
+                    {hasRawOutput && !hasTerminalOutput ? (
+                        <ToolDetailCodeBlock
+                            backgroundColor="var(--color-bg-tertiary)"
+                            color="var(--color-text-secondary)"
+                            content={formatRawJson(activity.rawOutputJson ?? "")}
+                            languageInfo="json"
+                        />
+                    ) : null}
+                    {hasInlineReview ? (
+                        <ChangeReviewPanel
+                            activity={activity}
+                            onOpenFile={onOpenFile}
+                            projectId={projectId}
+                            resolveFileReference={resolveFileReference}
+                            trackedFiles={trackedFiles}
+                            worktreeId={worktreeId}
+                        />
+                    ) : null}
+                </div>
+            ) : null}
+        </div>
+    );
+}
+
+export interface ToolActivityItemProps {
+    readonly activity: AiToolActivity;
+    readonly canRenderFileReference?: (
+        rawReference: string,
+        reference: ResolvedProjectFileReference,
+    ) => boolean;
+    readonly compactTerminal?: boolean;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -1821,12 +2038,30 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     readonly resolveFileReference?: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
+    readonly surface?: ToolActivitySurface;
     readonly worktreeId?: string | null;
-}) {
+}
+
+export const ToolActivityItem = memo(function ToolActivityItem({
+    activity,
+    canRenderFileReference: canRenderFileReferenceOverride,
+    compactTerminal = false,
+    onOpenFile,
+    onOpenFileReference,
+    onOpenSession,
+    trackedFiles = [],
+    projectId,
+    resolveFileReference,
+    surface = "card",
+    worktreeId = null,
+}: ToolActivityItemProps) {
     const pendingTrackedFiles = trackedFiles.filter(
         isAiTrackedFileUnresolved,
     );
     const hasInlineReview = trackedFiles.length > 0 || activity.diffs.length > 0;
+    const hasPendingChangeReview =
+        isEditedFileToolActivity(activity, trackedFiles) &&
+        (activity.status === "in_progress" || activity.status === "pending");
 
     // Validate file references in tool summaries against the real project file
     // index so only existing files become clickable pills (mirrors chat
@@ -1838,6 +2073,19 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     const canRenderFileReference =
         canRenderFileReferenceOverride ?? projectCanRenderFileReference;
     const fileIndex = useProjectFileIndex(projectId, worktreeId ?? null);
+    const openSessionId =
+        activity.action?.kind === "open_session"
+            ? activity.action.sessionId
+            : null;
+    const openSessionTitle = useAiStore((state) => {
+        if (!openSessionId) return null;
+        const targetSession = state.sessions[openSessionId];
+        return (
+            targetSession?.snapshot?.title ??
+            targetSession?.meta?.title ??
+            null
+        );
+    });
 
     useRenderProbe("ToolActivityItem", {
         activityId: activity.id,
@@ -1848,28 +2096,36 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     });
 
     if (isTurnStartedActivity(activity)) {
-        return <TurnStartedDivider activity={activity} />;
+        return null;
+    }
+
+    if (isStatusToolActivity(activity)) {
+        return <StatusActivityItem activity={activity} />;
+    }
+
+    if (surface === "rail-row") {
+        return (
+            <CompactToolActivityRow
+                activity={activity}
+                canRenderFileReference={canRenderFileReference}
+                fileIndex={fileIndex}
+                onOpenFile={onOpenFile}
+                onOpenFileReference={onOpenFileReference}
+                onOpenSession={onOpenSession}
+                openSessionTitle={openSessionTitle}
+                projectId={projectId}
+                resolveFileReference={resolveFileReference}
+                trackedFiles={trackedFiles}
+                worktreeId={worktreeId}
+            />
+        );
     }
 
     if (isFileToolActivity(activity, trackedFiles)) {
-        const fileToolExpansionMode = isEditedFileToolActivity(
-            activity,
-            trackedFiles,
-        )
-            ? expansionMode
-            : "collapsed";
-
-        if (hasInlineReview) {
-            const reviewExpansionState = getToolCardExpansionState({
-                defaultExpanded: false,
-                expansionMode: fileToolExpansionMode,
-                isLatestStreamingTool,
-            });
+        if (hasInlineReview || hasPendingChangeReview) {
             const reviewPanel = (
                 <ChangeReviewPanel
                     activity={activity}
-                    defaultExpanded={reviewExpansionState.defaultExpanded}
-                    forceExpanded={reviewExpansionState.forceExpanded}
                     onOpenFile={onOpenFile}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
@@ -1881,7 +2137,10 @@ export const ToolActivityItem = memo(function ToolActivityItem({
             if (isTerminalToolActivity(activity)) {
                 return (
                     <div className="min-w-0 space-y-2">
-                        <TerminalToolMessage activity={activity} />
+                        <TerminalToolMessage
+                            activity={activity}
+                            compactByDefault={compactTerminal}
+                        />
                         {reviewPanel}
                     </div>
                 );
@@ -1891,16 +2150,19 @@ export const ToolActivityItem = memo(function ToolActivityItem({
         }
 
         if (isTerminalToolActivity(activity)) {
-            return <TerminalToolMessage activity={activity} />;
+            return (
+                <TerminalToolMessage
+                    activity={activity}
+                    compactByDefault={compactTerminal}
+                />
+            );
         }
 
         return (
             <FileToolMessage
                 activity={activity}
                 canRenderFileReference={canRenderFileReference}
-                expansionMode={fileToolExpansionMode}
                 fileIndex={fileIndex}
-                isLatestStreamingTool={isLatestStreamingTool}
                 onOpenFile={onOpenFile}
                 onOpenFileReference={onOpenFileReference}
                 pendingTrackedFiles={pendingTrackedFiles}
@@ -1912,7 +2174,12 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     }
 
     if (isTerminalToolActivity(activity)) {
-        return <TerminalToolMessage activity={activity} />;
+        return (
+            <TerminalToolMessage
+                activity={activity}
+                compactByDefault={compactTerminal}
+            />
+        );
     }
 
     return (
@@ -1921,6 +2188,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
             canRenderFileReference={canRenderFileReference}
             onOpenFileReference={onOpenFileReference}
             onOpenSession={onOpenSession}
+            openSessionTitle={openSessionTitle}
             resolveFileReference={resolveFileReference}
         />
     );
@@ -1929,66 +2197,19 @@ export const ToolActivityItem = memo(function ToolActivityItem({
 ToolActivityItem.displayName = "ToolActivityItem";
 
 function areToolActivityItemPropsEqual(
-    previous: Readonly<{
-        readonly activity: AiToolActivity;
-        readonly canRenderFileReference?: (
-            rawReference: string,
-            reference: ResolvedProjectFileReference,
-        ) => boolean;
-        readonly expansionMode?: AiToolCardExpansionMode;
-        readonly isLatestStreamingTool?: boolean;
-        readonly onOpenFile: (
-            projectId: string,
-            relativePath: string,
-            worktreeId?: string | null,
-            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-            openLocation?: RuntimeWorkspaceFileOpenLocation | null,
-        ) => Promise<void>;
-        readonly onOpenFileReference?: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
-        readonly trackedFiles?: readonly AiTrackedFile[];
-        readonly projectId: string | null;
-        readonly resolveFileReference?: (
-            reference: string,
-        ) => ResolvedProjectFileReference | null;
-        readonly worktreeId?: string | null;
-    }>,
-    next: Readonly<{
-        readonly activity: AiToolActivity;
-        readonly canRenderFileReference?: (
-            rawReference: string,
-            reference: ResolvedProjectFileReference,
-        ) => boolean;
-        readonly expansionMode?: AiToolCardExpansionMode;
-        readonly isLatestStreamingTool?: boolean;
-        readonly onOpenFile: (
-            projectId: string,
-            relativePath: string,
-            worktreeId?: string | null,
-            reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-            openLocation?: RuntimeWorkspaceFileOpenLocation | null,
-        ) => Promise<void>;
-        readonly onOpenFileReference?: (
-            reference: ResolvedProjectFileReference,
-        ) => void;
-        readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
-        readonly trackedFiles?: readonly AiTrackedFile[];
-        readonly projectId: string | null;
-        readonly resolveFileReference?: (
-            reference: string,
-        ) => ResolvedProjectFileReference | null;
-        readonly worktreeId?: string | null;
-    }>,
+    previous: Readonly<ToolActivityItemProps>,
+    next: Readonly<ToolActivityItemProps>,
 ) {
     return (
         previous.activity === next.activity &&
         previous.canRenderFileReference === next.canRenderFileReference &&
-        previous.expansionMode === next.expansionMode &&
-        previous.isLatestStreamingTool === next.isLatestStreamingTool &&
+        previous.compactTerminal === next.compactTerminal &&
+        previous.onOpenFile === next.onOpenFile &&
+        previous.onOpenFileReference === next.onOpenFileReference &&
         previous.onOpenSession === next.onOpenSession &&
         previous.projectId === next.projectId &&
+        previous.resolveFileReference === next.resolveFileReference &&
+        previous.surface === next.surface &&
         previous.trackedFiles === next.trackedFiles &&
         previous.worktreeId === next.worktreeId
     );

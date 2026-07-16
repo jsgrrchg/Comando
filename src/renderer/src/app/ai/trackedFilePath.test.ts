@@ -3,7 +3,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { AppBootstrapSnapshot } from "@shared/ipc";
 
 import { useAppStore } from "@renderer/app/store/app-store";
-import { areTrackedFilePathsEquivalent } from "./trackedFilePath";
+import {
+    areTrackedFilePathReferencesEquivalent,
+    areTrackedFilePathsEquivalent,
+} from "./trackedFilePath";
 
 afterEach(() => {
     useAppStore.setState({
@@ -39,6 +42,35 @@ describe("trackedFilePath", () => {
                 "c:\\repo\\src\\app.ts",
             ),
         ).toBe(true);
+    });
+
+    it("matches normalized relative paths to absolute workspace references", () => {
+        setRendererPlatform("darwin");
+
+        expect(
+            areTrackedFilePathReferencesEquivalent(
+                "/Users/example/Comando/src/app.ts",
+                "./src/app.ts",
+            ),
+        ).toBe(true);
+    });
+
+    it("matches Windows absolute and relative references across separators and casing", () => {
+        expect(
+            areTrackedFilePathReferencesEquivalent(
+                "C:\\Workspace\\Comando\\src\\App.ts",
+                ".\\src/app.ts",
+            ),
+        ).toBe(true);
+    });
+
+    it("does not merge absolute paths from different workspaces", () => {
+        expect(
+            areTrackedFilePathReferencesEquivalent(
+                "/workspace/one/src/app.ts",
+                "/workspace/two/src/app.ts",
+            ),
+        ).toBe(false);
     });
 });
 

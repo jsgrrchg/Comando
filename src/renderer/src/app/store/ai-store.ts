@@ -8,6 +8,8 @@ import type {
     AiRuntimeAuthLaunchInput,
     AiRuntimeAuthLogoutInput,
     AiPermissionResponseInput,
+    AiPromptQueueSnapshot,
+    AiQueuedPrompt,
     AiRuntimeId,
     AiRuntimeStatus,
     AiSessionConfigOption,
@@ -36,6 +38,7 @@ import type {
     OpenCodeRuntimeSettingsInput,
     SecretValuePatch,
 } from "@shared/ipc";
+import { serializeComposerMessagePartsForDisplay } from "@shared/composer-display-markers";
 import {
     deriveTrackedFilesFromActionLog,
     isReviewTargetVersionCurrent,
@@ -48,7 +51,6 @@ import {
     type AiReviewActionLogTarget,
 } from "@shared/ai-review-action-log";
 import { resolveTrackedFileHunks } from "@shared/ai-tracked-file";
-import { isSessionBusyErrorMessage } from "@shared/ai-errors";
 import {
     applyModelIdToConfigOptions,
     applyReasoningEffortToConfigOptions,
@@ -81,7 +83,11 @@ import {
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
 import { matchesTrackedFilePath } from "@renderer/app/ai/trackedFilePath";
-import { collectExternalComposerRoots } from "@renderer/components/workspace/chat/composerParts";
+import {
+    getChatPerformanceTimestamp,
+    measureChatPerformance,
+    recordChatPerformanceMetric,
+} from "@renderer/app/debug/chatPerformanceProbe";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceReviewTab,
@@ -90,6 +96,28 @@ import { useWorkspaceStore } from "./workspace-store";
 
 type RuntimeAiSessionTab = RuntimeWorkspaceChatTab | RuntimeWorkspaceReviewTab;
 type AiSessionRuntimeState = "history" | "live";
+
+const ensureSessionInFlight = new Map<string, Promise<void>>();
+type OptimisticSnapshotMutator = (
+    snapshot: AiSessionSnapshot,
+) => AiSessionSnapshot;
+
+const optimisticSnapshotMutationStates = new Map<
+    string,
+    {
+        latestVersion: number;
+        latestVersionByConflictKey: Map<string, number>;
+        nextVersion: number;
+        pendingVersionsByConflictKey: Map<string, Set<number>>;
+        preservedMutations: Map<number, OptimisticSnapshotMutator>;
+        rollbackBaseSnapshotsByConflictKey: Map<string, AiSessionSnapshot>;
+        pendingVersions: Set<number>;
+    }
+>();
+
+interface AiSessionControlMutationOptions {
+    readonly ensureLiveSession?: (force: boolean) => Promise<void>;
+}
 
 interface RegisteredSessionMeta {
     readonly projectId: string | null;
@@ -129,6 +157,8 @@ interface ActiveQueuedPromptState {
     readonly queuedPrompt: QueuedPrompt;
 }
 
+type AiHistoryHydrationState = "not_loaded" | "loading" | "loaded" | "failed";
+
 interface AiSessionClientState {
     readonly activeDispatchToken: string | null;
     readonly activePromptMessageAliases: Readonly<Record<string, string>>;
@@ -141,17 +171,15 @@ interface AiSessionClientState {
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
     readonly incomingSnapshotVersion: number;
+    readonly historyHydrationState: AiHistoryHydrationState;
     readonly isDispatching: boolean;
     readonly lastIncomingSnapshotUpdatedAt: string | null;
     readonly localError: string | null;
     readonly meta: RegisteredSessionMeta | null;
     readonly queue: readonly QueuedPrompt[];
-    // True after the user cancels an inference while there are still queued
-    // prompts. While paused, drainQueueIfNeeded is a no-op even when the
-    // agent becomes idle. Pause is released the next time the user manually
-    // sends a prompt (either through the composer or an explicit Send Now on
-    // a queued item), at which point that prompt dispatches and the rest of
-    // the queue resumes draining when its turn completes.
+    readonly queueRevision: number;
+    // Projected from the main-owned queue. A paused queue will not dispatch
+    // again until the user explicitly resumes or steers it.
     readonly queuePaused: boolean;
     readonly runtimeState: AiSessionRuntimeState;
     readonly snapshot: AiSessionSnapshot | null;
@@ -200,6 +228,7 @@ interface AiStore {
     applySessionEvent: (event: AiSessionDomainEvent) => void;
     applySessionUpdate: (update: AiSessionUpdate) => void;
     applySessionSnapshot: (snapshot: AiSessionSnapshot) => void;
+    applyPromptQueueSnapshot: (snapshot: AiPromptQueueSnapshot) => void;
     cancelSession: (sessionId: string) => Promise<void>;
     cancelQueuedPromptEdit: (
         sessionId: string,
@@ -289,10 +318,17 @@ interface AiStore {
         status: QueuedPrompt["status"],
     ) => void;
     setSessionDiffZoom: (sessionId: string, diffZoom: number) => void;
-    setSessionMode: (input: AiSessionModeMutationInput) => Promise<void>;
-    setSessionModel: (input: AiSessionModelMutationInput) => Promise<void>;
+    setSessionMode: (
+        input: AiSessionModeMutationInput,
+        options?: AiSessionControlMutationOptions,
+    ) => Promise<void>;
+    setSessionModel: (
+        input: AiSessionModelMutationInput,
+        options?: AiSessionControlMutationOptions,
+    ) => Promise<void>;
     setSessionConfigOption: (
         input: AiSessionConfigOptionMutationInput,
+        options?: AiSessionControlMutationOptions,
     ) => Promise<void>;
     renameSession: (input: AiSessionRenameMutationInput) => Promise<void>;
     sendQueuedPromptNow: (sessionId: string, promptId: string) => Promise<void>;
@@ -317,8 +353,16 @@ type BufferedSessionDeltaEvent = Extract<
     { kind: "message-delta" | "thinking-delta" }
 >;
 
-const bufferedSessionDeltaEvents = new Map<string, BufferedSessionDeltaEvent>();
-let bufferedSessionDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+interface BufferedSessionDeltaBuffer {
+    readonly events: Map<string, BufferedSessionDeltaEvent>;
+    cancelScheduledFlush: (() => void) | null;
+    firstQueuedAt: number | null;
+}
+
+const bufferedSessionDeltasBySessionId = new Map<
+    string,
+    BufferedSessionDeltaBuffer
+>();
 let isFlushingBufferedSessionDeltas = false;
 const AI_SESSION_RESYNC_SILENCE_MS = 20_000;
 const AI_SESSION_RESYNC_RETRY_DELAYS_MS = [20_000, 30_000, 45_000, 60_000];
@@ -360,36 +404,88 @@ function mergeBufferedSessionDelta(
     };
 }
 
+function getBufferedSessionDeltaBuffer(
+    sessionId: string,
+): BufferedSessionDeltaBuffer {
+    const existing = bufferedSessionDeltasBySessionId.get(sessionId);
+    if (existing) {
+        return existing;
+    }
+
+    const buffer: BufferedSessionDeltaBuffer = {
+        cancelScheduledFlush: null,
+        events: new Map(),
+        firstQueuedAt: null,
+    };
+    bufferedSessionDeltasBySessionId.set(sessionId, buffer);
+    return buffer;
+}
+
+function scheduleBufferedSessionDeltaFlush(
+    sessionId: string,
+    buffer: BufferedSessionDeltaBuffer,
+    get: GetAiState,
+): void {
+    if (buffer.cancelScheduledFlush !== null) {
+        return;
+    }
+
+    const flush = () => {
+        const currentBuffer = bufferedSessionDeltasBySessionId.get(sessionId);
+        if (currentBuffer === buffer) {
+            currentBuffer.cancelScheduledFlush = null;
+        }
+        flushBufferedSessionDeltas(get, sessionId);
+    };
+    if (typeof globalThis.requestAnimationFrame === "function") {
+        const frameId = globalThis.requestAnimationFrame(flush);
+        buffer.cancelScheduledFlush = () => {
+            globalThis.cancelAnimationFrame(frameId);
+        };
+        return;
+    }
+
+    const timer = setTimeout(flush, 16);
+    buffer.cancelScheduledFlush = () => {
+        clearTimeout(timer);
+    };
+}
+
 function bufferSessionDeltaEvent(
     event: BufferedSessionDeltaEvent,
     get: GetAiState,
 ): void {
+    const buffer = getBufferedSessionDeltaBuffer(event.sessionId);
     const key = sessionDeltaBufferKey(event);
-    const existing = bufferedSessionDeltaEvents.get(key);
-    bufferedSessionDeltaEvents.set(
+    const existing = buffer.events.get(key);
+    if (buffer.firstQueuedAt === null) {
+        buffer.firstQueuedAt = getChatPerformanceTimestamp();
+    }
+    buffer.events.set(
         key,
         existing ? mergeBufferedSessionDelta(existing, event) : event,
     );
-
-    if (bufferedSessionDeltaFlushTimer === null) {
-        bufferedSessionDeltaFlushTimer = setTimeout(() => {
-            flushBufferedSessionDeltas(get);
-        }, 0);
-    }
+    scheduleBufferedSessionDeltaFlush(event.sessionId, buffer, get);
 }
 
-function flushBufferedSessionDeltas(get: GetAiState): void {
-    if (bufferedSessionDeltaFlushTimer !== null) {
-        clearTimeout(bufferedSessionDeltaFlushTimer);
-        bufferedSessionDeltaFlushTimer = null;
-    }
-
-    if (bufferedSessionDeltaEvents.size === 0) {
+function flushBufferedSessionDeltas(get: GetAiState, sessionId: string): void {
+    const buffer = bufferedSessionDeltasBySessionId.get(sessionId);
+    if (!buffer || buffer.events.size === 0) {
         return;
     }
 
-    const events = Array.from(bufferedSessionDeltaEvents.values());
-    bufferedSessionDeltaEvents.clear();
+    buffer.cancelScheduledFlush?.();
+    buffer.cancelScheduledFlush = null;
+    const events = Array.from(buffer.events.values());
+    const queuedAt = buffer.firstQueuedAt;
+    bufferedSessionDeltasBySessionId.delete(sessionId);
+    if (queuedAt !== null) {
+        recordChatPerformanceMetric("delta_buffer_wait_ms", {
+            durationMs: performance.now() - queuedAt,
+            sessionId,
+            values: { payloadDepth: events.length },
+        });
+    }
     isFlushingBufferedSessionDeltas = true;
     try {
         for (const event of events) {
@@ -401,11 +497,10 @@ function flushBufferedSessionDeltas(get: GetAiState): void {
 }
 
 function resetBufferedSessionDeltas(): void {
-    if (bufferedSessionDeltaFlushTimer !== null) {
-        clearTimeout(bufferedSessionDeltaFlushTimer);
-        bufferedSessionDeltaFlushTimer = null;
+    for (const buffer of bufferedSessionDeltasBySessionId.values()) {
+        buffer.cancelScheduledFlush?.();
     }
-    bufferedSessionDeltaEvents.clear();
+    bufferedSessionDeltasBySessionId.clear();
     isFlushingBufferedSessionDeltas = false;
 }
 
@@ -581,12 +676,10 @@ async function requestAiSessionResyncAfterSilence(
     }
 }
 
-const activeQueueDrainSessionIds = new Set<string>();
-const pendingQueueDrainSessionIds = new Set<string>();
-
 export function resetAiStoreRuntimeBuffersForTests(): void {
     resetBufferedSessionDeltas();
     resetAiSessionResyncWatchdogs();
+    optimisticSnapshotMutationStates.clear();
 }
 
 export const useAiStore = create<AiStore>((set, get) => ({
@@ -683,6 +776,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
             };
         });
 
+        void getComandoApi()
+            .cancelEditAiQueuedPrompt(sessionId)
+            .then((snapshot) => get().applyPromptQueueSnapshot(snapshot));
+
         return restoredComposerParts;
     },
 
@@ -753,7 +850,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [sessionId]: {
                         ...session,
-                        activeQueuedPrompt: null,
                         editingQueuedPromptState: null,
                         editingQueuedPrompt: null,
                         queue: [],
@@ -762,6 +858,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
             };
         });
+        void getComandoApi()
+            .clearAiPromptQueue(sessionId)
+            .then((snapshot) => get().applyPromptQueueSnapshot(snapshot));
     },
 
     applyRuntimeStatus: (status) => {
@@ -779,6 +878,63 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 [status.runtimeId]: status,
             },
         }));
+    },
+
+    applyPromptQueueSnapshot: (queueSnapshot) => {
+        set((state) => {
+            const session =
+                state.sessions[queueSnapshot.sessionId] ?? createSessionState();
+            if (queueSnapshot.revision < session.queueRevision) {
+                return state;
+            }
+
+            const activeQueuedPrompt = queueSnapshot.activeItem
+                ? toRendererQueuedPrompt(queueSnapshot.activeItem)
+                : null;
+            const currentActiveId =
+                session.activeQueuedPrompt?.queuedPrompt.id ?? null;
+            const nextActiveState = activeQueuedPrompt
+                ? {
+                      activatedAfterIncomingSnapshotVersion:
+                          session.incomingSnapshotVersion,
+                      position: {
+                          nextPromptId: null,
+                          previousPromptId: null,
+                          queueIndex: 0,
+                      },
+                      queuedPrompt: activeQueuedPrompt,
+                  }
+                : null;
+            const nextSession = {
+                ...session,
+                activeDispatchToken: null,
+                activeQueuedPrompt: nextActiveState,
+                editingQueuedPrompt: queueSnapshot.editingItem
+                    ? toRendererQueuedPrompt(queueSnapshot.editingItem)
+                    : null,
+                editingQueuedPromptState: queueSnapshot.editingItem
+                    ? session.editingQueuedPromptState
+                    : null,
+                isDispatching: queueSnapshot.activeItem?.status === "sending",
+                queue: queueSnapshot.items.map(toRendererQueuedPrompt),
+                queuePaused: queueSnapshot.paused,
+                queueRevision: queueSnapshot.revision,
+            };
+            const acceptedSession =
+                activeQueuedPrompt && currentActiveId !== activeQueuedPrompt.id
+                    ? applyLocalPromptAcceptanceToSession(
+                          nextSession,
+                          activeQueuedPrompt,
+                      )
+                    : nextSession;
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [queueSnapshot.sessionId]: acceptedSession,
+                },
+            };
+        });
     },
 
     applySessionEvent: (event) => {
@@ -800,11 +956,23 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return;
         }
         if (!isSessionDeltaEvent(normalizedEvent)) {
-            flushBufferedSessionDeltas(get);
+            flushBufferedSessionDeltas(get, normalizedEvent.sessionId);
         }
 
         let syncedTitle: string | null = null;
-        set((state) => {
+        measureChatPerformance(
+            "apply_event_ms",
+            {
+                sessionId: normalizedEvent.sessionId,
+                values: {
+                    payloadDepth:
+                        bufferedSessionDeltasBySessionId.get(
+                            normalizedEvent.sessionId,
+                        )?.events.size ?? 0,
+                },
+            },
+            () =>
+                set((state) => {
             const session =
                 state.sessions[normalizedEvent.sessionId] ?? createSessionState();
             const existingCatalog =
@@ -812,9 +980,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             const baseSnapshot =
                 session.snapshot ??
                 createSessionSnapshotFromEvent(normalizedEvent, existingCatalog);
-            const nextTranscript = applyAiSessionDomainEventToTranscript(
-                getSessionTranscript(session, baseSnapshot),
-                normalizedEvent,
+            const nextTranscript = measureChatPerformance(
+                "transcript_patch_ms",
+                { sessionId: normalizedEvent.sessionId },
+                () =>
+                    applyAiSessionDomainEventToTranscript(
+                        getSessionTranscript(session, baseSnapshot),
+                        normalizedEvent,
+                    ),
             );
             const nextSnapshot = writeAiSessionTranscriptToSnapshot(
                 applySessionDomainEventToSnapshot(baseSnapshot, normalizedEvent),
@@ -840,10 +1013,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                                 event,
                                 activePromptMessageAlias,
                             ),
-                        ...reconcileDispatchStateForIncomingSnapshot(
-                            session,
-                            nextSnapshot,
-                        ),
                         ...resolveIncomingSnapshotProgress(
                             session,
                             nextSnapshot.updatedAt,
@@ -856,7 +1025,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     },
                 },
             };
-        });
+                }),
+        );
+
+        const eventUpdatedAt = Date.parse(normalizedEvent.updatedAt);
+        if (Number.isFinite(eventUpdatedAt)) {
+            recordChatPerformanceMetric("ack_lag_ms", {
+                durationMs: Math.max(0, Date.now() - eventUpdatedAt),
+                sessionId: normalizedEvent.sessionId,
+            });
+        }
 
         if (syncedTitle !== null) {
             void useWorkspaceStore
@@ -864,12 +1042,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 .updateSessionTabTitles(normalizedEvent.sessionId, syncedTitle);
         }
 
-        void drainQueueIfNeeded(normalizedEvent.sessionId, get, set);
         scheduleAiSessionResyncWatchdog(normalizedEvent.sessionId, get);
     },
 
     applySessionUpdate: (update) => {
-        flushBufferedSessionDeltas(get);
+        const sessionId =
+            update.kind === "snapshot"
+                ? update.snapshot.sessionId
+                : update.patch.sessionId;
+        flushBufferedSessionDeltas(get, sessionId);
         if (update.kind === "snapshot") {
             get().applySessionSnapshot(update.snapshot);
             return;
@@ -946,10 +1127,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                             ...state.sessions,
                             [update.patch.sessionId]: {
                                 ...session,
-                                ...reconcileDispatchStateForIncomingSnapshot(
-                                    session,
-                                    nextSnapshot,
-                                ),
                                 ...resolveIncomingSnapshotProgress(
                                     session,
                                     incomingSnapshot.updatedAt,
@@ -996,9 +1173,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             );
             const nextSnapshot = resolved.snapshot;
             const nextTranscript = resolved.transcript;
-            const resolvedCatalog = hasCatalogChanges(update.patch.changes)
-                ? extractRuntimeCatalog(nextSnapshot)
-                : null;
+            const resolvedCatalog = nextCatalog;
             const nextMeta = session.meta
                 ? session.meta.title === nextSnapshot.title
                     ? session.meta
@@ -1020,10 +1195,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [update.patch.sessionId]: {
                         ...session,
-                        ...reconcileDispatchStateForIncomingSnapshot(
-                            session,
-                            incomingSnapshot,
-                        ),
                         ...resolveIncomingSnapshotProgress(
                             session,
                             incomingSnapshot.updatedAt,
@@ -1044,19 +1215,18 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 .updateSessionTabTitles(update.patch.sessionId, syncedTitle);
         }
 
-        void drainQueueIfNeeded(update.patch.sessionId, get, set);
         scheduleAiSessionResyncWatchdog(update.patch.sessionId, get);
     },
 
     applySessionSnapshot: (snapshot) => {
-        flushBufferedSessionDeltas(get);
+        flushBufferedSessionDeltas(get, snapshot.sessionId);
         let syncedTitle: string | null = null;
         set((state) => {
             const session =
                 state.sessions[snapshot.sessionId] ?? createSessionState();
             const existingCatalog =
                 state.runtimeCatalogById[snapshot.runtimeId] ?? null;
-            const nextSnapshot =
+            const incomingSnapshot =
                 existingCatalog && hasRuntimeCatalog(existingCatalog)
                     ? mergeRuntimeCatalogIntoSnapshot(
                           snapshot,
@@ -1064,7 +1234,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                       )
                     : snapshot;
             const resolved = resolveIncomingSessionSnapshot(
-                nextSnapshot,
+                incomingSnapshot,
                 session,
                 {
                     preserveCurrentReviewState: true,
@@ -1080,7 +1250,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
             if (nextMeta !== session.meta) {
                 syncedTitle = resolvedSnapshot.title;
             }
-            const nextCatalog = extractRuntimeCatalog(resolvedSnapshot);
+            // Runtime defaults must come from provider state, never from the
+            // optimistic session overlay applied by the resolver.
+            const nextCatalog = extractRuntimeCatalog(incomingSnapshot);
 
             return {
                 runtimeCatalogById: hasRuntimeCatalog(nextCatalog)
@@ -1093,13 +1265,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     ...state.sessions,
                     [snapshot.sessionId]: {
                         ...session,
-                        ...reconcileDispatchStateForIncomingSnapshot(
-                            session,
-                            nextSnapshot,
-                        ),
                         ...resolveIncomingSnapshotProgress(
                             session,
-                            nextSnapshot.updatedAt,
+                            incomingSnapshot.updatedAt,
                         ),
                         localError: resolvedSnapshot.lastError,
                         meta: nextMeta,
@@ -1117,7 +1285,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 .updateSessionTabTitles(snapshot.sessionId, syncedTitle);
         }
 
-        void drainQueueIfNeeded(snapshot.sessionId, get, set);
         scheduleAiSessionResyncWatchdog(snapshot.sessionId, get);
     },
 
@@ -1151,16 +1318,46 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     ensureSession: async (tab, options) => {
         const currentSession = get().sessions[tab.sessionId] ?? null;
-        if (
+        const shouldHydratePassively =
             !options?.force &&
-            getSessionRuntimeStateForTab(tab) === "history" &&
-            currentSession?.runtimeState !== "live"
+            getSessionRuntimeStateForTab(tab) === "history";
+
+        if (shouldHydratePassively) {
+            // A registered tab receives an empty snapshot placeholder. Only a
+            // completed history read may suppress a later hydration.
+            if (
+                currentSession?.runtimeState === "live" ||
+                currentSession?.historyHydrationState === "loaded"
+            ) {
+                return;
+            }
+        } else if (
+            !options?.force &&
+            currentSession?.runtimeState === "live" &&
+            currentSession.snapshot?.runtimeSessionId
         ) {
-            await executePassiveSessionHydration(tab, get, set);
             return;
         }
 
-        await executeSessionPrepare(tab, get, set);
+        const requestKey = `${tab.sessionId}:${shouldHydratePassively ? "history" : "live"}`;
+        const existingRequest = ensureSessionInFlight.get(requestKey);
+        if (existingRequest) {
+            await existingRequest;
+            return;
+        }
+
+        const request = shouldHydratePassively
+            ? executePassiveSessionHydration(tab, get, set)
+            : executeSessionPrepare(tab, get, set);
+        ensureSessionInFlight.set(requestKey, request);
+
+        try {
+            await request;
+        } finally {
+            if (ensureSessionInFlight.get(requestKey) === request) {
+                ensureSessionInFlight.delete(requestKey);
+            }
+        }
     },
 
     hydrateSettings: (settings) => {
@@ -1304,6 +1501,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
             };
         });
+        void getComandoApi()
+            .removeAiQueuedPrompt({ promptId, sessionId })
+            .then((snapshot) => get().applyPromptQueueSnapshot(snapshot));
     },
 
     editQueuedPrompt: (sessionId, promptId, currentComposerParts = []) => {
@@ -1368,6 +1568,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 },
             };
         });
+
+        void getComandoApi()
+            .beginEditAiQueuedPrompt({ promptId, sessionId })
+            .then((snapshot) => get().applyPromptQueueSnapshot(snapshot));
 
         return restoredComposerParts;
     },
@@ -1624,62 +1828,141 @@ export const useAiStore = create<AiStore>((set, get) => ({
         return status;
     },
 
-    setSessionMode: async (input) => {
-        const snapshot = get().sessions[input.sessionId]?.snapshot ?? null;
+    setSessionMode: async (input, options) => {
+        const snapshot = getSelectionMutationSnapshot(input.sessionId, get);
         const modeConfig = snapshot ? getModeConfigOption(snapshot) : null;
 
         await runOptimisticSnapshotMutation(
             input.sessionId,
             (currentSnapshot) =>
-                setModeOnSnapshot(currentSnapshot, input.modeId),
+                setModeOnSnapshot(
+                    hydrateOptimisticSelectionSnapshot(currentSnapshot, get),
+                    input.modeId,
+                ),
             () =>
-                modeConfig?.type === "select" &&
-                hasSelectConfigValue(modeConfig, input.modeId)
-                    ? getComandoApi().setAiSessionConfigOption({
-                          optionId: modeConfig.id,
-                          sessionId: input.sessionId,
-                          value: input.modeId,
-                      })
-                    : getComandoApi().setAiSessionMode(input),
+                runAiSessionControlRemoteMutation(
+                    () =>
+                        modeConfig?.type === "select" &&
+                        hasSelectConfigValue(modeConfig, input.modeId)
+                            ? getComandoApi().setAiSessionConfigOption({
+                                  optionId: modeConfig.id,
+                                  sessionId: input.sessionId,
+                                  value: input.modeId,
+                              })
+                            : getComandoApi().setAiSessionMode(input),
+                    options?.ensureLiveSession,
+                ),
             set,
             get,
+            {
+                conflictKey: "mode",
+                preserveDuringIncomingSnapshots: true,
+                rollbackSnapshot: (currentSnapshot, rollbackBaseSnapshot) =>
+                    rollbackBaseSnapshot.modeId
+                        ? setModeOnSnapshot(
+                              hydrateOptimisticSelectionSnapshot(
+                                  currentSnapshot,
+                                  get,
+                              ),
+                              rollbackBaseSnapshot.modeId,
+                          )
+                        : {
+                              ...currentSnapshot,
+                              modeId: null,
+                              updatedAt: new Date().toISOString(),
+                          },
+            },
         );
     },
 
-    setSessionModel: async (input) => {
-        const snapshot = get().sessions[input.sessionId]?.snapshot ?? null;
+    setSessionModel: async (input, options) => {
+        const snapshot = getSelectionMutationSnapshot(input.sessionId, get);
         const modelConfig = snapshot ? getModelConfigOption(snapshot) : null;
 
         await runOptimisticSnapshotMutation(
             input.sessionId,
             (currentSnapshot) =>
-                setModelOnSnapshot(currentSnapshot, input.modelId),
+                setModelOnSnapshot(
+                    hydrateOptimisticSelectionSnapshot(currentSnapshot, get),
+                    input.modelId,
+                ),
             () =>
-                modelConfig?.type === "select" &&
-                hasSelectConfigValue(modelConfig, input.modelId)
-                    ? getComandoApi().setAiSessionConfigOption({
-                          optionId: modelConfig.id,
-                          sessionId: input.sessionId,
-                          value: input.modelId,
-                      })
-                    : getComandoApi().setAiSessionModel(input),
+                runAiSessionControlRemoteMutation(
+                    () =>
+                        modelConfig?.type === "select" &&
+                        hasSelectConfigValue(modelConfig, input.modelId)
+                            ? getComandoApi().setAiSessionConfigOption({
+                                  optionId: modelConfig.id,
+                                  sessionId: input.sessionId,
+                                  value: input.modelId,
+                              })
+                            : getComandoApi().setAiSessionModel(input),
+                    options?.ensureLiveSession,
+                ),
             set,
             get,
+            {
+                conflictKey: "model",
+                preserveDuringIncomingSnapshots: true,
+                rollbackSnapshot: (currentSnapshot, rollbackBaseSnapshot) =>
+                    rollbackBaseSnapshot.modelId
+                        ? setModelOnSnapshot(
+                              hydrateOptimisticSelectionSnapshot(
+                                  currentSnapshot,
+                                  get,
+                              ),
+                              rollbackBaseSnapshot.modelId,
+                          )
+                        : {
+                              ...currentSnapshot,
+                              modelId: null,
+                              updatedAt: new Date().toISOString(),
+                          },
+            },
         );
     },
 
-    setSessionConfigOption: async (input) => {
+    setSessionConfigOption: async (input, options) => {
+        const snapshot = getSelectionMutationSnapshot(input.sessionId, get);
+        const conflictKey = getConfigOptionConflictKey(
+            snapshot,
+            input.optionId,
+        );
+
         await runOptimisticSnapshotMutation(
             input.sessionId,
-            (snapshot) =>
+            (currentSnapshot) =>
                 setConfigOptionOnSnapshot(
-                    snapshot,
+                    hydrateOptimisticSelectionSnapshot(currentSnapshot, get),
                     input.optionId,
                     input.value,
                 ),
-            () => getComandoApi().setAiSessionConfigOption(input),
+            () =>
+                runAiSessionControlRemoteMutation(
+                    () => getComandoApi().setAiSessionConfigOption(input),
+                    options?.ensureLiveSession,
+                ),
             set,
             get,
+            {
+                conflictKey,
+                preserveDuringIncomingSnapshots: true,
+                rollbackSnapshot: (currentSnapshot, rollbackBaseSnapshot) => {
+                    const rollbackValue = rollbackBaseSnapshot.configOptions.find(
+                        (option) => option.id === input.optionId,
+                    )?.value;
+                    return rollbackValue !== undefined
+                        ? setConfigOptionOnSnapshot(
+                              hydrateOptimisticSelectionSnapshot(
+                                  currentSnapshot,
+                                  get,
+                              ),
+                              input.optionId,
+                              rollbackValue,
+                          )
+                        : currentSnapshot;
+                },
+            },
         );
     },
 
@@ -1720,73 +2003,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     sendQueuedPromptNow: async (sessionId, promptId) => {
-        const session = get().sessions[sessionId];
-        const queuedPrompt = session?.queue.find(
-            (candidate) => candidate.id === promptId,
-        );
-        if (!session || !queuedPrompt || queuedPrompt.status === "sending") {
-            return;
-        }
-
-        enqueuePrompt(
+        const snapshot = await getComandoApi().steerAiQueuedPrompt({
+            promptId,
             sessionId,
-            {
-                ...queuedPrompt,
-                status: "queued",
-            },
-            "head",
-            set,
-        );
-
-        const latestSession = get().sessions[sessionId];
-        if (!latestSession?.meta || !latestSession.snapshot) {
-            return;
-        }
-
-        if (
-            hasActiveLocalDispatch(latestSession) ||
-            isBusySession(latestSession.snapshot)
-        ) {
-            try {
-                await getComandoApi().cancelAiSession(sessionId);
-            } catch (error) {
-                set((state) => {
-                    const session = state.sessions[sessionId];
-                    if (!session) {
-                        return state;
-                    }
-
-                    return {
-                        sessions: {
-                            ...state.sessions,
-                            [sessionId]: {
-                                ...session,
-                                localError:
-                                    error instanceof Error
-                                        ? error.message
-                                        : "Could not cancel the current response before steering.",
-                            },
-                        },
-                    };
-                });
-                return;
-            }
-            // The cancel succeeded, so the steer action becomes the new
-            // intentional queue owner. Resume before draining the selected head.
-            resumeQueue(sessionId, set);
-            await drainQueueIfNeeded(sessionId, get, set, {
-                lockDrain: false,
-            });
-            return;
-        }
-
-        // Clicking Send Now on a queued prompt is an explicit resume: the
-        // user is taking over what to dispatch next. Lift any pause so the
-        // remainder of the queue drains after this turn ends.
-        resumeQueue(sessionId, set);
-        await drainQueueIfNeeded(sessionId, get, set, {
-            lockDrain: false,
         });
+        get().applyPromptQueueSnapshot(snapshot);
     },
 
     verifyCodexBinaryPath: async (binaryPath) => {
@@ -1812,74 +2033,34 @@ export const useAiStore = create<AiStore>((set, get) => ({
         get().registerSessionTab(tab);
         const session = get().sessions[tab.sessionId] ?? createSessionState();
         const editingQueuedPrompt = session.editingQueuedPrompt;
-        const queuedPrompt = createQueuedPrompt({
+        const messageId =
+            editingQueuedPrompt?.optimisticMessageId ??
+            editingQueuedPrompt?.id ??
+            crypto.randomUUID();
+        const input = {
             additionalRoots: options.additionalRoots,
             attachments,
-            composerPartsSnapshot: options.composerPartsSnapshot ?? [
-                { text: trimmedPrompt, type: "text" },
-            ],
-            existing: editingQueuedPrompt,
+            composerParts:
+                options.composerPartsSnapshot ?? [
+                    { text: trimmedPrompt, type: "text" as const },
+                ],
             fileContextsSnapshot: options.fileContextsSnapshot ?? [],
+            messageId,
+            projectId: tab.projectId,
             prompt: trimmedPrompt,
-        });
-        if (
-            hasActiveLocalDispatch(session) ||
-            (session.snapshot ? isBusySession(session.snapshot) : false)
-        ) {
-            if (editingQueuedPrompt) {
-                commitQueuedPromptEdit(
-                    tab.sessionId,
-                    queuedPrompt,
-                    set,
-                    buildSessionMeta(tab),
-                );
-            } else {
-                enqueuePrompt(
-                    tab.sessionId,
-                    queuedPrompt,
-                    "tail",
-                    set,
-                    buildSessionMeta(tab),
-                );
-            }
-            clearEditingQueuedPromptState(tab.sessionId, set);
-            return;
-        }
-
-        // The user is manually sending a prompt with the agent idle. If the
-        // queue was paused after a cancel, this is the explicit resume: the
-        // rest of the queued prompts will drain when this turn completes.
-        resumeQueue(tab.sessionId, set);
-
-        if (editingQueuedPrompt) {
-            commitQueuedPromptEdit(
-                tab.sessionId,
-                queuedPrompt,
-                set,
-                buildSessionMeta(tab),
-            );
-            clearEditingQueuedPromptState(tab.sessionId, set);
-            await drainQueueIfNeeded(tab.sessionId, get, set, {
-                lockDrain: false,
-            });
-            return;
-        }
-
-        enqueuePrompt(
-            tab.sessionId,
-            {
-                ...queuedPrompt,
-                status: "pending_dispatch",
-            },
-            "head",
-            set,
-            buildSessionMeta(tab),
-        );
+            runtimeId: tab.runtimeId,
+            sessionId: tab.sessionId,
+            title: tab.title,
+            worktreeId: tab.worktreeId ?? null,
+        };
+        const queueSnapshot = editingQueuedPrompt
+            ? await getComandoApi().updateAiQueuedPrompt({
+                  ...input,
+                  promptId: editingQueuedPrompt.id,
+              })
+            : await getComandoApi().enqueueAiPrompt(input);
+        get().applyPromptQueueSnapshot(queueSnapshot);
         clearEditingQueuedPromptState(tab.sessionId, set);
-
-        await drainQueueIfNeeded(tab.sessionId, get, set, {
-            lockDrain: false,
-        });
     },
 }));
 
@@ -1899,11 +2080,14 @@ function createSessionState(
         editingQueuedPromptState: null,
         editingQueuedPrompt: null,
         incomingSnapshotVersion: 0,
+        historyHydrationState:
+            runtimeState === "history" ? "not_loaded" : "loaded",
         isDispatching: false,
         lastIncomingSnapshotUpdatedAt: null,
         localError: null,
         meta: null,
         queue: [],
+        queueRevision: 0,
         queuePaused: false,
         runtimeState,
         snapshot: null,
@@ -2019,7 +2203,12 @@ async function executeSessionPrepare(
                 },
             };
         });
-        void drainQueueIfNeeded(tab.sessionId, get, set);
+        const api = getComandoApi();
+        if (api.getAiPromptQueue) {
+            get().applyPromptQueueSnapshot(
+                await api.getAiPromptQueue(tab.sessionId),
+            );
+        }
     } catch (error) {
         set((state) => ({
             runtimeCatalogById: {
@@ -2040,12 +2229,18 @@ async function executeSessionPrepare(
                             ? error.message
                             : `Could not hydrate the ${getRuntimeDisplayName(tab.runtimeId)} session.`,
                     meta: buildSessionMeta(tab),
-                    runtimeState: "live",
-                    snapshot: createEmptySessionSnapshot(
-                        tab,
-                        state.runtimeCatalogById[tab.runtimeId] ?? null,
-                    ),
-                    transcript: createEmptyAiSessionTranscriptModel(),
+                    runtimeState: "history",
+                    // Keep the readable history on screen when reconnecting the
+                    // runtime fails. The user can retry without losing context.
+                    snapshot:
+                        state.sessions[tab.sessionId]?.snapshot ??
+                        createEmptySessionSnapshot(
+                            tab,
+                            state.runtimeCatalogById[tab.runtimeId] ?? null,
+                        ),
+                    transcript:
+                        state.sessions[tab.sessionId]?.transcript ??
+                        createEmptyAiSessionTranscriptModel(),
                 },
             },
         }));
@@ -2058,6 +2253,24 @@ async function executePassiveSessionHydration(
     set: SetAiState,
 ): Promise<void> {
     get().registerSessionTab(tab);
+
+    set((state) => {
+        const session = state.sessions[tab.sessionId];
+        if (!session || session.runtimeState === "live") {
+            return state;
+        }
+
+        return {
+            sessions: {
+                ...state.sessions,
+                [tab.sessionId]: {
+                    ...session,
+                    historyHydrationState: "loading",
+                    localError: null,
+                },
+            },
+        };
+    });
 
     try {
         const runtimeStatusPromise = getComandoApi().getAiRuntimeStatus(
@@ -2133,6 +2346,7 @@ async function executePassiveSessionHydration(
                                       null,
                               }),
                         localError: null,
+                        historyHydrationState: "loaded",
                         meta: buildSessionMeta(tab),
                         runtimeState: "history",
                         snapshot: resolved.snapshot,
@@ -2141,6 +2355,12 @@ async function executePassiveSessionHydration(
                 },
             };
         });
+        const api = getComandoApi();
+        if (api.getAiPromptQueue) {
+            get().applyPromptQueueSnapshot(
+                await api.getAiPromptQueue(tab.sessionId),
+            );
+        }
     } catch (error) {
         set((state) => {
             const currentSession = state.sessions[tab.sessionId] ?? null;
@@ -2157,6 +2377,7 @@ async function executePassiveSessionHydration(
                             error instanceof Error
                                 ? error.message
                                 : "Could not load this saved chat.",
+                        historyHydrationState: "failed",
                         meta: buildSessionMeta(tab),
                         runtimeState: "history",
                         snapshot: createEmptySessionSnapshot(
@@ -2784,6 +3005,51 @@ function resolveIncomingSessionSnapshot(
     currentSession: AiSessionClientState | null | undefined,
     options: ResolveIncomingSnapshotOptions = {},
 ): ResolvedIncomingSessionSnapshot {
+    const resolved = resolveIncomingSessionSnapshotBase(
+        incomingSnapshot,
+        currentSession,
+        options,
+    );
+    const snapshot = applyPendingOptimisticSelectionMutations(
+        resolved.snapshot,
+    );
+
+    return snapshot === resolved.snapshot
+        ? resolved
+        : {
+              ...resolved,
+              snapshot,
+          };
+}
+
+function applyPendingOptimisticSelectionMutations(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    const mutations = optimisticSnapshotMutationStates.get(snapshot.sessionId)
+        ?.preservedMutations;
+    if (!mutations || mutations.size === 0) {
+        return snapshot;
+    }
+
+    const authoritativeUpdatedAt = snapshot.updatedAt;
+    let nextSnapshot = snapshot;
+    for (const mutateSnapshot of mutations.values()) {
+        nextSnapshot = mutateSnapshot(nextSnapshot);
+    }
+
+    return nextSnapshot === snapshot
+        ? snapshot
+        : {
+              ...nextSnapshot,
+              updatedAt: authoritativeUpdatedAt,
+          };
+}
+
+function resolveIncomingSessionSnapshotBase(
+    incomingSnapshot: AiSessionSnapshot,
+    currentSession: AiSessionClientState | null | undefined,
+    options: ResolveIncomingSnapshotOptions = {},
+): ResolvedIncomingSessionSnapshot {
     const session = currentSession ?? null;
     const currentSnapshot = session?.snapshot ?? null;
     const normalizedIncomingSnapshot = normalizeIncomingActivePromptEcho(
@@ -2939,19 +3205,29 @@ function normalizeIncomingActivePromptEcho(
     const messages: AiMessage[] = [];
 
     for (const message of incomingSnapshot.messages) {
+        const isCanonicalOptimisticMessage =
+            message.kind === "user" && message.id === optimisticMessageId;
         const isActivePromptEcho =
             message.kind === "user" &&
             message.id !== optimisticMessageId &&
             isTimestampAtOrAfter(message.createdAt, activeQueuedPrompt.createdAt) &&
             message.content === promptContent;
-        const nextMessage = isActivePromptEcho
+        const nextMessage = isCanonicalOptimisticMessage
+            ? {
+                  ...message,
+                  content: promptContent,
+              }
+            : isActivePromptEcho
             ? {
                   ...message,
                   id: optimisticMessageId,
               }
             : message;
 
-        if (isActivePromptEcho) {
+        if (
+            isActivePromptEcho ||
+            (isCanonicalOptimisticMessage && message.content !== promptContent)
+        ) {
             changed = true;
         }
 
@@ -3036,8 +3312,17 @@ function normalizeIncomingActivePromptEvent(
             };
         case "message-delta":
             if (
+                event.messageKind === "user" &&
+                event.messageId === optimisticMessageId
+            ) {
+                return {
+                    ...event,
+                    content: promptContent,
+                    delta: promptContent,
+                };
+            }
+            if (
                 event.messageKind !== "user" ||
-                event.messageId === optimisticMessageId ||
                 !isActivePromptEchoContent(event, promptContent)
             ) {
                 return event;
@@ -3409,290 +3694,22 @@ function isActiveToolActivityStatus(
     return status === "pending" || status === "in_progress";
 }
 
-async function dispatchPrompt(
-    meta: {
-        readonly additionalRoots?: readonly string[];
-        readonly composerParts?: readonly AiComposerDraftPart[];
-        readonly projectId: string | null;
-        readonly runtimeId: AiRuntimeId;
-        readonly sessionId: string;
-        readonly title: string;
-        readonly worktreeId: string | null;
-    },
-    messageId: string,
-    prompt: string,
-    attachments: readonly AiImageAttachment[],
-    set: SetAiState,
-): Promise<"deferred" | "sent"> {
-    const dispatchToken = crypto.randomUUID();
-
-    set((state) => {
-        const session = state.sessions[meta.sessionId] ?? createSessionState();
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [meta.sessionId]: {
-                    ...session,
-                    activeDispatchToken: dispatchToken,
-                    isDispatching: true,
-                    localError: null,
-                    runtimeState: "live",
-                },
-            },
-        };
-    });
-
-    let result: "deferred" | "sent" = "sent";
-
-    try {
-        await getComandoApi().sendAiPrompt({
-            additionalRoots: meta.additionalRoots,
-            attachments,
-            composerParts: meta.composerParts,
-            messageId,
-            projectId: meta.projectId,
-            prompt,
-            runtimeId: meta.runtimeId,
-            sessionId: meta.sessionId,
-            title: meta.title,
-            worktreeId: meta.worktreeId,
-        });
-    } catch (error) {
-        if (isSessionBusyError(error)) {
-            set((state) => {
-                const session =
-                    state.sessions[meta.sessionId] ?? createSessionState();
-                if (session.activeDispatchToken !== dispatchToken) {
-                    return state;
-                }
-
-                return {
-                    sessions: {
-                        ...state.sessions,
-                        [meta.sessionId]: {
-                            ...session,
-                            localError: null,
-                            snapshot: session.snapshot
-                                ? {
-                                      ...session.snapshot,
-                                      status: "starting",
-                                      updatedAt: session.snapshot.updatedAt,
-                                  }
-                                : session.snapshot,
-                        },
-                    },
-                };
-            });
-            result = "deferred";
-            return result;
-        }
-
-        set((state) => {
-            const session =
-                state.sessions[meta.sessionId] ?? createSessionState();
-            if (session.activeDispatchToken !== dispatchToken) {
-                return state;
-            }
-            const message =
-                error instanceof Error
-                    ? error.message
-                    : `Could not send the prompt to ${getRuntimeDisplayName(meta.runtimeId)}.`;
-
-            return {
-                sessions: {
-                    ...state.sessions,
-                    [meta.sessionId]: {
-                        ...session,
-                        activeDispatchToken: null,
-                        isDispatching: false,
-                        localError: message,
-                        snapshot: session.snapshot
-                            ? {
-                                  ...session.snapshot,
-                                  activeTurnStartedAt: null,
-                                  lastError: message,
-                                  status: "error",
-                                  updatedAt: session.snapshot.updatedAt,
-                              }
-                            : session.snapshot,
-                    },
-                },
-            };
-        });
-        throw error;
-    } finally {
-        set((state) => {
-            const session =
-                state.sessions[meta.sessionId] ?? createSessionState();
-            if (session.activeDispatchToken !== dispatchToken) {
-                return state;
-            }
-
-            return {
-                sessions: {
-                    ...state.sessions,
-                    [meta.sessionId]: {
-                        ...session,
-                        activeDispatchToken: null,
-                        isDispatching: false,
-                    },
-                },
-            };
-        });
-    }
-
-    return result;
-}
-
-async function drainQueueIfNeeded(
-    sessionId: string,
-    get: GetAiState,
-    set: SetAiState,
-    options: {
-        readonly lockDrain?: boolean;
-    } = {},
-): Promise<void> {
-    const lockDrain = options.lockDrain ?? true;
-    if (lockDrain && activeQueueDrainSessionIds.has(sessionId)) {
-        pendingQueueDrainSessionIds.add(sessionId);
-        return;
-    }
-
-    const session = get().sessions[sessionId];
-    if (
-        !session ||
-        hasActiveLocalDispatch(session) ||
-        !session.meta ||
-        !session.snapshot ||
-        session.queue.length === 0 ||
-        session.queuePaused ||
-        isBusySession(session.snapshot) ||
-        isClosedSubagentSession(session.snapshot)
-    ) {
-        return;
-    }
-
-    const nextQueuedPromptIndex = session.queue.findIndex((queuedPrompt) =>
-        isDispatchableQueuedPrompt(queuedPrompt),
-    );
-    const nextQueuedPrompt =
-        nextQueuedPromptIndex >= 0
-            ? session.queue[nextQueuedPromptIndex]
-            : null;
-    if (!nextQueuedPrompt || nextQueuedPromptIndex < 0) {
-        return;
-    }
-
-    const activeQueuedPrompt = activateQueuedPromptForDrain(
-        sessionId,
-        nextQueuedPrompt.id,
-        set,
-    );
-    if (!activeQueuedPrompt) {
-        return;
-    }
-
-    if (lockDrain) {
-        activeQueueDrainSessionIds.add(sessionId);
-    }
-    let shouldDrainAfterUnlock = false;
-    try {
-        const result = await dispatchPrompt(
-            {
-                additionalRoots:
-                    activeQueuedPrompt.queuedPrompt.additionalRoots ??
-                    collectExternalComposerRoots(
-                        activeQueuedPrompt.queuedPrompt.composerPartsSnapshot,
-                    ),
-                composerParts:
-                    activeQueuedPrompt.queuedPrompt.composerPartsSnapshot,
-                projectId: session.meta.projectId,
-                runtimeId: session.meta.runtimeId,
-                sessionId,
-                title: session.meta.title,
-                worktreeId: session.meta.worktreeId,
-            },
-            activeQueuedPrompt.queuedPrompt.optimisticMessageId ??
-                activeQueuedPrompt.queuedPrompt.id,
-            activeQueuedPrompt.queuedPrompt.prompt,
-            activeQueuedPrompt.queuedPrompt.attachments,
-            set,
-        );
-
-        if (result === "sent") {
-            // The backend is now busy handling this prompt. Don't drain the
-            // next queued item here — it would race the "starting" patch and
-            // get rejected as busy. The patch pipeline (applySessionPatch /
-            // applySessionSnapshot) calls drainQueueIfNeeded whenever the
-            // session transitions back to idle. If that idle snapshot already
-            // arrived while IPC was still resolving, reconcile it after this
-            // drain lock is released.
-            shouldDrainAfterUnlock =
-                completeActiveQueuedPromptAfterSuccessfulDispatch(
-                    sessionId,
-                    activeQueuedPrompt,
-                    get,
-                    set,
-                );
-            return;
-        }
-
-        restoreActiveQueuedPrompt(
-            sessionId,
-            activeQueuedPrompt,
-            "pending_dispatch",
-            set,
-        );
-    } catch {
-        restoreActiveQueuedPrompt(
-            sessionId,
-            activeQueuedPrompt,
-            "failed",
-            set,
-        );
-    } finally {
-        if (lockDrain) {
-            activeQueueDrainSessionIds.delete(sessionId);
-        }
-        const hasPendingDrain =
-            lockDrain && pendingQueueDrainSessionIds.delete(sessionId);
-        if (shouldDrainAfterUnlock || hasPendingDrain) {
-            await drainQueueIfNeeded(sessionId, get, set);
-        }
-    }
-}
-
-function createQueuedPrompt(input: {
-    readonly additionalRoots?: readonly string[];
-    readonly attachments: readonly AiImageAttachment[];
-    readonly composerPartsSnapshot: readonly AiComposerDraftPart[];
-    readonly existing?: QueuedPrompt | null;
-    readonly fileContextsSnapshot: readonly AiFileContextAttachment[];
-    readonly prompt: string;
-}): QueuedPrompt {
+function toRendererQueuedPrompt(item: AiQueuedPrompt): QueuedPrompt {
     return {
-        additionalRoots: input.additionalRoots,
-        attachments: cloneDraftAttachments(input.attachments),
+        additionalRoots: item.additionalRoots,
+        attachments: cloneDraftAttachments(item.attachments),
         composerPartsSnapshot: cloneComposerDraftParts(
-            input.composerPartsSnapshot,
+            item.composerPartsSnapshot,
         ),
-        createdAt: input.existing?.createdAt ?? new Date().toISOString(),
+        createdAt: item.createdAt,
         fileContextsSnapshot: cloneDraftFileContexts(
-            input.fileContextsSnapshot,
+            item.fileContextsSnapshot,
         ),
-        id: input.existing?.id ?? crypto.randomUUID(),
-        optimisticMessageId: input.existing?.optimisticMessageId,
-        prompt: input.prompt,
-        status: "queued",
+        id: item.id,
+        optimisticMessageId: item.optimisticMessageId ?? item.messageId,
+        prompt: item.prompt,
+        status: item.status,
     };
-}
-
-function isDispatchableQueuedPrompt(queuedPrompt: QueuedPrompt): boolean {
-    return (
-        queuedPrompt.status === "pending_dispatch" ||
-        queuedPrompt.status === "queued"
-    );
 }
 
 function applyLocalPromptAcceptanceToSession(
@@ -3770,31 +3787,10 @@ function completeLocalStreamingMessages(
 }
 
 function getQueuedPromptDisplayContent(queuedPrompt: QueuedPrompt): string {
-    if (queuedPrompt.prompt.trim()) {
-        return queuedPrompt.prompt.trim();
-    }
-
-    return queuedPrompt.composerPartsSnapshot
-        .map((part) => {
-            switch (part.type) {
-                case "text":
-                    return part.text;
-                case "file_mention":
-                case "folder_mention":
-                case "file_attachment":
-                case "git_commit_mention":
-                case "github_issue_mention":
-                case "github_pull_request_mention":
-                case "selection_mention":
-                    return part.label;
-                case "fetch_mention":
-                    return "@fetch";
-                case "plan_mention":
-                    return "/plan";
-            }
-        })
-        .join("")
-        .trim();
+    return serializeComposerMessagePartsForDisplay(
+        queuedPrompt.composerPartsSnapshot,
+        queuedPrompt.prompt,
+    );
 }
 
 function createQueuedPromptEditState(input: {
@@ -3897,62 +3893,6 @@ function insertQueuedPromptAtPosition(
     ];
 }
 
-function commitQueuedPromptEdit(
-    sessionId: string,
-    queuedPrompt: QueuedPrompt,
-    set: SetAiState,
-    meta?: RegisteredSessionMeta,
-): void {
-    set((state) => {
-        const session = state.sessions[sessionId] ?? createSessionState();
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    meta: meta ?? session.meta,
-                    queue: insertQueuedPromptAtEditPosition(
-                        session.queue,
-                        queuedPrompt,
-                        session.editingQueuedPromptState,
-                    ),
-                },
-            },
-        };
-    });
-}
-
-function enqueuePrompt(
-    sessionId: string,
-    queuedPrompt: QueuedPrompt,
-    position: "head" | "tail",
-    set: SetAiState,
-    meta?: RegisteredSessionMeta,
-): void {
-    set((state) => {
-        const session = state.sessions[sessionId] ?? createSessionState();
-        const remainingQueue = session.queue.filter(
-            (candidate) => candidate.id !== queuedPrompt.id,
-        );
-        const queue =
-            position === "head"
-                ? [queuedPrompt, ...remainingQueue]
-                : [...remainingQueue, queuedPrompt];
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    meta: meta ?? session.meta,
-                    queue,
-                },
-            },
-        };
-    });
-}
-
 function setQueuedPromptStatusInState(
     sessionId: string,
     promptId: string,
@@ -3997,147 +3937,6 @@ function setQueuedPromptStatusInState(
     });
 }
 
-function activateQueuedPromptForDrain(
-    sessionId: string,
-    promptId: string,
-    set: SetAiState,
-): ActiveQueuedPromptState | null {
-    let activeQueuedPrompt: ActiveQueuedPromptState | null = null;
-
-    set((state) => {
-        const session = state.sessions[sessionId];
-        if (!session || session.activeQueuedPrompt) {
-            return state;
-        }
-
-        const queueIndex = session.queue.findIndex(
-            (candidate) => candidate.id === promptId,
-        );
-        const queuedPrompt = session.queue[queueIndex];
-        if (!queuedPrompt || !isDispatchableQueuedPrompt(queuedPrompt)) {
-            return state;
-        }
-
-        activeQueuedPrompt = {
-            activatedAfterIncomingSnapshotVersion:
-                session.incomingSnapshotVersion,
-            position: createQueuedPromptPositionState(
-                session.queue,
-                queueIndex,
-            ),
-            queuedPrompt: {
-                ...queuedPrompt,
-                optimisticMessageId:
-                    queuedPrompt.optimisticMessageId ?? queuedPrompt.id,
-                status: "sending",
-            },
-        };
-
-        const nextSession = applyLocalPromptAcceptanceToSession(
-            {
-                ...session,
-                activeQueuedPrompt,
-                queue: session.queue.filter(
-                    (candidate) => candidate.id !== promptId,
-                ),
-            },
-            activeQueuedPrompt.queuedPrompt,
-        );
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: nextSession,
-            },
-        };
-    });
-
-    return activeQueuedPrompt;
-}
-
-function restoreActiveQueuedPrompt(
-    sessionId: string,
-    activeQueuedPrompt: ActiveQueuedPromptState,
-    status: QueuedPrompt["status"],
-    set: SetAiState,
-): void {
-    set((state) => {
-        const session = state.sessions[sessionId];
-        if (
-            !session ||
-            session.activeQueuedPrompt?.queuedPrompt.id !==
-                activeQueuedPrompt.queuedPrompt.id
-        ) {
-            return state;
-        }
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    activeQueuedPrompt: null,
-                    queue: insertQueuedPromptAtPosition(
-                        session.queue,
-                        {
-                            ...activeQueuedPrompt.queuedPrompt,
-                            status,
-                        },
-                        activeQueuedPrompt.position,
-                    ),
-                },
-            },
-        };
-    });
-}
-
-function completeActiveQueuedPromptAfterSuccessfulDispatch(
-    sessionId: string,
-    activeQueuedPrompt: ActiveQueuedPromptState,
-    get: GetAiState,
-    set: SetAiState,
-): boolean {
-    let shouldDrainAfterUnlock = false;
-
-    set((state) => {
-        const session = state.sessions[sessionId];
-        if (
-            !session ||
-            session.activeQueuedPrompt?.queuedPrompt.id !==
-                activeQueuedPrompt.queuedPrompt.id ||
-            !session.snapshot
-        ) {
-            return state;
-        }
-
-        const nextSession = {
-            ...session,
-            activeQueuedPrompt: null,
-        };
-
-        shouldDrainAfterUnlock =
-            hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
-                session,
-                activeQueuedPrompt,
-            ) &&
-            nextSession.queue.some((queuedPrompt) =>
-                isDispatchableQueuedPrompt(queuedPrompt),
-            ) &&
-            !nextSession.queuePaused &&
-            !isBusySession(session.snapshot) &&
-            !isClosedSubagentSession(session.snapshot);
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: nextSession,
-            },
-        };
-    });
-
-    return shouldDrainAfterUnlock && Boolean(get().sessions[sessionId]);
-}
-
 function clearEditingQueuedPromptState(
     sessionId: string,
     set: SetAiState,
@@ -4180,59 +3979,237 @@ function pauseQueue(sessionId: string, set: SetAiState): void {
     });
 }
 
-function resumeQueue(sessionId: string, set: SetAiState): void {
-    set((state) => {
-        const session = state.sessions[sessionId];
-        if (!session || !session.queuePaused) {
-            return state;
-        }
-
-        return {
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...session,
-                    queuePaused: false,
-                },
-            },
-        };
-    });
+interface OptimisticSnapshotMutationOptions {
+    readonly conflictKey?: string;
+    readonly preserveDuringIncomingSnapshots?: boolean;
+    readonly rollbackSnapshot?: (
+        currentSnapshot: AiSessionSnapshot,
+        previousSnapshot: AiSessionSnapshot,
+    ) => AiSessionSnapshot;
 }
 
-async function runOptimisticSnapshotMutation(
+function getSelectionMutationSnapshot(
     sessionId: string,
-    mutateSnapshot: (snapshot: AiSessionSnapshot) => AiSessionSnapshot,
-    runRemote: () => Promise<void>,
-    set: SetAiState,
     get: GetAiState,
-): Promise<void> {
-    const previousSession = get().sessions[sessionId] ?? null;
-    const previousSnapshot = previousSession?.snapshot ?? null;
+): AiSessionSnapshot | null {
+    const snapshot = get().sessions[sessionId]?.snapshot ?? null;
+    return snapshot
+        ? hydrateOptimisticSelectionSnapshot(snapshot, get)
+        : null;
+}
 
-    if (previousSession && previousSnapshot) {
-        set((state) => ({
-            sessions: {
-                ...state.sessions,
-                [sessionId]: {
-                    ...previousSession,
-                    snapshot: mutateSnapshot(previousSnapshot),
-                },
-            },
-        }));
+function getConfigOptionConflictKey(
+    snapshot: AiSessionSnapshot | null,
+    optionId: string,
+): string {
+    if (snapshot && getModelConfigOption(snapshot)?.id === optionId) {
+        return "model";
     }
+    if (snapshot && getModeConfigOption(snapshot)?.id === optionId) {
+        return "mode";
+    }
+    return `config:${optionId}`;
+}
+
+function hydrateOptimisticSelectionSnapshot(
+    snapshot: AiSessionSnapshot,
+    get: GetAiState,
+): AiSessionSnapshot {
+    const runtimeCatalog = get().runtimeCatalogById[snapshot.runtimeId] ?? null;
+    return runtimeCatalog && hasRuntimeCatalog(runtimeCatalog)
+        ? mergeRuntimeCatalogIntoSnapshot(snapshot, runtimeCatalog)
+        : snapshot;
+}
+
+async function runAiSessionControlRemoteMutation(
+    runRemote: () => Promise<void>,
+    ensureLiveSession?: (force: boolean) => Promise<void>,
+): Promise<void> {
+    await ensureLiveSession?.(false);
 
     try {
         await runRemote();
     } catch (error) {
-        if (previousSession) {
-            set((state) => ({
+        if (!ensureLiveSession || !isMissingAiSessionControlError(error)) {
+            throw error;
+        }
+
+        await ensureLiveSession(true);
+        await runRemote();
+    }
+}
+
+function isMissingAiSessionControlError(error: unknown): boolean {
+    const message =
+        error instanceof Error
+            ? error.message
+            : typeof error === "string"
+              ? error
+              : "";
+    const normalizedMessage = message.toLowerCase();
+    return (
+        normalizedMessage.includes("ai session was not found") ||
+        normalizedMessage.includes("ai session is no longer open")
+    );
+}
+
+async function runOptimisticSnapshotMutation(
+    sessionId: string,
+    mutateSnapshot: OptimisticSnapshotMutator,
+    runRemote: () => Promise<void>,
+    set: SetAiState,
+    get: GetAiState,
+    options: OptimisticSnapshotMutationOptions = {},
+): Promise<void> {
+    const mutationState = optimisticSnapshotMutationStates.get(sessionId) ?? {
+        latestVersion: 0,
+        latestVersionByConflictKey: new Map<string, number>(),
+        nextVersion: 0,
+        pendingVersionsByConflictKey: new Map<string, Set<number>>(),
+        preservedMutations: new Map<number, OptimisticSnapshotMutator>(),
+        rollbackBaseSnapshotsByConflictKey: new Map<
+            string,
+            AiSessionSnapshot
+        >(),
+        pendingVersions: new Set<number>(),
+    };
+    const previousSession = get().sessions[sessionId] ?? null;
+    const previousSnapshot = previousSession?.snapshot ?? null;
+    const mutationVersion = mutationState.nextVersion + 1;
+    mutationState.latestVersion = mutationVersion;
+    mutationState.nextVersion = mutationVersion;
+    mutationState.pendingVersions.add(mutationVersion);
+    if (options.conflictKey) {
+        mutationState.latestVersionByConflictKey.set(
+            options.conflictKey,
+            mutationVersion,
+        );
+        const pendingConflictVersions =
+            mutationState.pendingVersionsByConflictKey.get(
+                options.conflictKey,
+            ) ?? new Set<number>();
+        if (pendingConflictVersions.size === 0 && previousSnapshot) {
+            mutationState.rollbackBaseSnapshotsByConflictKey.set(
+                options.conflictKey,
+                previousSnapshot,
+            );
+        }
+        pendingConflictVersions.add(mutationVersion);
+        mutationState.pendingVersionsByConflictKey.set(
+            options.conflictKey,
+            pendingConflictVersions,
+        );
+    }
+    if (options.preserveDuringIncomingSnapshots) {
+        mutationState.preservedMutations.set(mutationVersion, mutateSnapshot);
+    }
+    optimisticSnapshotMutationStates.set(sessionId, mutationState);
+
+    if (previousSession && previousSnapshot) {
+        set((state) => {
+            const currentSession = state.sessions[sessionId];
+            if (!currentSession?.snapshot) {
+                return state;
+            }
+
+            return {
                 sessions: {
                     ...state.sessions,
-                    [sessionId]: previousSession,
+                    [sessionId]: {
+                        ...currentSession,
+                        snapshot: mutateSnapshot(currentSession.snapshot),
+                    },
                 },
-            }));
+            };
+        });
+    }
+
+    try {
+        await runRemote();
+        if (options.conflictKey) {
+            const pendingConflictVersions =
+                mutationState.pendingVersionsByConflictKey.get(
+                    options.conflictKey,
+                );
+            const hasNewerPendingMutation = Boolean(
+                pendingConflictVersions &&
+                    [...pendingConflictVersions].some(
+                        (version) => version > mutationVersion,
+                    ),
+            );
+            const rollbackBase =
+                mutationState.rollbackBaseSnapshotsByConflictKey.get(
+                    options.conflictKey,
+                );
+            if (hasNewerPendingMutation && rollbackBase) {
+                mutationState.rollbackBaseSnapshotsByConflictKey.set(
+                    options.conflictKey,
+                    mutateSnapshot(rollbackBase),
+                );
+            }
+        }
+    } catch (error) {
+        mutationState.preservedMutations.delete(mutationVersion);
+        const latestMutationVersion = options.conflictKey
+            ? mutationState.latestVersionByConflictKey.get(options.conflictKey)
+            : mutationState.latestVersion;
+        if (
+            previousSession &&
+            optimisticSnapshotMutationStates.get(sessionId) === mutationState &&
+            latestMutationVersion === mutationVersion
+        ) {
+            set((state) => {
+                const currentSession = state.sessions[sessionId];
+                if (!currentSession) {
+                    return state;
+                }
+
+                const currentSnapshot = currentSession.snapshot;
+                const rollbackBaseSnapshot = options.conflictKey
+                    ? (mutationState.rollbackBaseSnapshotsByConflictKey.get(
+                          options.conflictKey,
+                      ) ?? previousSnapshot)
+                    : previousSnapshot;
+                const rollbackSnapshot =
+                    currentSnapshot && rollbackBaseSnapshot
+                        ? (options.rollbackSnapshot?.(
+                              currentSnapshot,
+                              rollbackBaseSnapshot,
+                          ) ?? rollbackBaseSnapshot)
+                        : rollbackBaseSnapshot;
+
+                return {
+                    sessions: {
+                        ...state.sessions,
+                        [sessionId]: {
+                            ...currentSession,
+                            snapshot: rollbackSnapshot,
+                        },
+                    },
+                };
+            });
         }
         throw error;
+    } finally {
+        mutationState.pendingVersions.delete(mutationVersion);
+        if (options.conflictKey) {
+            const pendingConflictVersions =
+                mutationState.pendingVersionsByConflictKey.get(
+                    options.conflictKey,
+                );
+            pendingConflictVersions?.delete(mutationVersion);
+            if (!pendingConflictVersions?.size) {
+                mutationState.pendingVersionsByConflictKey.delete(
+                    options.conflictKey,
+                );
+                mutationState.rollbackBaseSnapshotsByConflictKey.delete(
+                    options.conflictKey,
+                );
+            }
+        }
+        if (mutationState.pendingVersions.size === 0) {
+            optimisticSnapshotMutationStates.delete(sessionId);
+        }
     }
 }
 
@@ -4540,88 +4517,6 @@ function isTrackedFileMutationTargetCurrent(
         Number.isInteger(input.expectedVersion) &&
         input.expectedVersion === (trackedFile.version ?? 1)
     );
-}
-
-function isBusySession(snapshot: AiSessionSnapshot): boolean {
-    return (
-        snapshot.status === "starting" ||
-        snapshot.status === "streaming" ||
-        snapshot.status === "waiting_permission" ||
-        snapshot.status === "waiting_user_input"
-    );
-}
-
-function hasActiveLocalDispatch(session: AiSessionClientState): boolean {
-    return Boolean(session.isDispatching || session.activeQueuedPrompt);
-}
-
-function reconcileDispatchStateForIncomingSnapshot(
-    session: AiSessionClientState,
-    snapshot: AiSessionSnapshot,
-): Pick<
-    AiSessionClientState,
-    "activeDispatchToken" | "activeQueuedPrompt" | "isDispatching"
-> {
-    if (!session.activeQueuedPrompt) {
-        return {
-            activeDispatchToken: null,
-            activeQueuedPrompt: null,
-            isDispatching: false,
-        };
-    }
-
-    if (
-        doesIncomingSnapshotAdvancePastActiveQueuedPrompt(
-            session,
-            snapshot,
-            session.activeQueuedPrompt,
-        )
-    ) {
-        return {
-            activeDispatchToken: null,
-            activeQueuedPrompt: null,
-            isDispatching: false,
-        };
-    }
-
-    return {
-        activeDispatchToken: session.activeDispatchToken,
-        activeQueuedPrompt: session.activeQueuedPrompt,
-        isDispatching: session.isDispatching,
-    };
-}
-
-function doesIncomingSnapshotAdvancePastActiveQueuedPrompt(
-    session: AiSessionClientState,
-    snapshot: AiSessionSnapshot,
-    activeQueuedPrompt: ActiveQueuedPromptState,
-): boolean {
-    return (
-        resolveIncomingSnapshotProgress(session, snapshot.updatedAt)
-            .incomingSnapshotVersion >
-        activeQueuedPrompt.activatedAfterIncomingSnapshotVersion
-    );
-}
-
-function hasIncomingSnapshotVersionAdvancedPastActiveQueuedPrompt(
-    session: AiSessionClientState,
-    activeQueuedPrompt: ActiveQueuedPromptState,
-): boolean {
-    return (
-        session.incomingSnapshotVersion >
-        activeQueuedPrompt.activatedAfterIncomingSnapshotVersion
-    );
-}
-
-function isClosedSubagentSession(snapshot: AiSessionSnapshot): boolean {
-    return Boolean(snapshot.parentSessionId && snapshot.closedAt);
-}
-
-function isSessionBusyError(error: unknown): boolean {
-    // Match by a sentinel embedded in the error message so detection survives
-    // Electron's IPC wrapping, which prefixes the original message and drops
-    // custom Error subclasses and extra properties.
-    return error instanceof Error && isSessionBusyErrorMessage(error.message);
 }
 
 function getComandoApi() {

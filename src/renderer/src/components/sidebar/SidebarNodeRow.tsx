@@ -50,7 +50,7 @@ function SidebarNodeRowComponent({
     trailing,
 }: SidebarNodeRowProps) {
     const rowClasses = [
-        "group flex min-h-8 items-center gap-2 rounded-md px-2 py-1.5 transition-colors",
+        "group flex min-h-7 items-center gap-1.5 rounded-md px-2 py-1 transition-colors",
         isActive
             ? "bg-accent/12 text-accent-strong"
             : isSelected
@@ -69,7 +69,7 @@ function SidebarNodeRowComponent({
         >
             {onClick ? (
                 <button
-                    className="app-no-drag flex min-w-0 flex-1 items-center gap-2 text-left"
+                    className="app-no-drag flex min-w-0 flex-1 items-center gap-1.5 text-left"
                     onClick={onClick}
                     type="button"
                 >
@@ -81,7 +81,7 @@ function SidebarNodeRowComponent({
                     />
                 </button>
             ) : (
-                <div className="flex min-w-0 flex-1 items-center gap-2">
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">
                     <RowContent
                         badges={badges}
                         description={description}

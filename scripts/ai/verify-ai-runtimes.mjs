@@ -10,21 +10,37 @@ import {
     claudeVendorDir,
     codexEmbeddedDir,
     codexBundledBinary,
+    codexBundledCodeModeHostBinary,
     codexLegacyVendorTargetDir,
     codexTargetDebugBinary,
+    codexTargetDebugCodeModeHostBinary,
     codexTargetReleaseBinary,
+    codexTargetReleaseCodeModeHostBinary,
     codexVendorDir,
     embeddedNodeBin,
     isExecutableFile,
     isFile,
     relativeToRepo,
 } from "./_shared.mjs";
+import {
+    assertCodexRuntimeBundleVersion,
+    resolveExpectedCodexRuntimeVersion,
+} from "./codex-runtime-version.mjs";
 
 export function verifyAiRuntimes() {
     const codexVendorExists = fs.existsSync(codexVendorDir);
-    const codexBundledReady = isExecutableFile(codexBundledBinary);
-    const codexEmbeddedReady = isExecutableFile(codexTargetReleaseBinary);
-    const codexEmbeddedDebugReady = isExecutableFile(codexTargetDebugBinary);
+    const codexBundledReady = [
+        codexBundledBinary,
+        codexBundledCodeModeHostBinary,
+    ].every(isExecutableFile);
+    const codexEmbeddedReady = [
+        codexTargetReleaseBinary,
+        codexTargetReleaseCodeModeHostBinary,
+    ].every(isExecutableFile);
+    const codexEmbeddedDebugReady = [
+        codexTargetDebugBinary,
+        codexTargetDebugCodeModeHostBinary,
+    ].every(isExecutableFile);
     const legacyTargetExists = fs.existsSync(codexLegacyVendorTargetDir);
     const claudeVendorExists = fs.existsSync(claudeVendorDir);
     const embeddedNodeReady = isExecutableFile(embeddedNodeBin);
@@ -45,10 +61,18 @@ export function verifyAiRuntimes() {
 
     if (!codexBundledReady) {
         console.error(
-            `[verify:ai-runtimes] ${relativeToRepo(codexBundledBinary)} is missing. Run pnpm run stage:ai.`,
+            `[verify:ai-runtimes] The Codex runtime bundle is incomplete. Expected ${relativeToRepo(codexBundledBinary)} and ${relativeToRepo(codexBundledCodeModeHostBinary)}. Run pnpm run stage:ai.`,
         );
         process.exit(1);
     }
+
+    assertCodexRuntimeBundleVersion({
+        codeModeHostBinaryPath: codexBundledCodeModeHostBinary,
+        codexBinaryPath: codexBundledBinary,
+        expectedVersion: resolveExpectedCodexRuntimeVersion(
+            path.join(codexVendorDir, "Cargo.toml"),
+        ),
+    });
 
     if (!codexEmbeddedReady) {
         console.warn(
@@ -112,6 +136,9 @@ function verifyClaudeRuntimeDependencies() {
     };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+    process.argv[1] &&
+    import.meta.url === pathToFileURL(process.argv[1]).href
+) {
     verifyAiRuntimes();
 }

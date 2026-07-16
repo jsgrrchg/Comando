@@ -11,6 +11,9 @@ import {
     applyReasoningEffortToConfigOptions,
     isReasoningEffortConfigOption,
 } from "@shared/ai-config-options";
+import {
+    serializeComposerMessagePartsForDisplay,
+} from "@shared/composer-display-markers";
 import type {
     AiAvailableCommand,
     AiRuntimeId,
@@ -83,37 +86,146 @@ interface AiRuntimeModelState {
 export function normalizeRestoredAiSessionSnapshot(
     snapshot: AiSessionSnapshot,
 ): AiSessionSnapshot {
+    const normalizedHierarchySnapshot = normalizeAiSessionHierarchy(snapshot);
+    const normalizedSnapshot = {
+        ...normalizedHierarchySnapshot,
+        toolActivity: normalizeLegacyCodexToolActivities(snapshot.toolActivity),
+    };
     const hadRestoredRuntimeState =
-        isActiveAiSessionStatus(snapshot.status) ||
-        (snapshot.activeTurnStartedAt ?? null) !== null ||
-        (snapshot.pendingPermission ?? null) !== null ||
-        (snapshot.pendingUserInput ?? null) !== null ||
-        snapshot.messages.some((message) => message.status === "streaming") ||
-        snapshot.toolActivity.some((activity) =>
+        isActiveAiSessionStatus(normalizedSnapshot.status) ||
+        (normalizedSnapshot.activeTurnStartedAt ?? null) !== null ||
+        (normalizedSnapshot.pendingPermission ?? null) !== null ||
+        (normalizedSnapshot.pendingUserInput ?? null) !== null ||
+        normalizedSnapshot.messages.some(
+            (message) => message.status === "streaming",
+        ) ||
+        normalizedSnapshot.toolActivity.some((activity) =>
             isActiveToolActivityStatus(activity.status),
         );
 
     if (!hadRestoredRuntimeState) {
-        return snapshot;
+        return normalizedSnapshot;
     }
 
     return {
-        ...snapshot,
+        ...normalizedSnapshot,
         activeTurnStartedAt: null,
-        messages: snapshot.messages.map((message) =>
+        messages: normalizedSnapshot.messages.map((message) =>
             message.status === "streaming"
                 ? { ...message, status: "completed" as const }
                 : message,
         ),
         pendingPermission: null,
         pendingUserInput: null,
-        status: isActiveAiSessionStatus(snapshot.status) ? "idle" : snapshot.status,
-        toolActivity: snapshot.toolActivity.map((activity) =>
+        status: isActiveAiSessionStatus(normalizedSnapshot.status)
+            ? "idle"
+            : normalizedSnapshot.status,
+        toolActivity: normalizedSnapshot.toolActivity.map((activity) =>
             isActiveToolActivityStatus(activity.status)
                 ? { ...activity, status: "failed" as const }
                 : activity,
         ),
     };
+}
+
+export function normalizeAiSessionHierarchy(
+    snapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    if (snapshot.parentSessionId !== snapshot.sessionId) {
+        return snapshot;
+    }
+
+    return {
+        ...snapshot,
+        // A session cannot be its own subagent. Clear the derived close state
+        // and restore a manual title overwritten by the same bad mapping.
+        closedAt: null,
+        parentSessionId: null,
+        title:
+            snapshot.manualTitle?.trim() || snapshot.title,
+    };
+}
+
+function normalizeLegacyCodexToolActivities(
+    activities: readonly AiToolActivity[],
+): readonly AiToolActivity[] {
+    const statusPrefix = "codex-acp:status:item:";
+    const byId = new Map(activities.map((activity) => [activity.id, activity]));
+    const removed = new Set<string>();
+    const replacements = new Map<string, AiToolActivity>();
+
+    for (const alias of activities) {
+        if (!alias.id.startsWith(statusPrefix)) {
+            continue;
+        }
+        const logicalId = alias.id.slice(statusPrefix.length);
+        const canonical = [
+            logicalId,
+            `codex-acp:subagent:${logicalId}`,
+            `codex-acp:image:${logicalId}`,
+        ]
+            .map((id) => byId.get(id))
+            .find((activity): activity is AiToolActivity => activity !== undefined);
+        if (canonical) {
+            const aliasFirst =
+                activities.indexOf(alias) < activities.indexOf(canonical);
+            const targetId = aliasFirst ? alias.id : canonical.id;
+            const discardedId = aliasFirst ? canonical.id : alias.id;
+            replacements.set(
+                targetId,
+                mergeCanonicalToolActivity(canonical, alias),
+            );
+            removed.add(discardedId);
+            continue;
+        }
+        if (isInternalCodexItemTitle(alias.title)) {
+            removed.add(alias.id);
+        }
+    }
+
+    if (removed.size === 0 && replacements.size === 0) {
+        return activities;
+    }
+    return activities.flatMap((activity) => {
+        if (removed.has(activity.id)) {
+            return [];
+        }
+        return [replacements.get(activity.id) ?? activity];
+    });
+}
+
+function mergeCanonicalToolActivity(
+    canonical: AiToolActivity,
+    alias: AiToolActivity,
+): AiToolActivity {
+    return {
+        ...canonical,
+        action: canonical.action ?? alias.action,
+        createdAt:
+            canonical.createdAt < alias.createdAt
+                ? canonical.createdAt
+                : alias.createdAt,
+        diffs: canonical.diffs.length > 0 ? canonical.diffs : alias.diffs,
+        exitCode: canonical.exitCode ?? alias.exitCode,
+        locations:
+            canonical.locations.length > 0
+                ? canonical.locations
+                : alias.locations,
+        rawInputJson: canonical.rawInputJson ?? alias.rawInputJson,
+        rawOutputJson: canonical.rawOutputJson ?? alias.rawOutputJson,
+        summary: canonical.summary ?? alias.summary,
+        terminalOutput: canonical.terminalOutput ?? alias.terminalOutput,
+        updatedAt:
+            canonical.updatedAt > alias.updatedAt
+                ? canonical.updatedAt
+                : alias.updatedAt,
+    };
+}
+
+function isInternalCodexItemTitle(title: string): boolean {
+    return ["preparing input", "drafting response", "reasoning"].includes(
+        title.trim().toLowerCase(),
+    );
 }
 
 function isActiveAiSessionStatus(status: AiSessionSnapshot["status"]): boolean {
@@ -872,46 +984,11 @@ export function setConfigOptionOnSnapshot(
     };
 }
 
-const PILL_OPEN = "\u200B\u00AB";
-const PILL_CLOSE = "\u00BB\u200B";
-
 export function serializeComposerPartsForDisplay(
     parts: SendAiPromptInput["composerParts"] | undefined,
     fallback: string,
 ): string {
-    if (!parts || parts.length === 0) {
-        return fallback;
-    }
-
-    return parts
-        .map((part) => {
-            switch (part.type) {
-                case "text":
-                    return part.text;
-                case "file_mention":
-                    return `${PILL_OPEN}@${part.label}${PILL_CLOSE}`;
-                case "folder_mention":
-                    return `${PILL_OPEN}@${part.label}${PILL_CLOSE}`;
-                case "fetch_mention":
-                    return `${PILL_OPEN}@fetch${PILL_CLOSE}`;
-                case "plan_mention":
-                    return `${PILL_OPEN}/plan${PILL_CLOSE}`;
-                case "selection_mention":
-                    return `${PILL_OPEN}${part.label}${PILL_CLOSE}`;
-                case "file_attachment":
-                    return `${PILL_OPEN}📎${part.label}${PILL_CLOSE}`;
-                case "git_commit_mention":
-                    return `${PILL_OPEN}commit: ${part.label}${PILL_CLOSE}`;
-                case "github_issue_mention":
-                    return `${PILL_OPEN}${part.label}${PILL_CLOSE}`;
-                case "github_pull_request_mention":
-                    return `${PILL_OPEN}${part.label}${PILL_CLOSE}`;
-                default:
-                    return "";
-            }
-        })
-        .join("")
-        .trim();
+    return serializeComposerMessagePartsForDisplay(parts, fallback);
 }
 
 export function normalizeAdditionalRoots(

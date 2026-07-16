@@ -81,8 +81,7 @@ impl NativeAiSession {
 pub struct ManagedAiSession {
     pub session: NativeAiSession,
     pub acp_controller: Option<AcpSessionController>,
-    pub active_message_id: Option<String>,
-    pub prompt_in_flight: bool,
+    active_prompt_message_ids: HashMap<String, String>,
 }
 
 impl ManagedAiSession {
@@ -90,8 +89,7 @@ impl ManagedAiSession {
         Self {
             session,
             acp_controller: None,
-            active_message_id: None,
-            prompt_in_flight: false,
+            active_prompt_message_ids: HashMap::new(),
         }
     }
 
@@ -102,9 +100,40 @@ impl ManagedAiSession {
         Self {
             session,
             acp_controller: Some(acp_controller),
-            active_message_id: None,
-            prompt_in_flight: false,
+            active_prompt_message_ids: HashMap::new(),
         }
+    }
+
+    pub fn begin_prompt(&mut self, target_session_id: &SessionId, message_id: &str) -> bool {
+        if self
+            .active_prompt_message_ids
+            .contains_key(&target_session_id.0)
+        {
+            return false;
+        }
+        self.active_prompt_message_ids
+            .insert(target_session_id.0.clone(), message_id.to_string());
+        true
+    }
+
+    pub fn finish_prompt(&mut self, target_session_id: &SessionId, message_id: &str) -> bool {
+        if self
+            .active_prompt_message_ids
+            .get(&target_session_id.0)
+            .is_none_or(|active_message_id| active_message_id != message_id)
+        {
+            return false;
+        }
+        self.active_prompt_message_ids.remove(&target_session_id.0);
+        true
+    }
+
+    pub fn cancel_prompt(&mut self, target_session_id: &SessionId) -> Option<String> {
+        self.active_prompt_message_ids.remove(&target_session_id.0)
+    }
+
+    pub fn clear_prompts(&mut self) {
+        self.active_prompt_message_ids.clear();
     }
 
     pub fn set_status(&mut self, status: NativeAiSessionStatus) {
@@ -368,6 +397,28 @@ mod tests {
         let closed = registry.close_owned_by_window("w1");
         assert_eq!(closed.len(), 1);
         assert!(registry.get(&SessionId("s2".to_string())).is_ok());
+    }
+
+    #[test]
+    fn tracks_active_prompts_independently_by_target() {
+        let root_session_id = SessionId("root".to_string());
+        let child_session_id = SessionId("child".to_string());
+        let session = NativeAiSession::from_prepare_input(prepare_input("root", "w1")).unwrap();
+        let mut managed = ManagedAiSession::new(session);
+
+        assert!(managed.begin_prompt(&root_session_id, "root-message"));
+        assert!(managed.begin_prompt(&child_session_id, "child-message"));
+        assert!(!managed.begin_prompt(&child_session_id, "child-message-2"));
+
+        assert!(managed.finish_prompt(&child_session_id, "child-message"));
+        assert!(managed.begin_prompt(&child_session_id, "child-message-2"));
+        assert!(!managed.begin_prompt(&root_session_id, "root-message-2"));
+
+        assert_eq!(
+            managed.cancel_prompt(&root_session_id),
+            Some("root-message".to_string())
+        );
+        assert!(managed.begin_prompt(&root_session_id, "root-message-2"));
     }
 
     #[test]

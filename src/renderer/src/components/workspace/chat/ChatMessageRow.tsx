@@ -53,6 +53,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 content={message.content}
+                createdAt={message.createdAt}
                 highlightQuery={highlightQuery}
                 onAddFileReferenceToChat={onAddFileReferenceToChat}
                 onOpenFile={onOpenFile}
@@ -107,6 +108,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
             chatFontSize={chatFontSize}
             content={message.content}
             highlightQuery={highlightQuery}
+            live={message.status === "streaming"}
             onAddFileReferenceToChat={onAddFileReferenceToChat}
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
@@ -568,6 +570,7 @@ function renderHighlightableMarkdown(params: {
     readonly chatFontSize?: number;
     readonly content: string;
     readonly highlightQuery?: string;
+    readonly live?: boolean;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -597,6 +600,7 @@ function renderHighlightableMarkdown(params: {
             chatFontFamily={params.chatFontFamily}
             chatFontSize={params.chatFontSize}
             content={params.content}
+            live={params.live}
             onAddFileReferenceToChat={params.onAddFileReferenceToChat}
             onOpenFile={params.onOpenFile}
             onRevealFileReference={params.onRevealFileReference}
@@ -614,6 +618,7 @@ function UserMessage(props: {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly content: string;
+    readonly createdAt: string;
     readonly highlightQuery?: string;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
@@ -627,40 +632,136 @@ function UserMessage(props: {
         reference: string,
     ) => ResolvedProjectFileReference | null;
 }) {
+    const [copied, setCopied] = useState(false);
+    const formattedTime = formatChatMessageTime(props.createdAt);
+    const copyMessage = async () => {
+        if (!props.content || !window.comando) {
+            return;
+        }
+
+        await window.comando.writeClipboardText(props.content);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1500);
+    };
+
     return (
         <div
-            className="min-w-0 max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
-            style={{
-                backgroundColor: "var(--color-bg-tertiary)",
-                border: "1px solid var(--color-border)",
-                color: "var(--color-text-primary)",
-                fontSize: props.chatFontSize,
-                lineHeight: 1.6,
-                overflowWrap: "anywhere",
-                wordBreak: "break-word",
-            }}
+            className="user-message-layout min-w-0 w-full max-w-full"
+            data-user-message="true"
         >
-            {props.content
-                ? renderHighlightableMarkdown({
-                      chatFontFamily: props.chatFontFamily,
-                      chatFontSize: props.chatFontSize,
-                      canRenderFileReference:
-                          props.canRenderFileReference,
-                      content: props.content,
-                      highlightQuery: props.highlightQuery,
-                      onAddFileReferenceToChat: props.onAddFileReferenceToChat,
-                      onOpenFile: props.onOpenFile,
-                      onRevealFileReference: props.onRevealFileReference,
-                      resolveFileReference: props.resolveFileReference,
-                  })
-                : null}
-            {props.attachments.length > 0 ? (
-                <MessageImageGrid
-                    attachments={props.attachments}
-                    onOpenImage={props.onOpenImage}
-                />
-            ) : null}
+            <div
+                className="user-message-bubble ml-auto min-w-0 w-[70%] max-w-full whitespace-pre-wrap rounded-lg px-3 py-2"
+                style={{
+                    backgroundColor:
+                        "color-mix(in srgb, var(--color-accent) 5%, var(--color-bg-tertiary))",
+                    border: "1px solid color-mix(in srgb, var(--color-accent) 16%, var(--color-border))",
+                    color: "var(--color-text-primary)",
+                    fontSize: props.chatFontSize,
+                    lineHeight: 1.6,
+                    overflowWrap: "anywhere",
+                    wordBreak: "break-word",
+                }}
+            >
+                {props.content
+                    ? renderHighlightableMarkdown({
+                          chatFontFamily: props.chatFontFamily,
+                          chatFontSize: props.chatFontSize,
+                          canRenderFileReference:
+                              props.canRenderFileReference,
+                          content: props.content,
+                          highlightQuery: props.highlightQuery,
+                          onAddFileReferenceToChat:
+                              props.onAddFileReferenceToChat,
+                          onOpenFile: props.onOpenFile,
+                          onRevealFileReference: props.onRevealFileReference,
+                          resolveFileReference: props.resolveFileReference,
+                      })
+                    : null}
+                {props.attachments.length > 0 ? (
+                    <MessageImageGrid
+                        attachments={props.attachments}
+                        onOpenImage={props.onOpenImage}
+                    />
+                ) : null}
+            </div>
+            <div
+                className="mt-1 flex min-h-5 items-center justify-end gap-1.5 px-0.5 text-text-secondary"
+                data-user-message-metadata="true"
+                style={{
+                    fontFamily: "var(--font-mono), ui-monospace, monospace",
+                    fontSize: "10px",
+                    opacity: 0.72,
+                }}
+            >
+                {formattedTime ? (
+                    <time dateTime={props.createdAt}>{formattedTime}</time>
+                ) : null}
+                {props.content ? (
+                    <button
+                        aria-label={copied ? "Message copied" : "Copy message"}
+                        className="flex h-5 w-5 items-center justify-center rounded text-text-secondary transition-colors hover:bg-bg-tertiary hover:text-text-primary focus-visible:outline-none focus-visible:shadow-[0_0_0_1px_var(--color-accent)]"
+                        onClick={() => void copyMessage()}
+                        style={copied ? { color: "var(--diff-add)" } : undefined}
+                        title={copied ? "Copied" : "Copy message"}
+                        type="button"
+                    >
+                        {copied ? <CopySuccessIcon /> : <CopyMessageIcon />}
+                    </button>
+                ) : null}
+            </div>
         </div>
+    );
+}
+
+export function formatChatMessageTime(
+    value: string,
+    locales?: Intl.LocalesArgument,
+): string | null {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+        return null;
+    }
+
+    return new Intl.DateTimeFormat(locales, {
+        hour: "numeric",
+        minute: "2-digit",
+    }).format(date);
+}
+
+function CopyMessageIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.5"
+            viewBox="0 0 24 24"
+            width="12"
+        >
+            <rect height="13" rx="2" width="13" x="8" y="8" />
+            <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
+        </svg>
+    );
+}
+
+function CopySuccessIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="12"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.7"
+            viewBox="0 0 24 24"
+            width="12"
+        >
+            <path d="m5 12 4 4L19 6" />
+        </svg>
     );
 }
 
@@ -674,6 +775,7 @@ function AssistantMessage(props: {
     readonly chatFontSize?: number;
     readonly content: string;
     readonly highlightQuery?: string;
+    readonly live?: boolean;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -702,6 +804,7 @@ function AssistantMessage(props: {
                           props.canRenderFileReference,
                       content: props.content,
                       highlightQuery: props.highlightQuery,
+                      live: props.live,
                       onAddFileReferenceToChat: props.onAddFileReferenceToChat,
                       onOpenFile: props.onOpenFile,
                       onRevealFileReference: props.onRevealFileReference,
@@ -822,18 +925,7 @@ function UserInputRequestMessage({
     );
 }
 
-function ThinkingMessage({
-    canRenderFileReference,
-    chatFontFamily,
-    chatFontSize,
-    content,
-    highlightQuery,
-    inProgress,
-    onAddFileReferenceToChat,
-    onOpenFile,
-    onRevealFileReference,
-    resolveFileReference,
-}: {
+export interface ThinkingMessageProps {
     readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
@@ -853,7 +945,20 @@ function ThinkingMessage({
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
-}) {
+}
+
+export function ThinkingMessage({
+    canRenderFileReference,
+    chatFontFamily,
+    chatFontSize,
+    content,
+    highlightQuery,
+    inProgress,
+    onAddFileReferenceToChat,
+    onOpenFile,
+    onRevealFileReference,
+    resolveFileReference,
+}: ThinkingMessageProps) {
     const [expanded, setExpanded] = useState(false);
     return (
         <div className="min-w-0 max-w-full">
@@ -902,6 +1007,7 @@ function ThinkingMessage({
                         canRenderFileReference,
                         content,
                         highlightQuery,
+                        live: inProgress,
                         onAddFileReferenceToChat,
                         onOpenFile,
                         onRevealFileReference,

@@ -2,12 +2,14 @@ import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import type { editor as MonacoEditor } from "monaco-editor";
 import {
     useCallback,
+    createContext,
     useEffect,
     useEffectEvent,
     useLayoutEffect,
     useMemo,
     useRef,
     useState,
+    useContext,
     type DragEvent as ReactDragEvent,
     type MouseEvent as ReactMouseEvent,
     type ReactNode,
@@ -91,6 +93,7 @@ import {
     useLifecycleProbe,
     useRenderProbe,
 } from "@renderer/app/debug/renderProbe";
+import { recordWorkspacePerformanceEvent } from "@renderer/app/debug/workspacePerformanceProbe";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
 import {
@@ -102,6 +105,8 @@ import {
     getBestMatchingChatTabId,
     useWorkspaceStore,
 } from "@renderer/app/store/workspace-store";
+import { resolveWorkspaceViewLifecycles } from "@renderer/app/workspace/view-lifecycle";
+import type { WorkspaceViewLifecycle } from "@renderer/app/workspace/view-lifecycle";
 import {
     collectPaneNodes,
     findWorkspaceNodeById,
@@ -130,9 +135,18 @@ import { GitWorktreeDiffTabView } from "@renderer/components/workspace/GitWorktr
 import { GitTabView } from "@renderer/components/workspace/GitTabView";
 import { ProviderIcon } from "@renderer/components/workspace/ProviderIcon";
 import { ReviewTabView } from "@renderer/components/workspace/ReviewTabView";
-import { WorkspacePaneEmptyState } from "@renderer/components/workspace/WorkspacePaneEmptyState";
+import {
+    getIndexedWorkspaceHasChat,
+    getIndexedWorkspaceNode,
+    getIndexedWorkspacePaneCount,
+} from "@renderer/components/workspace/workspaceViewIndex";
+import {
+    WorkspacePaneEmptyState,
+    type WorkspacePaneRecentProject,
+} from "@renderer/components/workspace/WorkspacePaneEmptyState";
 import { MarkdownFilePreview } from "@renderer/components/workspace/MarkdownFilePreview";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
+import { resolveHotChatTabIds } from "@renderer/components/workspace/chatViewResourceBudget";
 import {
     GIT_GUTTER_LINE_DECORATIONS_WIDTH,
     GitGutterDecorator,
@@ -208,6 +222,9 @@ import {
 interface WorkspaceViewProps {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly recentProjects: readonly WorkspacePaneRecentProject[];
+    readonly onOpenProject: (projectId: string) => void;
+    readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
 }
 
@@ -235,6 +252,13 @@ type QuickCreateMenuItem = {
     readonly type?: "item";
 };
 
+type WorkspaceExternalDragPreview = {
+    readonly kind: "agent" | "github";
+    readonly title: string;
+    readonly x: number;
+    readonly y: number;
+};
+
 type QuickCreateMenuSeparator = {
     readonly type: "separator";
 };
@@ -245,6 +269,14 @@ const CLAUDE_CODE_TERMINAL_DESCRIPTION =
 const CLAUDE_CODE_NOT_FOUND_MESSAGE =
     "The claude command was not found in Comando's PATH. Your shell may still resolve it.";
 const GIT_GUTTER_LIVE_DIFF_DEBOUNCE_MS = 200;
+const MAX_RETAINED_CHAT_TAB_VIEWS = 4;
+const EMPTY_HOT_CHAT_TAB_IDS: ReadonlySet<string> = new Set();
+const ChatViewResourceBudgetContext = createContext<ReadonlySet<string>>(
+    EMPTY_HOT_CHAT_TAB_IDS,
+);
+const WorkspaceTabLifecycleContext = createContext<
+    ReadonlyMap<string, WorkspaceViewLifecycle>
+>(new Map());
 
 type GitGutterLiveDiffState =
     | {
@@ -667,9 +699,20 @@ function resolveActiveRuntimeId(runtimeId: AiRuntimeId): ActiveAiRuntimeId {
 export function WorkspaceView({
     defaultProjectId,
     defaultWorktreeId,
+    recentProjects,
+    onOpenProject,
+    onOpenProjects,
     onRequestCreateFile,
 }: WorkspaceViewProps) {
     const closeTab = useWorkspaceStore((state) => state.closeTab);
+    const chatViewBudgetWorkspaceState = useWorkspaceStore(
+        useShallow((state) => ({
+            activePaneId: state.activePaneId,
+            deferredPaneIds: state.deferredPaneIds,
+            recentActiveTabIds: state.recentActiveTabIds,
+            rootNode: state.rootNode,
+        })),
+    );
     const dropTabToSplit = useWorkspaceStore((state) => state.dropTabToSplit);
     const moveTabToPane = useWorkspaceStore((state) => state.moveTabToPane);
     const openChatSessionTabAtTarget = useWorkspaceStore(
@@ -690,8 +733,58 @@ export function WorkspaceView({
     );
     const reorderTab = useWorkspaceStore((state) => state.reorderTab);
     const rootNodeId = useWorkspaceStore((state) => state.rootNode.id);
+    const workspaceViewLifecycles = useMemo(() => {
+        const tabsById = useWorkspaceStore.getState().tabsById;
+        const panes = collectPaneNodes(
+            chatViewBudgetWorkspaceState.rootNode,
+        ).map((pane) => ({
+            activeTabId: pane.activeTabId,
+            id: pane.id,
+            tabIds: pane.tabIds.filter((tabId) => tabsById[tabId] !== undefined),
+            visible:
+                pane.id === chatViewBudgetWorkspaceState.activePaneId ||
+                !chatViewBudgetWorkspaceState.deferredPaneIds.has(pane.id),
+        }));
+
+        return resolveWorkspaceViewLifecycles({
+            focusedPaneId: chatViewBudgetWorkspaceState.activePaneId,
+            panes,
+            recentTabIds: chatViewBudgetWorkspaceState.recentActiveTabIds,
+        });
+    }, [chatViewBudgetWorkspaceState]);
+    const hotChatTabIds = useMemo(() => {
+        const tabsById = useWorkspaceStore.getState().tabsById;
+        const workspacePanes = collectPaneNodes(
+            chatViewBudgetWorkspaceState.rootNode,
+        );
+        const panes = workspacePanes.map((pane) => ({
+            activeTabId: pane.activeTabId,
+            chatTabIds: pane.tabIds.filter(
+                (tabId) => tabsById[tabId]?.kind === "chat",
+            ),
+            id: pane.id,
+            visible:
+                workspaceViewLifecycles.lifecycleByPaneId.get(pane.id) ===
+                "active",
+        }));
+
+        return resolveHotChatTabIds({
+            focusedPaneId: chatViewBudgetWorkspaceState.activePaneId,
+            panes,
+            recentActiveTabIds:
+                chatViewBudgetWorkspaceState.recentActiveTabIds,
+        });
+    }, [chatViewBudgetWorkspaceState, workspaceViewLifecycles]);
+    useEffect(() => {
+        recordWorkspacePerformanceEvent(
+            "chat-view-budget",
+            `mounted=${hotChatTabIds.size}; panes=${workspaceViewLifecycles.lifecycleByPaneId.size}`,
+        );
+    }, [hotChatTabIds, workspaceViewLifecycles]);
     const [externalDropTarget, setExternalDropTarget] =
         useState<WorkspacePaneDropTarget | null>(null);
+    const [externalDragPreview, setExternalDragPreview] =
+        useState<WorkspaceExternalDragPreview | null>(null);
     const workspaceRootRef = useRef<HTMLDivElement | null>(null);
     const reviewTabKeys = useWorkspaceStore(
         useShallow(selectWorkspaceReviewTabHandleKeys),
@@ -908,7 +1001,19 @@ export function WorkspaceView({
 
         if (detail.phase === "cancel") {
             clearExternalDropTarget();
+            setExternalDragPreview(null);
             return;
+        }
+
+        if (detail.phase === "end") {
+            setExternalDragPreview(null);
+        } else {
+            setExternalDragPreview({
+                kind: "agent",
+                title: detail.title,
+                x: detail.x,
+                y: detail.y,
+            });
         }
 
         const target = resolveExternalPaneDropTarget(detail.x, detail.y);
@@ -956,7 +1061,19 @@ export function WorkspaceView({
 
         if (detail.phase === "cancel") {
             clearExternalDropTarget();
+            setExternalDragPreview(null);
             return;
+        }
+
+        if (detail.phase === "end") {
+            setExternalDragPreview(null);
+        } else {
+            setExternalDragPreview({
+                kind: "github",
+                title: detail.title,
+                x: detail.x,
+                y: detail.y,
+            });
         }
 
         const target = resolveExternalPaneDropTarget(detail.x, detail.y);
@@ -1047,13 +1164,22 @@ export function WorkspaceView({
             onDropCapture={handleWorkspaceDrop}
             ref={workspaceRootRef}
         >
-            <WorkspaceNodeView
-                defaultProjectId={defaultProjectId}
-                defaultWorktreeId={defaultWorktreeId}
-                nodeId={rootNodeId}
-                onRequestCreateFile={onRequestCreateFile}
-                tabDrag={tabDrag}
-            />
+            <WorkspaceTabLifecycleContext.Provider
+                value={workspaceViewLifecycles.lifecycleByTabId}
+            >
+                <ChatViewResourceBudgetContext.Provider value={hotChatTabIds}>
+                    <WorkspaceNodeView
+                    defaultProjectId={defaultProjectId}
+                    defaultWorktreeId={defaultWorktreeId}
+                    recentProjects={recentProjects}
+                    nodeId={rootNodeId}
+                    onOpenProject={onOpenProject}
+                    onOpenProjects={onOpenProjects}
+                    onRequestCreateFile={onRequestCreateFile}
+                    tabDrag={tabDrag}
+                    />
+                </ChatViewResourceBudgetContext.Provider>
+            </WorkspaceTabLifecycleContext.Provider>
             {!tabDrag.isDragging ? (
                 <WorkspaceDropTargetOverlay
                     target={externalDropTarget}
@@ -1067,6 +1193,47 @@ export function WorkspaceView({
                 target={tabDrag.activeDropTarget}
                 visible={tabDrag.isDragging}
             />
+            {externalDragPreview ? (
+                <WorkspaceExternalDragGhost preview={externalDragPreview} />
+            ) : null}
+        </div>
+    );
+}
+
+function WorkspaceExternalDragGhost({
+    preview,
+}: {
+    readonly preview: WorkspaceExternalDragPreview;
+}) {
+    const label = preview.kind === "agent" ? "AI chat" : "GitHub item";
+
+    return (
+        <div
+            aria-hidden="true"
+            className="pointer-events-none fixed min-w-40 max-w-72 rounded-lg border border-accent/30 bg-bg-panel/96 px-2.5 py-2 text-text-primary shadow-[0_14px_34px_rgba(15,23,42,0.28)] backdrop-blur-sm"
+            style={{
+                left: preview.x + 14,
+                top: preview.y + 14,
+                transform: "translate3d(0, 0, 0) scale(1.02)",
+                zIndex: 10050,
+            }}
+        >
+            <div className="flex min-w-0 items-center gap-2">
+                <span
+                    aria-hidden="true"
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-accent/10 text-[10px] font-semibold text-accent"
+                >
+                    {preview.kind === "agent" ? "AI" : "GH"}
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="truncate text-[11.5px] font-medium leading-tight">
+                        {preview.title}
+                    </div>
+                    <div className="mt-0.5 truncate text-[10px] leading-tight text-text-secondary">
+                        Drag to pane or composer · {label}
+                    </div>
+                </div>
+            </div>
         </div>
     );
 }
@@ -1074,20 +1241,26 @@ export function WorkspaceView({
 function WorkspaceNodeView({
     defaultProjectId,
     defaultWorktreeId,
+    recentProjects,
     nodeId,
+    onOpenProject,
+    onOpenProjects,
     onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly recentProjects: readonly WorkspacePaneRecentProject[];
     readonly nodeId: string;
+    readonly onOpenProject: (projectId: string) => void;
+    readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     const node = useWorkspaceStore(
         useCallback(
             (state: ReturnType<typeof useWorkspaceStore.getState>) =>
-                findWorkspaceNodeById(state.rootNode, nodeId),
+                getIndexedWorkspaceNode(state.rootNode, nodeId),
             [nodeId],
         ),
     );
@@ -1100,7 +1273,10 @@ function WorkspaceNodeView({
             <WorkspacePaneView
                 defaultProjectId={defaultProjectId}
                 defaultWorktreeId={defaultWorktreeId}
+                recentProjects={recentProjects}
                 paneId={node.id}
+                onOpenProject={onOpenProject}
+                onOpenProjects={onOpenProjects}
                 onRequestCreateFile={onRequestCreateFile}
                 tabDrag={tabDrag}
             />
@@ -1111,7 +1287,10 @@ function WorkspaceNodeView({
         <WorkspaceSplitView
             defaultProjectId={defaultProjectId}
             defaultWorktreeId={defaultWorktreeId}
+            recentProjects={recentProjects}
             splitId={node.id}
+            onOpenProject={onOpenProject}
+            onOpenProjects={onOpenProjects}
             onRequestCreateFile={onRequestCreateFile}
             tabDrag={tabDrag}
         />
@@ -1325,20 +1504,29 @@ function findPaneIdForWorkspaceTab(
 function WorkspaceSplitView({
     defaultProjectId,
     defaultWorktreeId,
+    recentProjects,
     splitId,
+    onOpenProject,
+    onOpenProjects,
     onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly recentProjects: readonly WorkspacePaneRecentProject[];
     readonly splitId: string;
+    readonly onOpenProject: (projectId: string) => void;
+    readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     const node = useWorkspaceStore(
         useCallback(
             (state: ReturnType<typeof useWorkspaceStore.getState>) => {
-                const match = findWorkspaceNodeById(state.rootNode, splitId);
+                const match = getIndexedWorkspaceNode(
+                    state.rootNode,
+                    splitId,
+                );
                 return match?.type === "split" ? match : null;
             },
             [splitId],
@@ -1456,10 +1644,13 @@ function WorkspaceSplitView({
                     axis={node.axis}
                     defaultProjectId={defaultProjectId}
                     defaultWorktreeId={defaultWorktreeId}
+                    recentProjects={recentProjects}
                     handleIndex={index}
                     isLast={index === node.children.length - 1}
                     key={child.id}
                     nodeId={child.id}
+                    onOpenProject={onOpenProject}
+                    onOpenProjects={onOpenProjects}
                     onRequestCreateFile={onRequestCreateFile}
                     onPointerDown={(event) => {
                         if (!isPrimaryPointerButton(event.button)) {
@@ -1499,9 +1690,12 @@ function FragmentPane({
     axis,
     defaultProjectId,
     defaultWorktreeId,
+    recentProjects,
     handleIndex,
     isLast,
     nodeId,
+    onOpenProject,
+    onOpenProjects,
     onRequestCreateFile,
     onPointerDown,
     size,
@@ -1510,9 +1704,12 @@ function FragmentPane({
     readonly axis: "horizontal" | "vertical";
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly recentProjects: readonly WorkspacePaneRecentProject[];
     readonly handleIndex: number;
     readonly isLast: boolean;
     readonly nodeId: string;
+    readonly onOpenProject: (projectId: string) => void;
+    readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
     readonly onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
     readonly size: number;
@@ -1531,7 +1728,10 @@ function FragmentPane({
                 <WorkspaceNodeView
                     defaultProjectId={defaultProjectId}
                     defaultWorktreeId={defaultWorktreeId}
+                    recentProjects={recentProjects}
                     nodeId={nodeId}
+                    onOpenProject={onOpenProject}
+                    onOpenProjects={onOpenProjects}
                     onRequestCreateFile={onRequestCreateFile}
                     tabDrag={tabDrag}
                 />
@@ -1574,33 +1774,103 @@ function FragmentPane({
 function WorkspacePaneView({
     defaultProjectId,
     defaultWorktreeId,
+    recentProjects,
     paneId,
+    onOpenProject,
+    onOpenProjects,
     onRequestCreateFile,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
     readonly defaultWorktreeId: string | null;
+    readonly recentProjects: readonly WorkspacePaneRecentProject[];
     readonly paneId: string;
+    readonly onOpenProject: (projectId: string) => void;
+    readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
-    const node = useWorkspaceStore(
-        useCallback(
-            (state: ReturnType<typeof useWorkspaceStore.getState>) => {
-                const match = findWorkspaceNodeById(state.rootNode, paneId);
-                return match?.type === "pane" ? match : null;
-            },
-            [paneId],
-        ),
-    );
+    const hotChatTabIds = useContext(ChatViewResourceBudgetContext);
+    const tabLifecycles = useContext(WorkspaceTabLifecycleContext);
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
     const attachSelectionMention = useAiStore((s) => s.attachSelectionMention);
-    const activePaneId = useWorkspaceStore((state) => state.activePaneId);
-    const closeOtherTabs = useWorkspaceStore((state) => state.closeOtherTabs);
-    const closePane = useWorkspaceStore((state) => state.closePane);
-    const closeTab = useWorkspaceStore((state) => state.closeTab);
-    const closeTabsToRight = useWorkspaceStore(
-        (state) => state.closeTabsToRight,
+    const {
+        activePaneId,
+        closeOtherTabs,
+        closePane,
+        closeTab,
+        closeTabsToRight,
+        createChatTab,
+        createTerminalTab,
+        hasAnyChatTab,
+        lastFocusedRuntimeId,
+        lastQuickCreateAction,
+        moveTab,
+        node,
+        openChatHistoryTab,
+        openChatImageTab,
+        openFileTab,
+        openGitTab,
+        openGitWorktreeDiffTab,
+        openReviewTab,
+        paneCount,
+        recentActiveTabIds,
+        reloadFileTab,
+        saveFileTab,
+        selectAdjacentTab,
+        selectTab,
+        setActivePane,
+        shouldRenderPaneContent,
+        togglePaneTabPinned,
+        updateChatDraft,
+        updateFileDraft,
+    } = useWorkspaceStore(
+        useShallow(
+            useCallback(
+                (state: ReturnType<typeof useWorkspaceStore.getState>) => {
+                    const candidate = getIndexedWorkspaceNode(
+                        state.rootNode,
+                        paneId,
+                    );
+                    return {
+                        activePaneId: state.activePaneId,
+                        closeOtherTabs: state.closeOtherTabs,
+                        closePane: state.closePane,
+                        closeTab: state.closeTab,
+                        closeTabsToRight: state.closeTabsToRight,
+                        createChatTab: state.createChatTab,
+                        createTerminalTab: state.createTerminalTab,
+                        hasAnyChatTab: getIndexedWorkspaceHasChat(
+                            state.tabsById,
+                        ),
+                        lastFocusedRuntimeId: state.lastFocusedRuntimeId,
+                        lastQuickCreateAction: state.lastQuickCreateAction,
+                        moveTab: state.moveTab,
+                        node: candidate?.type === "pane" ? candidate : null,
+                        openChatHistoryTab: state.openChatHistoryTab,
+                        openChatImageTab: state.openChatImageTab,
+                        openFileTab: state.openFileTab,
+                        openGitTab: state.openGitTab,
+                        openGitWorktreeDiffTab: state.openGitWorktreeDiffTab,
+                        openReviewTab: state.openReviewTab,
+                        paneCount: getIndexedWorkspacePaneCount(state.rootNode),
+                        recentActiveTabIds: state.recentActiveTabIds,
+                        reloadFileTab: state.reloadFileTab,
+                        saveFileTab: state.saveFileTab,
+                        selectAdjacentTab: state.selectAdjacentTab,
+                        selectTab: state.selectTab,
+                        setActivePane: state.setActivePane,
+                        shouldRenderPaneContent:
+                            state.activePaneId === paneId ||
+                            !state.deferredPaneIds.has(paneId),
+                        togglePaneTabPinned: state.togglePaneTabPinned,
+                        updateChatDraft: state.updateChatDraft,
+                        updateFileDraft: state.updateFileDraft,
+                    };
+                },
+                [paneId],
+            ),
+        ),
     );
     const confirmBeforeClose = useCallback(
         async (
@@ -1647,38 +1917,6 @@ function WorkspacePaneView({
         },
         [closeTabsToRight, collectPaneTabIds, confirmBeforeClose],
     );
-    const createChatTab = useWorkspaceStore((state) => state.createChatTab);
-    const createTerminalTab = useWorkspaceStore(
-        (state) => state.createTerminalTab,
-    );
-    const openChatHistoryTab = useWorkspaceStore(
-        (state) => state.openChatHistoryTab,
-    );
-    const openGitTab = useWorkspaceStore((state) => state.openGitTab);
-    const lastQuickCreateAction = useWorkspaceStore(
-        (state) => state.lastQuickCreateAction,
-    );
-    const lastFocusedRuntimeId = useWorkspaceStore(
-        (state) => state.lastFocusedRuntimeId,
-    );
-    const moveTab = useWorkspaceStore((state) => state.moveTab);
-    const togglePaneTabPinned = useWorkspaceStore(
-        (state) => state.togglePaneTabPinned,
-    );
-    const openFileTab: (
-        projectId: string,
-        relativePath: string,
-        worktreeId?: string | null,
-        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-        targetPaneId?: string | null,
-        targetIndex?: number,
-        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
-    ) => Promise<void> = useWorkspaceStore((state) => state.openFileTab);
-    const openChatImageTab = useWorkspaceStore((state) => state.openChatImageTab);
-    const openReviewTab = useWorkspaceStore((state) => state.openReviewTab);
-    const paneCount = useWorkspaceStore(
-        (state) => collectPaneNodes(state.rootNode).length,
-    );
     const paneNodeId = node?.id ?? paneId;
     const paneTabIds = node?.tabIds ?? EMPTY_TAB_IDS;
     const panePinnedTabIds = node?.pinnedTabIds ?? EMPTY_TAB_IDS;
@@ -1700,18 +1938,6 @@ function WorkspacePaneView({
             ),
         ),
     );
-    const selectTab = useWorkspaceStore((state) => state.selectTab);
-    const setActivePane = useWorkspaceStore((state) => state.setActivePane);
-    const hasAnyChatTab = useWorkspaceStore((state) =>
-        Object.values(state.tabsById).some((tab) => tab.kind === "chat"),
-    );
-    const updateChatDraft = useWorkspaceStore((state) => state.updateChatDraft);
-    const updateFileDraft = useWorkspaceStore((state) => state.updateFileDraft);
-    const reloadFileTab = useWorkspaceStore((state) => state.reloadFileTab);
-    const saveFileTab = useWorkspaceStore((state) => state.saveFileTab);
-    const selectAdjacentTab = useWorkspaceStore(
-        (state) => state.selectAdjacentTab,
-    );
     const tabStripRef = useRef<HTMLDivElement | null>(null);
     const [tabContextMenu, setTabContextMenu] =
         useState<ContextMenuState<TabContextMenuPayload> | null>(null);
@@ -1731,7 +1957,32 @@ function WorkspacePaneView({
     const activeTab = paneActiveTabId
         ? (paneTabs.find((tab) => tab.id === paneActiveTabId) ?? null)
         : null;
+    const activeTabLifecycle = activeTab
+        ? (tabLifecycles.get(activeTab.id) ?? "cold")
+        : "cold";
     const activeChatTab = activeTab?.kind === "chat" ? activeTab : null;
+    const [retainedChatTabIds, setRetainedChatTabIds] = useState<
+        readonly string[]
+    >(() => (activeChatTab ? [activeChatTab.id] : []));
+    const retainChatTab = useCallback((tabId: string) => {
+        const tab = useWorkspaceStore.getState().tabsById[tabId];
+        if (tab?.kind !== "chat") {
+            return;
+        }
+
+        setRetainedChatTabIds((currentIds) => {
+            if (currentIds.at(-1) === tabId) {
+                return currentIds;
+            }
+
+            // Keep recently visited chats warm without retaining an unbounded
+            // number of full transcript trees in a pane.
+            return [
+                ...currentIds.filter((currentTabId) => currentTabId !== tabId),
+                tabId,
+            ].slice(-MAX_RETAINED_CHAT_TAB_VIEWS);
+        });
+    }, []);
     const activeFileTab = activeTab?.kind === "file" ? activeTab : null;
     const paneFileTabs = useMemo(
         () =>
@@ -1740,10 +1991,57 @@ function WorkspacePaneView({
             ),
         [paneTabs],
     );
-    const recentActiveTabIds = useWorkspaceStore(
-        (state) => state.recentActiveTabIds,
-    );
     const isActivePane = activePaneId === paneNodeId;
+
+    useEffect(() => {
+        const activeChatTabId = activeChatTab?.id;
+        if (!activeChatTabId) {
+            return;
+        }
+
+        let cancelled = false;
+        queueMicrotask(() => {
+            if (!cancelled) {
+                retainChatTab(activeChatTabId);
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [activeChatTab?.id, retainChatTab]);
+
+    const retainedChatTabs = useMemo(
+        () =>
+            paneTabs.filter(
+                (tab): tab is RuntimeWorkspaceChatTab =>
+                    tab.kind === "chat" &&
+                    (retainedChatTabIds.includes(tab.id) ||
+                        tab.id === activeChatTab?.id) &&
+                    hotChatTabIds.has(tab.id),
+            ),
+        [activeChatTab?.id, hotChatTabIds, paneTabs, retainedChatTabIds],
+    );
+    const handleSelectTab = useCallback(
+        (tabId: string) => {
+            retainChatTab(tabId);
+            void selectTab(paneNodeId, tabId);
+        },
+        [paneNodeId, retainChatTab, selectTab],
+    );
+    const handleSelectAdjacentTab = useCallback(
+        async (direction: "next" | "previous") => {
+            await selectAdjacentTab(paneNodeId, direction);
+            const nextPane = findWorkspaceNodeById(
+                useWorkspaceStore.getState().rootNode,
+                paneNodeId,
+            );
+            if (nextPane?.type === "pane" && nextPane.activeTabId) {
+                retainChatTab(nextPane.activeTabId);
+            }
+        },
+        [paneNodeId, retainChatTab, selectAdjacentTab],
+    );
     const activeTabWorktreeId = activeTab?.worktreeId ?? null;
     const activeChatSessionId = activeChatTab?.sessionId ?? null;
     const activeChatFallbackTitle = activeChatTab?.title ?? "Chat";
@@ -1776,6 +2074,7 @@ function WorkspacePaneView({
 
     useRenderProbe("WorkspacePaneView", {
         activeTabId: activeTab?.id ?? null,
+        contentReady: shouldRenderPaneContent,
         paneId: node?.id ?? paneId,
         tabCount: node?.tabIds.length ?? 0,
     });
@@ -1916,7 +2215,7 @@ function WorkspacePaneView({
         event.preventDefault();
         event.stopPropagation();
         void setActivePane(paneNodeId);
-        void selectTab(paneNodeId, tabId);
+        handleSelectTab(tabId);
         setTabContextMenu({
             x: event.clientX,
             y: event.clientY,
@@ -2047,6 +2346,9 @@ function WorkspacePaneView({
                 const paneId = findPaneIdByTabId(candidateTabId) ?? paneNodeId;
 
                 await setActivePane(paneId);
+                if (paneId === paneNodeId) {
+                    retainChatTab(candidateTabId);
+                }
                 await selectTab(paneId, candidateTabId);
 
                 const targetTab =
@@ -2109,6 +2411,7 @@ function WorkspacePaneView({
             attachSelectionMention,
             createChatTab,
             paneNodeId,
+            retainChatTab,
             selectTab,
             setActivePane,
         ],
@@ -2296,8 +2599,9 @@ function WorkspacePaneView({
         handleCreateFile,
         openChatHistoryTab,
         openGitTab,
+        openGitWorktreeDiffTab,
         paneNodeId,
-        selectAdjacentTab,
+        selectAdjacentTab: handleSelectAdjacentTab,
     });
     useEffect(() => {
         paneShortcutHandlersRef.current = {
@@ -2308,8 +2612,9 @@ function WorkspacePaneView({
             handleCreateFile,
             openChatHistoryTab,
             openGitTab,
+            openGitWorktreeDiffTab,
             paneNodeId,
-            selectAdjacentTab,
+            selectAdjacentTab: handleSelectAdjacentTab,
         };
     }, [
         createTerminalTab,
@@ -2319,8 +2624,9 @@ function WorkspacePaneView({
         handleCreateFile,
         openChatHistoryTab,
         openGitTab,
+        openGitWorktreeDiffTab,
         paneNodeId,
-        selectAdjacentTab,
+        handleSelectAdjacentTab,
     ]);
 
     useEffect(() => {
@@ -2376,7 +2682,6 @@ function WorkspacePaneView({
                 event.preventDefault();
                 event.stopPropagation();
                 void handlers.selectAdjacentTab(
-                    handlers.paneNodeId,
                     event.shiftKey ? "previous" : "next",
                 );
                 return;
@@ -2423,6 +2728,20 @@ function WorkspacePaneView({
                 event.preventDefault();
                 event.stopPropagation();
                 void handlers.openGitTab(
+                    handlers.defaultProjectId,
+                    handlers.defaultWorktreeId ?? null,
+                );
+                return;
+            }
+
+            if (event.shiftKey && key === "m") {
+                if (!handlers.defaultProjectId) {
+                    return;
+                }
+
+                event.preventDefault();
+                event.stopPropagation();
+                void handlers.openGitWorktreeDiffTab(
                     handlers.defaultProjectId,
                     handlers.defaultWorktreeId ?? null,
                 );
@@ -2502,7 +2821,7 @@ function WorkspacePaneView({
                                                 ? "opacity-35"
                                                 : "",
                                             isActive
-                                                ? "z-10 bg-bg-primary text-text-primary shadow-[inset_0_-2px_0_0_var(--color-accent)] duration-0"
+                                                ? "z-10 bg-bg-primary font-medium text-text-primary shadow-[inset_0_-1px_0_0_var(--color-accent)] duration-0"
                                                 : "z-0 bg-bg-chrome text-text-secondary hover:bg-bg-tertiary hover:text-text-primary",
                                         ].join(" ")}
                                         data-workspace-tab-id={tab.id}
@@ -2516,7 +2835,7 @@ function WorkspacePaneView({
                                                 return;
                                             }
 
-                                            void selectTab(paneNodeId, tab.id);
+                                            handleSelectTab(tab.id);
                                         }}
                                         onContextMenu={(event) =>
                                             handleTabContextMenu(event, tab.id)
@@ -2632,66 +2951,97 @@ function WorkspacePaneView({
                     </div>
                 </div>
 
-                <div className="relative min-h-0 flex-1 overflow-hidden bg-editor">
-                    {paneTabs
-                        .filter((tab) => tab.kind === "terminal")
-                        .map((tab) => (
-                            <WorkspaceTerminalView
-                                key={tab.id}
-                                active={tab.id === paneActiveTabId}
-                                activePane={isActivePane}
-                                tab={tab}
-                            />
-                        ))}
-                    <WorkspaceFileEditorHost
-                        activeFileTab={activeFileTab}
-                        fileTabs={paneFileTabs}
-                        isActivePane={isActivePane}
-                        onAttachLineFragment={handleAttachLineFragment}
-                        onDraftChange={updateFileDraft}
-                        onReload={reloadFileTab}
-                        onSave={saveFileTab}
-                        recentActiveTabIds={recentActiveTabIds}
-                    />
-                    {activeTab ? (
-                        activeTab.kind === "file" ? (
-                            null
-                        ) : activeTab.kind === "git" ? (
-                            <GitTabView tab={activeTab} />
-                        ) : activeTab.kind === "git_worktree_diff" ? (
-                            <GitWorktreeDiffTabView tab={activeTab} />
-                        ) : activeTab.kind === "chat_history" ? (
-                            <ChatHistoryTabView tab={activeTab} />
-                        ) : activeTab.kind === "git_commit" ? (
-                            <GitCommitTabView tab={activeTab} />
-                        ) : activeTab.kind === "review" ? (
-                            <ReviewTabView
-                                onOpenFile={handleOpenWorkspaceFile}
-                                tab={activeTab}
-                            />
-                        ) : activeTab.kind === "github_issues" ? (
-                            <GitHubIssuesTabView tab={activeTab} />
-                        ) : activeTab.kind === "github_issue" ? (
-                            <GitHubIssueTabView tab={activeTab} />
-                        ) : activeTab.kind === "github_pull_requests" ? (
-                            <GitHubPullRequestsTabView tab={activeTab} />
-                        ) : activeTab.kind === "github_pull_request" ? (
-                            <GitHubPullRequestTabView tab={activeTab} />
-                        ) : activeTab.kind === "terminal" ? null : (
-                            <ChatTabView
-                                key={activeTab.id}
-                                onDraftChange={handleChatDraftChange}
-                                onOpenFile={handleOpenWorkspaceFile}
-                                onOpenImage={handleOpenChatImage}
-                                onOpenReview={() =>
-                                    handleOpenChatReview(activeTab)
+                <div
+                    className="relative min-h-0 flex-1 overflow-hidden bg-editor"
+                    data-workspace-pane-content-ready={shouldRenderPaneContent}
+                >
+                    {shouldRenderPaneContent ? (
+                        <>
+                            {activeTab?.kind === "terminal" ? (
+                                <WorkspaceTerminalView
+                                    active
+                                    activePane={isActivePane}
+                                    tab={activeTab}
+                                />
+                            ) : null}
+                            <WorkspaceFileEditorHost
+                                activeFileTab={activeFileTab}
+                                fileTabs={
+                                    activeTabLifecycle === "active"
+                                        ? paneFileTabs.filter(
+                                              (tab) => tab.id === activeFileTab?.id,
+                                          )
+                                        : []
                                 }
-                                tab={activeTab}
+                                isActivePane={isActivePane}
+                                onAttachLineFragment={handleAttachLineFragment}
+                                onDraftChange={updateFileDraft}
+                                onReload={reloadFileTab}
+                                onSave={saveFileTab}
+                                recentActiveTabIds={recentActiveTabIds}
                             />
-                        )
-                    ) : (
-                        <WorkspacePaneEmptyState />
-                    )}
+                            {retainedChatTabs.map((tab) => {
+                                const isActiveChat = tab.id === activeTab?.id;
+
+                                return (
+                                    <div
+                                        aria-hidden={!isActiveChat}
+                                        className={
+                                            isActiveChat
+                                                ? "relative z-1 h-full"
+                                                : "pointer-events-none invisible absolute inset-0"
+                                        }
+                                        inert={!isActiveChat}
+                                        key={tab.id}
+                                    >
+                                        <ChatTabView
+                                            active={isActiveChat}
+                                            onDraftChange={handleChatDraftChange}
+                                            onOpenFile={handleOpenWorkspaceFile}
+                                            onOpenImage={handleOpenChatImage}
+                                            onOpenReview={() =>
+                                                handleOpenChatReview(tab)
+                                            }
+                                            tab={tab}
+                                        />
+                                    </div>
+                                );
+                            })}
+                            {activeTab ? (
+                                activeTab.kind === "file" ? (
+                                    null
+                                ) : activeTab.kind === "git" ? (
+                                    <GitTabView tab={activeTab} />
+                                ) : activeTab.kind === "git_worktree_diff" ? (
+                                    <GitWorktreeDiffTabView tab={activeTab} />
+                                ) : activeTab.kind === "chat_history" ? (
+                                    <ChatHistoryTabView tab={activeTab} />
+                                ) : activeTab.kind === "git_commit" ? (
+                                    <GitCommitTabView tab={activeTab} />
+                                ) : activeTab.kind === "review" ? (
+                                    <ReviewTabView
+                                        onOpenFile={handleOpenWorkspaceFile}
+                                        tab={activeTab}
+                                    />
+                                ) : activeTab.kind === "github_issues" ? (
+                                    <GitHubIssuesTabView tab={activeTab} />
+                                ) : activeTab.kind === "github_issue" ? (
+                                    <GitHubIssueTabView tab={activeTab} />
+                                ) : activeTab.kind ===
+                                  "github_pull_requests" ? (
+                                    <GitHubPullRequestsTabView tab={activeTab} />
+                                ) : activeTab.kind === "github_pull_request" ? (
+                                    <GitHubPullRequestTabView tab={activeTab} />
+                                ) : null
+                            ) : (
+                                <WorkspacePaneEmptyState
+                                    onOpenProject={onOpenProject}
+                                    onOpenProjects={onOpenProjects}
+                                    recentProjects={recentProjects}
+                                />
+                            )}
+                        </>
+                    ) : null}
                 </div>
             </section>
 

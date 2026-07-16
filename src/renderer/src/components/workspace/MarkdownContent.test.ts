@@ -5,7 +5,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { MarkdownContent } from "./MarkdownContent";
+import {
+    serializeComposerDisplayFileMention,
+    serializeComposerDisplayFolderMention,
+    serializeComposerDisplaySelectionMention,
+} from "@shared/composer-display-markers";
+
+import {
+    MarkdownContent,
+    parseMarkdownBlocksProgressively,
+} from "./MarkdownContent";
 import { resolveProjectFileReference } from "./projectFileReferences";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -44,6 +53,51 @@ function renderInteractiveMarkdownContent(
 }
 
 describe("MarkdownContent", () => {
+    it("reuses a stable plain-text prefix without changing the parsed blocks", () => {
+        const initial = "First paragraph.\n\nSecond paragraph";
+        const next = `${initial} grows safely`;
+        const progressive = parseMarkdownBlocksProgressively(
+            parseMarkdownBlocksProgressively(null, initial),
+            next,
+        );
+        const complete = parseMarkdownBlocksProgressively(null, next);
+
+        expect(progressive.blocks).toEqual(complete.blocks);
+        expect(progressive.stableContentLength).toBe(
+            "First paragraph.\n\n".length,
+        );
+    });
+
+    it.each([
+        "```ts\nconst value = 1;",
+        "- incomplete list item",
+        "name | value\n--- | ---\npartial | row",
+    ])("falls back to complete parsing for ambiguous live Markdown", (content) => {
+        const next = `${content}\nmore streamed content`;
+        const previous = parseMarkdownBlocksProgressively(null, content);
+        const parsed = parseMarkdownBlocksProgressively(previous, next);
+
+        expect(parsed.stableContentLength).toBe(0);
+        expect(parsed.blocks).toEqual(
+            parseMarkdownBlocksProgressively(null, next).blocks,
+        );
+    });
+
+    it("renders serialized folder mentions as Catppuccin links", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: serializeComposerDisplayFolderMention({
+                    folderPath: "src/components",
+                    label: "components",
+                }),
+            }),
+        );
+
+        expect(markup).toContain("@components");
+        expect(markup).toContain("src/components");
+        expect(markup).toContain("<svg");
+    });
+
     it("renders diff blocks with DiffLineView", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {
@@ -55,7 +109,9 @@ describe("MarkdownContent", () => {
         expect(markup).toContain('data-diff-line="true"');
         expect(markup).toContain('data-line-type="remove"');
         expect(markup).toContain('data-line-type="add"');
-        expect(markup).toContain(">diff<");
+        expect(markup).toContain(">Diff<");
+        expect(markup).toContain("markdown-code-frame");
+        expect(markup).toContain("markdown-code-header");
     });
 
     it("keeps normal rendering for non-diff code blocks", () => {
@@ -65,9 +121,24 @@ describe("MarkdownContent", () => {
             }),
         );
 
-        expect(markup).toContain(">ts<");
+        expect(markup).toContain(">TypeScript<");
+        expect(markup).toContain("markdown-code-block");
         expect(markup).toContain("cm-static-code");
         expect(markup).not.toContain("markdown-diff-block");
+    });
+
+    it("uses the shared preview chrome for text fences", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: "```text\nprepare root\n```",
+            }),
+        );
+
+        expect(markup).toContain("markdown-code-frame");
+        expect(markup).toContain("markdown-code-header");
+        expect(markup).toContain(">Text</span>");
+        expect(markup).toContain('aria-label="Copy code block"');
+        expect(markup).toContain("prepare root");
     });
 
     it("renders tilde fenced code blocks", () => {
@@ -77,7 +148,7 @@ describe("MarkdownContent", () => {
             }),
         );
 
-        expect(markup).toContain(">python<");
+        expect(markup).toContain(">Python<");
         expect(markup).toContain("cm-static-code");
         expect(markup).toContain("print");
     });
@@ -89,7 +160,7 @@ describe("MarkdownContent", () => {
             }),
         );
 
-        expect(markup).toContain(">zig<");
+        expect(markup).toContain(">Zig<");
         expect(markup).toContain("cm-static-code");
         expect(markup).toContain("value");
     });
@@ -106,9 +177,9 @@ describe("MarkdownContent", () => {
             }),
         );
 
-        expect(tomlMarkup).toContain(">toml<");
+        expect(tomlMarkup).toContain(">Toml<");
         expect(tomlMarkup).toContain("cm-static-code");
-        expect(graphqlMarkup).toContain(">graphql<");
+        expect(graphqlMarkup).toContain(">GraphQL<");
         expect(graphqlMarkup).toContain("cm-static-code");
     });
 
@@ -144,6 +215,110 @@ describe("MarkdownContent", () => {
 
         expect(markup).toContain("(8:14) - Si ves que un");
         expect(markup).toContain("expande");
+    });
+
+    it("renders serialized user file mentions as openable icon links", () => {
+        const relativePath = "vendor/codex-acp/src/thread.rs";
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderFileReference: () => true,
+                content: serializeComposerDisplayFileMention({
+                    label: "thread.rs",
+                    relativePath,
+                }),
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup).toContain(">@thread.rs<");
+        expect(markup).toContain(`title="${relativePath}"`);
+        expect(markup).toContain("catppuccin-icon");
+    });
+
+    it("modernizes legacy user file mentions when the file is unambiguous", () => {
+        const fileName = "@02-pr-code-mode-host-packaging-por-commits.md";
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderFileReference: () => true,
+                content: `\u200B\u00AB${fileName}\u00BB\u200B create this`,
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, { projectRoots: [] }),
+            }),
+        );
+
+        expect(markup).toContain(`>${fileName}<`);
+        expect(markup).toContain(
+            'title="02-pr-code-mode-host-packaging-por-commits.md"',
+        );
+        expect(markup).toContain("catppuccin-icon");
+        expect(markup).toContain("background:transparent");
+    });
+
+    it("renders serialized selections as links to their exact line range", () => {
+        const relativePath = "src/elicitation.ts";
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderFileReference: () => true,
+                content: serializeComposerDisplaySelectionMention({
+                    endLine: 14,
+                    label: "(8:14) - selected code",
+                    path: relativePath,
+                    startLine: 8,
+                }),
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup).toContain(
+            ">elicitation.ts (lines 8–14)<",
+        );
+        expect(markup).not.toContain("selected code</span>");
+        expect(markup).toContain('title="src/elicitation.ts:8-14"');
+        expect(markup).toContain("catppuccin-icon");
+    });
+
+    it("keeps unresolved legacy user file mentions in the new icon link style", () => {
+        const fileName = "@03-pr-turntime-activities-deduplicacion-por-commits.md";
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: `\u200B\u00AB${fileName}\u00BB\u200B create a branch`,
+            }),
+        );
+
+        expect(markup).toContain(`>${fileName}<`);
+        expect(markup).toContain("catppuccin-icon");
+        expect(markup).toContain("background:transparent");
+    });
+
+    it("keeps trusted composer selections styled while the file index loads", () => {
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderFileReference: () => false,
+                content: serializeComposerDisplaySelectionMention({
+                    endLine: 3,
+                    label: "(1:3) - interesting",
+                    path: "archive-2.txt",
+                    startLine: 1,
+                }),
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, { projectRoots: [] }),
+            }),
+        );
+
+        expect(markup).toContain(">archive-2.txt (lines 1–3)<");
+        expect(markup).toContain('title="archive-2.txt:1-3"');
+        expect(markup).toContain("catppuccin-icon");
+        expect(markup).toContain("background:transparent");
     });
 
     it("renders long inline file reference pills without shortening the label", () => {
@@ -203,6 +378,7 @@ describe("MarkdownContent", () => {
         expect(markup).not.toContain('title="TCP/IP"');
         expect(markup).not.toContain('title="2024/Q1"');
         expect(markup).not.toContain('title="/LinkedIn"');
+        expect(markup.match(/class="chat-inline-code"/g)?.length).toBe(4);
         expect(markup).toContain(
             'title="src/renderer/src/components/workspace/MarkdownContent.tsx"',
         );
@@ -239,6 +415,30 @@ describe("MarkdownContent", () => {
         );
         expect(markup).toContain(
             'title="file:///Users/test/workspace/comando/src/app.ts#L9-L14"',
+        );
+    });
+
+    it("renders natural line references with Catppuccin file icons", () => {
+        const content =
+            "See manage_profiles_modal.rs (line 790) and src/profile_selector.rs (lines 177-184).";
+        const markup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                canRenderFileReference: () => true,
+                content,
+                onOpenFile: () => undefined,
+                resolveFileReference: (reference) =>
+                    resolveProjectFileReference(reference, {
+                        projectRoots: ["/Users/test/workspace/comando"],
+                    }),
+            }),
+        );
+
+        expect(markup.match(/<button/g)?.length).toBe(2);
+        expect(markup).toContain("manage_profiles_modal.rs (line 790)");
+        expect(markup).toContain("profile_selector.rs (lines 177-184)");
+        expect(markup).toContain("transform:translateY(2px)");
+        expect(markup.match(/catppuccin-icon/g)?.length).toBeGreaterThanOrEqual(
+            2,
         );
     });
 

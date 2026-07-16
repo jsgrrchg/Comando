@@ -1,6 +1,6 @@
 {
     "name": "comando",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "private": true,
     "description": "Workspace local-first para programar con IA.",
     "author": "José Gurruchaga",
@@ -170,6 +170,7 @@
             "entitlementsInherit": "resources/entitlements.mac.inherit.plist",
             "hardenedRuntime": true,
             "icon": "resources/icons/macos.icns",
+            "sign": "scripts/sign-macos-app.cjs",
             "x64ArchFiles": "{Contents/Resources/ai/**/*,Contents/Resources/native/**/*}",
             "target": [
                 {

@@ -248,6 +248,38 @@ describe("native backend fixtures", () => {
             },
             kind: "tool-activity",
         });
+        const terminalActivityEvent = nativeAiEventToIpc({
+            eventName: "ai://tool-activity",
+            payload: {
+                diffs: [],
+                exitCode: 0,
+                kind: "exec_command",
+                origin: "live",
+                rawOutput: {
+                    aggregated_output: "first line\nsecond line\n",
+                    formatted_output: "first line\nsecond line\n",
+                    stdout: "first line\nsecond line\n",
+                },
+                runtimeId: "codex",
+                runtimeSessionId: "runtime-1",
+                sessionId: "session-1",
+                status: "completed",
+                summary: "Terminal output available.",
+                title: "Run tests",
+                toolCallId: "tool_terminal_fallback",
+                updatedAt: "2026-07-10T00:00:00.000Z",
+            },
+            type: "event",
+        });
+        expect(terminalActivityEvent?.kind).toBe("tool-activity");
+        if (terminalActivityEvent?.kind === "tool-activity") {
+            expect(terminalActivityEvent.activity.rawOutputJson).toContain(
+                "aggregated_output",
+            );
+            expect(terminalActivityEvent.activity.terminalOutput).toBe(
+                "first line\nsecond line\n",
+            );
+        }
         expect(
             nativeAiEventToIpc({
                 eventName: "ai://tool-activity",
@@ -366,6 +398,28 @@ describe("native backend fixtures", () => {
                 type: "event",
             }),
         ).toBeNull();
+        expect(
+            nativeAiEventToIpc({
+                eventName: "ai://status-event",
+                payload: {
+                    detail: null,
+                    eventId: "comando:turn:message_1:completed",
+                    runtimeId: "codex",
+                    runtimeSessionId: "runtime_1",
+                    sessionId: "session_1",
+                    status: "completed",
+                    title: "Completed",
+                    turnId: "message_1",
+                    updatedAt: "2026-06-20T00:00:00.000Z",
+                },
+                type: "event",
+            }),
+        ).toMatchObject({
+            error: null,
+            kind: "turn-status",
+            status: "completed",
+            turnId: "message_1",
+        });
         expect(aiEvent("ai/event.plan_updated.json")).toMatchObject({
             kind: "plan",
             plan: { entries: [{ content: "Inspect files" }] },

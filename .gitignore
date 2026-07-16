@@ -1,4 +1,5 @@
 .personal/
+.codex/
 agents.md
 claude.md
 .DS_Store

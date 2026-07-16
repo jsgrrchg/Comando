@@ -10,7 +10,7 @@ import {
     type RefObject,
 } from "react";
 
-import type { AiToolCardExpansionMode } from "@shared/ipc";
+import { useSettingsStore } from "@renderer/app/store/settings-store";
 import { useShellStore } from "@renderer/app/store/shell-store";
 import {
     MeasuredVirtualList,
@@ -23,6 +23,7 @@ import type { ChatTimelineRow } from "./chatTimelineModel";
 import {
     CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
     CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN,
+    calculateChatTimelineVirtualizationCost,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
     getChatTimelineEffectiveContentWidth,
@@ -38,22 +39,19 @@ import {
 const MIN_FREEZABLE_CHAT_TIMELINE_WIDTH_PX = 240;
 
 interface ChatTimelineHistoryRowsProps {
+    readonly active?: boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly historyRows: readonly ChatTimelineRow[];
-    readonly latestStreamingEditedFileToolRowId: string | null;
+    readonly sessionId?: string;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
-    readonly renderRow: (params: {
-        readonly isLatestStreamingTool: boolean;
-        readonly row: ChatTimelineRow;
-    }) => ReactNode;
+    readonly renderRow: (params: { readonly row: ChatTimelineRow }) => ReactNode;
     readonly scrollRef: RefObject<HTMLElement | null>;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
 }
 
 export function resolveChatTimelineFrozenContentWidth(input: {
@@ -77,10 +75,11 @@ export function resolveChatTimelineFrozenContentWidth(input: {
 
 export const ChatTimelineHistoryRows = memo(
     function ChatTimelineHistoryRows({
+        active = true,
         chatFontFamily,
         chatFontSize,
         historyRows,
-        latestStreamingEditedFileToolRowId,
+        sessionId,
         onVirtualRangeChange,
         onVirtualResizeEnd,
         onVirtualResizeAutoFollow,
@@ -89,9 +88,11 @@ export const ChatTimelineHistoryRows = memo(
         scrollRef,
         shouldPreserveVirtualMeasureAnchor,
         shouldPreserveVirtualResizeAnchor,
-        toolCardExpansionMode,
     }: ChatTimelineHistoryRowsProps) {
         const historyRef = useRef<HTMLDivElement | null>(null);
+        const toolActivityDefaultExpansion = useSettingsStore(
+            (state) => state.aiChat.toolActivityDefaultExpansion,
+        );
         const pendingResizeAnchorFrameRef = useRef<number | null>(null);
         const pendingResizeAnchorRef =
             useRef<MeasuredVirtualViewportAnchor | null>(null);
@@ -114,10 +115,14 @@ export const ChatTimelineHistoryRows = memo(
             number | null
         >(null);
         const isFreezeActiveRef = useRef(false);
+        const isActiveRef = useRef(active);
         isFreezeActiveRef.current = frozenContentWidth !== null;
-        const shouldVirtualize = shouldVirtualizeChatTimeline(
-            historyRows.length,
+        isActiveRef.current = active;
+        const virtualizationCost = calculateChatTimelineVirtualizationCost(
+            historyRows,
         );
+        const shouldVirtualize =
+            shouldVirtualizeChatTimeline(virtualizationCost);
 
         const restorePendingResizeAnchor = useCallback(() => {
             const anchor = pendingResizeAnchorRef.current;
@@ -154,7 +159,7 @@ export const ChatTimelineHistoryRows = memo(
             // Frozen during an active splitter drag: skip every metric/anchor
             // update so the scroll stays put. The single re-sync happens when the
             // freeze lifts (see the freeze effects below).
-            if (isFreezeActiveRef.current) {
+            if (!isActiveRef.current || isFreezeActiveRef.current) {
                 return;
             }
 
@@ -212,15 +217,19 @@ export const ChatTimelineHistoryRows = memo(
         );
 
         useLayoutEffect(() => {
-            if (!shouldVirtualize) {
+            if (!active || !shouldVirtualize) {
                 return;
             }
 
             syncLayoutMetrics();
-        }, [historyRows.length, shouldVirtualize, syncLayoutMetrics]);
+        }, [active, historyRows.length, shouldVirtualize, syncLayoutMetrics]);
 
         useEffect(() => {
-            if (!shouldVirtualize || typeof ResizeObserver === "undefined") {
+            if (
+                !active ||
+                !shouldVirtualize ||
+                typeof ResizeObserver === "undefined"
+            ) {
                 return;
             }
 
@@ -244,7 +253,7 @@ export const ChatTimelineHistoryRows = memo(
                 observer.disconnect();
                 window.removeEventListener("resize", syncLayoutMetrics);
             };
-        }, [scrollRef, shouldVirtualize, syncLayoutMetrics]);
+        }, [active, scrollRef, shouldVirtualize, syncLayoutMetrics]);
 
         useLayoutEffect(() => {
             restorePendingResizeAnchor();
@@ -265,7 +274,7 @@ export const ChatTimelineHistoryRows = memo(
         // before the first width change lands (pointerdown precedes pointermove),
         // so the pinned width matches the pre-drag layout exactly.
         useLayoutEffect(() => {
-            if (!shouldVirtualize) {
+            if (!active || !shouldVirtualize) {
                 if (virtualResizeActiveRef.current) {
                     virtualResizeActiveRef.current = false;
                     pendingVirtualResizeEndRef.current = false;
@@ -297,6 +306,7 @@ export const ChatTimelineHistoryRows = memo(
                 setFrozenContentWidth(null);
             }
         }, [
+            active,
             isResizingPanel,
             onVirtualResizeEnd,
             onVirtualResizeStart,
@@ -307,7 +317,7 @@ export const ChatTimelineHistoryRows = memo(
         // Once the freeze lifts the DOM holds the real width again, so adopt it
         // and re-anchor exactly once — instead of on every drag frame.
         useLayoutEffect(() => {
-            if (!shouldVirtualize || frozenContentWidth !== null) {
+            if (!active || !shouldVirtualize || frozenContentWidth !== null) {
                 return;
             }
 
@@ -319,6 +329,7 @@ export const ChatTimelineHistoryRows = memo(
                 onVirtualResizeEnd?.();
             }
         }, [
+            active,
             frozenContentWidth,
             onVirtualResizeEnd,
             shouldVirtualize,
@@ -346,24 +357,21 @@ export const ChatTimelineHistoryRows = memo(
         // identity key simply ignores the width bucket it carries.
         const buildRowContext = useCallback(
             (
-                row: ChatTimelineRow,
+                _row: ChatTimelineRow,
                 index: number,
             ): ChatTimelineRowMeasurementContext => ({
                 chatFontFamily,
                 chatFontSize,
                 gapPx: resolveRowGapPx(index),
-                isLatestStreamingTool:
-                    row.id === latestStreamingEditedFileToolRowId,
-                toolCardExpansionMode,
+                toolActivityDefaultExpansion,
                 width: contentMeasurementWidth,
             }),
             [
                 chatFontFamily,
                 contentMeasurementWidth,
                 chatFontSize,
-                latestStreamingEditedFileToolRowId,
                 resolveRowGapPx,
-                toolCardExpansionMode,
+                toolActivityDefaultExpansion,
             ],
         );
 
@@ -407,16 +415,11 @@ export const ChatTimelineHistoryRows = memo(
                                 : undefined
                         }
                     >
-                        {renderRow({
-                            isLatestStreamingTool:
-                                item.id === latestStreamingEditedFileToolRowId,
-                            row: item,
-                        })}
+                        {renderRow({ row: item })}
                     </div>
                 );
             },
             [
-                latestStreamingEditedFileToolRowId,
                 renderRow,
                 resolveRowGapPx,
             ],
@@ -427,12 +430,7 @@ export const ChatTimelineHistoryRows = memo(
                 <>
                     {historyRows.map((row) => (
                         <Fragment key={row.id}>
-                            {renderRow({
-                                isLatestStreamingTool:
-                                    row.id ===
-                                    latestStreamingEditedFileToolRowId,
-                                row,
-                            })}
+                            {renderRow({ row })}
                         </Fragment>
                     ))}
                 </>
@@ -460,11 +458,29 @@ export const ChatTimelineHistoryRows = memo(
                     getItemKey={getChatTimelineRowKey}
                     getItemIdentityKey={getItemIdentityKey}
                     getItemMeasurementKey={getItemMeasurementKey}
+                    geometryCacheSignature={
+                        contentMeasurementWidth > 0
+                            ? [
+                                  chatFontFamily ?? "default",
+                                  chatFontSize ?? "default",
+                                  toolActivityDefaultExpansion,
+                                  contentMeasurementWidth,
+                              ].join(":")
+                            : null
+                    }
                     items={historyRows}
+                    observeMeasurements={active}
+                    measurementCacheKey={
+                        sessionId ? `chat-timeline:${sessionId}` : undefined
+                    }
                     onRangeChange={onVirtualRangeChange}
                     onReady={handleVirtualListReady}
                     overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
+                    preserveScrollAnchorOnItemsChange
                     preserveScrollAnchorOnMeasure
+                    shouldPreserveScrollAnchorOnItemsChange={
+                        shouldPreserveVirtualResizeAnchor
+                    }
                     shouldPreserveScrollAnchorOnMeasure={
                         shouldPreserveVirtualMeasureAnchor
                     }

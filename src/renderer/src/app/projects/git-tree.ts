@@ -1,4 +1,8 @@
-import type { GitStatusBadge, ProjectTreeNode } from "@shared/ipc";
+import type {
+    GitChangeEntry,
+    GitStatusBadge,
+    ProjectTreeNode,
+} from "@shared/ipc";
 
 import type { GitNodeStatus, GitTreeNode } from "@renderer/components/git";
 
@@ -6,15 +10,27 @@ const ROOT_NODE_KEY = "__root__";
 
 type ParentKey = string;
 
+interface GitTreeStatuses {
+    readonly changedDirectories: ReadonlySet<string>;
+    readonly exact: ReadonlyMap<string, GitNodeStatus>;
+}
+
 export function buildGitTreeNodesFromProjectTree(
     rootNodes: readonly ProjectTreeNode[],
     nodesByParent: Record<ParentKey, readonly ProjectTreeNode[]>,
     expandedPaths: readonly string[] = [],
+    gitChanges: readonly GitChangeEntry[] = [],
 ): readonly GitTreeNode[] {
     const expandedPathSet = new Set(expandedPaths);
+    const gitStatuses = buildGitStatuses(gitChanges);
 
     return rootNodes.map((node) =>
-        convertProjectTreeNode(node, nodesByParent, expandedPathSet),
+        convertProjectTreeNode(
+            node,
+            nodesByParent,
+            expandedPathSet,
+            gitStatuses,
+        ),
     );
 }
 
@@ -37,8 +53,10 @@ export interface HierarchicalGitTreeFromEntries {
 export function buildHierarchicalGitTreeNodesFromProjectEntries(
     entries: readonly ProjectTreeNode[],
     metadataEntries: readonly ProjectTreeNode[] = entries,
+    gitChanges: readonly GitChangeEntry[] = [],
 ): HierarchicalGitTreeFromEntries {
     const byPath = new Map<string, HierarchicalBuildNode>();
+    const gitStatuses = buildGitStatuses(gitChanges);
     const directoryMetadataByPath = new Map(
         metadataEntries
             .filter((entry) => entry.kind === "directory")
@@ -64,7 +82,12 @@ export function buildHierarchicalGitTreeNodesFromProjectEntries(
             kind: "directory",
             name: metadata?.name ?? name,
             path,
-            status: mapGitNodeStatus(metadata?.gitStatus ?? null),
+            status: resolveProjectTreeStatus(
+                "directory",
+                path,
+                metadata?.gitStatus ?? null,
+                gitStatuses,
+            ),
         };
         byPath.set(path, synthetic);
         return synthetic;
@@ -99,7 +122,12 @@ export function buildHierarchicalGitTreeNodesFromProjectEntries(
             kind: entry.kind,
             name: entry.name,
             path: entry.relativePath,
-            status: mapGitNodeStatus(entry.gitStatus),
+            status: resolveProjectTreeStatus(
+                entry.kind,
+                entry.relativePath,
+                entry.gitStatus,
+                gitStatuses,
+            ),
         });
     }
 
@@ -170,6 +198,7 @@ function buildGitTreeNodeChildren(
     node: ProjectTreeNode,
     nodesByParent: Record<ParentKey, readonly ProjectTreeNode[]>,
     expandedPaths: ReadonlySet<string>,
+    gitStatuses: GitTreeStatuses,
 ): readonly GitTreeNode[] | undefined {
     if (node.kind !== "directory" || !expandedPaths.has(node.relativePath)) {
         return undefined;
@@ -181,7 +210,12 @@ function buildGitTreeNodeChildren(
     }
 
     return children.map((child) =>
-        convertProjectTreeNode(child, nodesByParent, expandedPaths),
+        convertProjectTreeNode(
+            child,
+            nodesByParent,
+            expandedPaths,
+            gitStatuses,
+        ),
     );
 }
 
@@ -189,17 +223,92 @@ function convertProjectTreeNode(
     node: ProjectTreeNode,
     nodesByParent: Record<ParentKey, readonly ProjectTreeNode[]>,
     expandedPaths: ReadonlySet<string>,
+    gitStatuses: GitTreeStatuses,
 ): GitTreeNode {
     return {
-        children: buildGitTreeNodeChildren(node, nodesByParent, expandedPaths),
+        children: buildGitTreeNodeChildren(
+            node,
+            nodesByParent,
+            expandedPaths,
+            gitStatuses,
+        ),
         hasChildren: node.hasChildren,
         id: node.id,
         isGitIgnored: node.isGitIgnored,
         kind: node.kind,
         name: node.name,
         path: node.relativePath,
-        status: mapGitNodeStatus(node.gitStatus),
+        status: resolveProjectTreeStatus(
+            node.kind,
+            node.relativePath,
+            node.gitStatus,
+            gitStatuses,
+        ),
     };
+}
+
+function buildGitStatuses(
+    changes: readonly GitChangeEntry[],
+): GitTreeStatuses {
+    const exact = new Map<string, GitNodeStatus>();
+    const changedDirectories = new Set<string>();
+
+    for (const change of changes) {
+        const path = change.path.replace(/\/+$/, "");
+        if (!path) {
+            continue;
+        }
+
+        exact.set(path, mapGitChangeStatus(change));
+
+        let ancestor = path;
+        while (true) {
+            const separatorIndex = ancestor.lastIndexOf("/");
+            if (separatorIndex < 0) {
+                break;
+            }
+            ancestor = ancestor.slice(0, separatorIndex);
+            changedDirectories.add(ancestor);
+        }
+    }
+
+    return { changedDirectories, exact };
+}
+
+function resolveProjectTreeStatus(
+    kind: ProjectTreeNode["kind"],
+    relativePath: string,
+    fallbackStatus: GitStatusBadge | null,
+    gitStatuses: GitTreeStatuses,
+): GitNodeStatus | null {
+    if (kind === "directory") {
+        return gitStatuses.changedDirectories.has(relativePath)
+            ? "mixed"
+            : (gitStatuses.exact.get(relativePath) ??
+                  mapGitNodeStatus(fallbackStatus));
+    }
+
+    return gitStatuses.exact.get(relativePath) ?? mapGitNodeStatus(fallbackStatus);
+}
+
+function mapGitChangeStatus(change: GitChangeEntry): GitNodeStatus {
+    switch (change.kind) {
+        case "conflicted":
+            return "conflict";
+        case "added":
+            return change.scope === "staged" ? "staged" : "added";
+        case "deleted":
+            return "deleted";
+        case "renamed":
+            return "renamed";
+        case "untracked":
+            return "untracked";
+        case "copied":
+        case "modified":
+        case "typechange":
+        default:
+            return change.scope === "staged" ? "staged" : "modified";
+    }
 }
 
 function mapGitNodeStatus(status: GitStatusBadge | null): GitNodeStatus | null {

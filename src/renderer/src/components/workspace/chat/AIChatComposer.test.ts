@@ -9,6 +9,7 @@ import {
     getComposerShellSizingStyle,
     getComposerInputSlotSizingStyle,
     getComposerInputSizingStyle,
+    getComposerPrimaryAction,
     getComposerSubmitKeyboardAction,
     shouldAutoFocusComposerForKeyChange,
     shouldResetComposerForNonceChange,
@@ -41,6 +42,36 @@ describe("AIChatComposer", () => {
             shouldAutoFocusComposerForKeyChange("chat-tab-1", "chat-tab-2"),
         ).toBe(true);
     });
+
+    it.each([
+        {
+            expected: "send",
+            hasDraft: false,
+            isSessionBusy: false,
+        },
+        {
+            expected: "send",
+            hasDraft: true,
+            isSessionBusy: false,
+        },
+        {
+            expected: "stop",
+            hasDraft: false,
+            isSessionBusy: true,
+        },
+        {
+            expected: "queue",
+            hasDraft: true,
+            isSessionBusy: true,
+        },
+    ] as const)(
+        "uses $expected as the primary action when busy=$isSessionBusy and draft=$hasDraft",
+        ({ expected, hasDraft, isSessionBusy }) => {
+            expect(
+                getComposerPrimaryAction({ hasDraft, isSessionBusy }),
+            ).toBe(expected);
+        },
+    );
 
     it("submits with plain Enter when modifier is not required", () => {
         expect(

@@ -26,6 +26,7 @@ vi.mock("./usePersistedWorkspaceScroll", () => ({
 }));
 
 import {
+    GitHubSection,
     GitHubTabShell,
     type GitHubTabShellRenderContext,
 } from "./GitHubWorkspacePrimitives";
@@ -95,5 +96,21 @@ describe("GitHubTabShell", () => {
         expect(mockPersistedScroll.scrollRef).toHaveBeenCalledTimes(1);
         expect(markup).toContain('data-scroll-ref="shared"');
         expect(markup).toContain("Render prop content");
+    });
+});
+
+describe("GitHubSection", () => {
+    it("renders a flat document section with a semantic heading", () => {
+        const markup = renderToStaticMarkup(
+            <GitHubSection count={2} title="Description">
+                <p>Document content</p>
+            </GitHubSection>,
+        );
+
+        expect(markup).toContain('class="github-document-section"');
+        expect(markup).toContain("<h2");
+        expect(markup).toContain("Description</h2>");
+        expect(markup).not.toContain("bg-bg-secondary");
+        expect(markup).not.toContain("rounded-lg");
     });
 });

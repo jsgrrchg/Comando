@@ -387,6 +387,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             return;
         }
         await this.#client.request("ai_delete_session", { sessionId });
+        this.#forgetSession(sessionId);
     }
 
     async renameSession(input: AiSessionRenameMutationInput): Promise<void> {
@@ -542,8 +543,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         }
 
         if (this.#subagentParentSessionIds.has(sessionId)) {
-            this.#emitLocalSubagentClosed(sessionId);
-            this.#forgetSession(sessionId);
+            // A child close is a view detach. ACP has no target-aware close primitive.
             return;
         }
 
@@ -559,7 +559,11 @@ export class NativeAiGateway implements NativeAiGatewayContract {
 
     closeOwnedByWindow(ownerWindowId: string): void {
         const sessionIds = [...this.#sessionOwners.entries()]
-            .filter(([, owner]) => owner === ownerWindowId)
+            .filter(
+                ([sessionId, owner]) =>
+                    owner === ownerWindowId &&
+                    !this.#subagentParentSessionIds.has(sessionId),
+            )
             .map(([sessionId]) => sessionId);
         for (const sessionId of sessionIds) {
             void this.closeSession(sessionId).catch((error: unknown) => {
@@ -723,6 +727,12 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 return;
             }
 
+            // A close from an older runtime generation must not tear down the
+            // ownership and routing state of a session that was reopened.
+            if (this.#isStaleSessionCloseEvent(converted)) {
+                return;
+            }
+
             this.#rememberRuntimeSession(converted);
             if (converted.kind === "subagent-created") {
                 this.#sessionOwners.set(converted.childSessionId, ownerWindowId);
@@ -807,10 +817,12 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         launch: NativeAiPrepareSessionRpcInput["launch"],
     ): void {
         this.#rememberOwnerIdentity(sessionId, launch);
-        this.#runtimeSessionIds.set(
-            sessionId,
-            launch.persistedSnapshot.runtimeSessionId ?? null,
-        );
+        if (!this.#runtimeSessionIds.has(sessionId)) {
+            this.#runtimeSessionIds.set(
+                sessionId,
+                launch.persistedSnapshot.runtimeSessionId ?? null,
+            );
+        }
     }
 
     #rememberOwnerIdentity(
@@ -922,25 +934,19 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         };
     }
 
-    #emitLocalSubagentClosed(sessionId: string): void {
-        const parentSessionId = this.#subagentParentSessionIds.get(sessionId);
-        const ownerWindowId = this.#sessionOwners.get(sessionId);
-        const runtimeId = this.#sessionRuntimeIds.get(sessionId);
-        if (!parentSessionId || !ownerWindowId || !runtimeId) {
-            return;
+    #isStaleSessionCloseEvent(event: AiSessionDomainEvent): boolean {
+        if (event.kind !== "session-closed" || !event.runtimeSessionId) {
+            return false;
         }
 
-        const closedAt = new Date().toISOString();
-        this.#onSessionEvent(ownerWindowId, {
-            closedAt,
-            kind: "session-closed",
-            origin: "live",
-            parentSessionId,
-            runtimeId,
-            runtimeSessionId: this.#runtimeSessionIds.get(sessionId) ?? null,
-            sessionId,
-            updatedAt: closedAt,
-        });
+        const currentRuntimeSessionId = this.#runtimeSessionIds.get(
+            event.sessionId,
+        );
+        return (
+            currentRuntimeSessionId !== undefined &&
+            currentRuntimeSessionId !== null &&
+            currentRuntimeSessionId !== event.runtimeSessionId
+        );
     }
 
     #restoreOwner(sessionId: string, previousOwner: string | undefined): void {
@@ -953,16 +959,33 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     #forgetSession(sessionId: string): void {
-        const childSessionIds = [...this.#subagentParentSessionIds.entries()]
-            .filter(([, parentSessionId]) => parentSessionId === sessionId)
-            .map(([childSessionId]) => childSessionId);
-        for (const childSessionId of childSessionIds) {
-            this.#forgetSession(childSessionId);
+        for (const subtreeSessionId of this.#collectSessionSubtreeIds(sessionId)) {
+            this.#subagentParentSessionIds.delete(subtreeSessionId);
+            this.#runtimeSessionIds.delete(subtreeSessionId);
+            this.#sessionOwners.delete(subtreeSessionId);
+            this.#sessionRuntimeIds.delete(subtreeSessionId);
         }
-        this.#subagentParentSessionIds.delete(sessionId);
-        this.#runtimeSessionIds.delete(sessionId);
-        this.#sessionOwners.delete(sessionId);
-        this.#sessionRuntimeIds.delete(sessionId);
+    }
+
+    #collectSessionSubtreeIds(sessionId: string): string[] {
+        const subtreeSessionIds: string[] = [];
+        const pendingSessionIds = [sessionId];
+        const visitedSessionIds = new Set<string>();
+        while (pendingSessionIds.length > 0) {
+            const currentSessionId = pendingSessionIds.shift();
+            if (!currentSessionId || visitedSessionIds.has(currentSessionId)) {
+                continue;
+            }
+            visitedSessionIds.add(currentSessionId);
+            subtreeSessionIds.push(currentSessionId);
+            for (const [childSessionId, parentSessionId] of this
+                .#subagentParentSessionIds) {
+                if (parentSessionId === currentSessionId) {
+                    pendingSessionIds.push(childSessionId);
+                }
+            }
+        }
+        return subtreeSessionIds;
     }
 
     #resolveSessionTarget(sessionId: string): {
@@ -970,8 +993,19 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         readonly runtimeSessionId: string | null;
         readonly targetSessionId: string | null;
     } {
-        const parentSessionId = this.#subagentParentSessionIds.get(sessionId);
-        if (!parentSessionId) {
+        let backendSessionId = sessionId;
+        const visited = new Set([sessionId]);
+        while (true) {
+            const parentSessionId =
+                this.#subagentParentSessionIds.get(backendSessionId) ?? null;
+            if (!parentSessionId || visited.has(parentSessionId)) {
+                break;
+            }
+            visited.add(parentSessionId);
+            backendSessionId = parentSessionId;
+        }
+
+        if (backendSessionId === sessionId) {
             return {
                 backendSessionId: sessionId,
                 runtimeSessionId: null,
@@ -980,7 +1014,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         }
 
         return {
-            backendSessionId: parentSessionId,
+            backendSessionId,
             runtimeSessionId: this.#runtimeSessionIds.get(sessionId) ?? null,
             targetSessionId: sessionId,
         };
@@ -1026,12 +1060,19 @@ function nativeSummaryToSnapshot(
     launch: NativeAiPrepareSessionRpcInput["launch"],
 ): AiSessionSnapshot {
     const status = nativeSessionStatusToIpc(summary.status);
+    const preservesActiveTurn =
+        status === "streaming" ||
+        status === "waiting_permission" ||
+        status === "waiting_user_input";
     return {
         ...launch.persistedSnapshot,
         activeTurnStartedAt:
-            status === "streaming"
-                ? summary.updatedAt
+            preservesActiveTurn
+                ? launch.persistedSnapshot.activeTurnStartedAt
                 : null,
+        // Preparing creates a live runtime session, even when the persisted
+        // history snapshot was closed before the application restarted.
+        closedAt: null,
         configOptions: launch.desiredSelections.configOptions,
         modeId: launch.desiredSelections.modeId,
         modelId: launch.desiredSelections.modelId,

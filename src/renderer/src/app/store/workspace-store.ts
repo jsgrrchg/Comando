@@ -5,6 +5,7 @@ import type {
     AiImageAttachment,
     AiRuntimeId,
     GitHubRepositoryRef,
+    PersistedWorkspaceSnapshot,
     ProjectFileDocument,
     WorkspaceChatHistoryTab,
     WorkspaceChatTab,
@@ -15,13 +16,15 @@ import type {
     WorkspaceGitHubPullRequestTab,
     WorkspaceGitHubPullRequestsTab,
     WorkspaceGitTab,
+    WorkspaceLayoutSnapshot,
+    WorkspaceNavigationSnapshot,
     WorkspaceReviewTab,
-    WorkspaceSnapshot,
 } from "@shared/ipc";
 import {
     getAiRuntimeDisplayName,
     type ActiveAiRuntimeId,
 } from "@shared/ai-runtimes";
+import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
 
 import {
     activatePane,
@@ -88,6 +91,7 @@ import { areGitWorktreeIdsEquivalent } from "../git/context-key";
 import { useTerminalRuntimeStore } from "@renderer/features/terminal/terminalRuntimeStore";
 import { useAiStore } from "./ai-store";
 import { useProjectsStore } from "./projects-store";
+import { getProjectContextKey } from "../projects/context-key";
 
 export type WorkspaceQuickCreateAction =
     | ActiveAiRuntimeId
@@ -95,6 +99,16 @@ export type WorkspaceQuickCreateAction =
     | "history"
     | "file"
     | "terminal";
+
+const isWorkspaceSurfaceHost =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("window") ===
+        "workspace-host";
+
+const isWorkspaceSurfaceRenderer =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("window") ===
+        "workspace-surface";
 
 export type WorkspaceOpenTarget =
     | {
@@ -109,7 +123,29 @@ export type WorkspaceOpenTarget =
           readonly type: "split";
       };
 
+export interface RuntimeWorkspaceContext {
+    readonly key: string;
+    readonly lastActivatedAt: string;
+    readonly projectId: string;
+    readonly workspace: WorkspaceTreeState;
+    readonly worktreeId: string | null;
+}
+
 interface WorkspaceStore extends WorkspaceTreeState {
+    readonly activeContextKey: string | null;
+    readonly contextsByKey: Record<string, RuntimeWorkspaceContext>;
+    readonly deferredPaneIds: ReadonlySet<string>;
+    getContextNavigationSnapshot: (
+        contextKey: string,
+    ) => WorkspaceNavigationSnapshot | null;
+    getNavigationSnapshot: () => WorkspaceNavigationSnapshot;
+    applySurfaceNavigationSnapshot: (
+        snapshot: WorkspaceNavigationSnapshot,
+    ) => void;
+    readonly openContextKeys: readonly string[];
+    readonly scopeEpoch: number;
+    activateContext: (contextKey: string) => Promise<void>;
+    closeContext: (contextKey: string) => Promise<void>;
     closeOtherTabs: (tabId: string) => Promise<void>;
     readonly error: string | null;
     readonly hydrated: boolean;
@@ -221,7 +257,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly target: WorkspaceOpenTarget;
         readonly worktreeId?: string | null;
     }) => Promise<string | null>;
-    hydrate: () => Promise<void>;
+    hydrate: (input?: {
+        readonly activeProjectId?: string | null;
+        readonly activeWorktreeId?: string | null;
+    }) => Promise<void>;
     moveActiveTab: (paneId: string, direction: MoveDirection) => Promise<void>;
     moveTab: (tabId: string, direction: MoveDirection) => Promise<void>;
     moveTabToPane: (
@@ -259,6 +298,11 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly title: string;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
+    openContext: (
+        projectId: string,
+        worktreeId?: string | null,
+        options?: { readonly emptyLayout?: boolean },
+    ) => Promise<void>;
     reloadFileTab: (tabId: string) => Promise<void>;
     refreshProjectTabs: (
         projectId: string,
@@ -267,12 +311,14 @@ interface WorkspaceStore extends WorkspaceTreeState {
     ) => Promise<void>;
     reopenLastClosedTab: () => Promise<void>;
     removeProjectTabs: (projectId: string) => Promise<void>;
+    removeWorktreeTabs: (projectId: string, worktreeId: string | null) => Promise<void>;
     pinPaneTab: (paneId: string, tabId: string) => Promise<void>;
     reorderTab: (
         paneId: string,
         tabId: string,
         targetIndex: number,
     ) => Promise<void>;
+    reorderContext: (contextKey: string, targetIndex: number) => Promise<void>;
     closeTabsForProjectPath: (
         projectId: string,
         worktreeId: string | null,
@@ -357,6 +403,9 @@ interface ClosedWorkspaceTabEntry {
 
 export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     ...createDefaultWorkspaceState(),
+    activeContextKey: null,
+    contextsByKey: {},
+    deferredPaneIds: new Set(),
     error: null,
     hydrated: false,
     lastFocusedChatTabId: null,
@@ -365,6 +414,219 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     recentActiveTabIds: [],
     recentClosedTabs: [],
     recentFocusedChatTabIds: [],
+    openContextKeys: [],
+    scopeEpoch: 0,
+
+    getContextNavigationSnapshot: (contextKey) => {
+        const context = captureVisibleWorkspaceContext(get())[contextKey];
+        if (!context) {
+            return null;
+        }
+
+        return {
+            activeContextKey: context.key,
+            contexts: [
+                {
+                    key: context.key,
+                    lastActivatedAt: context.lastActivatedAt,
+                    projectId: context.projectId,
+                    workspace: workspaceStateToSnapshot(context.workspace),
+                    worktreeId: context.worktreeId,
+                },
+            ],
+            openContextKeys: [context.key],
+            version: 3,
+        };
+    },
+
+    getNavigationSnapshot: () => workspaceStoreToNavigationSnapshot(get()),
+
+    applySurfaceNavigationSnapshot: (snapshot) => {
+        // A persistent surface already owns the live runtime tabs for its
+        // workspace. Host snapshot notifications are bookkeeping updates, not
+        // a request to reconstruct that mounted workspace on every switch.
+        if (isWorkspaceSurfaceRenderer && get().hydrated) {
+            return;
+        }
+        const navigation = normalizeWorkspaceNavigationSnapshot(snapshot).snapshot;
+        const contextsByKey = Object.fromEntries(
+            navigation.contexts.map((context) => [
+                context.key,
+                {
+                    ...context,
+                    workspace: workspaceStateFromSnapshot(
+                        context.workspace,
+                        createHydratedRuntimeTabs(context.workspace),
+                    ),
+                } satisfies RuntimeWorkspaceContext,
+            ]),
+        );
+        const openContextKeys = navigation.openContextKeys.filter((key) =>
+            Boolean(contextsByKey[key]),
+        );
+        const activeContextKey =
+            navigation.activeContextKey &&
+            openContextKeys.includes(navigation.activeContextKey)
+                ? navigation.activeContextKey
+                : (openContextKeys[0] ?? null);
+        const activeContext = activeContextKey
+            ? contextsByKey[activeContextKey]
+            : null;
+        const workspace = activeContext?.workspace ?? createDefaultWorkspaceState();
+
+        set((state) => ({
+            ...workspace,
+            activeContextKey,
+            contextsByKey,
+            deferredPaneIds: getDeferredWorkspacePaneIds(workspace),
+            openContextKeys,
+            scopeEpoch: state.scopeEpoch + 1,
+        }));
+    },
+
+    activateContext: async (contextKey) => {
+        const currentState = get();
+        if (currentState.activeContextKey === contextKey) {
+            return;
+        }
+
+        const contextsByKey = captureVisibleWorkspaceContext(currentState);
+        const targetContext = contextsByKey[contextKey];
+        if (!targetContext) {
+            return;
+        }
+
+        const scopeEpoch = currentState.scopeEpoch + 1;
+        const targetWorkspace = targetContext.workspace;
+        set({
+            ...targetWorkspace,
+            activeContextKey: contextKey,
+            contextsByKey: {
+                ...contextsByKey,
+                [contextKey]: {
+                    ...targetContext,
+                    lastActivatedAt: new Date().toISOString(),
+                },
+            },
+            deferredPaneIds: getDeferredWorkspacePaneIds(targetWorkspace),
+            error: null,
+            lastFocusedChatTabId: getPaneChatTabId(
+                targetWorkspace,
+                targetWorkspace.activePaneId,
+            ),
+            lastFocusedRuntimeId:
+                getPaneRuntimeId(
+                    targetWorkspace,
+                    targetWorkspace.activePaneId,
+                ) ?? "codex",
+            recentActiveTabIds: recordRecentTabActivation(
+                [],
+                getPaneActiveTabId(
+                    targetWorkspace,
+                    targetWorkspace.activePaneId,
+                ),
+            ),
+            recentClosedTabs: [],
+            recentFocusedChatTabIds: recordRecentChatFocus(
+                [],
+                getPaneChatTabId(
+                    targetWorkspace,
+                    targetWorkspace.activePaneId,
+                ),
+            ),
+            scopeEpoch,
+        });
+
+        if (!isWorkspaceSurfaceHost) {
+            void activateWorkspaceRuntimePanes(
+                targetWorkspace,
+                get,
+                set,
+                { contextKey, scopeEpoch },
+            );
+        }
+        await persistWorkspaceState(get);
+    },
+
+    closeContext: async (contextKey) => {
+        const state = get();
+        const contextsByKey = captureVisibleWorkspaceContext(state);
+        const targetContext = contextsByKey[contextKey];
+        if (!targetContext) {
+            return;
+        }
+
+        await Promise.all(
+            Object.values(targetContext.workspace.tabsById).map(
+                closeTabSideEffects,
+            ),
+        );
+
+        const nextContextsByKey = pruneClosedWorkspaceContexts(
+            contextsByKey,
+            state.openContextKeys.filter((key) => key !== contextKey),
+        );
+        const closedIndex = state.openContextKeys.indexOf(contextKey);
+        const openContextKeys = state.openContextKeys.filter((key) => key !== contextKey);
+
+        if (state.activeContextKey !== contextKey) {
+            set({ contextsByKey: nextContextsByKey, openContextKeys });
+            await persistWorkspaceState(get);
+            return;
+        }
+
+        const nextContextKey =
+            openContextKeys[Math.min(closedIndex, openContextKeys.length - 1)] ??
+            null;
+        const nextContext = nextContextKey
+            ? nextContextsByKey[nextContextKey]
+            : null;
+        const nextWorkspace =
+            nextContext?.workspace ?? createDefaultWorkspaceState();
+        set({
+            ...nextWorkspace,
+            activeContextKey: nextContextKey,
+            contextsByKey: nextContextsByKey,
+            deferredPaneIds: getDeferredWorkspacePaneIds(nextWorkspace),
+            error: null,
+            lastFocusedChatTabId: getPaneChatTabId(
+                nextWorkspace,
+                nextWorkspace.activePaneId,
+            ),
+            lastFocusedRuntimeId:
+                getPaneRuntimeId(
+                    nextWorkspace,
+                    nextWorkspace.activePaneId,
+                ) ?? "codex",
+            openContextKeys,
+            recentActiveTabIds: recordRecentTabActivation(
+                [],
+                getPaneActiveTabId(
+                    nextWorkspace,
+                    nextWorkspace.activePaneId,
+                ),
+            ),
+            recentClosedTabs: [],
+            recentFocusedChatTabIds: recordRecentChatFocus(
+                [],
+                getPaneChatTabId(
+                    nextWorkspace,
+                    nextWorkspace.activePaneId,
+                ),
+            ),
+            scopeEpoch: state.scopeEpoch + 1,
+        });
+
+        if (nextContextKey && !isWorkspaceSurfaceHost) {
+            void activateWorkspaceRuntimePanes(
+                nextWorkspace,
+                get,
+                set,
+                { contextKey: nextContextKey, scopeEpoch: get().scopeEpoch },
+            );
+        }
+        await persistWorkspaceState(get);
+    },
 
     closeOtherTabs: async (tabId) => {
         const paneId = findPaneIdByTabId(get(), tabId);
@@ -416,8 +678,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
             if (
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId) &&
+                areWorkspaceWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ) &&
                 matchesRelativePath
             ) {
                 fileTabsToClose.push(tab);
@@ -446,8 +711,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 if (
                     tab.kind !== "file" ||
                     tab.projectId !== projectId ||
-                    normalizeWorktreeId(tab.worktreeId) !==
-                        normalizeWorktreeId(worktreeId)
+                    !areWorkspaceWorktreeIdsEquivalent(
+                        projectId,
+                        tab.worktreeId,
+                        worktreeId,
+                    )
                 ) {
                     return false;
                 }
@@ -575,7 +843,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 projectId: input.projectId,
                 runtimeId: input.runtimeId,
                 sessionOpenMode:
-                    input.sessionOpenMode ?? existingTab.sessionOpenMode,
+                    input.sessionOpenMode ??
+                    existingTab.sessionOpenMode ??
+                    "history",
                 title: input.title,
                 worktreeId: input.worktreeId ?? null,
             };
@@ -631,7 +901,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     existingTab.id,
                 ),
             }));
-            void useAiStore.getState().ensureSession(nextTab);
+            prewarmFocusedAiSession(nextTab);
             await persistWorkspaceState(get);
             return;
         }
@@ -650,7 +920,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             kind: "chat",
             projectId: input.projectId,
             runtimeId: input.runtimeId,
-            sessionOpenMode: input.sessionOpenMode,
+            // This API opens an existing session. Loading its durable
+            // transcript must not depend on every caller passing a mode.
+            sessionOpenMode: input.sessionOpenMode ?? "history",
             sessionId: input.sessionId,
             title: input.title,
             worktreeId: input.worktreeId ?? null,
@@ -677,7 +949,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 tab.id,
             ),
         }));
-        void useAiStore.getState().ensureSession(tab);
+        prewarmFocusedAiSession(tab);
         await persistWorkspaceState(get);
     },
 
@@ -992,43 +1264,175 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             input.target,
         ),
 
-    hydrate: async () => {
-        try {
-            const snapshot = await getComandoApi().getWorkspaceSnapshot();
-            const runtimeTabs = createHydratedRuntimeTabs(snapshot);
-            const hydratedState = workspaceStateFromSnapshot(
-                snapshot,
-                runtimeTabs,
+    openContext: async (projectId, worktreeId = null, options = {}) => {
+        if (isWorkspaceSurfaceRenderer) {
+            await getComandoApi().requestWorkspaceSurfaceContext({
+                emptyLayout: options.emptyLayout,
+                projectId,
+                worktreeId,
+            });
+            return;
+        }
+        const normalizedWorktreeId =
+            worktreeId === `${projectId}:primary` ? null : worktreeId;
+        const contextKey = getProjectContextKey(
+            projectId,
+            normalizedWorktreeId,
+        );
+        const currentState = get();
+        const existingContext = captureVisibleWorkspaceContext(currentState)[contextKey];
+        if (existingContext && !options.emptyLayout) {
+            if (!currentState.openContextKeys.includes(contextKey)) {
+                set((state) => ({
+                    contextsByKey: captureVisibleWorkspaceContext(state),
+                    openContextKeys: [...state.openContextKeys, contextKey],
+                }));
+            }
+            await get().activateContext(contextKey);
+            return;
+        }
+
+        const context: RuntimeWorkspaceContext = {
+            key: contextKey,
+            lastActivatedAt: new Date().toISOString(),
+            projectId,
+            workspace: createDefaultWorkspaceState(),
+            worktreeId: normalizedWorktreeId,
+        };
+
+        if (existingContext && currentState.activeContextKey === contextKey) {
+            await Promise.all(
+                Object.values(existingContext.workspace.tabsById).map(closeTabSideEffects),
             );
+            const workspace = context.workspace;
+            const scopeEpoch = currentState.scopeEpoch + 1;
+            set((state) => ({
+                ...workspace,
+                activeContextKey: contextKey,
+                contextsByKey: {
+                    ...captureVisibleWorkspaceContext(state),
+                    [contextKey]: context,
+                },
+                deferredPaneIds: getDeferredWorkspacePaneIds(workspace),
+                error: null,
+                lastFocusedChatTabId: null,
+                lastFocusedRuntimeId: "codex",
+                openContextKeys: state.openContextKeys.includes(contextKey)
+                    ? state.openContextKeys
+                    : [...state.openContextKeys, contextKey],
+                recentActiveTabIds: [],
+                recentClosedTabs: [],
+                recentFocusedChatTabIds: [],
+                scopeEpoch,
+            }));
+            await persistWorkspaceState(get);
+            return;
+        }
+
+        set((state) => ({
+            contextsByKey: {
+                ...captureVisibleWorkspaceContext(state),
+                [contextKey]: context,
+            },
+            openContextKeys: state.openContextKeys.includes(contextKey)
+                ? state.openContextKeys
+                : [...state.openContextKeys, contextKey],
+        }));
+        await get().activateContext(contextKey);
+    },
+
+    hydrate: async (input = {}) => {
+        try {
+            const persistedSnapshot =
+                await getComandoApi().getWorkspaceSnapshot();
+            const navigation = resolveWorkspaceNavigationSnapshot(
+                persistedSnapshot,
+                input.activeProjectId ?? null,
+                input.activeWorktreeId ?? null,
+            );
+            const contextsByKey = Object.fromEntries(
+                navigation.contexts.map((context) => [
+                    context.key,
+                    {
+                        ...context,
+                        workspace: workspaceStateFromSnapshot(
+                            context.workspace,
+                            createHydratedRuntimeTabs(context.workspace),
+                        ),
+                    } satisfies RuntimeWorkspaceContext,
+                ]),
+            );
+            const openContextKeys = navigation.openContextKeys.filter(
+                (key) => Boolean(contextsByKey[key]),
+            );
+            const activeContextKey =
+                navigation.activeContextKey &&
+                openContextKeys.includes(navigation.activeContextKey)
+                    ? navigation.activeContextKey
+                    : (openContextKeys[0] ?? null);
+            const activeContext = activeContextKey
+                ? contextsByKey[activeContextKey]
+                : null;
+            const hydratedState =
+                activeContext?.workspace ?? createDefaultWorkspaceState();
+            const scopeEpoch = get().scopeEpoch + 1;
             set({
                 ...hydratedState,
+                activeContextKey,
+                contextsByKey,
+                deferredPaneIds: getDeferredWorkspacePaneIds(hydratedState),
                 error: null,
                 hydrated: true,
+                openContextKeys,
                 lastFocusedChatTabId: getPaneChatTabId(
                     hydratedState,
-                    snapshot.activePaneId,
+                    hydratedState.activePaneId,
                 ),
                 lastFocusedRuntimeId:
-                    getPaneRuntimeId(hydratedState, snapshot.activePaneId) ??
-                    "codex",
+                    getPaneRuntimeId(
+                        hydratedState,
+                        hydratedState.activePaneId,
+                    ) ?? "codex",
                 recentActiveTabIds: recordRecentTabActivation(
                     [],
-                    getPaneActiveTabId(hydratedState, snapshot.activePaneId),
+                    getPaneActiveTabId(
+                        hydratedState,
+                        hydratedState.activePaneId,
+                    ),
                 ),
                 recentFocusedChatTabIds: recordRecentChatFocus(
                     [],
-                    getPaneChatTabId(hydratedState, snapshot.activePaneId),
+                    getPaneChatTabId(
+                        hydratedState,
+                        hydratedState.activePaneId,
+                    ),
                 ),
+                scopeEpoch,
             });
-            void hydrateRuntimeTabs(snapshot, get, set);
+            if (activeContextKey && !isWorkspaceSurfaceHost) {
+                void activateWorkspaceRuntimePanes(
+                    hydratedState,
+                    get,
+                    set,
+                    { contextKey: activeContextKey, scopeEpoch },
+                );
+            }
+            if (!isWorkspaceNavigationSnapshot(persistedSnapshot)) {
+                await persistWorkspaceState(get);
+            }
         } catch (error) {
             set({
                 ...createDefaultWorkspaceState(),
+                activeContextKey: null,
+                contextsByKey: {},
+                deferredPaneIds: new Set(),
                 error:
                     error instanceof Error
                         ? error.message
                         : "Could not restore the workspace layout.",
                 hydrated: true,
+                openContextKeys: [],
+                scopeEpoch: get().scopeEpoch + 1,
             });
         }
     },
@@ -1302,7 +1706,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 }));
 
                 if (!sourceTab.document && !sourceTab.isDirty) {
-                    await loadFileTabDocument(get, set, duplicatedTab.id);
+                    await loadFileTabDocument(
+                        get,
+                        set,
+                        duplicatedTab.id,
+                        getCurrentWorkspaceScope(get),
+                    );
                 }
 
                 await persistWorkspaceState(get);
@@ -1357,7 +1766,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ),
             }));
             await persistWorkspaceState(get);
-            await loadFileTabDocument(get, set, tab.id);
+            await loadFileTabDocument(
+                get,
+                set,
+                tab.id,
+                getCurrentWorkspaceScope(get),
+                { force: true },
+            );
         } catch (error) {
             set({
                 error:
@@ -1531,7 +1946,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     reloadFileTab: async (tabId) => {
-        await loadFileTabDocument(get, set, tabId);
+        await loadFileTabDocument(
+            get,
+            set,
+            tabId,
+            getCurrentWorkspaceScope(get),
+            { force: true },
+        );
     },
 
     refreshProjectTabs: async (
@@ -1539,12 +1960,27 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         worktreeId: string | null = null,
         invalidatedRelativePaths: readonly string[] | null = null,
     ) => {
+        set((state) => {
+            const contextsByKey = invalidateInactiveContextFileDocuments(
+                state,
+                projectId,
+                worktreeId,
+                invalidatedRelativePaths,
+            );
+            return contextsByKey === state.contextsByKey
+                ? state
+                : { contextsByKey };
+        });
+
         const fileTabs = Object.values(get().tabsById).filter(
             (tab): tab is RuntimeWorkspaceFileTab =>
                 tab.kind === "file" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId),
+                areWorkspaceWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ),
         );
 
         if (fileTabs.length === 0) {
@@ -1564,7 +2000,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     return;
                 }
 
-                await loadFileTabDocument(get, set, tab.id);
+                await loadFileTabDocument(
+                    get,
+                    set,
+                    tab.id,
+                    getCurrentWorkspaceScope(get),
+                    { force: true },
+                );
             }),
         );
     },
@@ -1583,10 +2025,21 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     removeProjectTabs: async (projectId) => {
-        const tabIdsToClose = Object.values(get().tabsById)
-            .filter((tab) => tab.projectId === projectId)
-            .map((tab) => tab.id);
-        await closeTabsWithSideEffects(get, set, tabIdsToClose);
+        await removeWorkspaceContexts(get, set, (context) => context.projectId === projectId);
+    },
+
+    removeWorktreeTabs: async (projectId, worktreeId) => {
+        await removeWorkspaceContexts(
+            get,
+            set,
+            (context) =>
+                context.projectId === projectId &&
+                areGitWorktreeIdsEquivalent(
+                    projectId,
+                    context.worktreeId,
+                    worktreeId,
+                ),
+        );
     },
 
     pinPaneTab: async (paneId, tabId) => {
@@ -1602,6 +2055,36 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ...reorderTabInPane(state, paneId, tabId, targetIndex),
             error: null,
         }));
+        await persistWorkspaceState(get);
+    },
+
+    reorderContext: async (contextKey, targetIndex) => {
+        const state = get();
+        const sourceIndex = state.openContextKeys.indexOf(contextKey);
+        if (sourceIndex < 0 || state.openContextKeys.length < 2) {
+            return;
+        }
+
+        const normalizedTargetIndex = Math.max(
+            0,
+            Math.min(
+                state.openContextKeys.length - 1,
+                Number.isFinite(targetIndex)
+                    ? Math.trunc(targetIndex)
+                    : sourceIndex,
+            ),
+        );
+        if (normalizedTargetIndex === sourceIndex) {
+            return;
+        }
+
+        const openContextKeys = [...state.openContextKeys];
+        openContextKeys.splice(sourceIndex, 1);
+        openContextKeys.splice(normalizedTargetIndex, 0, contextKey);
+        set({
+            contextsByKey: captureVisibleWorkspaceContext(state),
+            openContextKeys,
+        });
         await persistWorkspaceState(get);
     },
 
@@ -1750,11 +2233,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
         const activeTabId = getPaneActiveTabId(get(), paneId);
         const activeTab = activeTabId ? get().tabsById[activeTabId] : null;
-        if (activeTab?.kind === "chat" || activeTab?.kind === "review") {
-            void useAiStore.getState().ensureSession(activeTab, {
-                force: true,
-            });
-        }
+        prepareFocusedWorkspaceTab(activeTab, get, set);
         await persistWorkspaceState(get);
     },
 
@@ -1785,11 +2264,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             })(),
         }));
         const tab = get().tabsById[tabId];
-        if (tab?.kind === "chat" || tab?.kind === "review") {
-            void useAiStore.getState().ensureSession(tab, {
-                force: true,
-            });
-        }
+        prepareFocusedWorkspaceTab(tab, get, set);
         await persistWorkspaceState(get);
     },
 
@@ -1802,6 +2277,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 
     setActivePane: async (paneId) => {
+        // A mouse-down inside a pane bubbles to the pane container. Avoid
+        // treating an interaction in the already focused pane as navigation.
+        if (get().activePaneId === paneId) {
+            return;
+        }
+
         set((state) => ({
             ...(() => {
                 const nextState = activatePane(state, paneId);
@@ -1809,6 +2290,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 const chatTabId = getPaneChatTabId(nextState, paneId);
                 return {
                     ...nextState,
+                    deferredPaneIds: removeDeferredWorkspacePane(
+                        state.deferredPaneIds,
+                        paneId,
+                    ),
                     error: null,
                     ...(chatTabId ? { lastFocusedChatTabId: chatTabId } : {}),
                     ...(runtimeId ? { lastFocusedRuntimeId: runtimeId } : {}),
@@ -1823,6 +2308,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 };
             })(),
         }));
+        const activeTabId = getPaneActiveTabId(get(), paneId);
+        const activeTab = activeTabId ? get().tabsById[activeTabId] : null;
+        prepareFocusedWorkspaceTab(activeTab, get, set);
         await persistWorkspaceState(get);
     },
 
@@ -2008,6 +2496,34 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     },
 }));
 
+// Every workspace mutation may choose a new active pane. Keep the active pane
+// outside the deferred queue regardless of which tree helper produced it.
+const unsubscribeActivePaneDeferredInvariant = useWorkspaceStore.subscribe(
+    (state) => {
+        if (!state.deferredPaneIds.has(state.activePaneId)) {
+            return;
+        }
+
+        const activeTabId = getPaneActiveTabId(state, state.activePaneId);
+        const activeTab = activeTabId ? state.tabsById[activeTabId] : null;
+        useWorkspaceStore.setState({
+            deferredPaneIds: removeDeferredWorkspacePane(
+                state.deferredPaneIds,
+                state.activePaneId,
+            ),
+        });
+        prepareFocusedWorkspaceTab(
+            activeTab,
+            useWorkspaceStore.getState,
+            useWorkspaceStore.setState,
+        );
+    },
+);
+
+if (import.meta.hot) {
+    import.meta.hot.dispose(unsubscribeActivePaneDeferredInvariant);
+}
+
 type WorkspaceSetState = typeof useWorkspaceStore.setState;
 
 const WORKSPACE_PERSIST_DEBOUNCE_MS = 180;
@@ -2017,6 +2533,8 @@ let pendingWorkspacePersistTimer: ReturnType<typeof setTimeout> | null = null;
 let workspacePersistDirty = false;
 let workspacePersistGet: GetWorkspaceState | null = null;
 let workspacePersistInFlight: Promise<void> | null = null;
+let workspacePersistFailureCount = 0;
+const pendingFileDocumentLoads = new Map<string, Promise<ProjectFileDocument>>();
 
 export function getWorkspaceTabRuntimeId(
     tab: RuntimeWorkspaceTab | null | undefined,
@@ -2098,8 +2616,11 @@ export function getBestMatchingChatTabId(
         return (
             tab?.kind === "chat" &&
             tab.projectId === input.projectId &&
-            normalizeWorktreeId(tab.worktreeId) ===
-                normalizeWorktreeId(input.worktreeId)
+            areWorkspaceWorktreeIdsEquivalent(
+                input.projectId,
+                tab.worktreeId,
+                input.worktreeId,
+            )
         );
     };
 
@@ -2671,13 +3192,236 @@ function getExistingTabMoveTargetIndex(
     return targetIndex - 1;
 }
 
+function captureVisibleWorkspaceContext(
+    state: WorkspaceStore,
+): Record<string, RuntimeWorkspaceContext> {
+    if (!state.activeContextKey) {
+        return state.contextsByKey;
+    }
+
+    const activeContext = state.contextsByKey[state.activeContextKey];
+    if (!activeContext) {
+        return state.contextsByKey;
+    }
+
+    return {
+        ...state.contextsByKey,
+        [state.activeContextKey]: {
+            ...activeContext,
+            workspace: {
+                activePaneId: state.activePaneId,
+                rootNode: state.rootNode,
+                tabsById: state.tabsById,
+            },
+        },
+    };
+}
+
+const MAX_CLOSED_WORKSPACE_CONTEXTS = 30;
+
+export function pruneClosedWorkspaceContexts(
+    contextsByKey: Record<string, RuntimeWorkspaceContext>,
+    openContextKeys: readonly string[],
+): Record<string, RuntimeWorkspaceContext> {
+    const openContextKeySet = new Set(openContextKeys);
+    const retainedClosedContextKeys = new Set(
+        Object.values(contextsByKey)
+            .filter((context) => !openContextKeySet.has(context.key))
+            .sort((left, right) =>
+                Date.parse(right.lastActivatedAt) - Date.parse(left.lastActivatedAt),
+            )
+            .slice(0, MAX_CLOSED_WORKSPACE_CONTEXTS)
+            .map((context) => context.key),
+    );
+
+    return Object.fromEntries(
+        Object.entries(contextsByKey).filter(
+            ([key]) => openContextKeySet.has(key) || retainedClosedContextKeys.has(key),
+        ),
+    );
+}
+
+async function removeWorkspaceContexts(
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+    shouldRemove: (context: RuntimeWorkspaceContext) => boolean,
+): Promise<void> {
+    const state = get();
+    const capturedContexts = captureVisibleWorkspaceContext(state);
+    const removedContexts = Object.values(capturedContexts).filter(shouldRemove);
+    if (removedContexts.length === 0) {
+        return;
+    }
+
+    await Promise.all(
+        removedContexts.flatMap((context) =>
+            Object.values(context.workspace.tabsById).map(closeTabSideEffects),
+        ),
+    );
+
+    const contextsByKey = Object.fromEntries(
+        Object.entries(capturedContexts).filter(([, context]) => !shouldRemove(context)),
+    );
+    const openContextKeys = state.openContextKeys.filter((key) => Boolean(contextsByKey[key]));
+    const activeContextKey = state.activeContextKey && contextsByKey[state.activeContextKey]
+        ? state.activeContextKey
+        : (openContextKeys[0] ?? null);
+    const activeContext = activeContextKey ? contextsByKey[activeContextKey] : null;
+    const workspace = activeContext?.workspace ?? createDefaultWorkspaceState();
+    const scopeEpoch = state.scopeEpoch + 1;
+
+    set({
+        ...workspace,
+        activeContextKey,
+        contextsByKey,
+        deferredPaneIds: getDeferredWorkspacePaneIds(workspace),
+        error: null,
+        lastFocusedChatTabId: getPaneChatTabId(workspace, workspace.activePaneId),
+        lastFocusedRuntimeId: getPaneRuntimeId(workspace, workspace.activePaneId) ?? "codex",
+        openContextKeys,
+        recentActiveTabIds: recordRecentTabActivation(
+            [],
+            getPaneActiveTabId(workspace, workspace.activePaneId),
+        ),
+        recentClosedTabs: [],
+        recentFocusedChatTabIds: recordRecentChatFocus(
+            [],
+            getPaneChatTabId(workspace, workspace.activePaneId),
+        ),
+        scopeEpoch,
+    });
+
+    if (activeContextKey && !isWorkspaceSurfaceHost) {
+        void activateWorkspaceRuntimePanes(workspace, get, set, {
+            contextKey: activeContextKey,
+            scopeEpoch,
+        });
+    }
+    await persistWorkspaceState(get);
+}
+
+function invalidateInactiveContextFileDocuments(
+    state: WorkspaceStore,
+    projectId: string,
+    worktreeId: string | null,
+    invalidatedRelativePaths: readonly string[] | null,
+): Record<string, RuntimeWorkspaceContext> {
+    let nextContextsByKey = state.contextsByKey;
+
+    for (const [contextKey, context] of Object.entries(state.contextsByKey)) {
+        if (contextKey === state.activeContextKey) {
+            continue;
+        }
+
+        let nextTabsById = context.workspace.tabsById;
+        for (const [tabId, tab] of Object.entries(
+            context.workspace.tabsById,
+        )) {
+            if (
+                tab.kind !== "file" ||
+                tab.projectId !== projectId ||
+                !areWorkspaceWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ) ||
+                !isFileTabAffectedByProjectInvalidation(
+                    tab.relativePath,
+                    invalidatedRelativePaths,
+                ) ||
+                tab.isDirty ||
+                tab.isSaving ||
+                !tab.document
+            ) {
+                continue;
+            }
+
+            if (nextTabsById === context.workspace.tabsById) {
+                nextTabsById = { ...context.workspace.tabsById };
+            }
+            nextTabsById[tabId] = {
+                ...tab,
+                document: null,
+                isLoading: false,
+                loadError: null,
+            };
+        }
+
+        if (nextTabsById === context.workspace.tabsById) {
+            continue;
+        }
+        if (nextContextsByKey === state.contextsByKey) {
+            nextContextsByKey = { ...state.contextsByKey };
+        }
+        nextContextsByKey[contextKey] = {
+            ...context,
+            workspace: {
+                ...context.workspace,
+                tabsById: nextTabsById,
+            },
+        };
+    }
+
+    return nextContextsByKey;
+}
+
+function isWorkspaceNavigationSnapshot(
+    snapshot: PersistedWorkspaceSnapshot,
+): snapshot is WorkspaceNavigationSnapshot {
+    return "version" in snapshot && snapshot.version === 3;
+}
+
+function resolveWorkspaceNavigationSnapshot(
+    snapshot: PersistedWorkspaceSnapshot,
+    activeProjectId: string | null,
+    activeWorktreeId: string | null,
+): WorkspaceNavigationSnapshot {
+    return normalizeWorkspaceNavigationSnapshot(snapshot, {
+        projectId: activeProjectId,
+        worktreeId: activeWorktreeId,
+    }).snapshot;
+}
+
+function workspaceStoreToNavigationSnapshot(
+    state: WorkspaceStore,
+): WorkspaceNavigationSnapshot {
+    const contextsByKey = captureVisibleWorkspaceContext(state);
+    const contexts = Object.values(contextsByKey).map((context) => ({
+        key: context.key,
+        lastActivatedAt: context.lastActivatedAt,
+        projectId: context.projectId,
+        workspace: workspaceStateToSnapshot(context.workspace),
+        worktreeId: context.worktreeId,
+    }));
+    const openContextKeys = state.openContextKeys.filter((key) => Boolean(contextsByKey[key]));
+
+    return {
+        activeContextKey:
+            state.activeContextKey && contextsByKey[state.activeContextKey]
+                ? state.activeContextKey
+                : null,
+        contexts,
+        openContextKeys,
+        version: 3,
+    };
+}
+
 function createHydratedRuntimeTabs(
-    snapshot: WorkspaceSnapshot,
+    snapshot: WorkspaceLayoutSnapshot,
 ): Record<string, RuntimeWorkspaceTab> {
     return Object.fromEntries(
         snapshot.tabs.map((tab) => {
             if (tab.kind === "chat") {
-                return [tab.id, tab] as const;
+                return [
+                    tab.id,
+                    {
+                        ...tab,
+                        // Tabs persisted before passive history hydration did
+                        // not have this field. Restore them without starting
+                        // a runtime so their saved transcript is preserved.
+                        sessionOpenMode: tab.sessionOpenMode ?? "history",
+                    },
+                ] as const;
             }
 
             if (tab.kind === "git") {
@@ -2734,7 +3478,7 @@ function createHydratedRuntimeTabs(
                     draftContent: "",
                     hasExternalChange: false,
                     isDirty: false,
-                    isLoading: true,
+                    isLoading: false,
                     isSaving: false,
                     loadError: null,
                     reviewContext: null,
@@ -2748,76 +3492,186 @@ function createHydratedRuntimeTabs(
     ) as Record<string, RuntimeWorkspaceTab>;
 }
 
-async function hydrateRuntimeTabs(
-    snapshot: WorkspaceSnapshot,
+function prepareFocusedWorkspaceTab(
+    tab: RuntimeWorkspaceTab | null | undefined,
     get: GetWorkspaceState,
     set: WorkspaceSetState,
+): void {
+    if (tab?.kind === "file") {
+        void loadFileTabDocument(
+            get,
+            set,
+            tab.id,
+            getCurrentWorkspaceScope(get),
+        );
+        return;
+    }
+
+    if (tab?.kind === "chat" || tab?.kind === "review") {
+        prewarmFocusedAiSession(tab);
+    }
+}
+
+function prewarmFocusedAiSession(
+    tab: RuntimeWorkspaceTab,
+): void {
+    if (tab.kind !== "chat" || tab.sessionOpenMode !== "history") {
+        return;
+    }
+
+    // History is readable without a live ACP runtime. Runtime preparation is
+    // intentionally deferred to prompt dispatch or an explicit control action.
+    void useAiStore.getState().ensureSession(tab);
+}
+
+async function activateWorkspaceRuntimePanes(
+    workspace: WorkspaceTreeState,
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+    scope?: {
+        readonly contextKey: string;
+        readonly scopeEpoch: number;
+    },
 ): Promise<void> {
-    await Promise.all(
-        snapshot.tabs.map(async (tab) => {
-            if (tab.kind === "chat") {
-                try {
-                    const persistedSession =
-                        await getComandoApi().getChatSessionState(
-                            tab.sessionId,
-                        );
+    const panes = collectPaneNodes(workspace.rootNode);
+    const focusedPane = panes.find(
+        (pane) => pane.id === workspace.activePaneId,
+    ) ?? null;
+    const focusedTab = focusedPane?.activeTabId
+        ? workspace.tabsById[focusedPane.activeTabId]
+        : null;
+    const focusedLoad = focusedTab
+        ? hydrateWorkspaceRuntimeTab(focusedTab, get, set, scope)
+        : Promise.resolve();
+    const backgroundPaneIds = panes
+        .filter((pane) => pane.id !== workspace.activePaneId)
+        .map((pane) => pane.id);
 
-                    if (!persistedSession) {
-                        return;
-                    }
+    // Let the focused pane commit before secondary panes start file I/O and
+    // history hydration. This keeps context switching responsive on dense layouts.
+    const backgroundLoads: Promise<void>[] = [];
+    for (const paneId of backgroundPaneIds) {
+        await waitForWorkspaceActivationFrame();
+        if (!isWorkspaceScopeCurrent(get, scope)) {
+            break;
+        }
 
-                    set((state) => ({
-                        error: null,
-                        tabsById: {
-                            ...state.tabsById,
-                            [tab.id]: {
-                                ...tab,
-                                draft: persistedSession.draft,
-                                projectId: persistedSession.projectId,
-                                title: persistedSession.title,
-                                worktreeId: persistedSession.worktreeId ?? null,
-                            },
-                        },
-                    }));
-                } catch {
-                    return;
-                }
+        if (!get().deferredPaneIds.has(paneId)) {
+            continue;
+        }
 
-                return;
-            }
+        set((state) => ({
+            deferredPaneIds: removeDeferredWorkspacePane(
+                state.deferredPaneIds,
+                paneId,
+            ),
+        }));
 
-            if (tab.kind === "git") {
-                return;
-            }
+        const currentState = get();
+        const currentPane = findPaneById(currentState.rootNode, paneId);
+        const currentTab = currentPane?.activeTabId
+            ? currentState.tabsById[currentPane.activeTabId]
+            : null;
+        if (currentTab) {
+            backgroundLoads.push(
+                hydrateWorkspaceRuntimeTab(currentTab, get, set, scope),
+            );
+        }
+    }
 
-            if (tab.kind === "chat_history") {
-                return;
-            }
+    await Promise.all([focusedLoad, ...backgroundLoads]);
+}
 
-            if (tab.kind === "git_commit") {
-                return;
-            }
-
-            if (
-                tab.kind === "github_issues" ||
-                tab.kind === "github_issue" ||
-                tab.kind === "github_pull_requests" ||
-                tab.kind === "github_pull_request"
-            ) {
-                return;
-            }
-
-            if (tab.kind === "review") {
-                return;
-            }
-
-            if (tab.kind === "terminal") {
-                return;
-            }
-
-            await loadFileTabDocument(get, set, tab.id);
-        }),
+function getDeferredWorkspacePaneIds(
+    workspace: WorkspaceTreeState,
+): ReadonlySet<string> {
+    // A persistent workspace surface owns a single workspace and keeps its
+    // rendered panes alive while hidden. Deferring those panes would turn a
+    // workspace switch into a partial remount instead of a view swap.
+    if (isWorkspaceSurfaceRenderer) {
+        return new Set();
+    }
+    return new Set(
+        collectPaneNodes(workspace.rootNode)
+            .filter((pane) => pane.id !== workspace.activePaneId)
+            .map((pane) => pane.id),
     );
+}
+
+function removeDeferredWorkspacePane(
+    deferredPaneIds: ReadonlySet<string>,
+    paneId: string,
+): ReadonlySet<string> {
+    if (!deferredPaneIds.has(paneId)) {
+        return deferredPaneIds;
+    }
+
+    const nextDeferredPaneIds = new Set(deferredPaneIds);
+    nextDeferredPaneIds.delete(paneId);
+    return nextDeferredPaneIds;
+}
+
+async function hydrateWorkspaceRuntimeTab(
+    tab: RuntimeWorkspaceTab,
+    get: GetWorkspaceState,
+    set: WorkspaceSetState,
+    scope?: {
+        readonly contextKey: string;
+        readonly scopeEpoch: number;
+    },
+): Promise<void> {
+    if (tab.kind === "file") {
+        await loadFileTabDocument(get, set, tab.id, scope);
+        return;
+    }
+
+    if (tab.kind === "chat" || tab.kind === "review") {
+        prewarmFocusedAiSession(tab);
+    }
+}
+
+function waitForWorkspaceActivationFrame(): Promise<void> {
+    return new Promise((resolve) => {
+        if (typeof window.requestAnimationFrame === "function") {
+            window.requestAnimationFrame(() => resolve());
+            return;
+        }
+
+        queueMicrotask(resolve);
+    });
+}
+
+function isWorkspaceScopeCurrent(
+    get: GetWorkspaceState,
+    scope?: {
+        readonly contextKey: string;
+        readonly scopeEpoch: number;
+    },
+): boolean {
+    if (!scope) {
+        return true;
+    }
+
+    const state = get();
+    return (
+        state.activeContextKey === scope.contextKey &&
+        state.scopeEpoch === scope.scopeEpoch
+    );
+}
+
+function getCurrentWorkspaceScope(get: GetWorkspaceState):
+    | {
+          readonly contextKey: string;
+          readonly scopeEpoch: number;
+      }
+    | undefined {
+    const state = get();
+    return state.activeContextKey
+        ? {
+              contextKey: state.activeContextKey,
+              scopeEpoch: state.scopeEpoch,
+          }
+        : undefined;
 }
 
 function persistWorkspaceState(get: GetWorkspaceState): Promise<void> {
@@ -2829,6 +3683,20 @@ export async function flushWorkspacePersistenceForTests(): Promise<void> {
     await flushWorkspacePersistence(undefined, { force: true });
 }
 
+export async function flushWorkspacePersistenceNow(): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (pendingWorkspacePersistTimer !== null) {
+            clearTimeout(pendingWorkspacePersistTimer);
+            pendingWorkspacePersistTimer = null;
+        }
+        await flushWorkspacePersistence(undefined, { force: true });
+        if (!workspacePersistDirty) {
+            return;
+        }
+    }
+    throw new Error("Could not persist the workspace before closing.");
+}
+
 export function resetWorkspacePersistenceForTests(): void {
     if (pendingWorkspacePersistTimer !== null) {
         clearTimeout(pendingWorkspacePersistTimer);
@@ -2838,6 +3706,8 @@ export function resetWorkspacePersistenceForTests(): void {
     workspacePersistDirty = false;
     workspacePersistGet = null;
     workspacePersistInFlight = null;
+    workspacePersistFailureCount = 0;
+    pendingFileDocumentLoads.clear();
 }
 
 function scheduleWorkspacePersistence(get: GetWorkspaceState): void {
@@ -2884,7 +3754,7 @@ async function flushWorkspacePersistence(
     if (workspacePersistInFlight) {
         await workspacePersistInFlight;
 
-        if (workspacePersistDirty) {
+        if (workspacePersistDirty && workspacePersistFailureCount === 0) {
             await flushWorkspacePersistence();
         }
 
@@ -2907,7 +3777,7 @@ async function flushWorkspacePersistence(
         }
     }
 
-    if (workspacePersistDirty) {
+    if (workspacePersistDirty && workspacePersistFailureCount === 0) {
         await flushWorkspacePersistence();
     }
 }
@@ -2916,8 +3786,9 @@ async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
     try {
         const state = get();
         await getComandoApi().saveWorkspaceSnapshot(
-            workspaceStateToSnapshot(state),
+            workspaceStoreToNavigationSnapshot(state),
         );
+        workspacePersistFailureCount = 0;
     } catch (error) {
         // Workspace persistence failure silently loses layout/tabs on restart;
         // surface it at error level so diagnostics don't start from scratch.
@@ -2925,6 +3796,17 @@ async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
             "[workspace-store] saveWorkspaceSnapshot failed",
             error,
         );
+        workspacePersistDirty = true;
+        workspacePersistFailureCount += 1;
+        if (
+            pendingWorkspacePersistTimer === null &&
+            workspacePersistFailureCount <= 3
+        ) {
+            pendingWorkspacePersistTimer = setTimeout(() => {
+                pendingWorkspacePersistTimer = null;
+                void flushWorkspacePersistence();
+            }, Math.min(1_000 * workspacePersistFailureCount, 3_000));
+        }
     }
 }
 
@@ -2932,23 +3814,23 @@ async function loadFileTabDocument(
     get: GetWorkspaceState,
     set: WorkspaceSetState,
     tabId: string,
+    scope?: {
+        readonly contextKey: string;
+        readonly scopeEpoch: number;
+    },
+    options: {
+        readonly force?: boolean;
+    } = {},
 ): Promise<void> {
+    if (!isWorkspaceScopeCurrent(get, scope)) {
+        return;
+    }
     const tab = get().tabsById[tabId];
     if (!tab || tab.kind !== "file" || tab.isTransient) {
         return;
     }
 
-    const hasSiblingLoadInFlight = Object.values(get().tabsById).some(
-        (candidate): candidate is RuntimeWorkspaceFileTab =>
-            candidate.kind === "file" &&
-            candidate.id !== tab.id &&
-            candidate.projectId === tab.projectId &&
-            normalizeWorktreeId(candidate.worktreeId) ===
-                normalizeWorktreeId(tab.worktreeId) &&
-            candidate.relativePath === tab.relativePath &&
-            candidate.isLoading,
-    );
-    if (hasSiblingLoadInFlight) {
+    if (!options.force && tab.document) {
         return;
     }
 
@@ -2958,17 +3840,22 @@ async function loadFileTabDocument(
             error: null,
         }));
 
-        const document = await getComandoApi().openProjectFile({
-            projectId: tab.projectId,
-            relativePath: tab.relativePath,
-            worktreeId: tab.worktreeId ?? null,
-        });
+        const document = await getOrCreateFileDocumentLoad(tab);
+
+        if (!isWorkspaceScopeCurrent(get, scope)) {
+            clearStaleFileTabLoading(set, tabId, scope);
+            return;
+        }
 
         set((state) => ({
             ...replaceFileDocument(state, tabId, document),
             error: null,
         }));
     } catch (error) {
+        if (!isWorkspaceScopeCurrent(get, scope)) {
+            clearStaleFileTabLoading(set, tabId, scope);
+            return;
+        }
         set((state) => ({
             ...setFileTabLoadError(
                 state,
@@ -2983,6 +3870,84 @@ async function loadFileTabDocument(
                     : "Could not refresh the open workspace tabs.",
         }));
     }
+}
+
+function getOrCreateFileDocumentLoad(
+    tab: RuntimeWorkspaceFileTab,
+): Promise<ProjectFileDocument> {
+    const key = getWorkspaceFileLoadKey(tab);
+    const existingLoad = pendingFileDocumentLoads.get(key);
+    if (existingLoad) {
+        return existingLoad;
+    }
+
+    const load = getComandoApi().openProjectFile({
+        projectId: tab.projectId,
+        relativePath: tab.relativePath,
+        worktreeId: tab.worktreeId ?? null,
+    });
+    pendingFileDocumentLoads.set(key, load);
+    void load.then(
+        () => {
+            if (pendingFileDocumentLoads.get(key) === load) {
+                pendingFileDocumentLoads.delete(key);
+            }
+        },
+        () => {
+            if (pendingFileDocumentLoads.get(key) === load) {
+                pendingFileDocumentLoads.delete(key);
+            }
+        },
+    );
+    return load;
+}
+
+function getWorkspaceFileLoadKey(tab: RuntimeWorkspaceFileTab): string {
+    return [
+        tab.projectId,
+        getWorkspaceWorktreeScopeKey(tab.projectId, tab.worktreeId),
+        tab.relativePath,
+    ].join("\u0000");
+}
+
+function clearStaleFileTabLoading(
+    set: WorkspaceSetState,
+    tabId: string,
+    scope: { readonly contextKey: string; readonly scopeEpoch: number } | undefined,
+): void {
+    if (!scope) {
+        return;
+    }
+
+    set((state) => {
+        if (state.activeContextKey === scope.contextKey) {
+            // A newer activation already owns the visible tab state.
+            return state;
+        }
+
+        const context = state.contextsByKey[scope.contextKey];
+        const tab = context?.workspace.tabsById[tabId];
+        if (!context || !tab || tab.kind !== "file" || !tab.isLoading) {
+            return state;
+        }
+
+        return {
+            ...state,
+            contextsByKey: {
+                ...state.contextsByKey,
+                [scope.contextKey]: {
+                    ...context,
+                    workspace: {
+                        ...context.workspace,
+                        tabsById: {
+                            ...context.workspace.tabsById,
+                            [tabId]: { ...tab, isLoading: false },
+                        },
+                    },
+                },
+            },
+        };
+    });
 }
 
 async function closeTabSideEffects(tab: RuntimeWorkspaceTab): Promise<void> {
@@ -3025,7 +3990,12 @@ async function restoreTabSideEffects(
 
     if (tab.kind === "file") {
         if (!tab.document && !tab.isDirty) {
-            await loadFileTabDocument(get, set, tab.id);
+            await loadFileTabDocument(
+                get,
+                set,
+                tab.id,
+                getCurrentWorkspaceScope(get),
+            );
             return;
         }
 
@@ -3212,8 +4182,11 @@ function findExistingFileTabs(
         (tab): tab is RuntimeWorkspaceFileTab =>
             tab.kind === "file" &&
             tab.projectId === projectId &&
-            normalizeWorktreeId(tab.worktreeId) ===
-                normalizeWorktreeId(worktreeId) &&
+            areGitWorktreeIdsEquivalent(
+                projectId,
+                tab.worktreeId ?? null,
+                worktreeId,
+            ) &&
             tab.relativePath === relativePath,
     );
 }
@@ -3252,8 +4225,11 @@ function findExistingGitTab(
             (tab): tab is RuntimeWorkspaceGitTab =>
                 tab.kind === "git" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId),
+                areGitWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId ?? null,
+                    worktreeId,
+                ),
         ) ?? null
     );
 }
@@ -3268,8 +4244,11 @@ function findExistingChatHistoryTab(
             (tab): tab is RuntimeWorkspaceChatHistoryTab =>
                 tab.kind === "chat_history" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId),
+                areWorkspaceWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId,
+                    worktreeId,
+                ),
         ) ?? null
     );
 }
@@ -3285,8 +4264,11 @@ function findExistingGitCommitTab(
             (tab): tab is RuntimeWorkspaceGitCommitTab =>
                 tab.kind === "git_commit" &&
                 tab.projectId === projectId &&
-                normalizeWorktreeId(tab.worktreeId) ===
-                    normalizeWorktreeId(worktreeId) &&
+                areWorkspaceWorktreeIdsEquivalent(
+                    projectId,
+                    tab.worktreeId,
+                    worktreeId,
+                ) &&
                 tab.commitSha === commitSha,
         ) ?? null
     );
@@ -3304,8 +4286,8 @@ function findExistingGitWorktreeDiffTab(
                 tab.projectId === projectId &&
                 areGitWorktreeIdsEquivalent(
                     projectId,
-                    normalizeWorktreeId(tab.worktreeId),
-                    normalizeWorktreeId(worktreeId),
+                    tab.worktreeId ?? null,
+                    worktreeId,
                 ),
         ) ?? null
     );
@@ -3330,8 +4312,11 @@ function findExistingGitHubTab(
                 tab.kind !== input.kind ||
                 !isGitHubTabKind(tab.kind) ||
                 tab.projectId !== input.projectId ||
-                normalizeWorktreeId(tab.worktreeId) !==
-                    normalizeWorktreeId(input.worktreeId) ||
+                !areWorkspaceWorktreeIdsEquivalent(
+                    input.projectId,
+                    tab.worktreeId ?? null,
+                    input.worktreeId,
+                ) ||
                 !matchesGitHubRepositoryRef(tab.ref, input.ref)
             ) {
                 return false;
@@ -3418,10 +4403,23 @@ function getComandoApi() {
     return comandoWindow.comando;
 }
 
-function normalizeWorktreeId(
+function areWorkspaceWorktreeIdsEquivalent(
+    projectId: string | null,
+    left: string | null | undefined,
+    right: string | null | undefined,
+): boolean {
+    return projectId
+        ? areGitWorktreeIdsEquivalent(projectId, left ?? null, right ?? null)
+        : (left ?? null) === (right ?? null);
+}
+
+function getWorkspaceWorktreeScopeKey(
+    projectId: string,
     worktreeId: string | null | undefined,
-): string | null {
-    return worktreeId ?? null;
+): string {
+    return areGitWorktreeIdsEquivalent(projectId, worktreeId ?? null, null)
+        ? "__primary__"
+        : (worktreeId ?? "__primary__");
 }
 
 function isFileTabAffectedByProjectInvalidation(

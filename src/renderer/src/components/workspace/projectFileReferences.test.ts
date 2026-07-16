@@ -16,6 +16,33 @@ describe("projectFileReferences", () => {
         });
     });
 
+    it("parses natural-language line references", () => {
+        expect(
+            parseProjectFileReference("manage_profiles_modal.rs (line 790)"),
+        ).toEqual({
+            endLine: 790,
+            isAbsolute: false,
+            path: "manage_profiles_modal.rs",
+            startLine: 790,
+        });
+        expect(
+            parseProjectFileReference(
+                "src/profile_selector.rs (lines 177-184)",
+            ),
+        ).toEqual({
+            endLine: 184,
+            isAbsolute: false,
+            path: "src/profile_selector.rs",
+            startLine: 177,
+        });
+        expect(parseProjectFileReference("src/app.ts, line 12")).toEqual({
+            endLine: 12,
+            isAbsolute: false,
+            path: "src/app.ts",
+            startLine: 12,
+        });
+    });
+
     it("parses parenthesized relative file paths", () => {
         expect(parseProjectFileReference("src/components/Foo(test).tsx")).toEqual({
             endLine: null,

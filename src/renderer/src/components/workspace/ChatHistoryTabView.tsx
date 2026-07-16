@@ -17,7 +17,6 @@ import type {
     AiMessage,
     AiSessionSnapshot,
     AiSessionStatus,
-    AiToolCardExpansionMode,
 } from "@shared/ipc";
 import {
     CHAT_TITLE_HISTORY_MAX_CHARS,
@@ -48,7 +47,10 @@ import {
 import { ChatContentColumn } from "./chat/ChatContentColumn";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { PlanMessage } from "./chat/PlanMessage";
+import { ToolActivitySegment } from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
+import { releaseScopedToolUiStateStore } from "./chat/toolExpansionStore";
+import { releaseCachedChatTimeline } from "./chat/chatTimelineCache";
 import {
     reconcileChatTimelineModel,
     type ChatTimelineRow,
@@ -117,7 +119,6 @@ export interface ChatHistoryTabLayoutProps {
     ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
-    readonly toolCardExpansionMode?: AiToolCardExpansionMode;
     readonly isSidebarCollapsed?: boolean;
     readonly historyScrollRef?: RefCallback<HTMLDivElement>;
     readonly transcriptScrollRef?: RefCallback<HTMLDivElement>;
@@ -841,6 +842,8 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
                     .map((candidate) => candidate.id);
 
                 await getComandoApi().deleteAiSession(session.sessionId);
+                releaseScopedToolUiStateStore(session.sessionId);
+                releaseCachedChatTimeline(session.sessionId);
 
                 for (const tabId of matchingTabIds) {
                     await closeTab(tabId);
@@ -913,7 +916,6 @@ export function ChatHistoryTabView({ tab }: ChatHistoryTabViewProps) {
         <ChatHistoryTabLayout
             chatFontFamily={chatFontFamily}
             chatFontSize={aiChatSettings.chatFontSize}
-            toolCardExpansionMode={aiChatSettings.toolCardExpansionMode}
             canRenderFileReference={canRenderFileReference}
             handleDelete={handleDelete}
             handleOpenFile={handleOpenFile}
@@ -963,7 +965,6 @@ export function ChatHistoryTabLayout({
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
-    toolCardExpansionMode = "collapsed",
     handleDelete,
     handleOpenFile,
     handleOpenImage,
@@ -1741,9 +1742,6 @@ export function ChatHistoryTabLayout({
                                             transcriptMessages={
                                                 displayedTranscriptMessages
                                             }
-                                            toolCardExpansionMode={
-                                                toolCardExpansionMode
-                                            }
                                             worktreeId={
                                                 selectedSession.worktreeId ??
                                                 null
@@ -1844,7 +1842,6 @@ interface HistoryTimelineHandlers {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly highlightQuery?: string;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -1874,7 +1871,6 @@ function HistoryTranscriptTimeline({
     projectId,
     resolveFileReference,
     snapshot,
-    toolCardExpansionMode,
     transcriptMessages,
     worktreeId,
 }: {
@@ -1902,7 +1898,6 @@ function HistoryTranscriptTimeline({
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly snapshot: AiSessionSnapshot | null;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
     readonly transcriptMessages: readonly AiMessage[];
     readonly worktreeId: string | null;
 }) {
@@ -1926,7 +1921,6 @@ function HistoryTranscriptTimeline({
             chatFontFamily,
             chatFontSize,
             highlightQuery,
-            toolCardExpansionMode,
             onOpenFile: onOpenFile ?? NOOP_OPEN_FILE,
             onOpenImage: onOpenImage ?? NOOP_OPEN_IMAGE,
             onOpenResolvedFileReference,
@@ -1939,7 +1933,6 @@ function HistoryTranscriptTimeline({
             chatFontFamily,
             chatFontSize,
             highlightQuery,
-            toolCardExpansionMode,
             onOpenFile,
             onOpenImage,
             onOpenResolvedFileReference,
@@ -1992,12 +1985,28 @@ function HistoryTimelineRow({
         );
     }
 
+    if (row.kind === "activity-segment") {
+        return (
+            <ToolActivitySegment
+                canRenderFileReference={handlers.canRenderFileReference}
+                chatFontFamily={handlers.chatFontFamily}
+                chatFontSize={handlers.chatFontSize}
+                highlightQuery={handlers.highlightQuery}
+                onOpenFile={handlers.onOpenFile}
+                onOpenFileReference={handlers.onOpenResolvedFileReference}
+                onOpenSession={handlers.onOpenSession}
+                projectId={projectId}
+                resolveFileReference={handlers.resolveFileReference}
+                segment={row}
+                worktreeId={worktreeId}
+            />
+        );
+    }
+
     return (
         <ToolActivityItem
             activity={row.reviewEntry.activity}
             canRenderFileReference={handlers.canRenderFileReference}
-            expansionMode={handlers.toolCardExpansionMode}
-            isLatestStreamingTool={false}
             onOpenFile={handlers.onOpenFile}
             onOpenFileReference={handlers.onOpenResolvedFileReference}
             onOpenSession={handlers.onOpenSession}

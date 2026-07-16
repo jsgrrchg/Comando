@@ -12,6 +12,56 @@ const repository = {
 };
 
 describe("GitHubApiClient", () => {
+    it("loads and maps every page of pull request files", async () => {
+        const fetchMock = vi
+            .fn<GitHubFetch>()
+            .mockResolvedValueOnce(
+                jsonResponse({
+                    ...rawPullRequest(),
+                    additions: 3,
+                    changed_files: 2,
+                    deletions: 1,
+                }),
+            )
+            .mockResolvedValueOnce(
+                jsonResponse(
+                    [
+                        {
+                            additions: 2,
+                            deletions: 1,
+                            filename: "src/a.ts",
+                            patch: "@@ -1 +1,2 @@\n-old\n+new\n+next",
+                            status: "modified",
+                        },
+                    ],
+                    {
+                        Link: '<https://api.github.com/repos/octocat/hello-world/pulls/7/files?page=2>; rel="next"',
+                    },
+                ),
+            )
+            .mockResolvedValueOnce(
+                jsonResponse([
+                    {
+                        additions: 1,
+                        filename: "src/new.ts",
+                        status: "added",
+                    },
+                ]),
+            );
+        const client = new GitHubApiClient({ fetch: fetchMock, token: "ghp_test" });
+
+        const result = await client.getPullRequestDiff({ number: 7, repository });
+
+        expect(result.fileListComplete).toBe(true);
+        expect(result.contentComplete).toBe(false);
+        expect(result.files[0]?.hunks[0]?.lines).toHaveLength(3);
+        expect(result.files[1]).toMatchObject({
+            contentState: "unavailable",
+            kind: "create",
+            statusLabel: "added",
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
     it("aborts pending REST requests after the request timeout", async () => {
         let requestSignal: AbortSignal | undefined;
         const fetchMock = vi.fn<GitHubFetch>((_, init) =>
@@ -169,9 +219,9 @@ function pendingAbortableBodyResponse(
     });
 }
 
-function jsonResponse(body: unknown): Response {
+function jsonResponse(body: unknown, headers?: HeadersInit): Response {
     return new Response(JSON.stringify(body), {
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...headers },
         status: 200,
     });
 }

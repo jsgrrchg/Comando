@@ -1,4 +1,9 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+    useEffect,
+    useRef,
+    useState,
+    type ReactNode,
+} from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import type {
@@ -8,7 +13,9 @@ import type {
 } from "@shared/ipc";
 
 import {
+    EMPTY_GITHUB_LIST,
     getGitHubPullRequestChecksKey,
+    getGitHubPullRequestDiffKey,
     getGitHubRepoKey,
     useGitHubStore,
 } from "@renderer/app/store/github-store";
@@ -27,6 +34,7 @@ import {
     GitHubEmptyState,
     GitHubErrorState,
     GitHubInput,
+    GitHubLabelPill,
     GitHubMergeablePill,
     GitHubSection,
     GitHubSectionLabel,
@@ -36,7 +44,9 @@ import {
     hasGitHubWritePermission,
     openGitHubWebUrl,
 } from "./GitHubWorkspacePrimitives";
+import { GitRevisionDiffView } from "./GitRevisionDiffView";
 import { GitHubActionsPanel } from "./GitHubActionsPanel";
+import { GitHubLabelPicker } from "./GitHubLabelPicker";
 import { MarkdownContent } from "./MarkdownContent";
 import { IdeActionButton } from "./ide-bar";
 
@@ -56,9 +66,15 @@ export function GitHubPullRequestTabView({
     const repoKey = getGitHubRepoKey(repo);
     const [commentDraft, setCommentDraft] = useState("");
     const [showAllCommits, setShowAllCommits] = useState(false);
+    const [showChanges, setShowChanges] = useState(false);
     const [isEditingDescription, setIsEditingDescription] = useState(false);
     const [titleDraft, setTitleDraft] = useState("");
     const [descriptionDraft, setDescriptionDraft] = useState("");
+    const [labelPickerAnchor, setLabelPickerAnchor] = useState<{
+        readonly x: number;
+        readonly y: number;
+    } | null>(null);
+    const labelPickerTriggerRef = useRef<HTMLSpanElement | null>(null);
 
     const detail = useGitHubStore(
         (state) =>
@@ -71,8 +87,24 @@ export function GitHubPullRequestTabView({
                 ? state.pullRequestChecksByRepo[repoKey]?.[detail.head.sha]
                 : undefined,
     );
+    const pullRequestDiff = useGitHubStore(
+        (state) =>
+            detail
+                ? (state.pullRequestDiffsByRepo[repoKey]?.[
+                      getGitHubPullRequestDiffKey(
+                          repo,
+                          pullRequestNumber,
+                          detail.base.sha,
+                          detail.head.sha,
+                      )
+                  ] ?? null)
+                : null,
+    );
     const authStatus = useGitHubStore(
         (state) => state.authStatusByHost[repo.host] ?? null,
+    );
+    const labels = useGitHubStore(
+        (state) => state.labelsByRepo[repoKey] ?? EMPTY_GITHUB_LIST,
     );
     const commentMutatingKeys = useGitHubStore((state) => state.mutatingKeys);
     const commentErrors = useGitHubStore((state) => state.errors);
@@ -81,7 +113,7 @@ export function GitHubPullRequestTabView({
         ? getGitHubPullRequestChecksKey(repo, detail.head.sha)
         : null;
 
-    const { isLoading, isLoadingChecks } = useGitHubStore(
+    const { isLoading, isLoadingChanges, isLoadingChecks, isLoadingLabels } = useGitHubStore(
         useShallow((state) => ({
             isLoading:
                 state.loadingKeys[
@@ -90,6 +122,9 @@ export function GitHubPullRequestTabView({
             isLoadingChecks: checksKey
                 ? (state.loadingKeys[checksKey] ?? false)
                 : false,
+            isLoadingChanges:
+                state.loadingKeys[`${repoKey}:pr:${pullRequestNumber}:diff`] ?? false,
+            isLoadingLabels: state.loadingKeys[`${repoKey}:labels`] ?? false,
         })),
     );
 
@@ -99,6 +134,7 @@ export function GitHubPullRequestTabView({
         isConvertingDraft,
         isRequestingReview,
         isUpdatingPullRequest,
+        isUpdatingLabels,
     } = useGitHubStore(
         useShallow((state) => ({
             isCommenting:
@@ -121,6 +157,10 @@ export function GitHubPullRequestTabView({
                 state.mutatingKeys[
                     `${repoKey}:pr:${pullRequestNumber}:update`
                 ] ?? false,
+            isUpdatingLabels:
+                state.mutatingKeys[
+                    `${repoKey}:pr:${pullRequestNumber}:labels`
+                ] ?? false,
         })),
     );
 
@@ -132,6 +172,9 @@ export function GitHubPullRequestTabView({
         requestReviewError,
         checksError,
         updateError,
+        labelMutationError,
+        labelsError,
+        changesError,
     } = useGitHubStore(
         useShallow((state) => ({
             checksError: checksKey ? (state.errors[checksKey] ?? null) : null,
@@ -157,6 +200,13 @@ export function GitHubPullRequestTabView({
                 state.errors[
                     `${repoKey}:pr:${pullRequestNumber}:update`
                 ] ?? null,
+            labelMutationError:
+                state.errors[
+                    `${repoKey}:pr:${pullRequestNumber}:labels`
+                ] ?? null,
+            labelsError: state.errors[`${repoKey}:labels`] ?? null,
+            changesError:
+                state.errors[`${repoKey}:pr:${pullRequestNumber}:diff`] ?? null,
         })),
     );
 
@@ -165,6 +215,9 @@ export function GitHubPullRequestTabView({
     );
     const ensurePullRequestDetail = useGitHubStore(
         (state) => state.ensurePullRequestDetail,
+    );
+    const ensurePullRequestDiff = useGitHubStore(
+        (state) => state.ensurePullRequestDiff,
     );
     const refreshPullRequestChecks = useGitHubStore(
         (state) => state.refreshPullRequestChecks,
@@ -185,6 +238,10 @@ export function GitHubPullRequestTabView({
     const updatePullRequest = useGitHubStore(
         (state) => state.updatePullRequest,
     );
+    const refreshLabels = useGitHubStore((state) => state.refreshLabels);
+    const setPullRequestLabels = useGitHubStore(
+        (state) => state.setPullRequestLabels,
+    );
     const openGitCommitTab = useWorkspaceStore(
         (state) => state.openGitCommitTab,
     );
@@ -193,12 +250,16 @@ export function GitHubPullRequestTabView({
         authStatus,
         "pull_requests",
     );
+    const canEditLabels =
+        canWritePullRequests || hasGitHubWritePermission(authStatus, "issues");
     const canCommentPullRequests =
         hasGitHubWritePermission(authStatus, "issues") ||
         canWritePullRequests;
     const writePermissionLabel = getGitHubWritePermissionLabel("pull_requests");
     const commentPermissionLabel =
         "Your GitHub token cannot write PR conversation comments.";
+    const labelPermissionLabel =
+        "Your GitHub token cannot edit pull request labels.";
 
     useEffect(() => {
         let cancelled = false;
@@ -231,6 +292,18 @@ export function GitHubPullRequestTabView({
         refreshAuthStatus,
         repo,
         repoKey,
+    ]);
+
+    useEffect(() => {
+        if (!showChanges || pullRequestDiff || isLoadingChanges) return;
+        void ensurePullRequestDiff(repo, pullRequestNumber).catch(() => undefined);
+    }, [
+        ensurePullRequestDiff,
+        isLoadingChanges,
+        pullRequestDiff,
+        pullRequestNumber,
+        repo,
+        showChanges,
     ]);
 
     useEffect(() => {
@@ -281,6 +354,11 @@ export function GitHubPullRequestTabView({
                         force: true,
                     },
                 ).catch(() => undefined);
+            }
+            if (showChanges || pullRequestDiff) {
+                await ensurePullRequestDiff(repo, pullRequestNumber, {
+                    force: true,
+                }).catch(() => undefined);
             }
         }
     };
@@ -365,6 +443,33 @@ export function GitHubPullRequestTabView({
         setIsEditingDescription(false);
     };
 
+    const handleOpenLabelPicker = () => {
+        if (!detail || !canEditLabels) {
+            return;
+        }
+
+        const rect = labelPickerTriggerRef.current?.getBoundingClientRect();
+        if (!rect) {
+            return;
+        }
+
+        setLabelPickerAnchor({ x: rect.left, y: rect.bottom + 6 });
+        void refreshLabels(repo).catch(() => undefined);
+    };
+
+    const handleSaveLabels = async (labelNames: readonly string[]) => {
+        if (!detail || !canEditLabels) {
+            return;
+        }
+
+        try {
+            await setPullRequestLabels(repo, pullRequestNumber, labelNames);
+            setLabelPickerAnchor(null);
+        } catch {
+            // The store exposes the mutation error while the picker remains open.
+        }
+    };
+
     const stateTone = detail?.draft
         ? "draft"
         : detail?.mergedAt
@@ -399,12 +504,79 @@ export function GitHubPullRequestTabView({
         commits.length - COMMITS_PREVIEW_LIMIT,
     );
 
+    if (showChanges) {
+        return (
+            <GitHubTabShell
+                header={
+                    <GitHubTabHeader
+                        actions={
+                            <>
+                                <IdeActionButton onClick={() => setShowChanges(false)}>
+                                    Overview
+                                </IdeActionButton>
+                                <IdeActionButton onClick={() => void handleRefresh()}>
+                                    Refresh
+                                </IdeActionButton>
+                            </>
+                        }
+                        meta={detail ? <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-text-primary">{detail.title}</span> : null}
+                        repo={repo}
+                        title={`PR #${pullRequestNumber}`}
+                    />
+                }
+                scrollScope={{
+                    entityId: `${repoKey}/pulls/${pullRequestNumber}:changes`,
+                    projectId,
+                    surface: "github_pull_request_changes",
+                    worktreeId: worktreeId ?? null,
+                }}
+            >
+                {({ scrollContainerRef }) => (
+                    <div className="github-document flex min-h-full flex-col">
+                        <GitHubAuthNotice authStatus={authStatus} />
+                        {isLoadingChanges ? <div className="py-6 text-[12px] text-text-secondary">Loading pull request changes...</div> : null}
+                        {changesError ? <div className="space-y-3 py-3"><GitHubErrorState>{changesError}</GitHubErrorState><IdeActionButton onClick={() => void ensurePullRequestDiff(repo, pullRequestNumber, { force: true })}>Retry</IdeActionButton></div> : null}
+                        {pullRequestDiff ? (
+                            <>
+                                {detail ? (
+                                    <h1 className="github-document-title pb-2">
+                                        {detail.title}
+                                    </h1>
+                                ) : null}
+                                <div className="py-2 text-[11px] text-text-secondary">
+                                    {pullRequestDiff.incompleteReason ??
+                                        "Reviewing the net change in this pull request."}
+                                </div>
+                                <GitRevisionDiffView
+                                    additions={pullRequestDiff.additions}
+                                    collapseStorageKey={`github-pr-diff:${repoKey}:${pullRequestDiff.number}:${pullRequestDiff.baseSha}:${pullRequestDiff.headSha}`}
+                                    deletions={pullRequestDiff.deletions}
+                                    files={pullRequestDiff.files}
+                                    key={`${pullRequestDiff.baseSha}:${pullRequestDiff.headSha}`}
+                                    scrollContainerRef={scrollContainerRef}
+                                    totalFileCount={pullRequestDiff.totalFileCount}
+                                />
+                            </>
+                        ) : null}
+                    </div>
+                )}
+            </GitHubTabShell>
+        );
+    }
+
     return (
         <GitHubTabShell
             header={
                 <GitHubTabHeader
                     actions={
                         <>
+                            <IdeActionButton
+                                onClick={() => setShowChanges((current) => !current)}
+                            >
+                                {showChanges
+                                    ? "Overview"
+                                    : "View Changes"}
+                            </IdeActionButton>
                             <IdeActionButton
                                 onClick={() =>
                                     openGitHubWebUrl(
@@ -447,7 +619,7 @@ export function GitHubPullRequestTabView({
                 worktreeId: worktreeId ?? null,
             }}
         >
-            <div className="space-y-4 p-4">
+            <div className="github-document space-y-8">
                 <GitHubAuthNotice authStatus={authStatus} />
                 {detailError ? (
                     <GitHubErrorState>{detailError}</GitHubErrorState>
@@ -460,26 +632,47 @@ export function GitHubPullRequestTabView({
                 ) : null}
                 {detail ? (
                     <>
-                        <section
-                            className="space-y-3 rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary px-4 py-3"
-                        >
-                            {isEditingDescription ? (
-                                <input
-                                    className="h-9 w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 text-[18px] font-semibold leading-7 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
-                                    disabled={isUpdatingPullRequest}
-                                    onChange={(event) =>
-                                        setTitleDraft(
-                                            event.currentTarget.value,
-                                        )
-                                    }
-                                    placeholder="Pull request title"
-                                    value={titleDraft}
-                                />
-                            ) : (
-                                <h1 className="text-[18px] font-semibold leading-7 text-text-primary">
-                                    {detail.title}
-                                </h1>
-                            )}
+                        <section className="space-y-4">
+                            <div className="flex min-w-0 items-start gap-1.5">
+                                <div className="min-w-0 flex-1">
+                                    {isEditingDescription ? (
+                                        <input
+                                            className="h-11 w-full rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 text-[22px] font-bold leading-7 text-text-primary outline-none placeholder:text-text-secondary/60 focus:border-[color-mix(in_srgb,var(--color-accent)_55%,var(--color-border))] disabled:cursor-not-allowed disabled:opacity-50"
+                                            disabled={isUpdatingPullRequest}
+                                            onChange={(event) =>
+                                                setTitleDraft(
+                                                    event.currentTarget.value,
+                                                )
+                                            }
+                                            placeholder="Pull request title"
+                                            value={titleDraft}
+                                        />
+                                    ) : (
+                                        <h1 className="github-document-title">
+                                            {detail.title}
+                                        </h1>
+                                    )}
+                                </div>
+                                <span
+                                    className="shrink-0"
+                                    ref={labelPickerTriggerRef}
+                                >
+                                    <button
+                                        aria-label="Edit labels"
+                                        className="review-icon-btn"
+                                        disabled={!canEditLabels}
+                                        onClick={handleOpenLabelPicker}
+                                        title={
+                                            canEditLabels
+                                                ? "Edit labels"
+                                                : labelPermissionLabel
+                                        }
+                                        type="button"
+                                    >
+                                        <PencilIcon />
+                                    </button>
+                                </span>
+                            </div>
                             <div className="flex flex-wrap items-center gap-2">
                                 <GitHubStatePill tone={stateTone}>
                                     {stateLabel}
@@ -500,6 +693,16 @@ export function GitHubPullRequestTabView({
                                     {formatGitHubDateTime(detail.updatedAt)}
                                 </span>
                             </div>
+                            {detail.labels.length > 0 ? (
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                    {detail.labels.map((label) => (
+                                        <GitHubLabelPill
+                                            key={label.id}
+                                            label={label}
+                                        />
+                                    ))}
+                                </div>
+                            ) : null}
                             <div className="flex flex-wrap items-center gap-2 text-[11px]">
                                 <BranchChip>{detail.head.label}</BranchChip>
                                 <span className="text-text-secondary">
@@ -591,6 +794,50 @@ export function GitHubPullRequestTabView({
                             ) : null}
                         </section>
 
+                        {showChanges ? (
+                            <GitHubSection
+                                title="Changes"
+                                tone="info"
+                            >
+                                {isLoadingChanges ? (
+                                    <div className="py-6 text-[12px] text-text-secondary">
+                                        Loading pull request changes...
+                                    </div>
+                                ) : changesError ? (
+                                    <div className="space-y-3 py-3">
+                                        <GitHubErrorState>
+                                            {changesError}
+                                        </GitHubErrorState>
+                                        <IdeActionButton
+                                            onClick={() =>
+                                                void ensurePullRequestDiff(
+                                                    repo,
+                                                    pullRequestNumber,
+                                                    { force: true },
+                                                )
+                                            }
+                                        >
+                                            Retry
+                                        </IdeActionButton>
+                                    </div>
+                                ) : pullRequestDiff ? (
+                                    <div className="-mx-5 flex min-h-[360px] flex-col">
+                                        {pullRequestDiff.incompleteReason ? (
+                                            <div className="px-5 py-2 text-[11px] text-[color:var(--diff-warn)]">
+                                                {pullRequestDiff.incompleteReason}
+                                            </div>
+                                        ) : null}
+                                        <GitRevisionDiffView
+                                            additions={pullRequestDiff.additions}
+                                            deletions={pullRequestDiff.deletions}
+                                            files={pullRequestDiff.files}
+                                            totalFileCount={pullRequestDiff.totalFileCount}
+                                        />
+                                    </div>
+                                ) : null}
+                            </GitHubSection>
+                        ) : null}
+
                         <GitHubSection
                             actions={
                                 !isEditingDescription ? (
@@ -609,8 +856,8 @@ export function GitHubPullRequestTabView({
                             }
                             bodyClassName={
                                 isEditingDescription
-                                    ? "space-y-3 px-4 py-4"
-                                    : "px-4 py-4 text-[13px] leading-6 text-text-secondary"
+                                    ? "space-y-3 pt-4"
+                                    : "github-document-markdown pt-4"
                             }
                             title="Description"
                             tone="accent"
@@ -633,12 +880,13 @@ export function GitHubPullRequestTabView({
                                             {updateError}
                                         </div>
                                     ) : null}
-                                    <div className="rounded-md border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-primary px-3 py-2">
+                                    <div className="border-t border-[color-mix(in_srgb,var(--color-border)_55%,transparent)] pt-3">
                                         <GitHubSectionLabel>
                                             Preview
                                         </GitHubSectionLabel>
-                                        <div className="mt-2 max-h-72 overflow-y-auto text-[12px] leading-5 text-text-secondary">
+                                        <div className="github-document-markdown mt-3 max-h-72 overflow-y-auto">
                                             <MarkdownContent
+                                                chatFontSize={14}
                                                 content={
                                                     descriptionDraft.trim() ||
                                                     "_No description._"
@@ -674,6 +922,7 @@ export function GitHubPullRequestTabView({
                                 </>
                             ) : (
                                 <MarkdownContent
+                                    chatFontSize={14}
                                     content={
                                         detail.body || "_No description._"
                                     }
@@ -695,73 +944,88 @@ export function GitHubPullRequestTabView({
                                     </IdeActionButton>
                                 ) : null
                             }
-                            bodyClassName="space-y-1 px-2 py-2"
+                            bodyClassName="divide-y divide-[color-mix(in_srgb,var(--color-border)_55%,transparent)] pt-2"
                             count={commits.length}
                             title="Commits"
                             tone="info"
                         >
                             <>
-                                {visibleCommits.map((commit) => (
-                                    <button
-                                        className="flex w-full items-center justify-between gap-3 rounded-md border-l-[3px] border-l-transparent px-2 py-1 text-left text-[11px] transition hover:border-l-[color-mix(in_srgb,var(--color-accent)_60%,transparent)] hover:bg-bg-tertiary"
-                                        key={commit.sha}
-                                        onClick={() =>
-                                            void openGitCommitTab({
-                                                commitSha: commit.sha,
-                                                projectId,
-                                                subject:
-                                                    commit.message.split(
-                                                        "\n",
-                                                    )[0] ?? commit.shortSha,
-                                                worktreeId:
-                                                    worktreeId ?? null,
-                                            })
-                                        }
-                                        type="button"
-                                    >
-                                        <span className="min-w-0 flex-1 truncate text-text-primary">
-                                            {commit.message.split("\n")[0]}
-                                        </span>
-                                        {commit.additions != null ||
-                                        commit.deletions != null ? (
-                                            <span
-                                                className="shrink-0 text-[10.5px]"
-                                                style={{
-                                                    fontFamily:
-                                                        "var(--font-mono)",
-                                                }}
+                                {visibleCommits.map((commit) => {
+                                    const subject =
+                                        commit.message.split("\n")[0] ??
+                                        commit.shortSha;
+                                    const handleOpenCommit = () =>
+                                        void openGitCommitTab({
+                                            commitSha: commit.sha,
+                                            projectId,
+                                            subject,
+                                            worktreeId: worktreeId ?? null,
+                                        });
+
+                                    return (
+                                        <div
+                                            className="group/commit -mx-2 flex items-center rounded-md px-2 transition-colors hover:bg-[color-mix(in_srgb,var(--color-bg-tertiary)_55%,transparent)] focus-within:bg-[color-mix(in_srgb,var(--color-bg-tertiary)_55%,transparent)]"
+                                            key={commit.sha}
+                                        >
+                                            <button
+                                                className="flex min-w-0 flex-1 items-center justify-between gap-3 py-2.5 text-left text-[12px]"
+                                                onClick={handleOpenCommit}
+                                                title={`Open commit ${commit.shortSha}`}
+                                                type="button"
                                             >
-                                                {commit.additions != null ? (
-                                                    <span
-                                                        style={{
-                                                            color: "var(--diff-add)",
-                                                        }}
-                                                    >
-                                                        +{commit.additions}
-                                                    </span>
-                                                ) : null}
-                                                {commit.additions != null &&
+                                                <span className="min-w-0 flex-1 truncate text-text-primary">
+                                                    {subject}
+                                                </span>
+                                                {commit.additions != null ||
                                                 commit.deletions != null ? (
-                                                    <span> </span>
-                                                ) : null}
-                                                {commit.deletions != null ? (
                                                     <span
+                                                        className="shrink-0 text-[10.5px]"
                                                         style={{
-                                                            color: "var(--diff-remove)",
+                                                            fontFamily:
+                                                                "var(--font-mono)",
                                                         }}
                                                     >
-                                                        -{commit.deletions}
+                                                        {commit.additions != null ? (
+                                                            <span
+                                                                style={{
+                                                                    color: "var(--diff-add)",
+                                                                }}
+                                                            >
+                                                                +{commit.additions}
+                                                            </span>
+                                                        ) : null}
+                                                        {commit.additions != null &&
+                                                        commit.deletions != null ? (
+                                                            <span> </span>
+                                                        ) : null}
+                                                        {commit.deletions != null ? (
+                                                            <span
+                                                                style={{
+                                                                    color: "var(--diff-remove)",
+                                                                }}
+                                                            >
+                                                                -{commit.deletions}
+                                                            </span>
+                                                        ) : null}
                                                     </span>
                                                 ) : null}
-                                            </span>
-                                        ) : null}
-                                        <span className="shrink-0 font-mono text-text-secondary">
-                                            {commit.shortSha}
-                                        </span>
-                                    </button>
-                                ))}
+                                                <span className="shrink-0 font-mono text-text-secondary">
+                                                    {commit.shortSha}
+                                                </span>
+                                            </button>
+                                            <div className="ml-3 shrink-0">
+                                                <IdeActionButton
+                                                    onClick={handleOpenCommit}
+                                                    title={`Open commit ${commit.shortSha}`}
+                                                >
+                                                    Open
+                                                </IdeActionButton>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                                 {commits.length === 0 ? (
-                                    <div className="px-2 py-3 text-[11px] text-text-secondary">
+                                    <div className="py-3 text-[12px] text-text-secondary">
                                         No commit details available yet.
                                     </div>
                                 ) : null}
@@ -773,7 +1037,7 @@ export function GitHubPullRequestTabView({
                             title="Conversation"
                             tone="neutral"
                         >
-                            <div className="space-y-3">
+                            <div className="space-y-5">
                                 <GitHubCommentList
                                     canEdit={canCommentPullRequests}
                                     comments={detail.comments}
@@ -821,6 +1085,19 @@ export function GitHubPullRequestTabView({
                     </>
                 ) : null}
             </div>
+            {detail && labelPickerAnchor ? (
+                <GitHubLabelPicker
+                    anchor={labelPickerAnchor}
+                    error={labelMutationError ?? labelsError}
+                    isLoading={isLoadingLabels}
+                    isSaving={isUpdatingLabels}
+                    item={detail}
+                    key={detail.number}
+                    labels={labels}
+                    onClose={() => setLabelPickerAnchor(null)}
+                    onSave={(labelNames) => void handleSaveLabels(labelNames)}
+                />
+            ) : null}
         </GitHubTabShell>
     );
 }
@@ -836,9 +1113,28 @@ function BranchChip({ children }: { readonly children: ReactNode }) {
     );
 }
 
+function PencilIcon() {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height="14"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.7"
+            viewBox="0 0 24 24"
+            width="14"
+        >
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+        </svg>
+    );
+}
+
 function PullRequestOverviewSkeleton() {
     return (
-        <div className="animate-pulse space-y-3 rounded-lg border border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary px-4 py-3">
+        <div className="animate-pulse space-y-3 py-2">
             <div className="flex gap-2">
                 <div className="h-4 w-16 rounded bg-bg-tertiary" />
                 <div className="h-4 w-24 rounded bg-bg-tertiary" />

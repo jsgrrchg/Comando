@@ -7,9 +7,12 @@ import {
     type ChatTimelineRow,
 } from "./chatTimelineModel";
 import {
+    CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX,
+    CHAT_ACTIVITY_RAIL_HEADER_HEIGHT_PX,
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
     CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
     CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+    calculateChatTimelineVirtualizationCost,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
     getChatTimelineEffectiveContentWidth,
@@ -114,6 +117,27 @@ function createToolRow({
     };
 }
 
+function createActivitySegmentRow(): ChatTimelineRow {
+    const model = reconcileChatTimelineModel(null, {
+        messages: [],
+        status: "idle",
+        toolActivity: [
+            createActivity({
+                id: "read-1",
+                kind: "read",
+                rawInputJson: JSON.stringify({ file_path: "src/app.ts" }),
+                title: "Read src/app.ts",
+            }),
+        ],
+        trackedFiles: [],
+    });
+    const row = model.orderedRows[0];
+    if (!row || row.kind !== "activity-segment") {
+        throw new Error("Expected a tool activity segment row.");
+    }
+    return row;
+}
+
 function createElementRect(top: number): HTMLElement {
     return {
         getBoundingClientRect: () => ({ top }) as DOMRect,
@@ -144,10 +168,140 @@ describe("chatTimelineVirtualization", () => {
         ).toBe(true);
     });
 
+    it("counts expanded segment entries and preview weight", () => {
+        const segment = createActivitySegmentRow();
+        if (segment.kind !== "activity-segment") {
+            throw new Error("Expected an activity segment.");
+        }
+
+        const repeatedEntries = Array.from(
+            { length: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD },
+            () => segment.entries[0],
+        );
+
+        expect(
+            calculateChatTimelineVirtualizationCost([
+                {
+                    ...segment,
+                    entries: repeatedEntries,
+                    items: repeatedEntries.map((entry) => ({
+                        entry,
+                        kind: "tool" as const,
+                    })),
+                },
+            ]),
+        ).toBe(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD + 1);
+    });
+
     it("preserves row ids as virtual keys", () => {
         const row = createMessageRow({ id: "message-42" });
 
         expect(getChatTimelineRowKey(row)).toBe("message:message-42");
+    });
+
+    it("uses the stable activity segment id as its virtual key", () => {
+        const row = createActivitySegmentRow();
+
+        expect(getChatTimelineRowKey(row)).toBe(
+            "activity-segment:session-1:read-1",
+        );
+    });
+
+    it("estimates compact segments at a fixed width-insensitive height", () => {
+        const row = createActivitySegmentRow();
+        const context = {
+            chatFontFamily: "Inter",
+            chatFontSize: 13,
+            gapPx: 8,
+            width: 640,
+        };
+
+        expect(estimateChatTimelineRowHeight(row, context)).toBe(
+            CHAT_ACTIVITY_RAIL_HEADER_HEIGHT_PX + 8,
+        );
+        expect(CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX).toBe(28);
+        expect(isWidthSensitiveChatTimelineRow(row)).toBe(false);
+        const wideKey = getChatTimelineRowMeasurementKey(row, context);
+        expect(
+            getChatTimelineRowMeasurementKey(row, {
+                ...context,
+                width: 920,
+            }),
+        ).toBe(wideKey);
+    });
+
+    it("estimates collapsed mixed activity as a summary-only rail", () => {
+        const createDiff = (id: string, path: string, second: number) =>
+            createActivity({
+                createdAt: `2026-04-14T00:00:0${second}.000Z`,
+                diffs: [
+                    {
+                        hunks: [],
+                        isText: true,
+                        kind: "update" as const,
+                        newText: "next",
+                        oldText: "prev",
+                        path,
+                        previousPath: null,
+                        reversible: true,
+                    },
+                ],
+                id,
+                kind: "edit",
+                title: `Edit ${path}`,
+                updatedAt: `2026-04-14T00:00:0${second}.000Z`,
+            });
+        const model = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [
+                createActivity({
+                    id: "read-1",
+                    kind: "read",
+                    rawInputJson: JSON.stringify({ file_path: "src/app.ts" }),
+                    title: "Read src/app.ts",
+                }),
+                createDiff("edit-1", "src/app.ts", 1),
+                createDiff("edit-2", "src/parser.ts", 2),
+                createActivity({
+                    createdAt: "2026-04-14T00:00:03.000Z",
+                    exitCode: 1,
+                    id: "test-1",
+                    kind: "shell",
+                    status: "failed",
+                    terminalOutput: "Tests failed",
+                    title: "Run tests",
+                    updatedAt: "2026-04-14T00:00:03.000Z",
+                }),
+            ],
+            trackedFiles: [],
+        });
+        const row = model.orderedRows[0];
+
+        expect(model.orderedRows).toHaveLength(1);
+        expect(row?.kind).toBe("activity-segment");
+        if (!row || row.kind !== "activity-segment") {
+            throw new Error("Expected one mixed activity segment.");
+        }
+        expect(row.entries.map((entry) => entry.policy)).toEqual([
+            "groupable",
+            "standalone-change",
+            "standalone-change",
+            "standalone-attention",
+        ]);
+        expect(
+            estimateChatTimelineRowHeight(row, {
+                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+                width: 640,
+            }),
+        ).toBe(48);
+        expect(
+            estimateChatTimelineRowHeight(row, {
+                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+                toolActivityDefaultExpansion: "expanded",
+                width: 640,
+            }),
+        ).toBe(198);
     });
 
     it("calculates measured row gaps without duplicating the parent gap", () => {
@@ -171,7 +325,7 @@ describe("chatTimelineVirtualization", () => {
         ).toBe(0);
     });
 
-    it("returns positive estimates and accounts for content, gap, and expansion mode", () => {
+    it("returns positive estimates and accounts for content and gaps", () => {
         const shortMessage = createMessageRow({ content: "short" });
         const richMessage = createMessageRow({
             attachments: [
@@ -212,33 +366,21 @@ describe("chatTimelineVirtualization", () => {
 
         const messageHeight = estimateChatTimelineRowHeight(shortMessage, {
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            toolCardExpansionMode: "collapsed",
         });
         const richMessageHeight = estimateChatTimelineRowHeight(richMessage, {
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            toolCardExpansionMode: "collapsed",
         });
         const collapsedToolHeight = estimateChatTimelineRowHeight(
             collapsedTool,
             {
                 gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-                toolCardExpansionMode: "collapsed",
             },
         );
-        const expandedToolHeight = estimateChatTimelineRowHeight(
-            collapsedTool,
-            {
-                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-                toolCardExpansionMode: "expanded",
-            },
-        );
-
         expect(messageHeight).toBeGreaterThan(CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX);
         expect(richMessageHeight).toBeGreaterThan(messageHeight);
         expect(collapsedToolHeight).toBeGreaterThan(
             CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
         );
-        expect(expandedToolHeight).toBeGreaterThan(collapsedToolHeight);
     });
 
     it("uses the available width when estimating message wrapping", () => {
@@ -251,13 +393,11 @@ describe("chatTimelineVirtualization", () => {
         const narrowHeight = estimateChatTimelineRowHeight(longMessage, {
             chatFontSize: 13,
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            toolCardExpansionMode: "collapsed",
             width: 320,
         });
         const wideHeight = estimateChatTimelineRowHeight(longMessage, {
             chatFontSize: 13,
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            toolCardExpansionMode: "collapsed",
             width: 960,
         });
 
@@ -275,13 +415,11 @@ describe("chatTimelineVirtualization", () => {
         const thinkingHeight = estimateChatTimelineRowHeight(thinkingRow, {
             chatFontSize: 13,
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            toolCardExpansionMode: "collapsed",
             width: 520,
         });
         const assistantHeight = estimateChatTimelineRowHeight(assistantRow, {
             chatFontSize: 13,
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            toolCardExpansionMode: "collapsed",
             width: 520,
         });
 
@@ -312,16 +450,32 @@ describe("chatTimelineVirtualization", () => {
             collapsedGenericTool,
             {
                 gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-                toolCardExpansionMode: "collapsed",
             },
         );
         const failedHeight = estimateChatTimelineRowHeight(failedGenericTool, {
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            toolCardExpansionMode: "collapsed",
         });
 
         expect(collapsedHeight).toBeLessThan(64);
         expect(failedHeight).toBeGreaterThan(collapsedHeight);
+    });
+
+    it("uses the compact estimate for lifecycle status rows", () => {
+        const statusRow = createToolRow({
+            activity: createActivity({
+                id: "codex-acp:status:item:wait-1",
+                kind: "other",
+                rawInputJson: JSON.stringify({ ignored: true }),
+                summary: "1000ms",
+                title: "Waiting",
+            }),
+        });
+
+        expect(
+            estimateChatTimelineRowHeight(statusRow, {
+                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            }),
+        ).toBe(28 + CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX);
     });
 
     it("calculates scroll margin from the history offset inside the scroller", () => {
@@ -359,8 +513,6 @@ describe("chatTimelineVirtualization", () => {
             chatFontFamily: "Inter",
             chatFontSize: 13,
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            isLatestStreamingTool: false,
-            toolCardExpansionMode: "collapsed",
             width: 640,
         });
 
@@ -369,8 +521,6 @@ describe("chatTimelineVirtualization", () => {
                 chatFontFamily: "Inter",
                 chatFontSize: 14,
                 gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-                isLatestStreamingTool: false,
-                toolCardExpansionMode: "collapsed",
                 width: 640,
             }),
         ).not.toBe(base);
@@ -379,18 +529,6 @@ describe("chatTimelineVirtualization", () => {
                 chatFontFamily: "Inter",
                 chatFontSize: 13,
                 gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-                isLatestStreamingTool: false,
-                toolCardExpansionMode: "expanded",
-                width: 640,
-            }),
-        ).not.toBe(base);
-        expect(
-            getChatTimelineRowMeasurementKey(row, {
-                chatFontFamily: "Inter",
-                chatFontSize: 13,
-                gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-                isLatestStreamingTool: false,
-                toolCardExpansionMode: "collapsed",
                 width: 672,
             }),
         ).not.toBe(base);
@@ -399,8 +537,6 @@ describe("chatTimelineVirtualization", () => {
                 chatFontFamily: "Inter",
                 chatFontSize: 13,
                 gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-                isLatestStreamingTool: false,
-                toolCardExpansionMode: "collapsed",
                 width: 641,
             }),
         ).toBe(base);
@@ -411,27 +547,40 @@ describe("chatTimelineVirtualization", () => {
                     chatFontFamily: "Inter",
                     chatFontSize: 13,
                     gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-                    isLatestStreamingTool: false,
-                    toolCardExpansionMode: "collapsed",
                     width: 640,
                 },
             ),
         ).not.toBe(base);
     });
 
-    it("keys tool rows independent of width but messages by width bucket", () => {
+    it("keys tool rows independent of width but messages and thinking rails by width bucket", () => {
         const baseContext = {
             chatFontFamily: "Inter",
             chatFontSize: 13,
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            isLatestStreamingTool: false,
-            toolCardExpansionMode: "collapsed" as const,
         };
         const toolRow = createToolRow();
         const messageRow = createMessageRow({ content: "hello" });
+        const thinkingModel = reconcileChatTimelineModel(null, {
+            messages: [
+                createMessage({
+                    content: "A long thought that can reflow when expanded.",
+                    id: "thinking-1",
+                    kind: "thinking",
+                }),
+            ],
+            status: "idle",
+            toolActivity: [],
+            trackedFiles: [],
+        });
+        const thinkingRail = thinkingModel.orderedRows[0];
+        if (!thinkingRail) {
+            throw new Error("Expected a thinking activity rail.");
+        }
 
         expect(isWidthSensitiveChatTimelineRow(toolRow)).toBe(false);
         expect(isWidthSensitiveChatTimelineRow(messageRow)).toBe(true);
+        expect(isWidthSensitiveChatTimelineRow(thinkingRail)).toBe(true);
 
         // A tool card lays out at a width-invariant height, so crossing a width
         // bucket must NOT churn its measurement key — that is what kept the whole
@@ -443,6 +592,17 @@ describe("chatTimelineVirtualization", () => {
             }),
         ).toBe(
             getChatTimelineRowMeasurementKey(toolRow, {
+                ...baseContext,
+                width: 960,
+            }),
+        );
+        expect(
+            getChatTimelineRowMeasurementKey(thinkingRail, {
+                ...baseContext,
+                width: 640,
+            }),
+        ).not.toBe(
+            getChatTimelineRowMeasurementKey(thinkingRail, {
                 ...baseContext,
                 width: 960,
             }),
@@ -467,8 +627,6 @@ describe("chatTimelineVirtualization", () => {
             chatFontFamily: "Inter",
             chatFontSize: 13,
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            isLatestStreamingTool: false,
-            toolCardExpansionMode: "collapsed" as const,
         };
         const messageRow = createMessageRow({ content: "hello" });
 
@@ -486,19 +644,6 @@ describe("chatTimelineVirtualization", () => {
             }),
         );
 
-        // ...but still react to a real layout change like the expansion mode.
-        expect(
-            getChatTimelineRowIdentityKey(messageRow, {
-                ...baseContext,
-                toolCardExpansionMode: "expanded",
-                width: 640,
-            }),
-        ).not.toBe(
-            getChatTimelineRowIdentityKey(messageRow, {
-                ...baseContext,
-                width: 640,
-            }),
-        );
     });
 
     it("buckets virtual measurement widths to reduce resize churn", () => {
@@ -528,8 +673,6 @@ describe("chatTimelineVirtualization", () => {
             chatFontFamily: "Inter",
             chatFontSize: 13,
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            isLatestStreamingTool: false,
-            toolCardExpansionMode: "collapsed" as const,
             width: 640,
         };
         const row = createMessageRow({ content: "original" });
@@ -560,8 +703,6 @@ describe("chatTimelineVirtualization", () => {
             chatFontFamily: "Inter",
             chatFontSize: 13,
             gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-            isLatestStreamingTool: false,
-            toolCardExpansionMode: "collapsed" as const,
             width: 640,
         };
         const reconcile = (summary: string, updatedAt: string) =>
@@ -576,13 +717,13 @@ describe("chatTimelineVirtualization", () => {
                 });
 
         const model1 = reconcile("first", "2026-04-14T00:00:00.000Z")(null);
-        const row1 = model1.historyRows[0];
+        const row1 = model1.atomicHistoryRows[0];
         const key1 = row1 && getChatTimelineRowMeasurementKey(row1, context);
 
         // A real content change (the model sees a new updatedAt) allocates a
         // fresh row reference, so the measurement key must change.
         const model2 = reconcile("second", "2026-04-14T00:00:05.000Z")(model1);
-        const row2 = model2.historyRows[0];
+        const row2 = model2.atomicHistoryRows[0];
         expect(row2).not.toBe(row1);
         expect(row2 && getChatTimelineRowMeasurementKey(row2, context)).not.toBe(
             key1,
@@ -591,7 +732,7 @@ describe("chatTimelineVirtualization", () => {
         // An identical snapshot reuses the same reference, so the key is reused
         // and the measured height is kept.
         const model3 = reconcile("second", "2026-04-14T00:00:05.000Z")(model2);
-        const row3 = model3.historyRows[0];
+        const row3 = model3.atomicHistoryRows[0];
         expect(row3).toBe(row2);
         expect(row3 && getChatTimelineRowMeasurementKey(row3, context)).toBe(
             row2 && getChatTimelineRowMeasurementKey(row2, context),

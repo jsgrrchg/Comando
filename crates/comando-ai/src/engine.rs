@@ -29,7 +29,7 @@ use crate::events::{
     AI_STATUS_EVENT, AI_SUBAGENT_BREADCRUMB_EVENT, AI_SUBAGENT_CREATED_EVENT,
     AI_THINKING_COMPLETED_EVENT, AI_THINKING_DELTA_EVENT, AI_THINKING_STARTED_EVENT,
     AI_TOKEN_USAGE_EVENT, AI_TOOL_ACTIVITY_EVENT, AI_USER_INPUT_REQUEST_EVENT, AiRuntimeEvent,
-    now_iso8601, status_event,
+    now_iso8601, status_event, turn_status_event,
 };
 use crate::history::{
     AiHistorySessionMetadata, AiHistorySessionMetadataInput, AiHistoryStore,
@@ -328,20 +328,11 @@ impl AiEngine {
         let has_prior_user_message = self.has_history_user_message(&target_session_id)?;
         let mut sessions = self.lock_sessions()?;
         let session = sessions.get_mut(&root_session_id)?;
-        if session.prompt_in_flight || session.session.status == NativeAiSessionStatus::Streaming {
-            return Err(AiError::SessionBusy {
-                session_id: target_session_id.0,
-            });
-        }
         let Some(controller) = session.acp_controller.clone() else {
             return Err(AiError::Unsupported(
                 "Native prompts require an ACP-backed session.".to_string(),
             ));
         };
-
-        session.prompt_in_flight = true;
-        session.active_message_id = Some(input.message_id.0.clone());
-        session.set_status(NativeAiSessionStatus::Streaming);
         let runtime_session_id = input
             .runtime_session_id
             .clone()
@@ -349,6 +340,14 @@ impl AiEngine {
             .ok_or_else(|| {
                 AiError::Unsupported("Native prompts require an ACP runtime session.".to_string())
             })?;
+        if !session.begin_prompt(&target_session_id, &input.message_id.0) {
+            return Err(AiError::SessionBusy {
+                session_id: target_session_id.0,
+            });
+        }
+        if target_session_id == root_session_id {
+            session.set_status(NativeAiSessionStatus::Streaming);
+        }
         if let Err(error) = controller.send_prompt(
             runtime_session_id.clone(),
             target_session_id.clone(),
@@ -356,9 +355,10 @@ impl AiEngine {
             input.prompt.text.clone(),
             input.prompt.attachments.clone(),
         ) {
-            session.prompt_in_flight = false;
-            session.active_message_id = None;
-            session.set_status(NativeAiSessionStatus::Error);
+            session.finish_prompt(&target_session_id, &input.message_id.0);
+            if target_session_id == root_session_id {
+                session.set_status(NativeAiSessionStatus::Error);
+            }
             return Err(error);
         }
         if target_session_id == root_session_id {
@@ -374,12 +374,15 @@ impl AiEngine {
             }
         }
         let mut summary = session.session.summary();
-        if target_session_id != root_session_id {
-            summary.session_id = target_session_id.clone();
-            summary.runtime_session_id = Some(runtime_session_id);
-            summary.status = NativeAiSessionStatus::Streaming;
-        }
         drop(sessions);
+        if target_session_id != root_session_id {
+            self.retarget_session_summary(
+                &mut summary,
+                &target_session_id,
+                Some(runtime_session_id),
+                NativeAiSessionStatus::Streaming,
+            )?;
+        }
         self.emit_synthetic_turn_started_status(&summary, &input.message_id.0)?;
         self.update_history_status(&summary)?;
         self.push_history_user_message(
@@ -403,10 +406,7 @@ impl AiEngine {
         let target_is_root = target_session_id == root_session_id;
         let mut sessions = self.lock_sessions()?;
         let session = sessions.get_mut(&root_session_id)?;
-        if target_is_root {
-            session.prompt_in_flight = false;
-            session.active_message_id = None;
-        }
+        let cancelled_turn_id = session.cancel_prompt(&target_session_id);
         let runtime_session_id = input
             .runtime_session_id
             .clone()
@@ -426,13 +426,22 @@ impl AiEngine {
             session.set_status(NativeAiSessionStatus::Idle);
         }
         let mut summary = session.session.summary();
-        if !target_is_root {
-            summary.session_id = target_session_id.clone();
-            summary.runtime_session_id = runtime_session_id;
-            summary.status = NativeAiSessionStatus::Idle;
-        }
         drop(sessions);
+        if !target_is_root {
+            self.retarget_session_summary(
+                &mut summary,
+                &target_session_id,
+                runtime_session_id,
+                NativeAiSessionStatus::Idle,
+            )?;
+        }
         self.update_history_status(&summary)?;
+        if let (Some(turn_id), Some(sender)) = (cancelled_turn_id, self.event_sender()?) {
+            let _ = sender.send(AiRuntimeEvent::new(
+                AI_STATUS_EVENT,
+                &turn_status_event(&summary, turn_id, "cancelled", None),
+            ));
+        }
         Ok((cancel_session_output(target_session_id), summary))
     }
 
@@ -445,8 +454,7 @@ impl AiEngine {
         if let Some(controller) = session.acp_controller.take() {
             controller.close();
         }
-        session.prompt_in_flight = false;
-        session.active_message_id = None;
+        session.clear_prompts();
         session.set_status(NativeAiSessionStatus::Closed);
         let summary = session.session.summary();
         drop(sessions);
@@ -754,6 +762,7 @@ impl AiEngine {
         current.worktree_id = metadata.worktree_id;
         current.title = metadata.title;
         current.status = metadata.status;
+        current.closed_at = None;
         current.model_id = metadata.model_id;
         current.mode_id = metadata.mode_id;
         current.reasoning_effort = metadata.reasoning_effort;
@@ -774,13 +783,40 @@ impl AiEngine {
             let mut metadata = store.load_metadata(&summary.session_id)?;
             metadata.runtime_session_id = summary.runtime_session_id.clone();
             metadata.status = summary.status.clone();
-            metadata.title = summary.title.clone();
+            metadata.title = preferred_status_title(&metadata, &summary.title);
             metadata.updated_at = summary.updated_at.clone();
             if summary.status == NativeAiSessionStatus::Closed {
                 metadata.closed_at = Some(summary.updated_at.clone());
             }
             store.save_metadata(&metadata)?;
         }
+        Ok(())
+    }
+
+    fn retarget_session_summary(
+        &self,
+        summary: &mut NativeAiSessionSummary,
+        target_session_id: &comando_types::ids::SessionId,
+        runtime_session_id: Option<RuntimeSessionId>,
+        status: NativeAiSessionStatus,
+    ) -> AiResult<()> {
+        summary.session_id = target_session_id.clone();
+        summary.runtime_session_id = runtime_session_id;
+        summary.status = status;
+        summary.updated_at = now_iso8601();
+
+        let Some(store) = self.history_store()? else {
+            return Ok(());
+        };
+        if !store.has_session(target_session_id) {
+            return Ok(());
+        }
+
+        let metadata = store.load_metadata(target_session_id)?;
+        summary.runtime_id = metadata.runtime_id.clone();
+        summary.project_id = metadata.project_id.clone();
+        summary.worktree_id = metadata.worktree_id.clone();
+        summary.title = metadata.display_title().to_string();
         Ok(())
     }
 
@@ -993,6 +1029,15 @@ impl AiEngine {
             return Ok(());
         };
         let activity = if event_name == AI_STATUS_EVENT {
+            // Terminal turn events drive queue lifecycle and are not transcript activities.
+            if payload.get("turnId").and_then(Value::as_str).is_some()
+                && matches!(
+                    payload.get("status").and_then(Value::as_str),
+                    Some("cancelled" | "completed" | "failed")
+                )
+            {
+                return Ok(());
+            }
             let Some(event_id) = payload.get("eventId").and_then(Value::as_str) else {
                 return Ok(());
             };
@@ -1027,20 +1072,22 @@ impl AiEngine {
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .unwrap_or_else(now_iso8601);
+            let raw_input_json = serialize_activity_json_field(payload.get("rawInput"));
+            let raw_output_json = serialize_activity_json_field(payload.get("rawOutput"));
             json!({
                 "action": null,
                 "createdAt": updated_at,
                 "diffs": payload.get("diffs").cloned().unwrap_or_else(|| json!([])),
-                "exitCode": null,
+                "exitCode": payload.get("exitCode").filter(|value| value.is_number()).cloned().unwrap_or(Value::Null),
                 "id": tool_call_id,
                 "kind": payload.get("kind").and_then(Value::as_str).unwrap_or("tool"),
                 "locations": [],
-                "rawInputJson": null,
-                "rawOutputJson": null,
+                "rawInputJson": raw_input_json,
+                "rawOutputJson": raw_output_json,
                 "sessionId": session_id.0,
                 "status": payload.get("status").and_then(Value::as_str).unwrap_or("pending"),
                 "summary": payload.get("summary").cloned().unwrap_or(Value::Null),
-                "terminalOutput": null,
+                "terminalOutput": payload.get("terminalOutput").filter(|value| value.is_string()).cloned().unwrap_or(Value::Null),
                 "title": payload.get("title").and_then(Value::as_str).unwrap_or("Tool"),
                 "updatedAt": updated_at
             })
@@ -1215,6 +1262,76 @@ impl AiEngine {
             .map(|value| comando_types::ids::SessionId(value.to_string()));
         let session_id = comando_types::ids::SessionId(child_session_id.to_string());
         if store.has_session(&session_id) {
+            let mut metadata = store.load_metadata(&session_id)?;
+            if let Some(title) = payload
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|title| !title.trim().is_empty())
+            {
+                metadata.title = title.to_string();
+            }
+            if let Some(model_id) = payload
+                .get("modelId")
+                .and_then(Value::as_str)
+                .filter(|model_id| !model_id.trim().is_empty())
+            {
+                metadata.model_id = Some(model_id.to_string());
+            }
+            if let Some(reasoning_effort) = payload
+                .get("reasoningEffort")
+                .and_then(Value::as_str)
+                .filter(|reasoning_effort| !reasoning_effort.trim().is_empty())
+            {
+                metadata.reasoning_effort = Some(reasoning_effort.to_string());
+                update_reasoning_effort_config_values(
+                    &mut metadata.config_values,
+                    reasoning_effort,
+                );
+            }
+            if let Some(runtime_session_id) =
+                payload.get("childRuntimeSessionId").and_then(Value::as_str)
+            {
+                metadata.runtime_session_id = Some(comando_types::ids::RuntimeSessionId(
+                    runtime_session_id.to_string(),
+                ));
+            }
+            let parent_metadata = parent_session_id
+                .as_ref()
+                .and_then(|parent_id| store.load_metadata(parent_id).ok());
+            if let Some(parent_metadata) = parent_metadata {
+                metadata.project_id = metadata.project_id.or(parent_metadata.project_id);
+                metadata.worktree_id = metadata.worktree_id.or(parent_metadata.worktree_id);
+                if metadata.cwd.as_deref().is_none_or(str::is_empty) {
+                    metadata.cwd = parent_metadata.cwd;
+                }
+                if metadata.additional_roots.is_empty() {
+                    metadata.additional_roots = parent_metadata.additional_roots;
+                }
+                if metadata.config_values.is_empty() {
+                    metadata.config_values = parent_metadata.config_values;
+                }
+            }
+            metadata.parent_session_id = parent_session_id.clone();
+            if let Some(parent_session_id) = parent_session_id {
+                metadata.subagent = Some(AiHistorySubagentMetadata {
+                    parent_session_id,
+                    parent_runtime_session_id: payload
+                        .get("parentRuntimeSessionId")
+                        .and_then(Value::as_str)
+                        .map(|value| comando_types::ids::RuntimeSessionId(value.to_string())),
+                    nickname: payload
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .filter(|title| !title.trim().is_empty())
+                        .map(ToOwned::to_owned),
+                });
+            }
+            metadata.updated_at = payload
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .unwrap_or(&metadata.updated_at)
+                .to_string();
+            store.save_metadata(&metadata)?;
             return Ok(());
         }
         let runtime_id = payload
@@ -1318,7 +1435,7 @@ impl AiEngine {
                     metadata.status = native_status_from_event(status);
                 }
                 if let Some(title) = payload.get("title").and_then(Value::as_str) {
-                    metadata.title = title.to_string();
+                    metadata.title = preferred_status_title(&metadata, title);
                 }
                 if let Some(runtime_session_id) =
                     payload.get("runtimeSessionId").and_then(Value::as_str)
@@ -1468,6 +1585,14 @@ fn payload_session_id(payload: &Value) -> Option<comando_types::ids::SessionId> 
         .map(|value| comando_types::ids::SessionId(value.to_string()))
 }
 
+fn serialize_activity_json_field(value: Option<&Value>) -> Value {
+    value
+        .filter(|value| !value.is_null())
+        .and_then(|value| serde_json::to_string(value).ok())
+        .map(Value::String)
+        .unwrap_or(Value::Null)
+}
+
 fn upsert_history_message(messages: &mut Vec<Value>, next: Value) {
     let Some(message_id) = next.get("id").and_then(Value::as_str) else {
         return;
@@ -1494,26 +1619,45 @@ fn upsert_state_activity(activities: &mut Vec<Value>, next: Value) {
             .get("createdAt")
             .cloned()
             .or_else(|| next.get("createdAt").cloned());
-        let existing_diffs = current.get("diffs").cloned();
-        let next_has_diffs = next
-            .get("diffs")
-            .and_then(Value::as_array)
-            .is_some_and(|diffs| !diffs.is_empty());
+        let preserved_fields = [
+            "action",
+            "diffs",
+            "exitCode",
+            "locations",
+            "rawInputJson",
+            "rawOutputJson",
+            "summary",
+            "terminalOutput",
+        ]
+        .into_iter()
+        .filter_map(|key| {
+            current
+                .get(key)
+                .filter(|value| !is_empty_history_activity_value(value))
+                .cloned()
+                .map(|value| (key, value))
+        })
+        .collect::<Vec<_>>();
         *current = next;
+        if let Some(object) = current.as_object_mut() {
+            for (key, value) in preserved_fields {
+                if object.get(key).is_none_or(is_empty_history_activity_value) {
+                    object.insert(key.to_string(), value);
+                }
+            }
+        }
         if let (Some(created_at), Some(object)) = (created_at, current.as_object_mut()) {
             object.insert("createdAt".to_string(), created_at);
-            if !next_has_diffs
-                && let Some(existing_diffs) = existing_diffs
-                && existing_diffs
-                    .as_array()
-                    .is_some_and(|diffs| !diffs.is_empty())
-            {
-                object.insert("diffs".to_string(), existing_diffs);
-            }
         }
     } else {
         activities.push(next);
     }
+}
+
+fn is_empty_history_activity_value(value: &Value) -> bool {
+    value.is_null()
+        || value.as_str().is_some_and(str::is_empty)
+        || value.as_array().is_some_and(Vec::is_empty)
 }
 
 fn native_available_command_to_ipc(command: &Value) -> Option<Value> {
@@ -1698,6 +1842,20 @@ fn is_reasoning_effort_config_option(option: &Value) -> bool {
         .and_then(Value::as_str)
         .unwrap_or_default();
     category == "reasoning" || is_reasoning_effort_config_key(id)
+}
+
+fn preferred_status_title(metadata: &AiHistorySessionMetadata, incoming_title: &str) -> String {
+    metadata
+        .custom_title
+        .as_deref()
+        .or_else(|| {
+            metadata
+                .subagent
+                .as_ref()
+                .and_then(|subagent| subagent.nickname.as_deref())
+        })
+        .unwrap_or(incoming_title)
+        .to_string()
 }
 
 fn native_status_from_event(status: &str) -> NativeAiSessionStatus {
@@ -2081,7 +2239,7 @@ mod tests {
                     "runtimeId": "codex",
                     "runtimeSessionId": "runtime-child",
                     "sessionId": "s-child",
-                    "title": "Child agent"
+                    "title": "explorer"
                 }),
             ))
             .expect("record subagent");
@@ -2097,6 +2255,113 @@ mod tests {
                 .and_then(Value::as_str),
             Some("high")
         );
+
+        engine
+            .record_history_event(&AiRuntimeEvent::new(
+                AI_SUBAGENT_CREATED_EVENT,
+                &json!({
+                    "childRuntimeSessionId": "runtime-child",
+                    "childSessionId": "s-child",
+                    "modelId": "gpt-5.6",
+                    "parentRuntimeSessionId": "runtime-parent",
+                    "parentSessionId": "s-parent",
+                    "reasoningEffort": "high",
+                    "runtimeId": "codex",
+                    "runtimeSessionId": "runtime-child",
+                    "sessionId": "s-child",
+                    "title": "Galileo"
+                }),
+            ))
+            .expect("enrich existing subagent");
+        let child = store
+            .load_metadata(&child_session_id)
+            .expect("enriched child metadata");
+        assert_eq!(child.title, "Galileo");
+        assert_eq!(child.model_id.as_deref(), Some("gpt-5.6"));
+
+        engine
+            .record_history_event(&AiRuntimeEvent::new(
+                AI_SUBAGENT_CREATED_EVENT,
+                &json!({
+                    "childRuntimeSessionId": "runtime-intermediate",
+                    "childSessionId": "s-intermediate",
+                    "parentRuntimeSessionId": "runtime-parent",
+                    "parentSessionId": "s-parent",
+                    "runtimeId": "codex",
+                    "runtimeSessionId": "runtime-intermediate",
+                    "sessionId": "s-intermediate",
+                    "title": "Intermediate agent"
+                }),
+            ))
+            .expect("record intermediate subagent");
+        engine
+            .record_history_event(&AiRuntimeEvent::new(
+                AI_SUBAGENT_CREATED_EVENT,
+                &json!({
+                    "childRuntimeSessionId": "runtime-child",
+                    "childSessionId": "s-child",
+                    "parentRuntimeSessionId": "runtime-intermediate",
+                    "parentSessionId": "s-intermediate",
+                    "runtimeId": "codex",
+                    "runtimeSessionId": "runtime-child",
+                    "sessionId": "s-child",
+                    "title": "Galileo"
+                }),
+            ))
+            .expect("reparent existing subagent");
+        let reparented_child = store
+            .load_metadata(&child_session_id)
+            .expect("reparented child metadata");
+        assert_eq!(
+            reparented_child
+                .parent_session_id
+                .as_ref()
+                .map(|session_id| session_id.0.as_str()),
+            Some("s-intermediate")
+        );
+        assert_eq!(
+            reparented_child
+                .subagent
+                .as_ref()
+                .and_then(|subagent| subagent.parent_runtime_session_id.as_ref())
+                .map(|runtime_session_id| runtime_session_id.0.as_str()),
+            Some("runtime-intermediate")
+        );
+
+        engine
+            .record_history_event(&AiRuntimeEvent::new(
+                AI_SESSION_UPDATED_EVENT,
+                &json!({
+                    "runtimeId": "codex",
+                    "runtimeSessionId": "runtime-child",
+                    "sessionId": "s-child",
+                    "status": "streaming",
+                    "title": "Parent prompt title",
+                    "updatedAt": "2026-06-20T00:00:00.000Z"
+                }),
+            ))
+            .expect("record child status");
+        let child_after_status = store
+            .load_metadata(&child_session_id)
+            .expect("child metadata after status");
+        assert_eq!(child_after_status.title, "Galileo");
+
+        let mut root_input = prepare_input("s-parent", "codex");
+        root_input.title = "Parent prompt title".to_string();
+        let mut child_summary = NativeAiSession::from_prepare_input(root_input)
+            .expect("root session")
+            .summary();
+        child_summary.updated_at = "2020-01-01T00:00:00.000Z".to_string();
+        engine
+            .retarget_session_summary(
+                &mut child_summary,
+                &child_session_id,
+                Some(RuntimeSessionId("runtime-child".to_string())),
+                NativeAiSessionStatus::Streaming,
+            )
+            .expect("retarget child summary");
+        assert_eq!(child_summary.title, "Galileo");
+        assert_ne!(child_summary.updated_at, "2020-01-01T00:00:00.000Z");
 
         engine
             .record_history_event(&AiRuntimeEvent::new(
@@ -2226,6 +2491,142 @@ mod tests {
         assert_eq!(snapshot.messages[0]["content"], "Child prompt");
         assert_eq!(snapshot.messages[0]["status"], "completed");
         assert_eq!(snapshot.messages[1]["kind"], "assistant");
+    }
+
+    #[test]
+    fn terminal_turn_status_is_not_recorded_as_history_activity() {
+        let app_data = tempfile::tempdir().expect("app data");
+        let store = AiHistoryStore::new(app_data.path()).expect("history store");
+        let session_id = SessionId("s-history".to_string());
+        store
+            .create_session(AiHistorySessionMetadata::new_native(
+                AiHistorySessionMetadataInput {
+                    session_id: session_id.clone(),
+                    runtime_id: RuntimeId("codex".to_string()),
+                    runtime_session_id: Some(RuntimeSessionId("runtime-history".to_string())),
+                    parent_session_id: None,
+                    project_id: None,
+                    worktree_id: None,
+                    title: "Historical session".to_string(),
+                    status: NativeAiSessionStatus::Idle,
+                    model_id: None,
+                    mode_id: None,
+                    reasoning_effort: None,
+                    config_values: BTreeMap::new(),
+                    cwd: "/tmp/project".to_string(),
+                    additional_roots: Vec::new(),
+                },
+            ))
+            .expect("create history session");
+        let engine = AiEngine::default();
+        engine
+            .set_history_store(Some(store.clone()))
+            .expect("install history store");
+
+        for status in ["cancelled", "completed", "failed"] {
+            engine
+                .record_history_event(&AiRuntimeEvent::new(
+                    AI_STATUS_EVENT,
+                    &json!({
+                        "detail": "Terminal turn state",
+                        "eventId": format!("comando:turn:message-1:{status}"),
+                        "runtimeId": "codex",
+                        "runtimeSessionId": "runtime-history",
+                        "sessionId": "s-history",
+                        "status": status,
+                        "title": "Terminal turn state",
+                        "turnId": "message-1",
+                        "updatedAt": "2026-06-20T00:00:00.000Z"
+                    }),
+                ))
+                .expect("record terminal turn");
+        }
+
+        let snapshot = store
+            .load_session_snapshot(&session_id)
+            .expect("load snapshot")
+            .expect("snapshot");
+        assert!(snapshot.tool_activity.is_empty());
+    }
+
+    #[test]
+    fn history_tool_activity_preserves_common_fields_across_updates() {
+        let app_data = tempfile::tempdir().expect("app data");
+        let store = AiHistoryStore::new(app_data.path()).expect("history store");
+        let session_id = SessionId("s-history".to_string());
+        store
+            .create_session(AiHistorySessionMetadata::new_native(
+                AiHistorySessionMetadataInput {
+                    session_id: session_id.clone(),
+                    runtime_id: RuntimeId("codex".to_string()),
+                    runtime_session_id: Some(RuntimeSessionId("runtime-history".to_string())),
+                    parent_session_id: None,
+                    project_id: None,
+                    worktree_id: None,
+                    title: "Historical session".to_string(),
+                    status: NativeAiSessionStatus::Idle,
+                    model_id: None,
+                    mode_id: None,
+                    reasoning_effort: None,
+                    config_values: BTreeMap::new(),
+                    cwd: "/tmp/project".to_string(),
+                    additional_roots: Vec::new(),
+                },
+            ))
+            .expect("create history session");
+        let engine = AiEngine::default();
+        engine
+            .set_history_store(Some(store.clone()))
+            .expect("install history store");
+
+        for payload in [
+            json!({
+                "diffs": [],
+                "kind": "execute",
+                "rawInput": { "command": "pnpm test" },
+                "runtimeId": "codex",
+                "runtimeSessionId": "runtime-history",
+                "sessionId": "s-history",
+                "status": "in_progress",
+                "summary": "Running tests",
+                "title": "Run tests",
+                "toolCallId": "tool-1",
+                "updatedAt": "2026-06-20T00:00:00.000Z"
+            }),
+            json!({
+                "diffs": [],
+                "exitCode": 0,
+                "kind": "execute",
+                "rawOutput": "done",
+                "runtimeId": "codex",
+                "runtimeSessionId": "runtime-history",
+                "sessionId": "s-history",
+                "status": "completed",
+                "summary": null,
+                "terminalOutput": "All tests passed",
+                "title": "Run tests",
+                "toolCallId": "tool-1",
+                "updatedAt": "2026-06-20T00:00:01.000Z"
+            }),
+        ] {
+            engine
+                .record_history_event(&AiRuntimeEvent::new(AI_TOOL_ACTIVITY_EVENT, &payload))
+                .expect("record tool activity");
+        }
+
+        let snapshot = store
+            .load_session_snapshot(&session_id)
+            .expect("load snapshot")
+            .expect("snapshot");
+        assert_eq!(snapshot.tool_activity.len(), 1);
+        let activity = &snapshot.tool_activity[0];
+        assert_eq!(activity["createdAt"], "2026-06-20T00:00:00.000Z");
+        assert_eq!(activity["updatedAt"], "2026-06-20T00:00:01.000Z");
+        assert_eq!(activity["exitCode"], 0);
+        assert_eq!(activity["rawInputJson"], r#"{"command":"pnpm test"}"#);
+        assert_eq!(activity["rawOutputJson"], r#""done""#);
+        assert_eq!(activity["summary"], "Running tests");
+        assert_eq!(activity["terminalOutput"], "All tests passed");
     }
 
     #[test]

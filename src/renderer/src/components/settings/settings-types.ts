@@ -1,5 +1,5 @@
 import type {
-    AiToolCardExpansionMode,
+    AiToolActivityDefaultExpansion,
     ProjectAppDataSummary,
     AppPrivacyAccessState,
     AppTerminalSettings,
@@ -32,6 +32,7 @@ export interface ThemePresetOption {
 export interface SettingsThemeControlState {
     readonly agentsSidebarScale?: number;
     readonly boostCodeContrast: boolean;
+    readonly chromeTransparency: number;
     readonly fileTreeScale?: number;
     readonly mode: ThemeMode;
     readonly presetId: string;
@@ -42,6 +43,7 @@ export interface SettingsThemeControlState {
     readonly disabled?: boolean;
     readonly onAgentsSidebarScaleChange?: (agentsSidebarScale: number) => void;
     readonly onBoostCodeContrastChange?: (enabled: boolean) => void;
+    readonly onChromeTransparencyChange?: (chromeTransparency: number) => void;
     readonly onFileTreeScaleChange?: (fileTreeScale: number) => void;
     readonly onModeChange?: (mode: ThemeMode) => void;
     readonly onPresetChange?: (presetId: string) => void;
@@ -121,7 +123,7 @@ export interface SettingsAiChatState {
     readonly screenshotRetentionSeconds: number;
     readonly historyRetentionDays: number;
     readonly contextUsageBarEnabled: boolean;
-    readonly toolCardExpansionMode: AiToolCardExpansionMode;
+    readonly toolActivityDefaultExpansion: AiToolActivityDefaultExpansion;
     readonly onChatFontFamilyChange?: (id: string) => void;
     readonly onChatFontSizeChange?: (size: number) => void;
     readonly onComposerFontFamilyChange?: (id: string) => void;
@@ -130,8 +132,8 @@ export interface SettingsAiChatState {
     readonly onScreenshotRetentionChange?: (seconds: number) => void;
     readonly onHistoryRetentionChange?: (days: number) => void;
     readonly onContextUsageBarEnabledChange?: (value: boolean) => void;
-    readonly onToolCardExpansionModeChange?: (
-        value: AiToolCardExpansionMode,
+    readonly onToolActivityDefaultExpansionChange?: (
+        value: AiToolActivityDefaultExpansion,
     ) => void;
 }
 

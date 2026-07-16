@@ -11,6 +11,8 @@ import {
     type AppUpdateState,
     type AppBootstrapSnapshot,
     type AiHistorySessionSummary,
+    type AiPromptQueueSnapshot,
+    type AiQueuedPromptMutationInput,
     type AiSessionDomainEvent,
     type AiSessionStreamAckMessage,
     type AiSessionUpdate,
@@ -36,6 +38,7 @@ import {
     type CloneRepositoryInput,
     type CloneRepositoryResult,
     type ComandoApi,
+    type ConfirmWorkspaceCloseInput,
     type CheckCommandAvailabilityInput,
     type CheckCommandAvailabilityResult,
     type CodexRuntimeSettingsInput,
@@ -47,6 +50,7 @@ import {
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
     type FileBufferNotificationInput,
+    type EnqueueAiPromptInput,
     type GetAiSessionTranscriptPageInput,
     type ListAiSessionHistoryInput,
     type ListProjectTreeInput,
@@ -97,6 +101,7 @@ import {
     type GitHubCreatePullRequestInput,
     type GitHubGetIssueInput,
     type GitHubGetPullRequestInput,
+    type GitHubGetPullRequestDiffInput,
     type GitHubIssueDetail,
     type GitHubListLabelsInput,
     type GitHubListLabelsResult,
@@ -113,6 +118,7 @@ import {
     type GitHubPullRequestChecksInput,
     type GitHubPullRequestChecksResult,
     type GitHubPullRequestDetail,
+    type GitHubPullRequestDiffResult,
     type GitHubCreateReleaseInput,
     type GitHubGeneratedReleaseNotes,
     type GitHubGenerateReleaseNotesInput,
@@ -120,6 +126,8 @@ import {
     type GitHubReleaseSummary,
     type GitHubRequestPullRequestReviewInput,
     type GitHubSaveTokenInput,
+    type GitHubSetIssueLabelsInput,
+    type GitHubSetIssueLabelsResult,
     type GitHubSetIssueStateInput,
     type GitHubSetPullRequestDraftStateInput,
     type GitHubUpdateCommentInput,
@@ -159,7 +167,7 @@ import {
     type ResizeTerminalSessionInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
-    type SendAiPromptInput,
+    type UpdateAiQueuedPromptInput,
     type SettingsSnapshot,
     type SettingsUpdatedEvent,
     type SystemTheme,
@@ -168,7 +176,10 @@ import {
     type TrashProjectEntryInput,
     type TsconfigResolutionSnapshot,
     type WriteTerminalInput,
-    type WorkspaceSnapshot,
+    type PersistedWorkspaceSnapshot,
+    type WorkspaceNavigationSnapshot,
+    type WorkspaceSurfaceDragEvent,
+    type WorkspaceSurfaceContextRequest,
 } from "@shared/ipc";
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -281,6 +292,9 @@ function assertClaudeCodeTranscriptResult(
 
 const aiSessionSnapshotListeners = new Set<(update: AiSessionUpdate) => void>();
 const aiSessionEventListeners = new Set<(event: AiSessionDomainEvent) => void>();
+const aiPromptQueueListeners = new Set<
+    (snapshot: AiPromptQueueSnapshot) => void
+>();
 let aiSessionSnapshotPort: MessagePort | null = null;
 
 // Narrow runtime guard for the IPC envelope. Does not validate the full
@@ -504,6 +518,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.revealGeneratedImage, path),
     openProjectWindow: (input: OpenProjectWindowInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.openProjectWindow, input),
+    confirmWorkspaceClose: (input: ConfirmWorkspaceCloseInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.confirmWorkspaceClose, input),
     checkCommandAvailability: async (input: CheckCommandAvailabilityInput) =>
         assertCommandAvailabilityResult(
             IPC_CHANNELS.checkCommandAvailability,
@@ -536,7 +552,7 @@ const comandoApi: ComandoApi = {
             await ipcRenderer.invoke(IPC_CHANNELS.getSystemTheme),
         ),
     getWorkspaceSnapshot: async () =>
-        assertIpcObject<WorkspaceSnapshot>(
+        assertIpcObject<PersistedWorkspaceSnapshot>(
             IPC_CHANNELS.getWorkspaceSnapshot,
             await ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceSnapshot),
         ),
@@ -821,6 +837,136 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceFlushRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            requestId: string,
+        ) => {
+            void Promise.resolve()
+                .then(listener)
+                .then(() => {
+                    ipcRenderer.send(
+                        IPC_EVENTS.workspaceFlushAcknowledged,
+                        requestId,
+                    );
+                })
+                .catch(() => undefined);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.workspaceFlushRequested, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceFlushRequested,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceSnapshotRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            requestId: string,
+        ) => {
+            try {
+                ipcRenderer.send(
+                    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
+                    requestId,
+                    listener(),
+                );
+            } catch {
+                ipcRenderer.send(
+                    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
+                    requestId,
+                    null,
+                );
+            }
+        };
+
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceSnapshotRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceSnapshotRequested,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceDrag: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            payload: WorkspaceSurfaceDragEvent,
+        ) => listener(payload);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceDrag, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(IPC_EVENTS.workspaceSurfaceDrag, handleEvent);
+        };
+    },
+    onWorkspaceSurfaceSnapshotUpdated: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            snapshot: WorkspaceNavigationSnapshot,
+        ) => listener(snapshot);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceSnapshotUpdated, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceFocused: (listener) => {
+        const handleEvent = () => listener();
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceFocused, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceFocused,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceContextRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            input: WorkspaceSurfaceContextRequest,
+        ) => listener(input);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceContextRequested, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceContextRequested,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceGitScopeMenuRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            anchor: { readonly width: number; readonly x: number },
+        ) => listener(anchor);
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceGitScopeMenuRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceGitScopeMenuRequested,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceProjectMenuRequested: (listener) => {
+        const handleEvent = () => listener();
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
+                handleEvent,
+            );
+        };
+    },
     onTerminalData: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -902,6 +1048,32 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveActiveWorktreeId, worktreeId),
     saveShellState: (snapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveShellState, snapshot),
+    initializeWorkspaceSurfaces: (snapshot: WorkspaceNavigationSnapshot) =>
+        ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
+    activateWorkspaceSurface: (contextKey: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
+    captureWorkspaceSurfaceContext: (contextKey: string) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.captureWorkspaceSurfaceContext,
+            contextKey,
+        ),
+    dispatchWorkspaceSurfaceDrag: (event) =>
+        ipcRenderer.invoke(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag, event),
+    notifyWorkspaceSurfaceFocused: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceFocused),
+    requestWorkspaceSurfaceContext: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.requestWorkspaceSurfaceContext, input),
+    openWorkspaceSurfaceGitScopeMenu: (anchor) =>
+        ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu, anchor),
+    openWorkspaceSurfaceProjectMenu: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu),
+    setWorkspaceSurfaceContentInset: (height: number) =>
+        ipcRenderer.invoke(IPC_CHANNELS.setWorkspaceSurfaceContentInset, height),
+    setWorkspaceSurfaceContentLeftInset: (width: number) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset,
+            width,
+        ),
     setTrafficLightVisibility: (visible: boolean) =>
         ipcRenderer.invoke(IPC_CHANNELS.setTrafficLightVisibility, visible),
     setNativeAppearance: (mode: ThemeMode) =>
@@ -1067,6 +1239,14 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.updateGitHubIssue,
             await ipcRenderer.invoke(IPC_CHANNELS.updateGitHubIssue, input),
         ),
+    setGitHubIssueLabels: async (input: GitHubSetIssueLabelsInput) =>
+        assertIpcObject<GitHubSetIssueLabelsResult>(
+            IPC_CHANNELS.setGitHubIssueLabels,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.setGitHubIssueLabels,
+                input,
+            ),
+        ),
     commentGitHubIssue: async (input: GitHubCommentIssueInput) =>
         assertIpcObject<GitHubCommentSummary>(
             IPC_CHANNELS.commentGitHubIssue,
@@ -1099,6 +1279,14 @@ const comandoApi: ComandoApi = {
         assertIpcObjectOrNull<GitHubPullRequestDetail>(
             IPC_CHANNELS.getGitHubPullRequest,
             await ipcRenderer.invoke(IPC_CHANNELS.getGitHubPullRequest, input),
+        ),
+    getGitHubPullRequestDiff: async (input: GitHubGetPullRequestDiffInput) =>
+        assertIpcObject<GitHubPullRequestDiffResult>(
+            IPC_CHANNELS.getGitHubPullRequestDiff,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.getGitHubPullRequestDiff,
+                input,
+            ),
         ),
     listGitHubPullRequestChecks: async (
         input: GitHubPullRequestChecksInput,
@@ -1259,7 +1447,7 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.removeProject, projectId),
     resizeTerminalSession: (input: ResizeTerminalSessionInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.resizeTerminalSession, input),
-    saveWorkspaceSnapshot: (snapshot: WorkspaceSnapshot) =>
+    saveWorkspaceSnapshot: (snapshot: WorkspaceNavigationSnapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveWorkspaceSnapshot, snapshot),
     notifyFileBuffer: (input: FileBufferNotificationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.notifyFileBuffer, input),
@@ -1305,8 +1493,46 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.getAiSessionTranscriptPage,
             input,
         ) as Promise<AiSessionTranscriptPage>,
-    sendAiPrompt: (input: SendAiPromptInput) =>
-        ipcRenderer.invoke(IPC_CHANNELS.sendAiPrompt, input),
+    getAiPromptQueue: (sessionId: string) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.getAiPromptQueue,
+            sessionId,
+        ) as Promise<AiPromptQueueSnapshot>,
+    enqueueAiPrompt: (input: EnqueueAiPromptInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.enqueueAiPrompt,
+            input,
+        ) as Promise<AiPromptQueueSnapshot>,
+    removeAiQueuedPrompt: (input: AiQueuedPromptMutationInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.removeAiQueuedPrompt,
+            input,
+        ) as Promise<AiPromptQueueSnapshot>,
+    clearAiPromptQueue: (sessionId: string) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.clearAiPromptQueue,
+            sessionId,
+        ) as Promise<AiPromptQueueSnapshot>,
+    beginEditAiQueuedPrompt: (input: AiQueuedPromptMutationInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.beginEditAiQueuedPrompt,
+            input,
+        ) as Promise<AiPromptQueueSnapshot>,
+    cancelEditAiQueuedPrompt: (sessionId: string) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.cancelEditAiQueuedPrompt,
+            sessionId,
+        ) as Promise<AiPromptQueueSnapshot>,
+    updateAiQueuedPrompt: (input: UpdateAiQueuedPromptInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.updateAiQueuedPrompt,
+            input,
+        ) as Promise<AiPromptQueueSnapshot>,
+    steerAiQueuedPrompt: (input: AiQueuedPromptMutationInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.steerAiQueuedPrompt,
+            input,
+        ) as Promise<AiPromptQueueSnapshot>,
     setAiSessionMode: (input: AiSessionModeMutationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.setAiSessionMode, input),
     setAiSessionModel: (input: AiSessionModelMutationInput) =>
@@ -1420,6 +1646,20 @@ const comandoApi: ComandoApi = {
                     handleAiSessionEventFallback,
                 );
             }
+        };
+    },
+    onAiPromptQueue: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            snapshot: AiPromptQueueSnapshot,
+        ) => {
+            listener(snapshot);
+        };
+        aiPromptQueueListeners.add(listener);
+        ipcRenderer.on(IPC_EVENTS.aiPromptQueue, handleEvent);
+        return () => {
+            aiPromptQueueListeners.delete(listener);
+            ipcRenderer.removeListener(IPC_EVENTS.aiPromptQueue, handleEvent);
         };
     },
 };
