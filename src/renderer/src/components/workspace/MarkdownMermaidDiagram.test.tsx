@@ -275,7 +275,7 @@ describe("MarkdownMermaidDiagram", () => {
         expect(clampMermaidZoom(0)).toBe(MERMAID_VIEWPORT_MIN_ZOOM);
         expect(clampMermaidZoom(0.5)).toBe(0.5);
         expect(clampMermaidZoom(Number.NaN)).toBe(1);
-        expect(clampMermaidZoom(9)).toBe(MERMAID_VIEWPORT_MAX_ZOOM);
+        expect(clampMermaidZoom(11)).toBe(MERMAID_VIEWPORT_MAX_ZOOM);
     });
 
     it("calculates the next Mermaid viewport zoom step", () => {
@@ -284,7 +284,7 @@ describe("MarkdownMermaidDiagram", () => {
         expect(calculateNextMermaidZoom({ direction: -1, scale: 0.3 })).toBe(
             MERMAID_VIEWPORT_MIN_ZOOM,
         );
-        expect(calculateNextMermaidZoom({ direction: 1, scale: 7.9 })).toBe(
+        expect(calculateNextMermaidZoom({ direction: 1, scale: 9.9 })).toBe(
             MERMAID_VIEWPORT_MAX_ZOOM,
         );
     });
