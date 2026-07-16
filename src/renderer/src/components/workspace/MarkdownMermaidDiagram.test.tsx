@@ -590,6 +590,88 @@ describe("MarkdownMermaidDiagram", () => {
         getBoundingClientRect.mockRestore();
     });
 
+    it("keeps the fit scale after resizing a diagram that is already scaled", async () => {
+        const getHtmlBounds = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function getMockBounds(this: HTMLElement) {
+                if (
+                    this.classList.contains(
+                        "markdown-file-preview__mermaid-viewport",
+                    )
+                ) {
+                    return {
+                        bottom: 250,
+                        height: 250,
+                        left: 0,
+                        right: 500,
+                        toJSON: () => ({}),
+                        top: 0,
+                        width: 500,
+                        x: 0,
+                        y: 0,
+                    };
+                }
+
+                return {
+                    bottom: 0,
+                    height: 0,
+                    left: 0,
+                    right: 0,
+                    toJSON: () => ({}),
+                    top: 0,
+                    width: 0,
+                    x: 0,
+                    y: 0,
+                };
+            });
+        const getSvgBounds = vi
+            .spyOn(SVGElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function getMockBounds(this: SVGElement) {
+                const transform = this.parentElement?.getAttribute("style") ?? "";
+                const scale = Number.parseFloat(
+                    transform.match(/scale\\(([^)]+)\\)/)?.[1] ?? "1",
+                );
+
+                return {
+                    bottom: 1000 * scale,
+                    height: 1000 * scale,
+                    left: 0,
+                    right: 500 * scale,
+                    toJSON: () => ({}),
+                    top: 0,
+                    width: 500 * scale,
+                    x: 0,
+                    y: 0,
+                };
+            });
+        const mermaid = createMermaidRenderer(() =>
+            Promise.resolve({
+                svg: '<svg viewBox="0 0 500 1000"><text>Tall diagram</text></svg>',
+            }),
+        );
+        const { container } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.25)",
+        );
+
+        act(() => {
+            window.dispatchEvent(new Event("resize"));
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.25)",
+        );
+        getSvgBounds.mockRestore();
+        getHtmlBounds.mockRestore();
+    });
+
     it("keeps fitted SVGs at full size when CSS already fits the width", async () => {
         const getHtmlBounds = vi
             .spyOn(HTMLElement.prototype, "getBoundingClientRect")

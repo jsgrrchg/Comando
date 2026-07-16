@@ -160,13 +160,22 @@ function parseSvgLength(value: string | null): number | null {
     return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : null;
 }
 
-function readSvgIntrinsicSize(svgElement: SVGSVGElement): MermaidViewportSize {
+function readSvgIntrinsicSize(
+    svgElement: SVGSVGElement,
+    viewportScale: number,
+): MermaidViewportSize {
     const bounds = svgElement.getBoundingClientRect();
+    const unscaledViewportScale =
+        Number.isFinite(viewportScale) && viewportScale > 0
+            ? viewportScale
+            : 1;
 
     if (bounds.width > 0 && bounds.height > 0) {
+        // getBoundingClientRect includes the viewport's CSS transform. Remove
+        // its scale so resize measurements keep referring to the same diagram.
         return {
-            height: bounds.height,
-            width: bounds.width,
+            height: bounds.height / unscaledViewportScale,
+            width: bounds.width / unscaledViewportScale,
         };
     }
 
@@ -695,6 +704,8 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         useState<MermaidRenderState>(initialRenderState);
     const [viewportState, setViewportState] =
         useState<MermaidViewportState>(initialViewportState);
+    const viewportScaleRef = useRef(viewportState.scale);
+    viewportScaleRef.current = viewportState.scale;
     const visibleRenderState =
         trimmedSource.length > MERMAID_SOURCE_MAX_LENGTH
             ? {
@@ -914,7 +925,10 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
             }
 
             const viewportBounds = viewportElement.getBoundingClientRect();
-            const diagramSize = readSvgIntrinsicSize(svgElement);
+            const diagramSize = readSvgIntrinsicSize(
+                svgElement,
+                viewportScaleRef.current,
+            );
             const viewportSize = {
                 height: viewportBounds.height,
                 width: viewportBounds.width,
