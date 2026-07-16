@@ -2894,7 +2894,6 @@ const ChatTimeline = memo(function ChatTimeline({
                             projectId={projectId}
                             resolveFileReference={resolveFileReference}
                             row={liveTailRow}
-                            scrollRef={scrollRef}
                             worktreeId={worktreeId}
                         />
                         {isStreaming ? (
@@ -3041,7 +3040,6 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
                 projectId={projectId}
                 resolveFileReference={resolveFileReference}
                 row={row}
-                scrollContainerRef={scrollRef}
                 worktreeId={worktreeId}
             />
         ),
@@ -3057,7 +3055,6 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             onRevealFileReference,
             projectId,
             resolveFileReference,
-            scrollRef,
             worktreeId,
         ],
     );
@@ -3117,7 +3114,6 @@ type ChatTimelineLiveTailProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly row: ChatTimelineRow | null;
-    readonly scrollRef: RefObject<HTMLDivElement | null>;
     readonly worktreeId: string | null;
 };
 
@@ -3134,7 +3130,6 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     projectId,
     resolveFileReference,
     row,
-    scrollRef,
     worktreeId,
 }: ChatTimelineLiveTailProps) {
     if (!row) {
@@ -3157,7 +3152,6 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
             resolveFileReference={resolveFileReference}
             isCurrentTurnTail={true}
             row={row}
-            scrollContainerRef={scrollRef}
             worktreeId={worktreeId}
         />
     );
@@ -3196,7 +3190,6 @@ type ChatTimelineRowViewProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly row: ChatTimelineRow;
-    readonly scrollContainerRef?: RefObject<HTMLElement | null>;
     readonly worktreeId: string | null;
 };
 
@@ -3214,7 +3207,6 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     projectId,
     resolveFileReference,
     row,
-    scrollContainerRef,
     worktreeId,
 }: ChatTimelineRowViewProps) {
     if (row.kind === "message") {
@@ -3250,7 +3242,6 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
                     onRevealFileReference={onRevealFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
-                    scrollContainerRef={scrollContainerRef}
                     segment={row}
                     worktreeId={worktreeId}
                 />

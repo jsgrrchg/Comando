@@ -16,6 +16,7 @@ import type {
     ToolActivitySegmentEntry,
 } from "./chatTimelineModel";
 import type { ToolActivityReviewEntry } from "./toolActivityReviewModel";
+import { deriveActivitySegmentChangeStats } from "./activitySegmentChangeStats";
 import { ToolActivitySegment } from "./ToolActivitySegment";
 import {
     resetScopedToolUiStateStoresForTests,
@@ -106,6 +107,7 @@ function createSegment(
     }
 
     return {
+        changeStats: deriveActivitySegmentChangeStats(entries),
         entries,
         id: `activity-segment:session-1:${first.id}`,
         items: entries.map((entry) => ({ entry, kind: "tool" as const })),
@@ -154,6 +156,7 @@ function createThinkingSegment(
         status,
     };
     return {
+        changeStats: { additions: 0, approximate: false, deletions: 0 },
         entries: [],
         id: "activity-segment:thinking:thinking-1",
         items: [{ kind: "thinking", message }],
@@ -197,7 +200,6 @@ function renderInteractive(segment: ChatTimelineActivitySegmentRow) {
         root.render(
             createElement(ToolActivitySegment, {
                 ...DEFAULT_PROPS,
-                scrollContainerRef: { current: container },
                 segment,
             }),
         );
@@ -408,7 +410,7 @@ describe("ToolActivitySegment", () => {
         const expandedEntries = Array.from(
             container.querySelectorAll<HTMLElement>("[data-child-activity]"),
         );
-        expect(expandedEntries).toHaveLength(50);
+        expect(expandedEntries).toHaveLength(20);
         expect(
             expandedEntries.every(
                 (entry) => entry.dataset.toolSurface === "rail-row",
@@ -419,6 +421,19 @@ describe("ToolActivitySegment", () => {
                 .querySelector('[role="region"]')
                 ?.getAttribute("aria-label"),
         ).toBe("Full activity");
+
+        const firstVisibleActivity = expandedEntries[0];
+        act(() =>
+            Array.from(container.querySelectorAll("button")).find(
+                (button) => button.textContent === "Load 20 more",
+            )?.click(),
+        );
+        expect(container.querySelectorAll("[data-child-activity]")).toHaveLength(
+            40,
+        );
+        expect(
+            container.querySelector<HTMLElement>("[data-child-activity]"),
+        ).toBe(firstVisibleActivity);
     });
 
     it("mounts a compact incremental window for twenty thousand expanded tools", () => {
@@ -432,11 +447,10 @@ describe("ToolActivitySegment", () => {
         const mountedActivities = container.querySelectorAll(
             "[data-child-activity]",
         );
-        expect(mountedActivities.length).toBeGreaterThan(0);
-        expect(mountedActivities.length).toBeLessThan(1_000);
+        expect(mountedActivities).toHaveLength(20);
         expect(
             Array.from(container.querySelectorAll("button")).some(
-                (button) => button.textContent === "Show more activity",
+                (button) => button.textContent === "Load 20 more",
             ),
         ).toBe(true);
         expect(

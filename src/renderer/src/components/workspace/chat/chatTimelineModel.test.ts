@@ -1026,6 +1026,11 @@ describe("chatTimelineModel activity segments", () => {
         ]);
         expect(segment.entries).toHaveLength(2);
         expect(segment.summary.actionCount).toBe(2);
+        expect(segment.changeStats).toEqual({
+            additions: 0,
+            approximate: false,
+            deletions: 0,
+        });
     });
 
     it("keeps a thinking-first segment stable when the first tool arrives", () => {

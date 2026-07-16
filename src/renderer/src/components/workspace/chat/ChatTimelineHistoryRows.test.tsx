@@ -190,6 +190,7 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
     }));
 
     return {
+        changeStats: { additions: 0, approximate: false, deletions: 0 },
         entries,
         id: "activity-segment:session-1:read-1",
         items: entries.map((entry) => ({ entry, kind: "tool" })),

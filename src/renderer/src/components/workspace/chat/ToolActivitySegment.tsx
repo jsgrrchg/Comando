@@ -1,9 +1,4 @@
-import {
-    memo,
-    useMemo,
-    useState,
-    type RefObject,
-} from "react";
+import { memo, useState } from "react";
 
 import { useSettingsStore } from "@renderer/app/store/settings-store";
 
@@ -11,7 +6,6 @@ import type {
     ChatTimelineActivitySegmentRow,
 } from "./chatTimelineModel";
 import { formatDiffStat } from "../review/reviewDiff";
-import { deriveActivitySegmentChangeStats } from "./activitySegmentChangeStats";
 import { getToolActivityDescriptor } from "./toolActivityDescriptor";
 import {
     ToolActivityItem,
@@ -23,8 +17,8 @@ import {
 } from "./ChatMessageRow";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
 
-const ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT = 80;
-const ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT = 80;
+const ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT = 20;
+const ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT = 20;
 
 type ToolActivitySegmentProps = Pick<
     ToolActivityItemProps,
@@ -38,7 +32,6 @@ type ToolActivitySegmentProps = Pick<
 > & {
     /** True only while this segment is the trailing activity of an active turn. */
     readonly isCurrentTurnTail?: boolean;
-    readonly scrollContainerRef?: RefObject<HTMLElement | null>;
     readonly segment: ChatTimelineActivitySegmentRow;
 } & Pick<
         ThinkingMessageProps,
@@ -239,8 +232,6 @@ function ExpandedActivitySegmentItems({
 }: ActivitySegmentItemRendererProps & {
     readonly contentId: string;
     readonly items: readonly ChatTimelineActivitySegmentRow["items"][number][];
-    readonly scrollContainerRef?: RefObject<HTMLElement | null>;
-    readonly segmentId: string;
 }) {
     const [fallbackRenderLimit, setFallbackRenderLimit] = useState(
         ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT,
@@ -279,7 +270,7 @@ function ExpandedActivitySegmentItems({
                     }
                     type="button"
                 >
-                    Show more activity
+                    Load 20 more
                 </button>
             ) : null}
         </div>
@@ -299,7 +290,6 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     projectId,
     resolveFileReference,
     isCurrentTurnTail = false,
-    scrollContainerRef,
     segment,
     worktreeId,
 }: ToolActivitySegmentProps) {
@@ -316,10 +306,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     const headline = getSegmentHeadline(segment, isCurrentTurnTail);
     const isWorkedSegment = headline.startsWith("Worked ·");
     const latestActivityLabel = getLatestActivityLabel(segment);
-    const changeStats = useMemo(
-        () => deriveActivitySegmentChangeStats(segment.entries),
-        [segment.entries],
-    );
+    const { changeStats } = segment;
     const hasChanges = segment.summary.changeCount > 0;
     const activityState = isCurrentTurnTail
         ? "In progress"
@@ -443,8 +430,6 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                     onRevealFileReference={onRevealFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
-                    scrollContainerRef={scrollContainerRef}
-                    segmentId={segment.id}
                     worktreeId={worktreeId}
                 />
             ) : null}

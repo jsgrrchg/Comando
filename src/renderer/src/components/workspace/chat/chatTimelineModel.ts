@@ -25,6 +25,10 @@ import {
     type ToolActivityPresentationPolicy,
 } from "./toolActivityPresentation";
 import { isTurnStartedActivity } from "./toolActivityKinds";
+import {
+    deriveActivitySegmentChangeStats,
+    type ActivitySegmentChangeStats,
+} from "./activitySegmentChangeStats";
 
 export interface ChatTimelineMessageRow {
     readonly id: string;
@@ -74,6 +78,7 @@ export interface ToolActivitySegmentSummary {
 }
 
 export interface ChatTimelineActivitySegmentRow {
+    readonly changeStats: ActivitySegmentChangeStats;
     readonly entries: readonly ToolActivitySegmentEntry[];
     readonly id: string;
     readonly items: readonly ActivitySegmentItem[];
@@ -662,8 +667,7 @@ function reuseToolActivitySegmentRow(
     );
     const summary = buildToolActivitySegmentSummary(items);
     const previousRow = previousRowById?.get(id);
-
-    if (
+    const itemsAreUnchanged =
         previousRow?.kind === "activity-segment" &&
         previousRow.items.length === items.length &&
         previousRow.items.every((item, index) => {
@@ -687,13 +691,19 @@ function reuseToolActivitySegmentRow(
                               ActivitySegmentItem,
                               { readonly kind: "tool" }
                           >).entry.reviewEntry;
-        }) &&
+        });
+
+    if (
+        previousRow?.kind === "activity-segment" &&
+        itemsAreUnchanged &&
         areToolActivitySegmentSummariesEquivalent(previousRow.summary, summary)
     ) {
         return previousRow;
     }
 
     return {
+        // Diff aggregation is expensive; only rebuild it with a changed segment.
+        changeStats: deriveActivitySegmentChangeStats(entries),
         entries,
         id,
         items,
