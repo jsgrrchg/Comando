@@ -6,6 +6,9 @@ import { DEFAULT_APP_TERMINAL_SETTINGS } from "@shared/terminal-settings";
 const liveWindows: Array<{
     readonly webContents: { readonly send: ReturnType<typeof vi.fn> };
 }> = [];
+const embeddedWebContents: Array<{
+    readonly send: ReturnType<typeof vi.fn>;
+}> = [];
 
 vi.mock("../window", () => ({
     forEachLiveWindow: (
@@ -17,9 +20,22 @@ vi.mock("../window", () => ({
     },
 }));
 
+vi.mock("../windows/registry", () => ({
+    windowRegistry: {
+        forEachLiveWebContents: (
+            callback: (webContents: (typeof embeddedWebContents)[number]) => void,
+        ) => {
+            for (const webContents of embeddedWebContents) {
+                callback(webContents);
+            }
+        },
+    },
+}));
+
 describe("broadcastSettingsUpdated", () => {
     beforeEach(() => {
         liveWindows.length = 0;
+        embeddedWebContents.length = 0;
     });
 
     it("sends appearance, editor, aiChat, and terminal settings", async () => {
@@ -99,6 +115,21 @@ describe("broadcastSettingsUpdated", () => {
                 vimModeEnabled: false,
             },
             terminal: DEFAULT_APP_TERMINAL_SETTINGS,
+        });
+    });
+
+    it("sends settings updates to embedded workspace renderers", async () => {
+        const { broadcastSettingsUpdated } = await import("./window-zoom");
+        const send = vi.fn();
+        embeddedWebContents.push({ send });
+
+        broadcastSettingsUpdated(null, null, null, null);
+
+        expect(send).toHaveBeenCalledWith(IPC_EVENTS.settingsUpdated, {
+            aiChat: null,
+            appearance: null,
+            editor: null,
+            terminal: null,
         });
     });
 });
