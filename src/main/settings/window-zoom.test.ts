@@ -23,8 +23,11 @@ vi.mock("../window", () => ({
 vi.mock("../windows/registry", () => ({
     windowRegistry: {
         forEachLiveWebContents: (
-            callback: (webContents: (typeof embeddedWebContents)[number]) => void,
+            callback: (webContents: (typeof liveWindows)[number]["webContents"]) => void,
         ) => {
+            for (const window of liveWindows) {
+                callback(window.webContents);
+            }
             for (const webContents of embeddedWebContents) {
                 callback(webContents);
             }
