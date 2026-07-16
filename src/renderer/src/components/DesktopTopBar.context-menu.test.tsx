@@ -87,23 +87,19 @@ function renderTopBar() {
     };
 }
 
-function getContextMenuButton(label: string): HTMLButtonElement {
-    const button = document.body.querySelector<HTMLButtonElement>(
-        `button[aria-label="${label}"]`,
-    );
-    if (!button) {
-        throw new Error(`Context menu action "${label}" was not rendered.`);
-    }
-    return button;
-}
-
 describe("DesktopTopBar context menu", () => {
     it("offers move and close actions for the context clicked with the secondary button", async () => {
         const writeText = vi.fn(() => Promise.resolve());
+        const showWorkspaceContextMenu = vi
+            .fn()
+            .mockResolvedValueOnce("copy_full_path")
+            .mockResolvedValueOnce("move_to_new_window")
+            .mockResolvedValueOnce("close");
         vi.stubGlobal("navigator", {
             ...navigator,
             clipboard: { writeText },
         });
+        vi.stubGlobal("comando", { showWorkspaceContextMenu });
         const { container, onCloseContext, onMoveContextToNewWindow } =
             renderTopBar();
         const tab = container.querySelector<HTMLElement>(
@@ -111,7 +107,7 @@ describe("DesktopTopBar context menu", () => {
         );
         expect(tab).toBeTruthy();
 
-        act(() => {
+        await act(async () => {
             tab?.dispatchEvent(
                 new MouseEvent("contextmenu", {
                     bubbles: true,
@@ -120,19 +116,17 @@ describe("DesktopTopBar context menu", () => {
                     clientY: 40,
                 }),
             );
+            await Promise.resolve();
         });
 
-        expect(getContextMenuButton("Copy Full Path")).toBeTruthy();
-        expect(getContextMenuButton("Move to New Window")).toBeTruthy();
-        expect(getContextMenuButton("Close")).toBeTruthy();
-
-        await act(async () => {
-            getContextMenuButton("Copy Full Path").click();
-            await Promise.resolve();
+        expect(showWorkspaceContextMenu).toHaveBeenLastCalledWith({
+            canCopyFullPath: true,
+            x: 120,
+            y: 40,
         });
         expect(writeText).toHaveBeenCalledWith("/projects/sandbox");
 
-        act(() => {
+        await act(async () => {
             tab?.dispatchEvent(
                 new MouseEvent("contextmenu", {
                     bubbles: true,
@@ -141,16 +135,27 @@ describe("DesktopTopBar context menu", () => {
                     clientY: 40,
                 }),
             );
-        });
-
-        await act(async () => {
-            getContextMenuButton("Move to New Window").click();
             await Promise.resolve();
         });
         expect(onMoveContextToNewWindow).toHaveBeenCalledWith(
             "project-2::__primary__",
         );
         expect(onCloseContext).not.toHaveBeenCalled();
+
+        await act(async () => {
+            tab?.dispatchEvent(
+                new MouseEvent("contextmenu", {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: 120,
+                    clientY: 40,
+                }),
+            );
+            await Promise.resolve();
+        });
+        expect(onCloseContext).toHaveBeenCalledWith(
+            "project-2::__primary__",
+        );
     });
 
     it("opens a project from the portaled project menu", async () => {

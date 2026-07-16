@@ -135,6 +135,7 @@ export const IPC_CHANNELS = {
     requestWorkspaceSurfaceContext: "workspace:request-surface-context",
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
     openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
+    showWorkspaceContextMenu: "workspace:show-context-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
     setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
     notifyFileBuffer: "workspace:notify-file-buffer",
@@ -2171,6 +2172,17 @@ export interface WorkspaceSurfaceContextRequest {
     readonly worktreeId?: string | null;
 }
 
+export interface WorkspaceContextMenuInput {
+    readonly canCopyFullPath: boolean;
+    readonly x: number;
+    readonly y: number;
+}
+
+export type WorkspaceContextMenuAction =
+    | "copy_full_path"
+    | "move_to_new_window"
+    | "close";
+
 export interface WindowWorkspaceRestoreRecord {
     readonly revision: number;
     readonly schemaVersion: 1;
@@ -3023,6 +3035,9 @@ export interface ComandoApi {
         readonly x: number;
     }) => Promise<void>;
     openWorkspaceSurfaceProjectMenu: () => Promise<void>;
+    showWorkspaceContextMenu: (
+        input: WorkspaceContextMenuInput,
+    ) => Promise<WorkspaceContextMenuAction | null>;
     setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
     setWorkspaceSurfaceContentLeftInset: (width: number) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;

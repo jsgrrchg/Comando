@@ -11,10 +11,6 @@ import {
     type ProjectContextMenuProject,
 } from "./ProjectContextMenu";
 import {
-    ContextMenu,
-    type ContextMenuState,
-} from "./context-menu/ContextMenu";
-import {
     projectAvatarColor,
     projectAvatarInitial,
 } from "./projectAvatar";
@@ -80,8 +76,6 @@ export function DesktopTopBar({
     settingsLabel,
 }: DesktopTopBarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
-    const [contextMenu, setContextMenu] =
-        useState<ContextMenuState<ProjectContextTabItem> | null>(null);
     const menuRootRef = useRef<HTMLDivElement | null>(null);
     const tabsRef = useRef<HTMLDivElement | null>(null);
     const contextTabDrag = useProjectContextTabDrag({
@@ -223,8 +217,10 @@ export function DesktopTopBar({
                             onContextMenu={(event) => {
                                 event.preventDefault();
                                 setMenuOpen(false);
-                                setContextMenu({
-                                    payload: context,
+                                void openWorkspaceContextMenu({
+                                    context,
+                                    onCloseContext,
+                                    onMoveContextToNewWindow,
                                     x: event.clientX,
                                     y: event.clientY,
                                 });
@@ -366,50 +362,36 @@ export function DesktopTopBar({
                     />
                 )}
             </div>
-            {contextMenu ? (
-                <ContextMenu
-                    entries={[
-                        {
-                            action: () => {
-                                const fullPath = contextMenu.payload.fullPath;
-                                if (!fullPath) {
-                                    return;
-                                }
-                                void (async () => {
-                                    try {
-                                        await navigator.clipboard.writeText(
-                                            fullPath,
-                                        );
-                                    } catch {
-                                        window.alert(
-                                            "Could not copy the project path.",
-                                        );
-                                    }
-                                })();
-                            },
-                            disabled: !contextMenu.payload.fullPath,
-                            label: "Copy Full Path",
-                        },
-                        { type: "separator" },
-                        {
-                            action: () =>
-                                onMoveContextToNewWindow(
-                                    contextMenu.payload.key,
-                                ),
-                            label: "Move to New Window",
-                        },
-                        { type: "separator" },
-                        {
-                            action: () =>
-                                onCloseContext(contextMenu.payload.key),
-                            danger: true,
-                            label: "Close",
-                        },
-                    ]}
-                    menu={contextMenu}
-                    onClose={() => setContextMenu(null)}
-                />
-            ) : null}
         </header>
     );
+}
+
+async function openWorkspaceContextMenu(input: {
+    readonly context: ProjectContextTabItem;
+    readonly onCloseContext: (contextKey: string) => void;
+    readonly onMoveContextToNewWindow: (contextKey: string) => void;
+    readonly x: number;
+    readonly y: number;
+}): Promise<void> {
+    // Native menus render above the workspace WebContentsView boundary.
+    const action = await window.comando?.showWorkspaceContextMenu({
+        canCopyFullPath: Boolean(input.context.fullPath),
+        x: input.x,
+        y: input.y,
+    });
+    if (action === "copy_full_path" && input.context.fullPath) {
+        try {
+            await navigator.clipboard.writeText(input.context.fullPath);
+        } catch {
+            window.alert("Could not copy the project path.");
+        }
+        return;
+    }
+    if (action === "move_to_new_window") {
+        input.onMoveContextToNewWindow(input.context.key);
+        return;
+    }
+    if (action === "close") {
+        input.onCloseContext(input.context.key);
+    }
 }
