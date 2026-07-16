@@ -119,6 +119,7 @@ const dittoCommand = resolveRequiredCommand("ditto", ["/usr/bin/ditto"]);
 const spctlCommand = resolveRequiredCommand("spctl", ["/usr/sbin/spctl"]);
 const xattrCommand = resolveRequiredCommand("xattr", ["/usr/bin/xattr"]);
 const xcrunCommand = resolveRequiredCommand("xcrun", ["/usr/bin/xcrun"]);
+const fileCommand = resolveRequiredCommand("file", ["/usr/bin/file"]);
 const macTargets = [{ arch: "arm64" }, { arch: "x64" }];
 const builtinModuleNames = new Set(
     builtinModules.flatMap((moduleName) => [
@@ -932,6 +933,9 @@ function verifyMacDistributionReadiness(packagedAppPath) {
         return;
     }
 
+    console.log("[package:mac] Verifying nested Developer ID signatures.");
+    verifyNestedMacSignatures(packagedAppPath);
+
     console.log("[package:mac] Verifying Developer ID signature and notarization.");
     run(codesignCommand, [
         "--verify",
@@ -948,6 +952,101 @@ function verifyMacDistributionReadiness(packagedAppPath) {
         packagedAppPath,
     ]);
     run(xcrunCommand, ["stapler", "validate", packagedAppPath]);
+}
+
+function verifyNestedMacSignatures(packagedAppPath) {
+    const binaries = collectMachOBinaries(packagedAppPath);
+
+    if (binaries.length === 0) {
+        throw new Error(
+            `No Mach-O binaries were found inside ${relativeToRepo(packagedAppPath)}.`,
+        );
+    }
+
+    for (const binaryPath of binaries) {
+        const verification = spawnSync(
+            codesignCommand,
+            ["--verify", "--strict", "--verbose=2", binaryPath],
+            { encoding: "utf8" },
+        );
+        const details = spawnSync(
+            codesignCommand,
+            ["--display", "--verbose=4", binaryPath],
+            { encoding: "utf8" },
+        );
+        const output = `${details.stdout ?? ""}\n${details.stderr ?? ""}`;
+        const relativeBinaryPath = relativeToRepo(binaryPath);
+
+        if (verification.error) {
+            throw verification.error;
+        }
+        if (details.error) {
+            throw details.error;
+        }
+        if (verification.status !== 0 || details.status !== 0) {
+            throw new Error(
+                `Invalid code signature for ${relativeBinaryPath}: ${formatCommandFailure(verification, details)}`,
+            );
+        }
+        if (!output.includes("Developer ID Application:")) {
+            throw new Error(
+                `Missing Developer ID Application signature for ${relativeBinaryPath}.`,
+            );
+        }
+        if (!output.includes("Timestamp=")) {
+            throw new Error(
+                `Missing secure timestamp for ${relativeBinaryPath}.`,
+            );
+        }
+        if (!output.includes("Runtime Version=")) {
+            throw new Error(
+                `Hardened runtime is not enabled for ${relativeBinaryPath}.`,
+            );
+        }
+    }
+}
+
+function collectMachOBinaries(rootPath) {
+    const binaries = [];
+    const pendingPaths = [rootPath];
+
+    while (pendingPaths.length > 0) {
+        const currentPath = pendingPaths.pop();
+        const entry = fs.lstatSync(currentPath);
+
+        if (entry.isSymbolicLink()) {
+            continue;
+        }
+        if (entry.isDirectory()) {
+            for (const child of fs.readdirSync(currentPath)) {
+                pendingPaths.push(path.join(currentPath, child));
+            }
+            continue;
+        }
+        if (!entry.isFile()) {
+            continue;
+        }
+
+        const inspection = spawnSync(fileCommand, ["--brief", currentPath], {
+            encoding: "utf8",
+        });
+        if (inspection.error) {
+            throw inspection.error;
+        }
+        if (inspection.status === 0 && inspection.stdout.includes("Mach-O")) {
+            binaries.push(currentPath);
+        }
+    }
+
+    return binaries.sort((left, right) => left.localeCompare(right));
+}
+
+function formatCommandFailure(...results) {
+    return results
+        .flatMap((result) => [result.stdout, result.stderr])
+        .filter(Boolean)
+        .join("\n")
+        .trim();
 }
 
 function shouldVerifyMacDistributionReadiness() {
