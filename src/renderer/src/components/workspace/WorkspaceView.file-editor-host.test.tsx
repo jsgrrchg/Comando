@@ -72,6 +72,15 @@ const mockEditorRuntime = vi.hoisted(() => ({
     })),
 }));
 
+const mockMermaidInitialize = vi.hoisted(() => vi.fn());
+const mockMermaidRender = vi.hoisted(() =>
+    vi.fn(() =>
+        Promise.resolve({
+            svg: "<svg><text>Workspace Mermaid Flowchart</text></svg>",
+        }),
+    ),
+);
+
 const monacoHarness = vi.hoisted(() => {
     type FakeUri = {
         readonly value: string;
@@ -605,6 +614,13 @@ vi.mock("@renderer/app/settings/client", () => ({
 
 vi.mock("@renderer/app/editor/monaco", () => mockEditorRuntime);
 
+vi.mock("mermaid", () => ({
+    default: {
+        initialize: mockMermaidInitialize,
+        render: mockMermaidRender,
+    },
+}));
+
 vi.mock("@renderer/app/store/workspace-store", () => ({
     getBestMatchingChatTabId: vi.fn(() => null),
     useWorkspaceStore: (selector: (state: unknown) => unknown) =>
@@ -1069,6 +1085,24 @@ async function waitForGitGutterLiveDiff() {
     });
 }
 
+async function waitForSelector(
+    container: HTMLElement,
+    selector: string,
+): Promise<Element> {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+        const element = container.querySelector(selector);
+        if (element) {
+            return element;
+        }
+
+        await act(async () => {
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
+        });
+    }
+
+    throw new Error(`Expected selector "${selector}" to render.`);
+}
+
 function findButtonByText(container: HTMLElement, label: string): HTMLButtonElement {
     const button = Array.from(container.querySelectorAll("button")).find(
         (entry): entry is HTMLButtonElement =>
@@ -1103,6 +1137,8 @@ describe("WorkspaceFileEditorHost", () => {
         mockEditorRuntime.applyProjectTypeScriptConfigForPath.mockClear();
         mockEditorRuntime.ensureMonacoTextMateForLanguage.mockClear();
         mockEditorRuntime.installMonacoTokenDebugAction.mockClear();
+        mockMermaidInitialize.mockClear();
+        mockMermaidRender.mockClear();
         mockWorkspaceStoreState.current.updateFileMarkdownPreviewScrollTop.mockReset();
         mockWorkspaceStoreState.current.updateFileMarkdownViewMode.mockClear();
         mockWorkspaceStoreState.current.updateFilePendingOpenLocation.mockClear();
@@ -1304,6 +1340,74 @@ describe("WorkspaceFileEditorHost", () => {
         expect(container.innerHTML).toContain("<li>From editor</li>");
         expect(monacoHarness.codeEditors).toHaveLength(1);
         expect(monacoHarness.codeEditors[0]?.disposed).toBe(false);
+    });
+
+    it("renders Mermaid diagrams after switching a Markdown file to preview", async () => {
+        const mermaidMarkdownFixture = [
+            "# Diagram",
+            "",
+            "```mermaid",
+            "flowchart TD",
+            "    Draft --> Preview",
+            "```",
+        ].join("\n");
+        const tab = createFileTab(
+            "file-1",
+            "README.md",
+            mermaidMarkdownFixture,
+        );
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(
+            container.querySelector(".markdown-file-preview__mermaid-frame"),
+        ).toBeNull();
+
+        act(() => {
+            findButtonByText(container, "Preview").click();
+        });
+
+        expect(
+            mockWorkspaceStoreState.current.updateFileMarkdownViewMode,
+        ).toHaveBeenCalledWith("file-1", "preview");
+
+        const previewTab = {
+            ...tab,
+            markdownViewMode: "preview" as const,
+        };
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: previewTab,
+                    fileTabs: [previewTab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(container.querySelector(".markdown-file-preview-scroll")).not.toBeNull();
+        expect(
+            await waitForSelector(
+                container,
+                ".markdown-file-preview__mermaid-frame",
+            ),
+        ).not.toBeNull();
+        expect(
+            await waitForSelector(container, ".markdown-file-preview__mermaid-svg"),
+        ).not.toBeNull();
+        expect(container.textContent).toContain("Workspace Mermaid Flowchart");
+        expect(mockMermaidRender).toHaveBeenCalledWith(
+            expect.stringMatching(/^markdown-mermaid-/),
+            "flowchart TD\n    Draft --> Preview",
+        );
     });
 
     it("returns from Markdown preview without remounting the Monaco editor", async () => {

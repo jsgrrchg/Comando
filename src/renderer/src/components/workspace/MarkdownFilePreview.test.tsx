@@ -10,9 +10,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MarkdownFilePreview } from "./MarkdownFilePreview";
 
 const mockOpenExternalUrl = vi.hoisted(() => vi.fn());
+const mockMermaidInitialize = vi.hoisted(() => vi.fn());
+const mockMermaidRender = vi.hoisted(() =>
+    vi.fn(() =>
+        Promise.resolve({
+            svg: "<svg><text>Rendered Mermaid SVG</text></svg>",
+        }),
+    ),
+);
 
 vi.mock("@renderer/app/utils/external-url", () => ({
     openExternalUrl: mockOpenExternalUrl,
+}));
+
+vi.mock("mermaid", () => ({
+    default: {
+        initialize: mockMermaidInitialize,
+        render: mockMermaidRender,
+    },
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -23,6 +38,8 @@ const mountedContainers: HTMLDivElement[] = [];
 
 afterEach(() => {
     mockOpenExternalUrl.mockReset();
+    mockMermaidInitialize.mockClear();
+    mockMermaidRender.mockClear();
     window.getSelection()?.removeAllRanges();
     vi.unstubAllGlobals();
 
@@ -199,6 +216,56 @@ describe("MarkdownFilePreview", () => {
         );
     });
 
+    it("styles Mermaid diagrams as stable scrollable preview frames", () => {
+        const styles = readMarkdownPreviewStyles();
+        const mermaidBodyRule =
+            styles.match(
+                /\.markdown-file-preview__mermaid-body\s*\{[^}]*\}/,
+            )?.[0] ?? "";
+        const mermaidSvgRule =
+            styles.match(
+                /\.markdown-file-preview__mermaid-svg svg\s*\{[^}]*\}/,
+            )?.[0] ?? "";
+        const mermaidSvgWrapRule =
+            styles.match(
+                /\.markdown-file-preview__mermaid-svg\s*\{[^}]*\}/,
+            )?.[0] ?? "";
+        const mermaidViewportRule =
+            styles.match(
+                /\.markdown-file-preview__mermaid-viewport\s*\{[^}]*\}/,
+            )?.[0] ?? "";
+
+        expect(styles).toContain(".markdown-file-preview__mermaid-frame");
+        expect(styles).toContain(".markdown-file-preview__mermaid-header");
+        expect(styles).toContain(".markdown-file-preview__mermaid-actions");
+        expect(styles).toContain(
+            ".markdown-file-preview__mermaid-zoom-controls",
+        );
+        expect(styles).toContain(".markdown-file-preview__mermaid-tool-button");
+        expect(styles).toContain(".markdown-file-preview__mermaid-zoom-level");
+        expect(styles).toContain(".markdown-file-preview__mermaid-copy-button");
+        expect(styles).toContain(".markdown-file-preview__mermaid-status");
+        expect(styles).toContain(".markdown-file-preview__mermaid-error");
+        expect(styles).toContain(
+            ".markdown-file-preview__mermaid-tool-button:disabled",
+        );
+        expect(styles).toContain(
+            ".markdown-file-preview__mermaid-viewport--dragging",
+        );
+        expect(mermaidBodyRule).toContain("min-height: 180px");
+        expect(mermaidBodyRule).toContain("overflow: auto");
+        expect(mermaidViewportRule).toContain(
+            "min-height: clamp(220px, 38vh, 520px)",
+        );
+        expect(mermaidViewportRule).toContain("overflow: hidden");
+        expect(mermaidViewportRule).toContain("cursor: grab");
+        expect(mermaidViewportRule).toContain("user-select: none");
+        expect(mermaidSvgWrapRule).toContain("min-width: 0");
+        expect(mermaidSvgWrapRule).toContain("transform-origin: center");
+        expect(mermaidSvgRule).toContain("max-width: 100%");
+        expect(mermaidSvgRule).toContain("color: var(--color-text-primary)");
+    });
+
     it("renders an empty Markdown file as a stable empty preview surface", () => {
         const markup = renderStaticMarkdownFilePreview({
             content: "",
@@ -328,6 +395,70 @@ describe("MarkdownFilePreview", () => {
         expect(markup).toContain("const value = 1;");
     });
 
+    it("renders Mermaid fenced code blocks with the diagram renderer", () => {
+        const markup = renderStaticMarkdownFilePreview({
+            content: "```mermaid\nflowchart TD\n    A --> B\n```",
+        });
+
+        expect(markup).toContain("markdown-file-preview__mermaid-frame");
+        expect(markup).toContain(">Mermaid</span>");
+        expect(markup).toContain(">Copy source</button>");
+        expect(markup).toContain("Rendering diagram...");
+        expect(markup).not.toContain("markdown-file-preview__code-frame");
+        expect(markup).not.toContain("markdown-file-preview__code-block");
+    });
+
+    it("restores Mermaid viewport state after the preview remounts", async () => {
+        const content = "```mermaid\nflowchart TD\n    A --> B\n```";
+        const mermaidViewportStateCache = new Map();
+        const { container, rerender } = mountInteractiveMarkdownFilePreview({
+            content,
+            mermaidViewportStateCache,
+            tabId: "file-tab-1",
+        });
+
+        await waitForPreviewToken(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+        );
+
+        const zoomInButton = container.querySelector<HTMLButtonElement>(
+            '[aria-label="Zoom in"]',
+        );
+        act(() => {
+            zoomInButton?.click();
+        });
+
+        await act(async () => {
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
+        });
+        expect(mermaidViewportStateCache.size).toBe(1);
+
+        rerender({
+            content: "",
+            mermaidViewportStateCache,
+            tabId: "file-tab-1",
+        });
+        rerender({ content, mermaidViewportStateCache, tabId: "file-tab-1" });
+
+        await waitForPreviewToken(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+        );
+        expect(container.textContent).toContain("120%");
+    });
+
+    it("renders tilde Mermaid fences with the diagram renderer", () => {
+        const markup = renderStaticMarkdownFilePreview({
+            content: "~~~mermaid\nsequenceDiagram\n    Alice->>Bob: Hello\n~~~",
+        });
+
+        expect(markup).toContain("markdown-file-preview__mermaid-frame");
+        expect(markup).toContain(">Mermaid</span>");
+        expect(markup).toContain(">Copy source</button>");
+        expect(markup).not.toContain("markdown-file-preview__code-frame");
+    });
+
     it("renders readable language labels for bash code fences", () => {
         const markup = renderStaticMarkdownFilePreview({
             content: "```bash\npnpm run lint\n```",
@@ -366,6 +497,35 @@ describe("MarkdownFilePreview", () => {
         expect(copyButton?.getAttribute("title")).toBe("Copied");
     });
 
+    it("copies Mermaid fence source instead of the rendered SVG", async () => {
+        const writeClipboardText = vi.fn(() => Promise.resolve());
+        vi.stubGlobal("comando", { writeClipboardText });
+        const mermaidSource = "flowchart TD\n    A --> B";
+        const container = renderInteractiveMarkdownFilePreview({
+            content: ["```mermaid", mermaidSource, "```"].join("\n"),
+        });
+
+        await waitForPreviewToken(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+        );
+
+        const copyButton = container.querySelector<HTMLButtonElement>(
+            ".markdown-file-preview__mermaid-copy-button",
+        );
+        expect(copyButton).not.toBeNull();
+
+        await act(async () => {
+            copyButton?.click();
+            await Promise.resolve();
+        });
+
+        expect(writeClipboardText).toHaveBeenCalledWith(mermaidSource);
+        expect(writeClipboardText).not.toHaveBeenCalledWith(
+            expect.stringContaining("Rendered Mermaid SVG"),
+        );
+    });
+
     it("shows a read-only context menu that can copy the full Markdown source", async () => {
         const writeClipboardText = vi.fn(() => Promise.resolve());
         vi.stubGlobal("comando", { writeClipboardText });
@@ -378,6 +538,27 @@ describe("MarkdownFilePreview", () => {
         expect(copyMarkdownButton).not.toBeNull();
         expect(queryContextMenuButton("Paste")).toBeNull();
         expect(queryContextMenuButton("Select all")).not.toBeNull();
+
+        await act(async () => {
+            copyMarkdownButton?.click();
+            await Promise.resolve();
+        });
+
+        expect(writeClipboardText).toHaveBeenCalledWith(content);
+    });
+
+    it("keeps copying the full Markdown source for Mermaid previews", async () => {
+        const writeClipboardText = vi.fn(() => Promise.resolve());
+        vi.stubGlobal("comando", { writeClipboardText });
+        const content = ["# Diagram", "", "```mermaid", "flowchart TD", "```"].join(
+            "\n",
+        );
+        const container = renderInteractiveMarkdownFilePreview({ content });
+
+        openPreviewContextMenu(container);
+
+        const copyMarkdownButton = queryContextMenuButton("Copy Markdown");
+        expect(copyMarkdownButton).not.toBeNull();
 
         await act(async () => {
             copyMarkdownButton?.click();
