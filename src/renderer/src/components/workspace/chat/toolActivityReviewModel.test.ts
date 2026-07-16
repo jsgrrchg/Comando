@@ -8,9 +8,13 @@ import type {
 
 import { useAppStore } from "@renderer/app/store/app-store";
 import {
+    createToolActivityReviewIndex,
     deriveChangeReviewItems,
     deriveChangeReviewSummary,
+    deriveToolActivityReviewEntriesFromIndex,
     deriveToolActivityReviewEntries,
+    deriveToolActivityReviewEntry,
+    deriveTrackedFilesForToolActivityFromIndex,
     deriveTrackedFilesForToolActivity,
 } from "./toolActivityReviewModel";
 
@@ -74,6 +78,93 @@ function createTrackedFile(
 }
 
 describe("toolActivityReviewModel", () => {
+    it("indexes explicit tool calls and reuses the index for stable tracked files", () => {
+        const activity = createActivity();
+        const trackedFiles = [
+            createTrackedFile(),
+            createTrackedFile({
+                identityKey: "tracked-2",
+                toolCallId: "tool-2",
+            }),
+        ];
+        const index = createToolActivityReviewIndex(trackedFiles);
+
+        expect(createToolActivityReviewIndex(trackedFiles)).toBe(index);
+        expect(index.trackedFilesBySessionId.get("session-1")).toEqual(
+            trackedFiles,
+        );
+        expect(
+            deriveTrackedFilesForToolActivityFromIndex(activity, index),
+        ).toEqual(deriveTrackedFilesForToolActivity(activity, trackedFiles));
+        expect(deriveToolActivityReviewEntry(activity, index)).toBe(
+            deriveToolActivityReviewEntry(activity, index),
+        );
+    });
+
+    it("matches renamed diff paths through indexed fallback candidates", () => {
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [],
+                    isText: true,
+                    kind: "move",
+                    newText: "next",
+                    oldText: "prev",
+                    path: "src/new-name.ts",
+                    previousPath: "src/old-name.ts",
+                    reversible: true,
+                },
+            ],
+            id: "tool-without-link",
+        });
+        const trackedFile = createTrackedFile({
+            path: "src/new-name.ts",
+            previousPath: "src/old-name.ts",
+            toolCallId: null,
+        });
+
+        expect(
+            deriveTrackedFilesForToolActivityFromIndex(
+                activity,
+                createToolActivityReviewIndex([trackedFile]),
+            ),
+        ).toEqual([trackedFile]);
+    });
+
+    it("preserves entries for tools unrelated to a tracked-file update", () => {
+        const firstActivity = createActivity({ id: "tool-1" });
+        const secondActivity = createActivity({ id: "tool-2" });
+        const firstTrackedFile = createTrackedFile({ toolCallId: "tool-1" });
+        const secondTrackedFile = createTrackedFile({
+            identityKey: "tracked-2",
+            path: "src/second.ts",
+            toolCallId: "tool-2",
+        });
+        const activities = [firstActivity, secondActivity];
+        const previousEntries = deriveToolActivityReviewEntriesFromIndex(
+            activities,
+            createToolActivityReviewIndex([
+                firstTrackedFile,
+                secondTrackedFile,
+            ]),
+        );
+        const nextEntries = deriveToolActivityReviewEntriesFromIndex(
+            activities,
+            createToolActivityReviewIndex([
+                {
+                    ...firstTrackedFile,
+                    reviewState: "kept",
+                    updatedAt: "2026-04-14T00:00:01.000Z",
+                },
+                secondTrackedFile,
+            ]),
+            previousEntries,
+        );
+
+        expect(nextEntries[0]).not.toBe(previousEntries[0]);
+        expect(nextEntries[1]).toBe(previousEntries[1]);
+    });
+
     it("prefers explicit match by toolCallId", () => {
         const activity = createActivity();
         const trackedFiles = [

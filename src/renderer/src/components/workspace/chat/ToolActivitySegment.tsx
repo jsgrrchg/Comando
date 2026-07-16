@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useState } from "react";
 
 import { useSettingsStore } from "@renderer/app/store/settings-store";
 
@@ -6,7 +6,6 @@ import type {
     ChatTimelineActivitySegmentRow,
 } from "./chatTimelineModel";
 import { formatDiffStat } from "../review/reviewDiff";
-import { deriveActivitySegmentChangeStats } from "./activitySegmentChangeStats";
 import { getToolActivityDescriptor } from "./toolActivityDescriptor";
 import {
     ToolActivityItem,
@@ -17,6 +16,9 @@ import {
     type ThinkingMessageProps,
 } from "./ChatMessageRow";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
+
+const ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT = 20;
+const ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT = 20;
 
 type ToolActivitySegmentProps = Pick<
     ToolActivityItemProps,
@@ -132,6 +134,149 @@ function Chevron({ expanded }: { readonly expanded: boolean }) {
     );
 }
 
+type ActivitySegmentItemRendererProps = Pick<
+    ToolActivitySegmentProps,
+    | "canRenderFileReference"
+    | "chatFontFamily"
+    | "chatFontSize"
+    | "highlightQuery"
+    | "onAddFileReferenceToChat"
+    | "onOpenFile"
+    | "onOpenFileReference"
+    | "onOpenSession"
+    | "onRevealFileReference"
+    | "projectId"
+    | "resolveFileReference"
+    | "worktreeId"
+>;
+
+function getActivitySegmentItemId(
+    item: ChatTimelineActivitySegmentRow["items"][number],
+): string {
+    return item.kind === "thinking"
+        ? `thinking:${item.message.id}`
+        : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`;
+}
+
+function ActivitySegmentItemRow({
+    item,
+    ...props
+}: ActivitySegmentItemRendererProps & {
+    readonly item: ChatTimelineActivitySegmentRow["items"][number];
+}) {
+    const openThinkingFileReference = props.onOpenFileReference ?? (() => undefined);
+    const resolveThinkingFileReference = props.resolveFileReference ?? (() => null);
+
+    return (
+        <div
+            className="activity-tree-branch min-w-0 pl-10"
+            data-activity-rail-decoration="branch"
+            data-activity-rail-indent="child"
+            data-thinking-message-id={
+                item.kind === "thinking" ? item.message.id : undefined
+            }
+            data-tool-activity-id={
+                item.kind === "tool"
+                    ? item.entry.reviewEntry.activity.id
+                    : undefined
+            }
+            data-tool-activity-visibility={
+                item.kind === "tool" && item.entry.policy === "groupable"
+                    ? "expanded-only"
+                    : "always"
+            }
+            role="listitem"
+        >
+            <div className="min-w-0 py-0.5">
+                {item.kind === "thinking" ? (
+                    <ThinkingMessage
+                        canRenderFileReference={props.canRenderFileReference}
+                        chatFontFamily={props.chatFontFamily}
+                        chatFontSize={props.chatFontSize}
+                        content={item.message.content}
+                        highlightQuery={props.highlightQuery}
+                        inProgress={item.message.status === "streaming"}
+                        onAddFileReferenceToChat={props.onAddFileReferenceToChat}
+                        onOpenFile={openThinkingFileReference}
+                        onRevealFileReference={props.onRevealFileReference}
+                        resolveFileReference={resolveThinkingFileReference}
+                    />
+                ) : (
+                    <ToolActivityItem
+                        activity={item.entry.reviewEntry.activity}
+                        canRenderFileReference={props.canRenderFileReference}
+                        compactTerminal
+                        onOpenFile={props.onOpenFile}
+                        onOpenFileReference={props.onOpenFileReference}
+                        onOpenSession={props.onOpenSession}
+                        projectId={props.projectId}
+                        resolveFileReference={props.resolveFileReference}
+                        surface={
+                            item.entry.policy === "standalone-change"
+                                ? "card"
+                                : "rail-row"
+                        }
+                        trackedFiles={item.entry.reviewEntry.trackedFiles}
+                        worktreeId={props.worktreeId}
+                    />
+                )}
+            </div>
+        </div>
+    );
+}
+
+function ExpandedActivitySegmentItems({
+    contentId,
+    items,
+    ...itemRendererProps
+}: ActivitySegmentItemRendererProps & {
+    readonly contentId: string;
+    readonly items: readonly ChatTimelineActivitySegmentRow["items"][number][];
+}) {
+    const [fallbackRenderLimit, setFallbackRenderLimit] = useState(
+        ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT,
+    );
+    const visibleItems = items.slice(0, fallbackRenderLimit);
+    const hasMoreFallbackItems = visibleItems.length < items.length;
+
+    return (
+        <div
+            aria-label="Full activity"
+            className="pt-1"
+            id={contentId}
+            role="region"
+        >
+            <div className="activity-tree min-w-0" role="list">
+                <div className="flex min-w-0 flex-col gap-1.5">
+                    {visibleItems.map((item) => (
+                        <ActivitySegmentItemRow
+                            {...itemRendererProps}
+                            item={item}
+                            key={getActivitySegmentItemId(item)}
+                        />
+                    ))}
+                </div>
+            </div>
+            {hasMoreFallbackItems ? (
+                <button
+                    aria-controls={contentId}
+                    className="ml-10 mt-1 text-xs text-text-secondary underline-offset-2 hover:text-text-primary hover:underline focus-visible:outline-none focus-visible:underline"
+                    onClick={() =>
+                        setFallbackRenderLimit(
+                            (current) =>
+                                current +
+                                ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT,
+                        )
+                    }
+                    type="button"
+                >
+                    Load 20 more
+                </button>
+            ) : null}
+        </div>
+    );
+}
+
 export const ToolActivitySegment = memo(function ToolActivitySegment({
     canRenderFileReference,
     chatFontFamily,
@@ -161,16 +306,8 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     const headline = getSegmentHeadline(segment, isCurrentTurnTail);
     const isWorkedSegment = headline.startsWith("Worked ·");
     const latestActivityLabel = getLatestActivityLabel(segment);
-    const changeStats = useMemo(
-        () => deriveActivitySegmentChangeStats(segment.entries),
-        [segment.entries],
-    );
+    const { changeStats } = segment;
     const hasChanges = segment.summary.changeCount > 0;
-    const visibleItems = expanded ? segment.items : [];
-    const openThinkingFileReference =
-        onOpenFileReference ?? (() => undefined);
-    const resolveThinkingFileReference =
-        resolveFileReference ?? (() => null);
     const activityState = isCurrentTurnTail
         ? "In progress"
         : "Completed";
@@ -278,95 +415,23 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 </div>
             )}
 
-            {visibleItems.length > 0 ? (
-                <div
-                    aria-label="Full activity"
-                    className="pt-1"
-                    id={contentId}
-                    role="region"
-                >
-                    <div
-                        className="activity-tree flex min-w-0 flex-col gap-1.5"
-                        role="list"
-                    >
-                        {visibleItems.map((item) => {
-                            const atomicRowId =
-                                item.kind === "thinking"
-                                    ? `thinking:${item.message.id}`
-                                    : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`;
-                            return (
-                                <div
-                                    className="activity-tree-branch min-w-0 pl-10"
-                                    data-activity-rail-decoration="branch"
-                                    data-activity-rail-indent="child"
-                                    data-thinking-message-id={
-                                        item.kind === "thinking"
-                                            ? item.message.id
-                                            : undefined
-                                    }
-                                    data-tool-activity-id={
-                                        item.kind === "tool"
-                                            ? item.entry.reviewEntry.activity.id
-                                            : undefined
-                                    }
-                                    data-tool-activity-visibility={
-                                        item.kind === "tool" &&
-                                        item.entry.policy === "groupable"
-                                            ? "expanded-only"
-                                            : "always"
-                                    }
-                                    key={atomicRowId}
-                                    role="listitem"
-                                >
-                                    <div className="min-w-0 py-0.5">
-                                        {item.kind === "thinking" ? (
-                                            <ThinkingMessage
-                                                canRenderFileReference={canRenderFileReference}
-                                                chatFontFamily={chatFontFamily}
-                                                chatFontSize={chatFontSize}
-                                                content={item.message.content}
-                                                highlightQuery={highlightQuery}
-                                                inProgress={
-                                                    item.message.status ===
-                                                    "streaming"
-                                                }
-                                                onAddFileReferenceToChat={onAddFileReferenceToChat}
-                                                onOpenFile={openThinkingFileReference}
-                                                onRevealFileReference={onRevealFileReference}
-                                                resolveFileReference={resolveThinkingFileReference}
-                                            />
-                                        ) : (
-                                            <ToolActivityItem
-                                                activity={
-                                                    item.entry.reviewEntry
-                                                        .activity
-                                                }
-                                                canRenderFileReference={canRenderFileReference}
-                                                compactTerminal
-                                                onOpenFile={onOpenFile}
-                                                onOpenFileReference={onOpenFileReference}
-                                                onOpenSession={onOpenSession}
-                                                projectId={projectId}
-                                                resolveFileReference={resolveFileReference}
-                                                surface={
-                                                    item.entry.policy ===
-                                                    "standalone-change"
-                                                        ? "card"
-                                                        : "rail-row"
-                                                }
-                                                trackedFiles={
-                                                    item.entry.reviewEntry
-                                                        .trackedFiles
-                                                }
-                                                worktreeId={worktreeId}
-                                            />
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                </div>
+            {expanded ? (
+                <ExpandedActivitySegmentItems
+                    canRenderFileReference={canRenderFileReference}
+                    chatFontFamily={chatFontFamily}
+                    chatFontSize={chatFontSize}
+                    contentId={contentId}
+                    highlightQuery={highlightQuery}
+                    items={segment.items}
+                    onAddFileReferenceToChat={onAddFileReferenceToChat}
+                    onOpenFile={onOpenFile}
+                    onOpenFileReference={onOpenFileReference}
+                    onOpenSession={onOpenSession}
+                    onRevealFileReference={onRevealFileReference}
+                    projectId={projectId}
+                    resolveFileReference={resolveFileReference}
+                    worktreeId={worktreeId}
+                />
             ) : null}
         </div>
     );

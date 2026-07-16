@@ -73,6 +73,15 @@ interface GitScopeMenuSize {
 }
 
 interface SidebarGitScopePickerProps {
+    readonly externalMenuRequest?: {
+        readonly id: number;
+        readonly width: number;
+        readonly x: number;
+    } | null;
+    readonly onTitlebarMenuRequest?: (anchor: {
+        readonly width: number;
+        readonly x: number;
+    }) => void;
     readonly onTitlebarKeyDown?: (
         event: ReactKeyboardEvent<HTMLButtonElement>,
     ) => void;
@@ -80,6 +89,7 @@ interface SidebarGitScopePickerProps {
     readonly titlebarContextKey?: string;
     readonly triggerVariant?: "sidebar" | "titlebar";
     readonly title?: string;
+    readonly triggerHidden?: boolean;
     readonly worktreeId: string | null;
 }
 
@@ -275,10 +285,13 @@ type SelectableListItem =
       };
 
 export function SidebarGitScopePicker({
+    externalMenuRequest = null,
     onTitlebarKeyDown,
+    onTitlebarMenuRequest,
     projectId,
     title,
     titlebarContextKey,
+    triggerHidden = false,
     triggerVariant = "sidebar",
     worktreeId,
 }: SidebarGitScopePickerProps) {
@@ -328,6 +341,7 @@ export function SidebarGitScopePicker({
     } | null>(null);
     const pendingMenuSizeRef = useRef<GitScopeMenuSize | null>(null);
     const menuResizeEndRef = useRef<(() => void) | null>(null);
+    const lastExternalMenuRequestIdRef = useRef(0);
 
     const project = useProjectsStore((state) =>
         projectId
@@ -862,6 +876,20 @@ export function SidebarGitScopePicker({
             setMenuAnimationState("closing");
         }
     }, [isMenuMounted, isOpen]);
+
+    useEffect(() => {
+        if (
+            !externalMenuRequest ||
+            externalMenuRequest.id <= lastExternalMenuRequestIdRef.current
+        ) {
+            return;
+        }
+
+        lastExternalMenuRequestIdRef.current = externalMenuRequest.id;
+        setIsOpen(true);
+        setActionError(null);
+        setQuery("");
+    }, [externalMenuRequest]);
 
     const finishMenuAnimation = useCallback(() => {
         if (menuAnimationState === "opening" && isOpen) {
@@ -2274,8 +2302,20 @@ export function SidebarGitScopePicker({
                     .join(" ")}
                 disabled={!projectId}
                 data-project-context-key={titlebarContextKey}
-                onClick={() => {
+                onClick={(event) => {
                     if (!projectId) {
+                        return;
+                    }
+
+                    if (
+                        triggerVariant === "titlebar" &&
+                        onTitlebarMenuRequest
+                    ) {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        onTitlebarMenuRequest({
+                            width: rect.width,
+                            x: rect.left,
+                        });
                         return;
                     }
 
@@ -2287,6 +2327,19 @@ export function SidebarGitScopePicker({
                 ref={buttonRef}
                 role={triggerVariant === "titlebar" ? "tab" : undefined}
                 tabIndex={triggerVariant === "titlebar" ? 0 : undefined}
+                style={
+                    triggerHidden
+                        ? {
+                              height: 0,
+                              left: externalMenuRequest?.x ?? 0,
+                              pointerEvents: "none",
+                              position: "fixed",
+                              top: 0,
+                              visibility: "hidden",
+                              width: externalMenuRequest?.width ?? 0,
+                          }
+                        : undefined
+                }
                 title={
                     projectId
                         ? activeRootPath

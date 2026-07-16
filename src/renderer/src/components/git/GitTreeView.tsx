@@ -22,10 +22,8 @@ import {
 
 import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import { FolderTypeIcon } from "@renderer/components/icons/FolderTypeIcon";
-import {
-    MeasuredVirtualList,
-    type MeasuredVirtualListHandle,
-} from "@renderer/components/virtual/MeasuredVirtualList";
+import { FixedVirtualList } from "@renderer/components/virtual/FixedVirtualList";
+import type { MeasuredVirtualListHandle } from "@renderer/components/virtual/MeasuredVirtualList";
 
 import { GitActionButton, GitEmptyState } from "./GitUi";
 import { canDropProjectEntriesIntoDirectory } from "./tree-dnd";
@@ -447,6 +445,7 @@ export function GitTreeView({
     const scrollContainerRef = useRef<HTMLElement | null>(null);
     const virtualListRef = useRef<MeasuredVirtualListHandle | null>(null);
     const treeScrollOffsetRef = useRef(0);
+    const [virtualRowHeight, setVirtualRowHeight] = useState(ROW_HEIGHT);
     const [shouldVirtualize, setShouldVirtualize] = useState(false);
     const expandedPathSet = useMemo(
         () => (expandedPaths ? new Set(expandedPaths) : null),
@@ -502,7 +501,18 @@ export function GitTreeView({
             getTreeOffsetWithinScrollContainer(container, scrollContainer),
         );
 
+        const configuredScale = Number.parseFloat(
+            window.getComputedStyle(container).getPropertyValue("--file-tree-scale"),
+        );
+        const nextRowHeight =
+            Number.isFinite(configuredScale) && configuredScale > 0
+                ? ROW_HEIGHT * configuredScale
+                : ROW_HEIGHT;
+
         treeScrollOffsetRef.current = treeOffset;
+        setVirtualRowHeight((current) =>
+            current === nextRowHeight ? current : nextRowHeight,
+        );
         setShouldVirtualize(treeOffset <= ROW_HEIGHT);
     }, []);
 
@@ -918,11 +928,10 @@ export function GitTreeView({
             role="tree"
             tabIndex={0}
         >
-            <MeasuredVirtualList
-                defaultViewportHeight={900}
+            <FixedVirtualList
                 enabled={shouldVirtualize}
-                estimateSize={() => ROW_HEIGHT}
                 getItemKey={(row) => row.key}
+                itemHeight={virtualRowHeight}
                 items={flatRows}
                 onReady={handleVirtualListReady}
                 overscan={8}

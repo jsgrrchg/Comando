@@ -108,6 +108,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
             chatFontSize={chatFontSize}
             content={message.content}
             highlightQuery={highlightQuery}
+            live={message.status === "streaming"}
             onAddFileReferenceToChat={onAddFileReferenceToChat}
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
@@ -569,6 +570,7 @@ function renderHighlightableMarkdown(params: {
     readonly chatFontSize?: number;
     readonly content: string;
     readonly highlightQuery?: string;
+    readonly live?: boolean;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -598,6 +600,7 @@ function renderHighlightableMarkdown(params: {
             chatFontFamily={params.chatFontFamily}
             chatFontSize={params.chatFontSize}
             content={params.content}
+            live={params.live}
             onAddFileReferenceToChat={params.onAddFileReferenceToChat}
             onOpenFile={params.onOpenFile}
             onRevealFileReference={params.onRevealFileReference}
@@ -772,6 +775,7 @@ function AssistantMessage(props: {
     readonly chatFontSize?: number;
     readonly content: string;
     readonly highlightQuery?: string;
+    readonly live?: boolean;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -800,6 +804,7 @@ function AssistantMessage(props: {
                           props.canRenderFileReference,
                       content: props.content,
                       highlightQuery: props.highlightQuery,
+                      live: props.live,
                       onAddFileReferenceToChat: props.onAddFileReferenceToChat,
                       onOpenFile: props.onOpenFile,
                       onRevealFileReference: props.onRevealFileReference,
@@ -1002,6 +1007,7 @@ export function ThinkingMessage({
                         canRenderFileReference,
                         content,
                         highlightQuery,
+                        live: inProgress,
                         onAddFileReferenceToChat,
                         onOpenFile,
                         onRevealFileReference,

@@ -20,10 +20,17 @@ import {
     shouldWrapDiffPreview,
     type DiffLine,
 } from "./reviewDiff";
+import {
+    prepareDiffPreview,
+    type PreparedDiffPreview,
+} from "./reviewDiffWorkerClient";
 
 export const EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD = 1_000;
 
 const VIRTUAL_DIFF_LINE_OVERSCAN = 32;
+const EMPTY_DIFF_LINES: readonly DiffLine[] = [];
+const EMPTY_VISUAL_BLOCKS: ReturnType<typeof computeVisualDiffBlocks> = [];
+const EMPTY_DECISION_HUNKS: ReturnType<typeof computeDecisionHunks> = [];
 
 type RenderBlock =
     | {
@@ -685,18 +692,56 @@ export function EditedFileDiffPreview({
     const [scrollMarginTop, setScrollMarginTop] = useState(0);
     const resolvedLineWrapping =
         lineWrapping ?? shouldWrapDiffPreview(file?.path ?? diff.path);
-    const lines = useMemo(
-        () => (expanded ? computeDiffLines(diff) : []),
-        [diff, expanded],
+    const diffLineCount = useMemo(
+        () => diff.hunks.reduce((count, hunk) => count + hunk.lines.length, 0),
+        [diff.hunks],
     );
-    const visualBlocks = useMemo(
-        () => (expanded ? computeVisualDiffBlocks(diff) : []),
-        [diff, expanded],
+    const shouldPrepareInWorker =
+        expanded &&
+        typeof Worker !== "undefined" &&
+        diffLineCount >= EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD;
+    const synchronouslyPreparedDiff = useMemo<PreparedDiffPreview | null>(
+        () =>
+            expanded && !shouldPrepareInWorker
+                ? {
+                      decisionHunks: computeDecisionHunks(diff),
+                      lines: computeDiffLines(diff),
+                      visualBlocks: computeVisualDiffBlocks(diff),
+                  }
+                : null,
+        [diff, expanded, shouldPrepareInWorker],
     );
-    const decisionHunks = useMemo(
-        () => (expanded ? computeDecisionHunks(diff) : []),
-        [diff, expanded],
-    );
+    const [workerPreparedDiff, setWorkerPreparedDiff] = useState<{
+        readonly diff: AiFileDiff;
+        readonly prepared: PreparedDiffPreview;
+    } | null>(null);
+
+    useEffect(() => {
+        if (!shouldPrepareInWorker) {
+            return;
+        }
+
+        const controller = new AbortController();
+        void prepareDiffPreview(diff, controller.signal)
+            .then((prepared) => {
+                if (!controller.signal.aborted) {
+                    setWorkerPreparedDiff({ diff, prepared });
+                }
+            })
+            .catch(() => {
+                // Cancellation is expected whenever a diff leaves the viewport.
+            });
+        return () => controller.abort();
+    }, [diff, shouldPrepareInWorker]);
+
+    const preparedDiff =
+        synchronouslyPreparedDiff ??
+        (workerPreparedDiff?.diff === diff
+            ? workerPreparedDiff.prepared
+            : null);
+    const lines = preparedDiff?.lines ?? EMPTY_DIFF_LINES;
+    const visualBlocks = preparedDiff?.visualBlocks ?? EMPTY_VISUAL_BLOCKS;
+    const decisionHunks = preparedDiff?.decisionHunks ?? EMPTY_DECISION_HUNKS;
     const renderBlocks = useMemo(() => buildRenderBlocks(lines), [lines]);
     const visualBlockSet = useMemo(
         () => new Set(visualBlocks.map((block) => block.index)),

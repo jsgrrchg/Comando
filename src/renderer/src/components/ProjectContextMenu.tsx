@@ -6,6 +6,7 @@ import {
     type KeyboardEvent,
     type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 
 import type { GitRepositorySnapshot, GitWorktreeSummary } from "@shared/ipc";
 
@@ -26,7 +27,7 @@ export interface ProjectContextMenuProject {
     }[];
 }
 
-interface ProjectContextMenuProps {
+export interface ProjectContextMenuProps {
     readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
     readonly onClose: () => void;
     readonly onOpenProject: (projectId: string) => void;
@@ -35,6 +36,40 @@ interface ProjectContextMenuProps {
     readonly onOpenWorktree: (projectId: string, worktreeId: string) => void;
     readonly projects: readonly ProjectContextMenuProject[];
     readonly settingsLabel: string | null;
+}
+
+interface WorkspaceSurfaceProjectContextMenuProps
+    extends Omit<ProjectContextMenuProps, "onClose"> {
+    readonly externalMenuRequest?: {
+        readonly id: number;
+    } | null;
+}
+
+export function WorkspaceSurfaceProjectContextMenu({
+    externalMenuRequest = null,
+    ...menuProps
+}: WorkspaceSurfaceProjectContextMenuProps) {
+    const [isOpen, setIsOpen] = useState(false);
+    const lastExternalMenuRequestIdRef = useRef(0);
+
+    useEffect(() => {
+        if (
+            !externalMenuRequest ||
+            externalMenuRequest.id <= lastExternalMenuRequestIdRef.current
+        ) {
+            return;
+        }
+
+        lastExternalMenuRequestIdRef.current = externalMenuRequest.id;
+        setIsOpen(true);
+    }, [externalMenuRequest]);
+
+    return isOpen ? (
+        <ProjectContextMenu
+            {...menuProps}
+            onClose={() => setIsOpen(false)}
+        />
+    ) : null;
 }
 
 export function ProjectContextMenu({
@@ -572,10 +607,11 @@ function ProjectContextModal({
     readonly children: ReactNode;
     readonly onClose: () => void;
 }) {
-    return (
+    const modal = (
         <div
             className="project-context-menu-backdrop"
             onMouseDown={(event) => {
+                event.stopPropagation();
                 if (event.target === event.currentTarget) {
                     onClose();
                 }
@@ -591,6 +627,12 @@ function ProjectContextModal({
             </div>
         </div>
     );
+
+    if (typeof document === "undefined" || !document.body) {
+        return modal;
+    }
+
+    return createPortal(modal, document.body);
 }
 
 function findProjectSnapshot(

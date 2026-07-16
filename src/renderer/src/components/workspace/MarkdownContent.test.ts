@@ -11,7 +11,10 @@ import {
     serializeComposerDisplaySelectionMention,
 } from "@shared/composer-display-markers";
 
-import { MarkdownContent } from "./MarkdownContent";
+import {
+    MarkdownContent,
+    parseMarkdownBlocksProgressively,
+} from "./MarkdownContent";
 import { resolveProjectFileReference } from "./projectFileReferences";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -50,6 +53,36 @@ function renderInteractiveMarkdownContent(
 }
 
 describe("MarkdownContent", () => {
+    it("reuses a stable plain-text prefix without changing the parsed blocks", () => {
+        const initial = "First paragraph.\n\nSecond paragraph";
+        const next = `${initial} grows safely`;
+        const progressive = parseMarkdownBlocksProgressively(
+            parseMarkdownBlocksProgressively(null, initial),
+            next,
+        );
+        const complete = parseMarkdownBlocksProgressively(null, next);
+
+        expect(progressive.blocks).toEqual(complete.blocks);
+        expect(progressive.stableContentLength).toBe(
+            "First paragraph.\n\n".length,
+        );
+    });
+
+    it.each([
+        "```ts\nconst value = 1;",
+        "- incomplete list item",
+        "name | value\n--- | ---\npartial | row",
+    ])("falls back to complete parsing for ambiguous live Markdown", (content) => {
+        const next = `${content}\nmore streamed content`;
+        const previous = parseMarkdownBlocksProgressively(null, content);
+        const parsed = parseMarkdownBlocksProgressively(previous, next);
+
+        expect(parsed.stableContentLength).toBe(0);
+        expect(parsed.blocks).toEqual(
+            parseMarkdownBlocksProgressively(null, next).blocks,
+        );
+    });
+
     it("renders serialized folder mentions as Catppuccin links", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {

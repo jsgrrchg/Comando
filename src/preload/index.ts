@@ -178,6 +178,8 @@ import {
     type WriteTerminalInput,
     type PersistedWorkspaceSnapshot,
     type WorkspaceNavigationSnapshot,
+    type WorkspaceSurfaceDragEvent,
+    type WorkspaceSurfaceContextRequest,
 } from "@shared/ipc";
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -859,6 +861,112 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfaceSnapshotRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            requestId: string,
+        ) => {
+            try {
+                ipcRenderer.send(
+                    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
+                    requestId,
+                    listener(),
+                );
+            } catch {
+                ipcRenderer.send(
+                    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
+                    requestId,
+                    null,
+                );
+            }
+        };
+
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceSnapshotRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceSnapshotRequested,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceDrag: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            payload: WorkspaceSurfaceDragEvent,
+        ) => listener(payload);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceDrag, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(IPC_EVENTS.workspaceSurfaceDrag, handleEvent);
+        };
+    },
+    onWorkspaceSurfaceSnapshotUpdated: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            snapshot: WorkspaceNavigationSnapshot,
+        ) => listener(snapshot);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceSnapshotUpdated, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceFocused: (listener) => {
+        const handleEvent = () => listener();
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceFocused, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceFocused,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceContextRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            input: WorkspaceSurfaceContextRequest,
+        ) => listener(input);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceContextRequested, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceContextRequested,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceGitScopeMenuRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            anchor: { readonly width: number; readonly x: number },
+        ) => listener(anchor);
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceGitScopeMenuRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceGitScopeMenuRequested,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceProjectMenuRequested: (listener) => {
+        const handleEvent = () => listener();
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
+                handleEvent,
+            );
+        };
+    },
     onTerminalData: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -940,6 +1048,32 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveActiveWorktreeId, worktreeId),
     saveShellState: (snapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveShellState, snapshot),
+    initializeWorkspaceSurfaces: (snapshot: WorkspaceNavigationSnapshot) =>
+        ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
+    activateWorkspaceSurface: (contextKey: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
+    captureWorkspaceSurfaceContext: (contextKey: string) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.captureWorkspaceSurfaceContext,
+            contextKey,
+        ),
+    dispatchWorkspaceSurfaceDrag: (event) =>
+        ipcRenderer.invoke(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag, event),
+    notifyWorkspaceSurfaceFocused: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceFocused),
+    requestWorkspaceSurfaceContext: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.requestWorkspaceSurfaceContext, input),
+    openWorkspaceSurfaceGitScopeMenu: (anchor) =>
+        ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu, anchor),
+    openWorkspaceSurfaceProjectMenu: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu),
+    setWorkspaceSurfaceContentInset: (height: number) =>
+        ipcRenderer.invoke(IPC_CHANNELS.setWorkspaceSurfaceContentInset, height),
+    setWorkspaceSurfaceContentLeftInset: (width: number) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset,
+            width,
+        ),
     setTrafficLightVisibility: (visible: boolean) =>
         ipcRenderer.invoke(IPC_CHANNELS.setTrafficLightVisibility, visible),
     setNativeAppearance: (mode: ThemeMode) =>

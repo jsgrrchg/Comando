@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vitest";
 
-import type { AiSessionSnapshot, AiToolActivity, AiTrackedFile } from "@shared/ipc";
-import { buildAiSessionTranscriptModel } from "@renderer/app/ai/transcriptModel";
+import type {
+    AiSessionDomainEvent,
+    AiSessionSnapshot,
+    AiToolActivity,
+    AiTrackedFile,
+} from "@shared/ipc";
+import {
+    applyAiSessionDomainEventToTranscript,
+    buildAiSessionTranscriptModel,
+} from "@renderer/app/ai/transcriptModel";
 
 import {
+    getChatTimelineReconciliationDiagnostics,
     reconcileChatTimelineModel,
+    reconcileChatTimelineModelIncrementallyFromTranscript,
     reconcileChatTimelineModelFromTranscript,
+    resetChatTimelineReconciliationDiagnosticsForTests,
 } from "./chatTimelineModel";
 
 function createMessage(
@@ -81,7 +92,328 @@ function createReadActivity(
     });
 }
 
+function createSessionEvent(
+    overrides: Partial<AiSessionDomainEvent> & {
+        readonly kind: AiSessionDomainEvent["kind"];
+    },
+): AiSessionDomainEvent {
+    const { kind, ...rest } = overrides;
+    return {
+        origin: "live",
+        parentSessionId: null,
+        runtimeId: "codex",
+        runtimeSessionId: "runtime-session-1",
+        sessionId: "session-1",
+        updatedAt: "2026-04-14T00:00:00.000Z",
+        ...rest,
+        kind,
+    } as AiSessionDomainEvent;
+}
+
 describe("chatTimelineModel", () => {
+    it("patches an assistant live tail incrementally while preserving history", () => {
+        const trackedFiles: AiTrackedFile[] = [];
+        const initialTranscript = buildAiSessionTranscriptModel({
+            messages: [
+                createMessage({
+                    content: "Inspect the timeline",
+                    id: "user-1",
+                    kind: "user",
+                }),
+                createMessage({
+                    content: "Draft",
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "assistant-1",
+                    status: "streaming",
+                }),
+            ],
+            toolActivity: [],
+        });
+        const initialModel = reconcileChatTimelineModelFromTranscript(null, {
+            status: "streaming",
+            trackedFiles,
+            transcript: initialTranscript,
+        });
+        const updatedTranscript = applyAiSessionDomainEventToTranscript(
+            initialTranscript,
+            createSessionEvent({
+                content: "Draft with streamed tail",
+                delta: " with streamed tail",
+                kind: "message-delta",
+                messageId: "assistant-1",
+                messageKind: "assistant",
+                updatedAt: "2026-04-14T00:00:02.000Z",
+            }),
+        );
+
+        resetChatTimelineReconciliationDiagnosticsForTests();
+        const incrementalModel =
+            reconcileChatTimelineModelIncrementallyFromTranscript(
+                initialModel,
+                initialTranscript,
+                {
+                    status: "streaming",
+                    trackedFiles,
+                    transcript: updatedTranscript,
+                },
+            );
+        const fullModel = reconcileChatTimelineModelFromTranscript(
+            initialModel,
+            {
+                status: "streaming",
+                trackedFiles,
+                transcript: updatedTranscript,
+            },
+        );
+
+        expect(incrementalModel.historyRows).toBe(initialModel.historyRows);
+        expect(incrementalModel.liveTailRow).toEqual(fullModel.liveTailRow);
+        expect(incrementalModel.orderedRowIds).toEqual(fullModel.orderedRowIds);
+        expect(getChatTimelineReconciliationDiagnostics()).toEqual({
+            fallbackCount: 0,
+            incrementalCount: 1,
+        });
+    });
+
+    it("appends a chronological assistant row without rebuilding history", () => {
+        const trackedFiles: AiTrackedFile[] = [];
+        const initialTranscript = buildAiSessionTranscriptModel({
+            messages: [
+                createMessage({
+                    content: "Inspect the timeline",
+                    id: "user-1",
+                    kind: "user",
+                }),
+            ],
+            toolActivity: [],
+        });
+        const initialModel = reconcileChatTimelineModelFromTranscript(null, {
+            status: "streaming",
+            trackedFiles,
+            transcript: initialTranscript,
+        });
+        const updatedTranscript = applyAiSessionDomainEventToTranscript(
+            initialTranscript,
+            createSessionEvent({
+                kind: "message-started",
+                message: createMessage({
+                    content: "",
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "assistant-1",
+                    status: "streaming",
+                }),
+                messageKind: "assistant",
+            }),
+        );
+
+        resetChatTimelineReconciliationDiagnosticsForTests();
+        const incrementalModel =
+            reconcileChatTimelineModelIncrementallyFromTranscript(
+                initialModel,
+                initialTranscript,
+                {
+                    status: "streaming",
+                    trackedFiles,
+                    transcript: updatedTranscript,
+                },
+            );
+
+        expect(incrementalModel.historyRows).toBe(initialModel.historyRows);
+        expect(incrementalModel.liveTailRow?.id).toBe("message:assistant-1");
+        expect(getChatTimelineReconciliationDiagnostics()).toEqual({
+            fallbackCount: 0,
+            incrementalCount: 1,
+        });
+    });
+
+    it("rebuilds when multiple appends arrive before the previous model commits", () => {
+        const trackedFiles: AiTrackedFile[] = [];
+        const initialTranscript = buildAiSessionTranscriptModel({
+            messages: [
+                createMessage({
+                    content: "Generate two outputs",
+                    id: "user-1",
+                    kind: "user",
+                }),
+            ],
+            toolActivity: [],
+        });
+        const initialModel = reconcileChatTimelineModelFromTranscript(null, {
+            status: "streaming",
+            trackedFiles,
+            transcript: initialTranscript,
+        });
+        const transcriptWithAssistant = applyAiSessionDomainEventToTranscript(
+            initialTranscript,
+            createSessionEvent({
+                kind: "message-started",
+                message: createMessage({
+                    content: "Preparing image",
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "assistant-1",
+                    status: "streaming",
+                }),
+                messageKind: "assistant",
+            }),
+        );
+        const updatedTranscript = applyAiSessionDomainEventToTranscript(
+            transcriptWithAssistant,
+            createSessionEvent({
+                kind: "image-generation",
+                message: createMessage({
+                    content: "Generated image",
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "image-1",
+                    kind: "image",
+                    status: "streaming",
+                }),
+            }),
+        );
+
+        resetChatTimelineReconciliationDiagnosticsForTests();
+        const reconciled =
+            reconcileChatTimelineModelIncrementallyFromTranscript(
+                initialModel,
+                initialTranscript,
+                {
+                    status: "streaming",
+                    trackedFiles,
+                    transcript: updatedTranscript,
+                },
+            );
+        const rebuilt = reconcileChatTimelineModelFromTranscript(initialModel, {
+            status: "streaming",
+            trackedFiles,
+            transcript: updatedTranscript,
+        });
+
+        expect(reconciled.orderedRowIds).toEqual(rebuilt.orderedRowIds);
+        expect(reconciled.orderedRowIds).toEqual([
+            "message:user-1",
+            "message:assistant-1",
+            "message:image-1",
+        ]);
+        expect(getChatTimelineReconciliationDiagnostics()).toEqual({
+            fallbackCount: 1,
+            incrementalCount: 0,
+        });
+    });
+
+    it("keeps history by reference across one thousand live-tail deltas", () => {
+        const trackedFiles: AiTrackedFile[] = [];
+        let transcript = buildAiSessionTranscriptModel({
+            messages: [
+                createMessage({
+                    content: "Inspect the timeline",
+                    id: "user-1",
+                    kind: "user",
+                }),
+                createMessage({
+                    content: "",
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "assistant-1",
+                    status: "streaming",
+                }),
+            ],
+            toolActivity: [],
+        });
+        let timeline = reconcileChatTimelineModelFromTranscript(null, {
+            status: "streaming",
+            trackedFiles,
+            transcript,
+        });
+        const initialHistoryRows = timeline.historyRows;
+
+        resetChatTimelineReconciliationDiagnosticsForTests();
+        for (let index = 1; index <= 1_000; index += 1) {
+            const nextTranscript = applyAiSessionDomainEventToTranscript(
+                transcript,
+                createSessionEvent({
+                    content: `Streamed token ${index}`,
+                    delta: ` ${index}`,
+                    kind: "message-delta",
+                    messageId: "assistant-1",
+                    messageKind: "assistant",
+                    updatedAt: `2026-04-14T00:00:${String(index % 60).padStart(2, "0")}.000Z`,
+                }),
+            );
+            timeline = reconcileChatTimelineModelIncrementallyFromTranscript(
+                timeline,
+                transcript,
+                {
+                    status: "streaming",
+                    trackedFiles,
+                    transcript: nextTranscript,
+                },
+            );
+            transcript = nextTranscript;
+        }
+
+        expect(timeline.historyRows).toBe(initialHistoryRows);
+        expect(timeline.liveTailRow?.id).toBe("message:assistant-1");
+        expect(getChatTimelineReconciliationDiagnostics()).toEqual({
+            fallbackCount: 0,
+            incrementalCount: 1_000,
+        });
+    });
+
+    it("falls back to full reconciliation for an out-of-order transcript entry", () => {
+        const trackedFiles: AiTrackedFile[] = [];
+        const initialTranscript = buildAiSessionTranscriptModel({
+            messages: [
+                createMessage({
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "assistant-2",
+                    status: "streaming",
+                }),
+            ],
+            toolActivity: [],
+        });
+        const initialModel = reconcileChatTimelineModelFromTranscript(null, {
+            status: "streaming",
+            trackedFiles,
+            transcript: initialTranscript,
+        });
+        const updatedTranscript = applyAiSessionDomainEventToTranscript(
+            initialTranscript,
+            createSessionEvent({
+                kind: "message-started",
+                message: createMessage({
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "assistant-1",
+                    status: "completed",
+                }),
+                messageKind: "assistant",
+            }),
+        );
+
+        resetChatTimelineReconciliationDiagnosticsForTests();
+        const incrementalModel =
+            reconcileChatTimelineModelIncrementallyFromTranscript(
+                initialModel,
+                initialTranscript,
+                {
+                    status: "streaming",
+                    trackedFiles,
+                    transcript: updatedTranscript,
+                },
+            );
+        const fullModel = reconcileChatTimelineModelFromTranscript(
+            initialModel,
+            {
+                status: "streaming",
+                trackedFiles,
+                transcript: updatedTranscript,
+            },
+        );
+
+        expect(incrementalModel.orderedRowIds).toEqual(fullModel.orderedRowIds);
+        expect(getChatTimelineReconciliationDiagnostics()).toEqual({
+            fallbackCount: 1,
+            incrementalCount: 0,
+        });
+    });
+
     it("keeps history rows stable while the streaming tail mutates", () => {
         const initialModel = reconcileChatTimelineModel(null, {
             messages: [
@@ -694,6 +1026,11 @@ describe("chatTimelineModel activity segments", () => {
         ]);
         expect(segment.entries).toHaveLength(2);
         expect(segment.summary.actionCount).toBe(2);
+        expect(segment.changeStats).toEqual({
+            additions: 0,
+            approximate: false,
+            deletions: 0,
+        });
     });
 
     it("keeps a thinking-first segment stable when the first tool arrives", () => {

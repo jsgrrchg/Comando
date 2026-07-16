@@ -2,11 +2,11 @@ import {
     useCallback,
     useEffect,
     useEffectEvent,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
     type KeyboardEvent as ReactKeyboardEvent,
-    type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
@@ -55,17 +55,13 @@ import {
     type ProjectQuickOpenMatch,
 } from "./app/projects/quick-open";
 import { filterProjectEntriesForTreeFilter } from "./app/projects/tree-filter";
+import { filterProjectEntriesInWorker } from "./app/projects/tree-filter-worker-client";
 import { getProjectContextKey } from "./app/projects/context-key";
 import {
     resolveWorkspaceContextRefreshPlan,
     runDeduplicatedContextRefresh,
 } from "./app/workspace/context-activation-refresh";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
-import {
-    edgePeekConfig,
-    isPointInsideInflatedRect,
-    type EdgePeekPointerPosition,
-} from "./app/layout/edge-peek";
 import {
     COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
@@ -150,6 +146,8 @@ import {
     type ProjectContextMenuProject,
     type ProjectContextTabItem,
 } from "./components/DesktopTopBar";
+import { SidebarGitScopePicker } from "./components/sidebar/SidebarGitScopePicker";
+import { WorkspaceSurfaceProjectContextMenu } from "./components/ProjectContextMenu";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 
@@ -164,6 +162,12 @@ type SidebarView = "files" | "git" | "agents" | "issues" | "pull_requests";
 const ROOT_NODE_KEY = "__root__";
 const PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
 const WORKSPACE_RECENT_PROJECTS_LIMIT = 6;
+const rendererWindowMode = new URLSearchParams(window.location.search).get(
+    "window",
+);
+const isWorkspaceHostRenderer = rendererWindowMode === "workspace-host";
+const isWorkspaceSurfaceRenderer =
+    rendererWindowMode === "workspace-surface";
 
 function getWorktreeDisplayLabel(worktree: GitWorktreeSummary): string {
     if (worktree.branchName) {
@@ -264,6 +268,20 @@ export function App() {
     const openWorkspaceContextKeys = useWorkspaceStore(
         (state) => state.openContextKeys,
     );
+    const workspaceSurfaceTopologyKey = useMemo(
+        () =>
+            JSON.stringify(
+                openWorkspaceContextKeys.map((contextKey) => {
+                    const context = workspaceContextsByKey[contextKey];
+                    return [
+                        contextKey,
+                        context?.projectId ?? null,
+                        context?.worktreeId ?? null,
+                    ];
+                }),
+            ),
+        [openWorkspaceContextKeys, workspaceContextsByKey],
+    );
     const activeWorkspaceContext = useWorkspaceStore((state) =>
         state.activeContextKey
             ? (state.contextsByKey[state.activeContextKey] ?? null)
@@ -335,46 +353,73 @@ export function App() {
             ),
         [closeWorkspaceTab],
     );
-    const requestCloseWorkspaceContext = useCallback((contextKey: string) => {
-        const workspaceState = useWorkspaceStore.getState();
-        const context = workspaceState.contextsByKey[contextKey];
-        if (!context) {
-            return Promise.resolve();
-        }
+    const requestCloseWorkspaceContext = useCallback(
+        async (contextKey: string) => {
+            const comandoApi = getComandoApi();
+            const flushSurfaceContext = async (): Promise<boolean> => {
+                if (!isWorkspaceHostRenderer || !comandoApi) {
+                    return true;
+                }
+                const snapshot = await comandoApi.captureWorkspaceSurfaceContext(
+                    contextKey,
+                );
+                if (snapshot) {
+                    useWorkspaceStore
+                        .getState()
+                        .applySurfaceNavigationSnapshot(snapshot);
+                }
+                return true;
+            };
 
-        const tabsById =
-            workspaceState.activeContextKey === contextKey
-                ? workspaceState.tabsById
-                : context.workspace.tabsById;
-        const workspaceName =
-            useProjectsStore
-                .getState()
-                .projects.find((project) => project.id === context.projectId)
-                ?.name ?? "this workspace";
-        return closeWorkspaceContextWithConfirmation(
-            {
-                projectId: context.projectId,
-                sessions: useAiStore.getState().sessions,
-                tabsById,
-                worktreeId: context.worktreeId,
-            },
-            () => useWorkspaceStore.getState().closeContext(contextKey),
-            {
-                confirm: async (summary) => {
-                    const comandoApi = getComandoApi();
-                    if (!comandoApi) {
-                        return false;
-                    }
+            if (!(await flushSurfaceContext())) {
+                return;
+            }
 
-                    return comandoApi.confirmWorkspaceClose({
-                        activeAgentCount: summary.activeAgentCount,
-                        dirtyFileCount: summary.dirtyFileCount,
-                        workspaceName,
-                    });
+            const workspaceState = useWorkspaceStore.getState();
+            const context = workspaceState.contextsByKey[contextKey];
+            if (!context) {
+                return;
+            }
+
+            const tabsById =
+                workspaceState.activeContextKey === contextKey
+                    ? workspaceState.tabsById
+                    : context.workspace.tabsById;
+            const workspaceName =
+                useProjectsStore
+                    .getState()
+                    .projects.find((project) => project.id === context.projectId)
+                    ?.name ?? "this workspace";
+            return closeWorkspaceContextWithConfirmation(
+                {
+                    projectId: context.projectId,
+                    sessions: useAiStore.getState().sessions,
+                    tabsById,
+                    worktreeId: context.worktreeId,
                 },
-            },
-        );
-    }, []);
+                async () => {
+                    if (!(await flushSurfaceContext())) {
+                        return;
+                    }
+                    await useWorkspaceStore.getState().closeContext(contextKey);
+                },
+                {
+                    confirm: async (summary) => {
+                        if (!comandoApi) {
+                            return false;
+                        }
+
+                        return comandoApi.confirmWorkspaceClose({
+                            activeAgentCount: summary.activeAgentCount,
+                            dirtyFileCount: summary.dirtyFileCount,
+                            workspaceName,
+                        });
+                    },
+                },
+            );
+        },
+        [],
+    );
     const requestMoveWorkspaceContextToNewWindow = useCallback(
         (contextKey: string) => {
             const workspaceState = useWorkspaceStore.getState();
@@ -509,8 +554,14 @@ export function App() {
     const [fileTreeMovePickerSelectedIndex, setFileTreeMovePickerSelectedIndex] =
         useState(0);
     const [persistenceReady, setPersistenceReady] = useState(false);
-    const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
-    const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
+    const [workspaceSurfaceGitScopeMenuRequest, setWorkspaceSurfaceGitScopeMenuRequest] =
+        useState<{
+            readonly id: number;
+            readonly width: number;
+            readonly x: number;
+        } | null>(null);
+    const [workspaceSurfaceProjectMenuRequest, setWorkspaceSurfaceProjectMenuRequest] =
+        useState<{ readonly id: number } | null>(null);
     const pendingContextTreeRefreshesRef = useRef(
         new Map<string, Promise<void>>(),
     );
@@ -609,14 +660,12 @@ export function App() {
         [setFileTreeEntryIndexByContext],
     );
     const fileTreeBackendSearchRequestRef = useRef(0);
-    const sidebarOverlayRef = useRef<HTMLDivElement | null>(null);
-    const sidebarPointerRef = useRef<EdgePeekPointerPosition | null>(null);
-    const sidebarDragActiveRef = useRef(false);
     const quickOpenSearchRequestRef = useRef(0);
     const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
     const sidebarScrollPositionsRef = useRef<SidebarScrollPositionStore>(
         new Map(),
     );
+    const workspaceHostTitleBarRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
         let isDisposed = false;
@@ -691,6 +740,182 @@ export function App() {
         refreshProjectTree,
         workspaceHydrate,
     ]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer || !workspaceNavigationHydrated) {
+            return;
+        }
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        void comandoApi.initializeWorkspaceSurfaces(
+            useWorkspaceStore.getState().getNavigationSnapshot(),
+        );
+    }, [
+        workspaceActiveContextKey,
+        workspaceNavigationHydrated,
+        workspaceSurfaceTopologyKey,
+    ]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        return comandoApi.onWorkspaceSurfaceSnapshotUpdated((snapshot) => {
+            const currentContextKey =
+                useWorkspaceStore.getState().activeContextKey;
+            if (
+                snapshot.activeContextKey &&
+                snapshot.activeContextKey !== currentContextKey
+            ) {
+                void comandoApi.activateWorkspaceSurface(
+                    snapshot.activeContextKey,
+                );
+            }
+            useWorkspaceStore
+                .getState()
+                .applySurfaceNavigationSnapshot(snapshot);
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceContextRequested((input) => {
+            void useWorkspaceStore
+                .getState()
+                .openContext(input.projectId, input.worktreeId, {
+                    emptyLayout: input.emptyLayout,
+                });
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceSnapshotRequested(() =>
+            useWorkspaceStore.getState().getNavigationSnapshot(),
+        );
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceSnapshotUpdated((snapshot) => {
+            useWorkspaceStore
+                .getState()
+                .applySurfaceNavigationSnapshot(snapshot);
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceDrag((event) => {
+            window.dispatchEvent(
+                new CustomEvent(
+                    event.kind === "agent"
+                        ? SIDEBAR_AGENT_DRAG_EVENT
+                        : SIDEBAR_GITHUB_DRAG_EVENT,
+                    { detail: event.detail },
+                ),
+            );
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        const forwardDrag = (
+            kind: "agent" | "github",
+            event: CustomEvent<
+                SidebarAgentDragDetail | SidebarGitHubDragDetail
+            >,
+        ) => {
+            void comandoApi.dispatchWorkspaceSurfaceDrag({
+                detail: event.detail,
+                kind,
+            });
+        };
+        const handleAgentDrag = (event: Event) =>
+            forwardDrag(
+                "agent",
+                event as CustomEvent<SidebarAgentDragDetail>,
+            );
+        const handleGitHubDrag = (event: Event) =>
+            forwardDrag(
+                "github",
+                event as CustomEvent<SidebarGitHubDragDetail>,
+            );
+        window.addEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleAgentDrag);
+        window.addEventListener(SIDEBAR_GITHUB_DRAG_EVENT, handleGitHubDrag);
+        return () => {
+            window.removeEventListener(
+                SIDEBAR_AGENT_DRAG_EVENT,
+                handleAgentDrag,
+            );
+            window.removeEventListener(
+                SIDEBAR_GITHUB_DRAG_EVENT,
+                handleGitHubDrag,
+            );
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceProjectMenuRequested(() => {
+            setWorkspaceSurfaceProjectMenuRequest((current) => ({
+                id: (current?.id ?? 0) + 1,
+            }));
+        });
+    }, []);
+
+    useLayoutEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        const element = workspaceHostTitleBarRef.current;
+        const comandoApi = getComandoApi();
+        if (!element || !comandoApi) {
+            return;
+        }
+        const updateInset = () => {
+            void comandoApi.setWorkspaceSurfaceContentInset(
+                element.getBoundingClientRect().height,
+            );
+        };
+        updateInset();
+        const observer = new ResizeObserver(updateInset);
+        observer.observe(element);
+        return () => observer.disconnect();
+    }, []);
+
+    useLayoutEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        void getComandoApi()?.setWorkspaceSurfaceContentLeftInset(
+            leftCollapsed
+                ? 0
+                : leftWidth + shellLayoutConstraints.handleWidth,
+        );
+    }, [leftCollapsed, leftWidth]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -889,6 +1114,20 @@ export function App() {
     }, []);
 
     useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceGitScopeMenuRequested(
+            (anchor) => {
+                setWorkspaceSurfaceGitScopeMenuRequest((current) => ({
+                    ...anchor,
+                    id: (current?.id ?? 0) + 1,
+                }));
+            },
+        );
+    }, []);
+
+    useEffect(() => {
         const comandoApi = getComandoApi();
         if (!comandoApi) {
             return;
@@ -1050,7 +1289,7 @@ export function App() {
                 ROOT_NODE_KEY,
             ),
             sidebarView,
-            sidebarVisible: !leftCollapsed || sidebarOverlayVisible,
+            sidebarVisible: !leftCollapsed,
         });
 
         if (refreshPlan.projectTree) {
@@ -1073,7 +1312,6 @@ export function App() {
         refreshGitProject,
         refreshProjectTree,
         setActiveWorktree,
-        sidebarOverlayVisible,
         sidebarView,
     ]);
 
@@ -1261,197 +1499,6 @@ export function App() {
             );
         };
     }, [dragState, setResizingPanel]);
-
-    const cancelSidebarOverlayClose = useCallback(() => {
-        setSidebarOverlayClosing(false);
-    }, []);
-
-    const hideSidebarOverlayImmediately = useCallback(() => {
-        sidebarDragActiveRef.current = false;
-        setSidebarOverlayClosing(false);
-        setSidebarOverlayVisible(false);
-    }, []);
-
-    const rememberSidebarPointer = useCallback(
-        (event: ReactMouseEvent<HTMLDivElement>) => {
-            sidebarPointerRef.current = {
-                x: event.clientX,
-                y: event.clientY,
-            };
-        },
-        [],
-    );
-
-    const isSidebarPointerInSafeZone = useCallback(() => {
-        const rect = sidebarOverlayRef.current?.getBoundingClientRect() ?? null;
-        return isPointInsideInflatedRect(
-            sidebarPointerRef.current,
-            rect,
-            edgePeekConfig.safeGap,
-        );
-    }, []);
-
-    const showSidebarOverlay = useCallback(
-        (event: ReactMouseEvent<HTMLDivElement>) => {
-            rememberSidebarPointer(event);
-            cancelSidebarOverlayClose();
-            setSidebarOverlayVisible(true);
-        },
-        [cancelSidebarOverlayClose, rememberSidebarPointer],
-    );
-
-    const hideSidebarOverlayWithAnimation = useCallback(() => {
-        if (
-            sidebarDragActiveRef.current ||
-            sidebarOverlayClosing ||
-            isSidebarPointerInSafeZone()
-        ) {
-            return;
-        }
-
-        setSidebarOverlayClosing(true);
-    }, [isSidebarPointerInSafeZone, sidebarOverlayClosing]);
-
-    const startSidebarOriginDrag = useCallback(() => {
-        sidebarDragActiveRef.current = true;
-        cancelSidebarOverlayClose();
-        setSidebarOverlayVisible(true);
-    }, [cancelSidebarOverlayClose]);
-
-    const finishSidebarOriginDrag = useCallback(() => {
-        if (!sidebarDragActiveRef.current) {
-            return;
-        }
-
-        sidebarDragActiveRef.current = false;
-        if (leftCollapsed) {
-            hideSidebarOverlayWithAnimation();
-        }
-    }, [hideSidebarOverlayWithAnimation, leftCollapsed]);
-
-    const isPointInsideSidebarOverlay = useCallback(
-        (point: EdgePeekPointerPosition) => {
-            const rect =
-                sidebarOverlayRef.current?.getBoundingClientRect() ?? null;
-            if (!rect || (rect.width <= 0 && rect.height <= 0)) {
-                return false;
-            }
-
-            return (
-                point.x >= rect.left &&
-                point.x <= rect.right &&
-                point.y >= rect.top &&
-                point.y <= rect.bottom
-            );
-        },
-        [],
-    );
-
-    useEffect(() => {
-        const handleSidebarOriginDrag = (
-            detail: SidebarAgentDragDetail | SidebarGitHubDragDetail,
-        ) => {
-            if (!detail) {
-                return;
-            }
-
-            if (Number.isFinite(detail.x) && Number.isFinite(detail.y)) {
-                sidebarPointerRef.current = {
-                    x: detail.x,
-                    y: detail.y,
-                };
-            }
-
-            if (detail.phase === "start" || detail.phase === "move") {
-                const startedInsideSidebarOverlay =
-                    detail.phase === "start" &&
-                    leftCollapsed &&
-                    sidebarOverlayVisible &&
-                    isPointInsideSidebarOverlay({
-                        x: detail.x,
-                        y: detail.y,
-                    });
-
-                if (
-                    !sidebarDragActiveRef.current &&
-                    !startedInsideSidebarOverlay
-                ) {
-                    return;
-                }
-
-                startSidebarOriginDrag();
-                return;
-            }
-
-            if (detail.phase === "end" || detail.phase === "cancel") {
-                finishSidebarOriginDrag();
-            }
-        };
-
-        const handleSidebarAgentDrag = (event: Event) => {
-            handleSidebarOriginDrag(
-                (event as CustomEvent<SidebarAgentDragDetail>).detail,
-            );
-        };
-
-        const handleSidebarGitHubDrag = (event: Event) => {
-            handleSidebarOriginDrag(
-                (event as CustomEvent<SidebarGitHubDragDetail>).detail,
-            );
-        };
-
-        window.addEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleSidebarAgentDrag);
-        window.addEventListener(
-            SIDEBAR_GITHUB_DRAG_EVENT,
-            handleSidebarGitHubDrag,
-        );
-        return () => {
-            window.removeEventListener(
-                SIDEBAR_AGENT_DRAG_EVENT,
-                handleSidebarAgentDrag,
-            );
-            window.removeEventListener(
-                SIDEBAR_GITHUB_DRAG_EVENT,
-                handleSidebarGitHubDrag,
-            );
-        };
-    }, [
-        finishSidebarOriginDrag,
-        isPointInsideSidebarOverlay,
-        leftCollapsed,
-        sidebarOverlayVisible,
-        startSidebarOriginDrag,
-    ]);
-
-    useEffect(() => {
-        if (!sidebarOverlayVisible) {
-            return;
-        }
-
-        const handlePointerMove = (event: PointerEvent) => {
-            sidebarPointerRef.current = {
-                x: event.clientX,
-                y: event.clientY,
-            };
-
-            if (isSidebarPointerInSafeZone()) {
-                cancelSidebarOverlayClose();
-                return;
-            }
-
-            hideSidebarOverlayWithAnimation();
-        };
-
-        window.addEventListener("pointermove", handlePointerMove);
-        return () => {
-            window.removeEventListener("pointermove", handlePointerMove);
-        };
-    }, [
-        cancelSidebarOverlayClose,
-        hideSidebarOverlayWithAnimation,
-        isSidebarPointerInSafeZone,
-        sidebarOverlayVisible,
-    ]);
 
     const gridTemplateColumns = useMemo(() => {
         const leftCol = leftCollapsed ? 0 : leftWidth;
@@ -1690,7 +1737,14 @@ export function App() {
         fileTreeBackendSearchResults,
         fileTreeFilterSource,
     ]);
-    const fileTreeFilterMatches = useMemo(() => {
+    const shouldFilterTreeInWorker =
+        fileTreeFilterSource?.kind === "full" &&
+        fileTreeFilterEntries.length >= 2_000 &&
+        typeof Worker !== "undefined";
+    const synchronousFileTreeFilterMatches = useMemo(() => {
+        if (shouldFilterTreeInWorker) {
+            return [];
+        }
         if (!fileTreeFilterSource) {
             return [];
         }
@@ -1706,7 +1760,56 @@ export function App() {
         fileTreeFilterEntries,
         fileTreeFilterSource,
         normalizedFileTreeFilter,
+        shouldFilterTreeInWorker,
     ]);
+    const [workerFileTreeFilterMatches, setWorkerFileTreeFilterMatches] =
+        useState<{
+            readonly entries: readonly ProjectTreeNode[];
+            readonly matches: readonly ProjectTreeNode[];
+            readonly query: string;
+        } | null>(null);
+    useEffect(() => {
+        if (!shouldFilterTreeInWorker || !fileTreeFilterSource) {
+            return;
+        }
+        const controller = new AbortController();
+        void filterProjectEntriesInWorker({
+            entries: fileTreeFilterEntries,
+            query: normalizedFileTreeFilter,
+            signal: controller.signal,
+            strategy: "substring",
+        }).then((matches) => {
+            if (!controller.signal.aborted) {
+                setWorkerFileTreeFilterMatches({
+                    entries: fileTreeFilterEntries,
+                    matches,
+                    query: normalizedFileTreeFilter,
+                });
+            }
+        });
+        return () => controller.abort();
+    }, [
+        fileTreeFilterEntries,
+        fileTreeFilterSource,
+        normalizedFileTreeFilter,
+        shouldFilterTreeInWorker,
+    ]);
+    const fileTreeFilterMatches = useMemo(
+        () =>
+            shouldFilterTreeInWorker
+                ? (workerFileTreeFilterMatches?.entries === fileTreeFilterEntries &&
+                  workerFileTreeFilterMatches.query === normalizedFileTreeFilter
+                      ? workerFileTreeFilterMatches.matches
+                      : [])
+                : synchronousFileTreeFilterMatches,
+        [
+            fileTreeFilterEntries,
+            normalizedFileTreeFilter,
+            shouldFilterTreeInWorker,
+            synchronousFileTreeFilterMatches,
+            workerFileTreeFilterMatches,
+        ],
+    );
     const fileTreeSearchTree = useMemo(
         () =>
             buildHierarchicalGitTreeNodesFromProjectEntries(
@@ -1798,6 +1901,22 @@ export function App() {
         setGitHubSidebarSelectionResetSignal((signal) => signal + 1);
         setFileTreeContextMenu(null);
     }, [clearFileTreeSelection, focusSurface]);
+
+    const handleWorkspaceSurfacePointerDown = useCallback(() => {
+        focusWorkspaceSurface();
+        if (isWorkspaceSurfaceRenderer) {
+            void getComandoApi()?.notifyWorkspaceSurfaceFocused();
+        }
+    }, [focusWorkspaceSurface]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceFocused(
+            focusWorkspaceSurface,
+        );
+    }, [focusWorkspaceSurface]);
 
     const closeFileTreeContextMenu = useCallback(() => {
         const transientSelectionPath =
@@ -3390,7 +3509,6 @@ export function App() {
 
         setLeftCollapsed(false);
         setSidebarView("files");
-        hideSidebarOverlayImmediately();
         setFileTreeFilter("");
         setProjectRootExpandedByContext((currentState) => ({
             ...currentState,
@@ -3409,7 +3527,6 @@ export function App() {
         );
     }, [
         activeWorkspaceTab,
-        hideSidebarOverlayImmediately,
         revealPathInTree,
         setLeftCollapsed,
         setSidebarView,
@@ -3733,26 +3850,6 @@ export function App() {
         isMac,
         openWorkspaceContextKeys,
         workspaceActiveContextKey,
-    ]);
-
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "b" && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                toggleLeftCollapsed();
-                hideSidebarOverlayImmediately();
-            }
-            if (event.key === "Escape") {
-                if (sidebarOverlayVisible) hideSidebarOverlayImmediately();
-            }
-        };
-
-        window.addEventListener("keydown", handleKeyDown);
-        return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [
-        hideSidebarOverlayImmediately,
-        sidebarOverlayVisible,
-        toggleLeftCollapsed,
     ]);
 
     useEffect(() => {
@@ -4476,6 +4573,202 @@ export function App() {
         })();
     };
 
+    const activateWorkspaceContext = (contextKey: string) => {
+        if (isWorkspaceHostRenderer) {
+            void getComandoApi()?.activateWorkspaceSurface(contextKey);
+        }
+        void useWorkspaceStore.getState().activateContext(contextKey);
+    };
+    const workspaceSurfaceContentLeftInset = leftCollapsed
+        ? 0
+        : leftWidth + shellLayoutConstraints.handleWidth;
+    const openWorkspaceSurfaceGitScopeMenu = useCallback(
+        (anchor: { readonly width: number; readonly x: number }) => {
+            void getComandoApi()?.openWorkspaceSurfaceGitScopeMenu({
+                width: anchor.width,
+                x: Math.max(0, anchor.x - workspaceSurfaceContentLeftInset),
+            });
+        },
+        [workspaceSurfaceContentLeftInset],
+    );
+
+    const desktopTopBar = (
+        <DesktopTopBar
+            activeContextKey={workspaceActiveContextKey}
+            contexts={projectContextTabs}
+            leftSidebarCollapsed={leftCollapsed}
+            menuProjects={projectContextMenuProjects}
+            onOpenGitScopeMenu={
+                isWorkspaceHostRenderer
+                    ? openWorkspaceSurfaceGitScopeMenu
+                    : undefined
+            }
+            onOpenProjectMenu={
+                isWorkspaceHostRenderer && workspaceActiveContextKey
+                    ? () => {
+                          void getComandoApi()?.openWorkspaceSurfaceProjectMenu();
+                      }
+                    : undefined
+            }
+            onActivateContext={activateWorkspaceContext}
+            onCloneRepository={async (repositoryUrl) => {
+                const projectIds = await cloneRepository(repositoryUrl);
+                for (const projectId of projectIds) {
+                    await useWorkspaceStore.getState().openContext(projectId);
+                }
+                return projectIds.length > 0;
+            }}
+            onCloseContext={(contextKey) => {
+                void requestCloseWorkspaceContext(contextKey);
+            }}
+            onMoveContextToNewWindow={(contextKey) => {
+                void requestMoveWorkspaceContextToNewWindow(contextKey);
+            }}
+            onOpenProject={handleOpenProject}
+            onOpenProjects={handleOpenProjects}
+            onOpenSettings={(initialCategory) =>
+                openSettingsWindow(initialCategory)
+            }
+            onOpenWorktree={(projectId, worktreeId) => {
+                void useWorkspaceStore
+                    .getState()
+                    .openContext(projectId, worktreeId);
+            }}
+            onReorderContext={(contextKey, targetIndex) => {
+                void useWorkspaceStore
+                    .getState()
+                    .reorderContext(contextKey, targetIndex);
+            }}
+            onToggleLeftSidebar={toggleLeftCollapsed}
+            platform={bootstrap?.platform ?? null}
+            settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
+        />
+    );
+
+    if (isWorkspaceHostRenderer) {
+        return (
+            <div
+                className="relative flex h-screen min-h-0 flex-col text-text-primary"
+                data-platform={bootstrap?.platform ?? undefined}
+            >
+                <div ref={workspaceHostTitleBarRef}>{desktopTopBar}</div>
+                <div
+                    className="grid min-h-0 flex-1"
+                    style={{ gridTemplateColumns }}
+                >
+                    <aside
+                        className="app-sidebar flex min-h-0 flex-col"
+                        style={
+                            leftCollapsed ? { overflow: "hidden" } : undefined
+                        }
+                        data-active={activeSurface === "projects"}
+                        onClick={() => focusSurface("projects")}
+                        onFocus={() => focusSurface("projects")}
+                        tabIndex={0}
+                    >
+                        {!leftCollapsed && sidebarContent}
+                    </aside>
+
+                    <div
+                        style={
+                            leftCollapsed
+                                ? {
+                                      overflow: "hidden",
+                                      pointerEvents: "none",
+                                  }
+                                : undefined
+                        }
+                    >
+                        <SplitHandle
+                            label="Resize project sidebar"
+                            onPointerDown={(event) =>
+                                startDragging(
+                                    "left",
+                                    event,
+                                    leftWidth,
+                                    setDragState,
+                                )
+                            }
+                            onStepBackward={() =>
+                                nudgePanel(
+                                    "left",
+                                    -shellLayoutConstraints.keyboardStep,
+                                )
+                            }
+                            onStepForward={() =>
+                                nudgePanel(
+                                    "left",
+                                    shellLayoutConstraints.keyboardStep,
+                                )
+                            }
+                        />
+                    </div>
+                    <div className="min-h-0" />
+                </div>
+
+            </div>
+        );
+    }
+
+    if (isWorkspaceSurfaceRenderer) {
+        return (
+            <div
+                className="h-screen min-h-0 text-text-primary"
+                data-platform={bootstrap?.platform ?? undefined}
+            >
+                <SidebarGitScopePicker
+                    externalMenuRequest={workspaceSurfaceGitScopeMenuRequest}
+                    projectId={activeProjectId}
+                    triggerHidden
+                    worktreeId={activeWorktreeId}
+                />
+                <WorkspaceSurfaceProjectContextMenu
+                    externalMenuRequest={workspaceSurfaceProjectMenuRequest}
+                    onCloneRepository={async (repositoryUrl) => {
+                        const projectIds = await cloneRepository(repositoryUrl);
+                        for (const projectId of projectIds) {
+                            await useWorkspaceStore
+                                .getState()
+                                .openContext(projectId);
+                        }
+                        return projectIds.length > 0;
+                    }}
+                    onOpenProject={handleOpenProject}
+                    onOpenProjects={handleOpenProjects}
+                    onOpenSettings={(initialCategory) =>
+                        openSettingsWindow(initialCategory)
+                    }
+                    onOpenWorktree={(projectId, worktreeId) => {
+                        void useWorkspaceStore
+                            .getState()
+                            .openContext(projectId, worktreeId);
+                    }}
+                    projects={projectContextMenuProjects}
+                    settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
+                />
+                <main
+                    className="surface-focus h-full min-h-0 bg-bg-primary"
+                    data-active={activeSurface === "workspace"}
+                    onFocus={focusWorkspaceSurface}
+                    onPointerDown={handleWorkspaceSurfacePointerDown}
+                    tabIndex={0}
+                >
+                    <WorkspaceTerminalHost />
+                    <WorkspaceView
+                        defaultProjectId={activeProjectId}
+                        defaultWorktreeId={activeWorktreeId}
+                        onOpenProject={handleOpenProject}
+                        onOpenProjects={handleOpenProjects}
+                        onRequestCreateFile={() => {
+                            void handleCreateTreeEntry("file", null);
+                        }}
+                        recentProjects={workspaceRecentProjects}
+                    />
+                </main>
+            </div>
+        );
+    }
+
     return (
         <div
             className="min-h-screen text-text-primary"
@@ -4483,58 +4776,7 @@ export function App() {
         >
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">
-                    <DesktopTopBar
-                        activeContextKey={workspaceActiveContextKey}
-                        contexts={projectContextTabs}
-                        leftSidebarCollapsed={leftCollapsed}
-                        menuProjects={projectContextMenuProjects}
-                        onActivateContext={(contextKey) => {
-                            void useWorkspaceStore
-                                .getState()
-                                .activateContext(contextKey);
-                        }}
-                        onCloneRepository={async (repositoryUrl) => {
-                            const projectIds =
-                                await cloneRepository(repositoryUrl);
-                            for (const projectId of projectIds) {
-                                await useWorkspaceStore
-                                    .getState()
-                                    .openContext(projectId);
-                            }
-                            return projectIds.length > 0;
-                        }}
-                        onCloseContext={(contextKey) => {
-                            void requestCloseWorkspaceContext(contextKey);
-                        }}
-                        onMoveContextToNewWindow={(contextKey) => {
-                            void requestMoveWorkspaceContextToNewWindow(
-                                contextKey,
-                            );
-                        }}
-                        onOpenProject={handleOpenProject}
-                        onOpenProjects={handleOpenProjects}
-                        onOpenSettings={(initialCategory) =>
-                            openSettingsWindow(initialCategory)
-                        }
-                        onOpenWorktree={(projectId, worktreeId) => {
-                            void useWorkspaceStore
-                                .getState()
-                                .openContext(projectId, worktreeId);
-                        }}
-                        onReorderContext={(contextKey, targetIndex) => {
-                            void useWorkspaceStore
-                                .getState()
-                                .reorderContext(contextKey, targetIndex);
-                        }}
-                        onToggleLeftSidebar={() => {
-                            toggleLeftCollapsed();
-                            hideSidebarOverlayImmediately();
-                        }}
-                        platform={bootstrap?.platform ?? null}
-                        settingsLabel={getSettingsUpdateMenuLabel(
-                            appUpdateState,
-                        )}
-                    />
+                    {desktopTopBar}
                     <div
                         className="grid min-h-0 flex-1"
                         style={{
@@ -4616,72 +4858,6 @@ export function App() {
                     </div>
                 </div>
 
-                {leftCollapsed && (
-                    <div
-                        style={{
-                            position: "absolute",
-                            left: 0,
-                            top: "var(--desktop-titlebar-height, 40px)",
-                            bottom: 0,
-                            width: sidebarOverlayVisible
-                                ? 0
-                                : edgePeekConfig.hotspotWidth,
-                            zIndex: 10,
-                        }}
-                        onMouseEnter={showSidebarOverlay}
-                    />
-                )}
-
-                {leftCollapsed && sidebarOverlayVisible && (
-                    <div
-                        ref={sidebarOverlayRef}
-                        className="flex min-h-0 flex-col bg-bg-panel"
-                        data-edge-peek-overlay="left"
-                        data-edge-peek-state={
-                            sidebarOverlayClosing ? "closing" : "opening"
-                        }
-                        style={{
-                            position: "absolute",
-                            left: 0,
-                            top: "var(--desktop-titlebar-height, 40px)",
-                            bottom: 0,
-                            width: leftWidth,
-                            zIndex: 10,
-                            boxShadow: "var(--shadow-soft)",
-                            borderRight: "1px solid var(--color-border)",
-                        }}
-                        onMouseEnter={(event) => {
-                            rememberSidebarPointer(event);
-                            cancelSidebarOverlayClose();
-                        }}
-                        onMouseMove={rememberSidebarPointer}
-                        onMouseLeave={(event) => {
-                            rememberSidebarPointer(event);
-                            hideSidebarOverlayWithAnimation();
-                        }}
-                        onDragStartCapture={startSidebarOriginDrag}
-                        onDragEndCapture={(event) => {
-                            sidebarPointerRef.current = {
-                                x: event.clientX,
-                                y: event.clientY,
-                            };
-                            finishSidebarOriginDrag();
-                        }}
-                        onAnimationEnd={(event) => {
-                            if (
-                                event.currentTarget !== event.target ||
-                                !sidebarOverlayClosing
-                            ) {
-                                return;
-                            }
-
-                            setSidebarOverlayClosing(false);
-                            setSidebarOverlayVisible(false);
-                        }}
-                    >
-                        {sidebarContent}
-                    </div>
-                )}
             </div>
 
             {topStatus ? (

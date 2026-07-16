@@ -18,6 +18,7 @@ export const ChatContentColumn = forwardRef<
         <div
             ref={ref}
             className={className}
+            data-chat-content-column="true"
             style={{
                 marginInline: "auto",
                 maxWidth: CHAT_CONTENT_MAX_WIDTH_PX,

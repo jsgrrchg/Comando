@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type {
     AiMessage,
@@ -14,6 +14,7 @@ import {
     getAiSessionTranscriptMessages,
     getAiSessionTranscriptToolActivity,
     mergeAiSessionTranscriptSources,
+    writeAiSessionTranscriptToSnapshot,
 } from "./transcriptModel";
 
 function createMessage(overrides: Partial<AiMessage> = {}): AiMessage {
@@ -237,6 +238,232 @@ describe("transcriptModel", () => {
                 id: "assistant-1",
             }),
         ]);
+    });
+
+    it("patches a long transcript tail without rebuilding order or untouched projections", () => {
+        const messages = Array.from({ length: 10_000 }, (_, index) =>
+            createMessage({
+                content: `Message ${index}`,
+                createdAt: new Date(
+                    Date.UTC(2026, 3, 14, 0, 0, index),
+                ).toISOString(),
+                id: `message-${index}`,
+                status: index === 9_999 ? "streaming" : "completed",
+            }),
+        );
+        const transcript = buildAiSessionTranscriptModel({
+            messages,
+            toolActivity: [createToolActivity()],
+        });
+        const sort = vi.spyOn(Array.prototype, "sort");
+
+        const updated = applyAiSessionDomainEventToTranscript(
+            transcript,
+            createSessionEvent({
+                content: "Message 9999 with streamed tail",
+                delta: " with streamed tail",
+                kind: "message-delta",
+                messageId: "message-9999",
+                messageKind: "assistant",
+                updatedAt: "2026-04-14T02:46:39.000Z",
+            }),
+        );
+
+        expect(sort).not.toHaveBeenCalled();
+        expect(updated.orderedEntryIds).toBe(transcript.orderedEntryIds);
+        expect(updated.messageIndexById).toBe(transcript.messageIndexById);
+        expect(updated.toolActivity).toBe(transcript.toolActivity);
+        expect(updated.messages).not.toBe(transcript.messages);
+        expect(updated.messages[0]).toBe(transcript.messages[0]);
+        expect(updated.messages[9_999]?.content).toBe(
+            "Message 9999 with streamed tail",
+        );
+        sort.mockRestore();
+    });
+
+    it("inserts delayed entries with binary ordering while preserving existing entry references", () => {
+        const transcript = buildAiSessionTranscriptModel({
+            messages: [
+                createMessage({
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "assistant-1",
+                }),
+                createMessage({
+                    createdAt: "2026-04-14T00:00:03.000Z",
+                    id: "assistant-3",
+                }),
+            ],
+            toolActivity: [],
+        });
+        const originalFirstEntry = transcript.entriesById["message:assistant-1"];
+
+        const updated = applyAiSessionDomainEventToTranscript(
+            transcript,
+            createSessionEvent({
+                kind: "message-started",
+                message: createMessage({
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "assistant-2",
+                    status: "streaming",
+                }),
+                messageKind: "assistant",
+            }),
+        );
+
+        expect(updated.messageOrder).toEqual([
+            "message:assistant-1",
+            "message:assistant-2",
+            "message:assistant-3",
+        ]);
+        expect(updated.entriesById["message:assistant-1"]).toBe(
+            originalFirstEntry,
+        );
+    });
+
+    it("matches the full builder after incremental message, tool, status, and plan events", () => {
+        const assistant = createMessage({
+            content: "",
+            createdAt: "2026-04-14T00:00:00.000Z",
+            id: "assistant-1",
+            status: "streaming",
+        });
+        const thinking = createMessage({
+            content: "Considering options",
+            createdAt: "2026-04-14T00:00:01.000Z",
+            id: "thinking-1",
+            kind: "thinking",
+            status: "streaming",
+        });
+        const tool = createToolActivity({
+            createdAt: "2026-04-14T00:00:02.000Z",
+        });
+        const plan = createPlan({
+            updatedAt: "2026-04-14T00:00:03.000Z",
+        });
+        let incremental = createEmptyAiSessionTranscriptModel();
+
+        incremental = applyAiSessionDomainEventToTranscript(
+            incremental,
+            createSessionEvent({
+                kind: "message-started",
+                message: assistant,
+                messageKind: "assistant",
+            }),
+        );
+        incremental = applyAiSessionDomainEventToTranscript(
+            incremental,
+            createSessionEvent({
+                kind: "thinking-started",
+                message: thinking,
+            }),
+        );
+        incremental = applyAiSessionDomainEventToTranscript(
+            incremental,
+            createSessionEvent({
+                activity: tool,
+                kind: "tool-activity",
+            }),
+        );
+        incremental = applyAiSessionDomainEventToTranscript(
+            incremental,
+            createSessionEvent({
+                activeTurnStartedAt: "2026-04-14T00:00:04.000Z",
+                kind: "status",
+                status: "streaming",
+            }),
+        );
+        incremental = applyAiSessionDomainEventToTranscript(
+            incremental,
+            createSessionEvent({
+                kind: "plan",
+                plan,
+            }),
+        );
+        incremental = applyAiSessionDomainEventToTranscript(
+            incremental,
+            createSessionEvent({
+                content: "Final answer",
+                delta: "Final answer",
+                kind: "message-delta",
+                messageId: assistant.id,
+                messageKind: "assistant",
+                updatedAt: "2026-04-14T00:00:05.000Z",
+            }),
+        );
+        incremental = applyAiSessionDomainEventToTranscript(
+            incremental,
+            createSessionEvent({
+                kind: "message-completed",
+                messageId: assistant.id,
+                messageKind: "assistant",
+                updatedAt: "2026-04-14T00:00:06.000Z",
+            }),
+        );
+
+        const expected = buildAiSessionTranscriptModel({
+            activeTurnStartedAt: "2026-04-14T00:00:04.000Z",
+            messages: [
+                { ...assistant, content: "Final answer", status: "completed" },
+                thinking,
+            ],
+            plan,
+            status: "streaming",
+            toolActivity: [tool],
+        });
+
+        expect(incremental.messageOrder).toEqual(expected.messageOrder);
+        expect(getAiSessionTranscriptMessages(incremental)).toEqual(
+            getAiSessionTranscriptMessages(expected),
+        );
+        expect(getAiSessionTranscriptToolActivity(incremental)).toEqual(
+            getAiSessionTranscriptToolActivity(expected),
+        );
+        expect(incremental.activePlanMessageId).toBe(
+            expected.activePlanMessageId,
+        );
+        expect(incremental.lastThinkingMessageId).toBe(
+            expected.lastThinkingMessageId,
+        );
+        expect(incremental.lastTurnStartedMessageId).toBe(
+            expected.lastTurnStartedMessageId,
+        );
+    });
+
+    it("writes the transcript's persistent projections directly to snapshots", () => {
+        const transcript = buildAiSessionTranscriptModel({
+            messages: [createMessage()],
+            toolActivity: [createToolActivity()],
+        });
+        const snapshot = writeAiSessionTranscriptToSnapshot(
+            {
+                availableCommands: [],
+                configOptions: [],
+                lastError: null,
+                messages: [],
+                modeId: null,
+                modes: [],
+                modelId: null,
+                models: [],
+                pendingPermission: null,
+                pendingUserInput: null,
+                plan: null,
+                projectId: "project-1",
+                runtimeId: "codex",
+                runtimeSessionId: "runtime-session-1",
+                sessionId: "session-1",
+                status: "streaming",
+                title: "Chat",
+                tokenUsage: null,
+                toolActivity: [],
+                trackedFiles: [],
+                updatedAt: "2026-04-14T00:00:00.000Z",
+                worktreeId: null,
+            },
+            transcript,
+        );
+
+        expect(snapshot.messages).toBe(transcript.messages);
+        expect(snapshot.toolActivity).toBe(transcript.toolActivity);
     });
 
     it("upserts tool activity while preserving the original createdAt", () => {

@@ -127,6 +127,16 @@ export const IPC_CHANNELS = {
     searchProjectEntries: "projects:search-entries",
     getWorkspaceSnapshot: "workspace:get-snapshot",
     saveWorkspaceSnapshot: "workspace:save-snapshot",
+    initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
+    activateWorkspaceSurface: "workspace:activate-surface",
+    captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
+    dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
+    notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
+    requestWorkspaceSurfaceContext: "workspace:request-surface-context",
+    openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
+    openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
+    setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
+    setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
     notifyFileBuffer: "workspace:notify-file-buffer",
     getChatSessionState: "workspace:get-chat-session-state",
     createTerminalSession: "terminals:create-session",
@@ -185,6 +195,15 @@ export const IPC_EVENTS = {
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
     workspaceFlushRequested: "workspace:flush-requested",
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
+    workspaceSurfaceSnapshotRequested: "workspace:surface-snapshot-requested",
+    workspaceSurfaceSnapshotCaptured: "workspace:surface-snapshot-captured",
+    workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
+    workspaceSurfaceFocused: "workspace:surface-focused",
+    workspaceSurfaceContextRequested: "workspace:surface-context-requested",
+    workspaceSurfaceDrag: "workspace:surface-drag",
+    workspaceSurfaceGitScopeMenuRequested:
+        "workspace:surface-git-scope-menu-requested",
+    workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
@@ -198,6 +217,11 @@ export const IPC_EVENTS = {
     aiSessionStreamPort: "ai:session-stream-port",
     nativeBackendEvent: "native-backend:event",
 } as const;
+
+export interface WorkspaceSurfaceDragEvent {
+    readonly detail: object;
+    readonly kind: "agent" | "github";
+}
 
 export interface SystemTheme {
     readonly isDark: boolean;
@@ -581,6 +605,8 @@ export interface PersistedWindowState {
 export type AppWindowKind = "main" | "settings";
 
 export interface WindowContextSnapshot {
+    /** The physical BrowserWindow that hosts an embedded workspace surface. */
+    readonly hostWindowId?: string | null;
     readonly projectId: string | null;
     readonly windowId: string;
     readonly windowKind: AppWindowKind;
@@ -2139,6 +2165,12 @@ export interface WorkspaceNavigationSnapshot {
     readonly version: 3;
 }
 
+export interface WorkspaceSurfaceContextRequest {
+    readonly emptyLayout?: boolean;
+    readonly projectId: string;
+    readonly worktreeId?: string | null;
+}
+
 export interface WindowWorkspaceRestoreRecord {
     readonly revision: number;
     readonly schemaVersion: 1;
@@ -2979,6 +3011,20 @@ export interface ComandoApi {
     saveActiveProjectId: (projectId: string | null) => Promise<void>;
     saveActiveWorktreeId: (worktreeId: string | null) => Promise<void>;
     saveShellState: (snapshot: PersistedShellState | null) => Promise<void>;
+    initializeWorkspaceSurfaces: (
+        snapshot: WorkspaceNavigationSnapshot,
+    ) => Promise<void>;
+    activateWorkspaceSurface: (contextKey: string) => Promise<void>;
+    requestWorkspaceSurfaceContext: (
+        input: WorkspaceSurfaceContextRequest,
+    ) => Promise<void>;
+    openWorkspaceSurfaceGitScopeMenu: (anchor: {
+        readonly width: number;
+        readonly x: number;
+    }) => Promise<void>;
+    openWorkspaceSurfaceProjectMenu: () => Promise<void>;
+    setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
+    setWorkspaceSurfaceContentLeftInset: (width: number) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;
     setNativeAppearance: (mode: ThemeMode) => Promise<void>;
     resolveTsconfigForPath: (
@@ -3212,6 +3258,16 @@ export interface ComandoApi {
     saveWorkspaceSnapshot: (
         snapshot: WorkspaceNavigationSnapshot,
     ) => Promise<void>;
+    captureWorkspaceSurfaceContext: (
+        contextKey: WorkspaceContextKey,
+    ) => Promise<WorkspaceNavigationSnapshot | null>;
+    dispatchWorkspaceSurfaceDrag: (
+        event: WorkspaceSurfaceDragEvent,
+    ) => Promise<void>;
+    notifyWorkspaceSurfaceFocused: () => Promise<void>;
+    onWorkspaceSurfaceSnapshotRequested: (
+        listener: () => WorkspaceNavigationSnapshot,
+    ) => () => void;
     notifyFileBuffer: (input: FileBufferNotificationInput) => Promise<void>;
     getChatSessionState: (
         sessionId: string,
@@ -3339,6 +3395,20 @@ export interface ComandoApi {
     onWorkspaceFlushRequested: (
         listener: () => Promise<void> | void,
     ) => () => void;
+    onWorkspaceSurfaceSnapshotUpdated: (
+        listener: (snapshot: WorkspaceNavigationSnapshot) => void,
+    ) => () => void;
+    onWorkspaceSurfaceFocused: (listener: () => void) => () => void;
+    onWorkspaceSurfaceContextRequested: (
+        listener: (input: WorkspaceSurfaceContextRequest) => void,
+    ) => () => void;
+    onWorkspaceSurfaceDrag: (
+        listener: (event: WorkspaceSurfaceDragEvent) => void,
+    ) => () => void;
+    onWorkspaceSurfaceGitScopeMenuRequested: (
+        listener: (anchor: { readonly width: number; readonly x: number }) => void,
+    ) => () => void;
+    onWorkspaceSurfaceProjectMenuRequested: (listener: () => void) => () => void;
     onTerminalData: (
         listener: (event: TerminalDataEvent) => void,
     ) => () => void;

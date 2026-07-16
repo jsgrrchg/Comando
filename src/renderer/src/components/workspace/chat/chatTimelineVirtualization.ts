@@ -56,15 +56,31 @@ export function shouldVirtualizeChatTimeline(
     return enabled && virtualizationCost >= threshold;
 }
 
-/**
- * The virtual list can only mount and unmount top-level timeline rows. Tool
- * activity inside a segment is rendered together by that one row, so counting
- * its entries here would enable virtualization without reducing that work.
- */
 export function calculateChatTimelineVirtualizationCost(
     rows: readonly ChatTimelineRow[],
 ): number {
-    return rows.length;
+    return rows.reduce((cost, row) => {
+        if (row.kind !== "activity-segment") {
+            return cost + 1;
+        }
+
+        const expandedItemWeight = row.items.reduce(
+            (itemCost, item) => {
+                if (item.kind === "thinking") {
+                    return itemCost + 1;
+                }
+
+                const activity = item.entry.reviewEntry.activity;
+                const previewWeight =
+                    activity.diffs.length > 0 || activity.terminalOutput
+                        ? 2
+                        : 1;
+                return itemCost + previewWeight;
+            },
+            0,
+        );
+        return cost + 1 + expandedItemWeight;
+    }, 0);
 }
 
 export function getChatTimelineRowKey(row: ChatTimelineRow): string {

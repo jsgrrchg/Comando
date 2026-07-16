@@ -2,7 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { BrowserWindow, nativeTheme, screen, shell } from "electron";
+import {
+    BrowserWindow,
+    nativeTheme,
+    screen,
+    shell,
+    type WebContents,
+} from "electron";
 
 import type { PersistedWindowState, SettingsWindowCategory } from "@shared/ipc";
 
@@ -178,15 +184,7 @@ function createBaseWindow(options: {
         });
     }
 
-    if (process.env.ELECTRON_RENDERER_URL) {
-        const url = new URL(process.env.ELECTRON_RENDERER_URL);
-        url.search = options.search ?? "";
-        void window.loadURL(url.toString());
-    } else {
-        void window.loadFile(path.join(rootDir, "out/renderer/index.html"), {
-            search: options.search,
-        });
-    }
+    loadRendererContents(window, options.search);
 
     window.webContents.on("did-finish-load", () => {
         window.setTitle(options.title);
@@ -201,6 +199,38 @@ function createBaseWindow(options: {
     }
 
     return window;
+}
+
+export function loadRendererContents(
+    target: BrowserWindow | WebContents,
+    search: string | undefined,
+): void {
+    const isWindow = "webContents" in target;
+    const webContents = isWindow ? target.webContents : target;
+    if (process.env.ELECTRON_RENDERER_URL) {
+        const url = new URL(process.env.ELECTRON_RENDERER_URL);
+        url.search = search ?? "";
+        if (isWindow) {
+            void target.loadURL(url.toString());
+        } else {
+            void webContents.loadURL(url.toString());
+        }
+        return;
+    }
+
+    if (isWindow) {
+        void target.loadFile(path.join(rootDir, "out/renderer/index.html"), {
+            search,
+        });
+    } else {
+        void webContents.loadFile(path.join(rootDir, "out/renderer/index.html"), {
+            search,
+        });
+    }
+}
+
+export function getRendererPreloadPath(): string {
+    return path.join(rootDir, "out/preload/index.cjs");
 }
 
 function openExternalHttpUrl(url: string): boolean {
@@ -228,6 +258,7 @@ export function createMainWindow(
         minHeight: 760,
         minWidth: 700,
         restoredState,
+        search: new URLSearchParams({ window: "workspace-host" }).toString(),
         title: appIdentity.windowTitle,
         transparencyEnabled,
         width: 1480,

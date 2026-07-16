@@ -8,7 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AiSessionSnapshot, AiToolActivity } from "@shared/ipc";
 import { useShellStore } from "@renderer/app/store/shell-store";
 
-import type { ChatTimelineRow } from "./chatTimelineModel";
+import {
+    reconcileChatTimelineModel,
+    type ChatTimelineRow,
+} from "./chatTimelineModel";
+import { createChatPerformanceFixtureById } from "./chatPerformanceFixtures";
 import {
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
     CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
@@ -186,6 +190,7 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
     }));
 
     return {
+        changeStats: { additions: 0, approximate: false, deletions: 0 },
         entries,
         id: "activity-segment:session-1:read-1",
         items: entries.map((entry) => ({ entry, kind: "tool" })),
@@ -382,6 +387,20 @@ describe("ChatTimelineHistoryRows", () => {
         expect(markup.match(/padding-bottom:8px/g)).toHaveLength(1);
     });
 
+    it("keeps the ten-thousand-message fixture DOM-bounded in the main timeline", () => {
+        const fixture = createChatPerformanceFixtureById("chat-long");
+        const timeline = reconcileChatTimelineModel(null, fixture.snapshot);
+        const markup = renderHistoryRows(timeline.historyRows);
+
+        expect(timeline.historyRows).toHaveLength(10_000);
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({ itemCount: 10_000 }),
+        );
+        expect(markup).toContain("message:message-1");
+        expect(markup).toContain("message:message-10000");
+        expect(markup.match(/data-row-id=/g)).toHaveLength(2);
+    });
+
     it("keeps virtual layout but stops row measurements while retained and hidden", () => {
         const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
 
@@ -415,17 +434,20 @@ describe("ChatTimelineHistoryRows", () => {
         expect(markup).toContain("activity-segment:session-1:read-1");
     });
 
-    it("keeps an activity-heavy single presentation row non-virtualized", () => {
+    it("virtualizes the outer timeline for an activity-heavy segment", () => {
         const rows = [
             createSegmentRow(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD),
         ];
         const markup = renderHistoryRows(rows);
 
-        // Virtualization only mounts and unmounts top-level timeline rows.
-        // A single segment would still render all of its entries either way.
-        expect(measuredVirtualListMock).not.toHaveBeenCalled();
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                firstKey: "activity-segment:session-1:read-1",
+                itemCount: 1,
+            }),
+        );
         expect(markup).toContain("activity-segment:session-1:read-1");
-        expect(markup).not.toContain("mock-measured-virtual-list");
+        expect(markup).toContain("mock-measured-virtual-list");
     });
 
     it("freezes content width during panel resize and re-syncs on release", () => {

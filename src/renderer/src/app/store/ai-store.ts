@@ -83,6 +83,11 @@ import {
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
 import { matchesTrackedFilePath } from "@renderer/app/ai/trackedFilePath";
+import {
+    getChatPerformanceTimestamp,
+    measureChatPerformance,
+    recordChatPerformanceMetric,
+} from "@renderer/app/debug/chatPerformanceProbe";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceReviewTab,
@@ -348,8 +353,16 @@ type BufferedSessionDeltaEvent = Extract<
     { kind: "message-delta" | "thinking-delta" }
 >;
 
-const bufferedSessionDeltaEvents = new Map<string, BufferedSessionDeltaEvent>();
-let bufferedSessionDeltaFlushTimer: ReturnType<typeof setTimeout> | null = null;
+interface BufferedSessionDeltaBuffer {
+    readonly events: Map<string, BufferedSessionDeltaEvent>;
+    cancelScheduledFlush: (() => void) | null;
+    firstQueuedAt: number | null;
+}
+
+const bufferedSessionDeltasBySessionId = new Map<
+    string,
+    BufferedSessionDeltaBuffer
+>();
 let isFlushingBufferedSessionDeltas = false;
 const AI_SESSION_RESYNC_SILENCE_MS = 20_000;
 const AI_SESSION_RESYNC_RETRY_DELAYS_MS = [20_000, 30_000, 45_000, 60_000];
@@ -391,36 +404,88 @@ function mergeBufferedSessionDelta(
     };
 }
 
+function getBufferedSessionDeltaBuffer(
+    sessionId: string,
+): BufferedSessionDeltaBuffer {
+    const existing = bufferedSessionDeltasBySessionId.get(sessionId);
+    if (existing) {
+        return existing;
+    }
+
+    const buffer: BufferedSessionDeltaBuffer = {
+        cancelScheduledFlush: null,
+        events: new Map(),
+        firstQueuedAt: null,
+    };
+    bufferedSessionDeltasBySessionId.set(sessionId, buffer);
+    return buffer;
+}
+
+function scheduleBufferedSessionDeltaFlush(
+    sessionId: string,
+    buffer: BufferedSessionDeltaBuffer,
+    get: GetAiState,
+): void {
+    if (buffer.cancelScheduledFlush !== null) {
+        return;
+    }
+
+    const flush = () => {
+        const currentBuffer = bufferedSessionDeltasBySessionId.get(sessionId);
+        if (currentBuffer === buffer) {
+            currentBuffer.cancelScheduledFlush = null;
+        }
+        flushBufferedSessionDeltas(get, sessionId);
+    };
+    if (typeof globalThis.requestAnimationFrame === "function") {
+        const frameId = globalThis.requestAnimationFrame(flush);
+        buffer.cancelScheduledFlush = () => {
+            globalThis.cancelAnimationFrame(frameId);
+        };
+        return;
+    }
+
+    const timer = setTimeout(flush, 16);
+    buffer.cancelScheduledFlush = () => {
+        clearTimeout(timer);
+    };
+}
+
 function bufferSessionDeltaEvent(
     event: BufferedSessionDeltaEvent,
     get: GetAiState,
 ): void {
+    const buffer = getBufferedSessionDeltaBuffer(event.sessionId);
     const key = sessionDeltaBufferKey(event);
-    const existing = bufferedSessionDeltaEvents.get(key);
-    bufferedSessionDeltaEvents.set(
+    const existing = buffer.events.get(key);
+    if (buffer.firstQueuedAt === null) {
+        buffer.firstQueuedAt = getChatPerformanceTimestamp();
+    }
+    buffer.events.set(
         key,
         existing ? mergeBufferedSessionDelta(existing, event) : event,
     );
-
-    if (bufferedSessionDeltaFlushTimer === null) {
-        bufferedSessionDeltaFlushTimer = setTimeout(() => {
-            flushBufferedSessionDeltas(get);
-        }, 0);
-    }
+    scheduleBufferedSessionDeltaFlush(event.sessionId, buffer, get);
 }
 
-function flushBufferedSessionDeltas(get: GetAiState): void {
-    if (bufferedSessionDeltaFlushTimer !== null) {
-        clearTimeout(bufferedSessionDeltaFlushTimer);
-        bufferedSessionDeltaFlushTimer = null;
-    }
-
-    if (bufferedSessionDeltaEvents.size === 0) {
+function flushBufferedSessionDeltas(get: GetAiState, sessionId: string): void {
+    const buffer = bufferedSessionDeltasBySessionId.get(sessionId);
+    if (!buffer || buffer.events.size === 0) {
         return;
     }
 
-    const events = Array.from(bufferedSessionDeltaEvents.values());
-    bufferedSessionDeltaEvents.clear();
+    buffer.cancelScheduledFlush?.();
+    buffer.cancelScheduledFlush = null;
+    const events = Array.from(buffer.events.values());
+    const queuedAt = buffer.firstQueuedAt;
+    bufferedSessionDeltasBySessionId.delete(sessionId);
+    if (queuedAt !== null) {
+        recordChatPerformanceMetric("delta_buffer_wait_ms", {
+            durationMs: performance.now() - queuedAt,
+            sessionId,
+            values: { payloadDepth: events.length },
+        });
+    }
     isFlushingBufferedSessionDeltas = true;
     try {
         for (const event of events) {
@@ -432,11 +497,10 @@ function flushBufferedSessionDeltas(get: GetAiState): void {
 }
 
 function resetBufferedSessionDeltas(): void {
-    if (bufferedSessionDeltaFlushTimer !== null) {
-        clearTimeout(bufferedSessionDeltaFlushTimer);
-        bufferedSessionDeltaFlushTimer = null;
+    for (const buffer of bufferedSessionDeltasBySessionId.values()) {
+        buffer.cancelScheduledFlush?.();
     }
-    bufferedSessionDeltaEvents.clear();
+    bufferedSessionDeltasBySessionId.clear();
     isFlushingBufferedSessionDeltas = false;
 }
 
@@ -892,11 +956,23 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return;
         }
         if (!isSessionDeltaEvent(normalizedEvent)) {
-            flushBufferedSessionDeltas(get);
+            flushBufferedSessionDeltas(get, normalizedEvent.sessionId);
         }
 
         let syncedTitle: string | null = null;
-        set((state) => {
+        measureChatPerformance(
+            "apply_event_ms",
+            {
+                sessionId: normalizedEvent.sessionId,
+                values: {
+                    payloadDepth:
+                        bufferedSessionDeltasBySessionId.get(
+                            normalizedEvent.sessionId,
+                        )?.events.size ?? 0,
+                },
+            },
+            () =>
+                set((state) => {
             const session =
                 state.sessions[normalizedEvent.sessionId] ?? createSessionState();
             const existingCatalog =
@@ -904,9 +980,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             const baseSnapshot =
                 session.snapshot ??
                 createSessionSnapshotFromEvent(normalizedEvent, existingCatalog);
-            const nextTranscript = applyAiSessionDomainEventToTranscript(
-                getSessionTranscript(session, baseSnapshot),
-                normalizedEvent,
+            const nextTranscript = measureChatPerformance(
+                "transcript_patch_ms",
+                { sessionId: normalizedEvent.sessionId },
+                () =>
+                    applyAiSessionDomainEventToTranscript(
+                        getSessionTranscript(session, baseSnapshot),
+                        normalizedEvent,
+                    ),
             );
             const nextSnapshot = writeAiSessionTranscriptToSnapshot(
                 applySessionDomainEventToSnapshot(baseSnapshot, normalizedEvent),
@@ -944,7 +1025,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     },
                 },
             };
-        });
+                }),
+        );
+
+        const eventUpdatedAt = Date.parse(normalizedEvent.updatedAt);
+        if (Number.isFinite(eventUpdatedAt)) {
+            recordChatPerformanceMetric("ack_lag_ms", {
+                durationMs: Math.max(0, Date.now() - eventUpdatedAt),
+                sessionId: normalizedEvent.sessionId,
+            });
+        }
 
         if (syncedTitle !== null) {
             void useWorkspaceStore
@@ -956,7 +1046,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionUpdate: (update) => {
-        flushBufferedSessionDeltas(get);
+        const sessionId =
+            update.kind === "snapshot"
+                ? update.snapshot.sessionId
+                : update.patch.sessionId;
+        flushBufferedSessionDeltas(get, sessionId);
         if (update.kind === "snapshot") {
             get().applySessionSnapshot(update.snapshot);
             return;
@@ -1125,7 +1219,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionSnapshot: (snapshot) => {
-        flushBufferedSessionDeltas(get);
+        flushBufferedSessionDeltas(get, snapshot.sessionId);
         let syncedTitle: string | null = null;
         set((state) => {
             const session =

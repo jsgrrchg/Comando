@@ -9,12 +9,14 @@ import {
     resetSettingsStoreForTests,
     useSettingsStore,
 } from "@renderer/app/store/settings-store";
+import { useShellStore } from "@renderer/app/store/shell-store";
 
 import type {
     ChatTimelineActivitySegmentRow,
     ToolActivitySegmentEntry,
 } from "./chatTimelineModel";
 import type { ToolActivityReviewEntry } from "./toolActivityReviewModel";
+import { deriveActivitySegmentChangeStats } from "./activitySegmentChangeStats";
 import { ToolActivitySegment } from "./ToolActivitySegment";
 import {
     resetScopedToolUiStateStoresForTests,
@@ -54,7 +56,9 @@ afterEach(() => {
         }
     }
     resetSettingsStoreForTests();
+    useShellStore.setState({ isResizingPanel: false });
     resetScopedToolUiStateStoresForTests();
+    vi.unstubAllGlobals();
 });
 
 function createActivity(
@@ -103,6 +107,7 @@ function createSegment(
     }
 
     return {
+        changeStats: deriveActivitySegmentChangeStats(entries),
         entries,
         id: `activity-segment:session-1:${first.id}`,
         items: entries.map((entry) => ({ entry, kind: "tool" as const })),
@@ -151,6 +156,7 @@ function createThinkingSegment(
         status,
     };
     return {
+        changeStats: { additions: 0, approximate: false, deletions: 0 },
         entries: [],
         id: "activity-segment:thinking:thinking-1",
         items: [{ kind: "thinking", message }],
@@ -184,6 +190,10 @@ const DEFAULT_PROPS = {
 function renderInteractive(segment: ChatTimelineActivitySegmentRow) {
     const container = document.createElement("div");
     document.body.appendChild(container);
+    Object.defineProperty(container, "clientHeight", {
+        configurable: true,
+        value: 720,
+    });
     const root = createRoot(container);
     mountedRoots.push(root);
     act(() => {
@@ -400,7 +410,7 @@ describe("ToolActivitySegment", () => {
         const expandedEntries = Array.from(
             container.querySelectorAll<HTMLElement>("[data-child-activity]"),
         );
-        expect(expandedEntries).toHaveLength(50);
+        expect(expandedEntries).toHaveLength(20);
         expect(
             expandedEntries.every(
                 (entry) => entry.dataset.toolSurface === "rail-row",
@@ -411,6 +421,78 @@ describe("ToolActivitySegment", () => {
                 .querySelector('[role="region"]')
                 ?.getAttribute("aria-label"),
         ).toBe("Full activity");
+
+        const firstVisibleActivity = expandedEntries[0];
+        act(() =>
+            Array.from(container.querySelectorAll("button")).find(
+                (button) => button.textContent === "Load 20 more",
+            )?.click(),
+        );
+        expect(container.querySelectorAll("[data-child-activity]")).toHaveLength(
+            40,
+        );
+        expect(
+            container.querySelector<HTMLElement>("[data-child-activity]"),
+        ).toBe(firstVisibleActivity);
+    });
+
+    it("mounts a compact incremental window for twenty thousand expanded tools", () => {
+        const entries = Array.from({ length: 20_000 }, (_, index) =>
+            createEntry(`read-${index + 1}`),
+        );
+        const container = renderInteractive(createSegment(entries));
+
+        act(() => container.querySelector<HTMLButtonElement>("button")?.click());
+
+        const mountedActivities = container.querySelectorAll(
+            "[data-child-activity]",
+        );
+        expect(mountedActivities).toHaveLength(20);
+        expect(
+            Array.from(container.querySelectorAll("button")).some(
+                (button) => button.textContent === "Load 20 more",
+            ),
+        ).toBe(true);
+        expect(
+            container.querySelector('[role="region"]')?.getAttribute("aria-label"),
+        ).toBe("Full activity");
+    });
+
+    it("does not remount activity rows when the parent layout changes", () => {
+        const entries = Array.from({ length: 200 }, (_, index) =>
+            createEntry(`read-${index + 1}`),
+        );
+        const container = renderInteractive(createSegment(entries));
+        container.scrollTop = 4_000;
+
+        act(() => container.querySelector<HTMLButtonElement>("button")?.click());
+
+        expect(
+            container.querySelector<HTMLElement>("[data-child-activity]")
+                ?.dataset.childActivity,
+        ).toBe("read-1");
+
+        act(() => {
+            window.dispatchEvent(new Event("resize"));
+        });
+
+        expect(
+            container.querySelector<HTMLElement>("[data-child-activity]")
+                ?.dataset.childActivity,
+        ).toBe("read-1");
+    });
+
+    it("does not observe parent transform mutations while scrolling", () => {
+        const mutationObserver = vi.fn();
+        vi.stubGlobal("MutationObserver", mutationObserver);
+        const entries = Array.from({ length: 200 }, (_, index) =>
+            createEntry(`read-${index + 1}`),
+        );
+        const container = renderInteractive(createSegment(entries));
+
+        act(() => container.querySelector<HTMLButtonElement>("button")?.click());
+
+        expect(mutationObserver).not.toHaveBeenCalled();
     });
 
     it("uses the AI setting as the initial state without overriding manual changes", () => {

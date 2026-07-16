@@ -2,12 +2,14 @@ import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 import type { editor as MonacoEditor } from "monaco-editor";
 import {
     useCallback,
+    createContext,
     useEffect,
     useEffectEvent,
     useLayoutEffect,
     useMemo,
     useRef,
     useState,
+    useContext,
     type DragEvent as ReactDragEvent,
     type MouseEvent as ReactMouseEvent,
     type ReactNode,
@@ -91,6 +93,7 @@ import {
     useLifecycleProbe,
     useRenderProbe,
 } from "@renderer/app/debug/renderProbe";
+import { recordWorkspacePerformanceEvent } from "@renderer/app/debug/workspacePerformanceProbe";
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { useGitStore } from "@renderer/app/store/git-store";
 import {
@@ -102,6 +105,8 @@ import {
     getBestMatchingChatTabId,
     useWorkspaceStore,
 } from "@renderer/app/store/workspace-store";
+import { resolveWorkspaceViewLifecycles } from "@renderer/app/workspace/view-lifecycle";
+import type { WorkspaceViewLifecycle } from "@renderer/app/workspace/view-lifecycle";
 import {
     collectPaneNodes,
     findWorkspaceNodeById,
@@ -141,6 +146,7 @@ import {
 } from "@renderer/components/workspace/WorkspacePaneEmptyState";
 import { MarkdownFilePreview } from "@renderer/components/workspace/MarkdownFilePreview";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
+import { resolveHotChatTabIds } from "@renderer/components/workspace/chatViewResourceBudget";
 import {
     GIT_GUTTER_LINE_DECORATIONS_WIDTH,
     GitGutterDecorator,
@@ -246,6 +252,13 @@ type QuickCreateMenuItem = {
     readonly type?: "item";
 };
 
+type WorkspaceExternalDragPreview = {
+    readonly kind: "agent" | "github";
+    readonly title: string;
+    readonly x: number;
+    readonly y: number;
+};
+
 type QuickCreateMenuSeparator = {
     readonly type: "separator";
 };
@@ -257,6 +270,13 @@ const CLAUDE_CODE_NOT_FOUND_MESSAGE =
     "The claude command was not found in Comando's PATH. Your shell may still resolve it.";
 const GIT_GUTTER_LIVE_DIFF_DEBOUNCE_MS = 200;
 const MAX_RETAINED_CHAT_TAB_VIEWS = 4;
+const EMPTY_HOT_CHAT_TAB_IDS: ReadonlySet<string> = new Set();
+const ChatViewResourceBudgetContext = createContext<ReadonlySet<string>>(
+    EMPTY_HOT_CHAT_TAB_IDS,
+);
+const WorkspaceTabLifecycleContext = createContext<
+    ReadonlyMap<string, WorkspaceViewLifecycle>
+>(new Map());
 
 type GitGutterLiveDiffState =
     | {
@@ -685,6 +705,14 @@ export function WorkspaceView({
     onRequestCreateFile,
 }: WorkspaceViewProps) {
     const closeTab = useWorkspaceStore((state) => state.closeTab);
+    const chatViewBudgetWorkspaceState = useWorkspaceStore(
+        useShallow((state) => ({
+            activePaneId: state.activePaneId,
+            deferredPaneIds: state.deferredPaneIds,
+            recentActiveTabIds: state.recentActiveTabIds,
+            rootNode: state.rootNode,
+        })),
+    );
     const dropTabToSplit = useWorkspaceStore((state) => state.dropTabToSplit);
     const moveTabToPane = useWorkspaceStore((state) => state.moveTabToPane);
     const openChatSessionTabAtTarget = useWorkspaceStore(
@@ -705,8 +733,58 @@ export function WorkspaceView({
     );
     const reorderTab = useWorkspaceStore((state) => state.reorderTab);
     const rootNodeId = useWorkspaceStore((state) => state.rootNode.id);
+    const workspaceViewLifecycles = useMemo(() => {
+        const tabsById = useWorkspaceStore.getState().tabsById;
+        const panes = collectPaneNodes(
+            chatViewBudgetWorkspaceState.rootNode,
+        ).map((pane) => ({
+            activeTabId: pane.activeTabId,
+            id: pane.id,
+            tabIds: pane.tabIds.filter((tabId) => tabsById[tabId] !== undefined),
+            visible:
+                pane.id === chatViewBudgetWorkspaceState.activePaneId ||
+                !chatViewBudgetWorkspaceState.deferredPaneIds.has(pane.id),
+        }));
+
+        return resolveWorkspaceViewLifecycles({
+            focusedPaneId: chatViewBudgetWorkspaceState.activePaneId,
+            panes,
+            recentTabIds: chatViewBudgetWorkspaceState.recentActiveTabIds,
+        });
+    }, [chatViewBudgetWorkspaceState]);
+    const hotChatTabIds = useMemo(() => {
+        const tabsById = useWorkspaceStore.getState().tabsById;
+        const workspacePanes = collectPaneNodes(
+            chatViewBudgetWorkspaceState.rootNode,
+        );
+        const panes = workspacePanes.map((pane) => ({
+            activeTabId: pane.activeTabId,
+            chatTabIds: pane.tabIds.filter(
+                (tabId) => tabsById[tabId]?.kind === "chat",
+            ),
+            id: pane.id,
+            visible:
+                workspaceViewLifecycles.lifecycleByPaneId.get(pane.id) ===
+                "active",
+        }));
+
+        return resolveHotChatTabIds({
+            focusedPaneId: chatViewBudgetWorkspaceState.activePaneId,
+            panes,
+            recentActiveTabIds:
+                chatViewBudgetWorkspaceState.recentActiveTabIds,
+        });
+    }, [chatViewBudgetWorkspaceState, workspaceViewLifecycles]);
+    useEffect(() => {
+        recordWorkspacePerformanceEvent(
+            "chat-view-budget",
+            `mounted=${hotChatTabIds.size}; panes=${workspaceViewLifecycles.lifecycleByPaneId.size}`,
+        );
+    }, [hotChatTabIds, workspaceViewLifecycles]);
     const [externalDropTarget, setExternalDropTarget] =
         useState<WorkspacePaneDropTarget | null>(null);
+    const [externalDragPreview, setExternalDragPreview] =
+        useState<WorkspaceExternalDragPreview | null>(null);
     const workspaceRootRef = useRef<HTMLDivElement | null>(null);
     const reviewTabKeys = useWorkspaceStore(
         useShallow(selectWorkspaceReviewTabHandleKeys),
@@ -923,7 +1001,19 @@ export function WorkspaceView({
 
         if (detail.phase === "cancel") {
             clearExternalDropTarget();
+            setExternalDragPreview(null);
             return;
+        }
+
+        if (detail.phase === "end") {
+            setExternalDragPreview(null);
+        } else {
+            setExternalDragPreview({
+                kind: "agent",
+                title: detail.title,
+                x: detail.x,
+                y: detail.y,
+            });
         }
 
         const target = resolveExternalPaneDropTarget(detail.x, detail.y);
@@ -971,7 +1061,19 @@ export function WorkspaceView({
 
         if (detail.phase === "cancel") {
             clearExternalDropTarget();
+            setExternalDragPreview(null);
             return;
+        }
+
+        if (detail.phase === "end") {
+            setExternalDragPreview(null);
+        } else {
+            setExternalDragPreview({
+                kind: "github",
+                title: detail.title,
+                x: detail.x,
+                y: detail.y,
+            });
         }
 
         const target = resolveExternalPaneDropTarget(detail.x, detail.y);
@@ -1062,16 +1164,22 @@ export function WorkspaceView({
             onDropCapture={handleWorkspaceDrop}
             ref={workspaceRootRef}
         >
-            <WorkspaceNodeView
-                defaultProjectId={defaultProjectId}
-                defaultWorktreeId={defaultWorktreeId}
-                recentProjects={recentProjects}
-                nodeId={rootNodeId}
-                onOpenProject={onOpenProject}
-                onOpenProjects={onOpenProjects}
-                onRequestCreateFile={onRequestCreateFile}
-                tabDrag={tabDrag}
-            />
+            <WorkspaceTabLifecycleContext.Provider
+                value={workspaceViewLifecycles.lifecycleByTabId}
+            >
+                <ChatViewResourceBudgetContext.Provider value={hotChatTabIds}>
+                    <WorkspaceNodeView
+                    defaultProjectId={defaultProjectId}
+                    defaultWorktreeId={defaultWorktreeId}
+                    recentProjects={recentProjects}
+                    nodeId={rootNodeId}
+                    onOpenProject={onOpenProject}
+                    onOpenProjects={onOpenProjects}
+                    onRequestCreateFile={onRequestCreateFile}
+                    tabDrag={tabDrag}
+                    />
+                </ChatViewResourceBudgetContext.Provider>
+            </WorkspaceTabLifecycleContext.Provider>
             {!tabDrag.isDragging ? (
                 <WorkspaceDropTargetOverlay
                     target={externalDropTarget}
@@ -1085,6 +1193,47 @@ export function WorkspaceView({
                 target={tabDrag.activeDropTarget}
                 visible={tabDrag.isDragging}
             />
+            {externalDragPreview ? (
+                <WorkspaceExternalDragGhost preview={externalDragPreview} />
+            ) : null}
+        </div>
+    );
+}
+
+function WorkspaceExternalDragGhost({
+    preview,
+}: {
+    readonly preview: WorkspaceExternalDragPreview;
+}) {
+    const label = preview.kind === "agent" ? "AI chat" : "GitHub item";
+
+    return (
+        <div
+            aria-hidden="true"
+            className="pointer-events-none fixed min-w-40 max-w-72 rounded-lg border border-accent/30 bg-bg-panel/96 px-2.5 py-2 text-text-primary shadow-[0_14px_34px_rgba(15,23,42,0.28)] backdrop-blur-sm"
+            style={{
+                left: preview.x + 14,
+                top: preview.y + 14,
+                transform: "translate3d(0, 0, 0) scale(1.02)",
+                zIndex: 10050,
+            }}
+        >
+            <div className="flex min-w-0 items-center gap-2">
+                <span
+                    aria-hidden="true"
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-accent/10 text-[10px] font-semibold text-accent"
+                >
+                    {preview.kind === "agent" ? "AI" : "GH"}
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="truncate text-[11.5px] font-medium leading-tight">
+                        {preview.title}
+                    </div>
+                    <div className="mt-0.5 truncate text-[10px] leading-tight text-text-secondary">
+                        Drag to pane or composer · {label}
+                    </div>
+                </div>
+            </div>
         </div>
     );
 }
@@ -1641,6 +1790,8 @@ function WorkspacePaneView({
     readonly onRequestCreateFile: () => void;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
+    const hotChatTabIds = useContext(ChatViewResourceBudgetContext);
+    const tabLifecycles = useContext(WorkspaceTabLifecycleContext);
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
     const attachSelectionMention = useAiStore((s) => s.attachSelectionMention);
     const {
@@ -1806,6 +1957,9 @@ function WorkspacePaneView({
     const activeTab = paneActiveTabId
         ? (paneTabs.find((tab) => tab.id === paneActiveTabId) ?? null)
         : null;
+    const activeTabLifecycle = activeTab
+        ? (tabLifecycles.get(activeTab.id) ?? "cold")
+        : "cold";
     const activeChatTab = activeTab?.kind === "chat" ? activeTab : null;
     const [retainedChatTabIds, setRetainedChatTabIds] = useState<
         readonly string[]
@@ -1863,9 +2017,10 @@ function WorkspacePaneView({
                 (tab): tab is RuntimeWorkspaceChatTab =>
                     tab.kind === "chat" &&
                     (retainedChatTabIds.includes(tab.id) ||
-                        tab.id === activeChatTab?.id),
+                        tab.id === activeChatTab?.id) &&
+                    hotChatTabIds.has(tab.id),
             ),
-        [activeChatTab?.id, paneTabs, retainedChatTabIds],
+        [activeChatTab?.id, hotChatTabIds, paneTabs, retainedChatTabIds],
     );
     const handleSelectTab = useCallback(
         (tabId: string) => {
@@ -2811,7 +2966,13 @@ function WorkspacePaneView({
                             ) : null}
                             <WorkspaceFileEditorHost
                                 activeFileTab={activeFileTab}
-                                fileTabs={paneFileTabs}
+                                fileTabs={
+                                    activeTabLifecycle === "active"
+                                        ? paneFileTabs.filter(
+                                              (tab) => tab.id === activeFileTab?.id,
+                                          )
+                                        : []
+                                }
                                 isActivePane={isActivePane}
                                 onAttachLineFragment={handleAttachLineFragment}
                                 onDraftChange={updateFileDraft}

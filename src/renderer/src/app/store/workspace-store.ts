@@ -100,6 +100,16 @@ export type WorkspaceQuickCreateAction =
     | "file"
     | "terminal";
 
+const isWorkspaceSurfaceHost =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("window") ===
+        "workspace-host";
+
+const isWorkspaceSurfaceRenderer =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("window") ===
+        "workspace-surface";
+
 export type WorkspaceOpenTarget =
     | {
           readonly insertIndex?: number;
@@ -128,6 +138,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
     getContextNavigationSnapshot: (
         contextKey: string,
     ) => WorkspaceNavigationSnapshot | null;
+    getNavigationSnapshot: () => WorkspaceNavigationSnapshot;
+    applySurfaceNavigationSnapshot: (
+        snapshot: WorkspaceNavigationSnapshot,
+    ) => void;
     readonly openContextKeys: readonly string[];
     readonly scopeEpoch: number;
     activateContext: (contextKey: string) => Promise<void>;
@@ -425,6 +439,51 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         };
     },
 
+    getNavigationSnapshot: () => workspaceStoreToNavigationSnapshot(get()),
+
+    applySurfaceNavigationSnapshot: (snapshot) => {
+        // A persistent surface already owns the live runtime tabs for its
+        // workspace. Host snapshot notifications are bookkeeping updates, not
+        // a request to reconstruct that mounted workspace on every switch.
+        if (isWorkspaceSurfaceRenderer && get().hydrated) {
+            return;
+        }
+        const navigation = normalizeWorkspaceNavigationSnapshot(snapshot).snapshot;
+        const contextsByKey = Object.fromEntries(
+            navigation.contexts.map((context) => [
+                context.key,
+                {
+                    ...context,
+                    workspace: workspaceStateFromSnapshot(
+                        context.workspace,
+                        createHydratedRuntimeTabs(context.workspace),
+                    ),
+                } satisfies RuntimeWorkspaceContext,
+            ]),
+        );
+        const openContextKeys = navigation.openContextKeys.filter((key) =>
+            Boolean(contextsByKey[key]),
+        );
+        const activeContextKey =
+            navigation.activeContextKey &&
+            openContextKeys.includes(navigation.activeContextKey)
+                ? navigation.activeContextKey
+                : (openContextKeys[0] ?? null);
+        const activeContext = activeContextKey
+            ? contextsByKey[activeContextKey]
+            : null;
+        const workspace = activeContext?.workspace ?? createDefaultWorkspaceState();
+
+        set((state) => ({
+            ...workspace,
+            activeContextKey,
+            contextsByKey,
+            deferredPaneIds: getDeferredWorkspacePaneIds(workspace),
+            openContextKeys,
+            scopeEpoch: state.scopeEpoch + 1,
+        }));
+    },
+
     activateContext: async (contextKey) => {
         const currentState = get();
         if (currentState.activeContextKey === contextKey) {
@@ -478,12 +537,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             scopeEpoch,
         });
 
-        void activateWorkspaceRuntimePanes(
-            targetWorkspace,
-            get,
-            set,
-            { contextKey, scopeEpoch },
-        );
+        if (!isWorkspaceSurfaceHost) {
+            void activateWorkspaceRuntimePanes(
+                targetWorkspace,
+                get,
+                set,
+                { contextKey, scopeEpoch },
+            );
+        }
         await persistWorkspaceState(get);
     },
 
@@ -556,7 +617,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             scopeEpoch: state.scopeEpoch + 1,
         });
 
-        if (nextContextKey) {
+        if (nextContextKey && !isWorkspaceSurfaceHost) {
             void activateWorkspaceRuntimePanes(
                 nextWorkspace,
                 get,
@@ -1204,6 +1265,14 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         ),
 
     openContext: async (projectId, worktreeId = null, options = {}) => {
+        if (isWorkspaceSurfaceRenderer) {
+            await getComandoApi().requestWorkspaceSurfaceContext({
+                emptyLayout: options.emptyLayout,
+                projectId,
+                worktreeId,
+            });
+            return;
+        }
         const normalizedWorktreeId =
             worktreeId === `${projectId}:primary` ? null : worktreeId;
         const contextKey = getProjectContextKey(
@@ -1340,7 +1409,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ),
                 scopeEpoch,
             });
-            if (activeContextKey) {
+            if (activeContextKey && !isWorkspaceSurfaceHost) {
                 void activateWorkspaceRuntimePanes(
                     hydratedState,
                     get,
@@ -3222,7 +3291,7 @@ async function removeWorkspaceContexts(
         scopeEpoch,
     });
 
-    if (activeContextKey) {
+    if (activeContextKey && !isWorkspaceSurfaceHost) {
         void activateWorkspaceRuntimePanes(workspace, get, set, {
             contextKey: activeContextKey,
             scopeEpoch,
@@ -3516,6 +3585,12 @@ async function activateWorkspaceRuntimePanes(
 function getDeferredWorkspacePaneIds(
     workspace: WorkspaceTreeState,
 ): ReadonlySet<string> {
+    // A persistent workspace surface owns a single workspace and keeps its
+    // rendered panes alive while hidden. Deferring those panes would turn a
+    // workspace switch into a partial remount instead of a view swap.
+    if (isWorkspaceSurfaceRenderer) {
+        return new Set();
+    }
     return new Set(
         collectPaneNodes(workspace.rootNode)
             .filter((pane) => pane.id !== workspace.activePaneId)
