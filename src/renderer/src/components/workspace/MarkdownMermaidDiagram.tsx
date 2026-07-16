@@ -1,6 +1,7 @@
 import DOMPurify from "dompurify";
 import {
     memo,
+    type KeyboardEvent as ReactKeyboardEvent,
     type PointerEvent as ReactPointerEvent,
     useCallback,
     useEffect,
@@ -14,6 +15,7 @@ export const MERMAID_SOURCE_MAX_LENGTH = 50000;
 export const MERMAID_VIEWPORT_FIT_MAX_ZOOM = 2;
 export const MERMAID_VIEWPORT_MAX_ZOOM = 10;
 export const MERMAID_VIEWPORT_MIN_ZOOM = 0.25;
+export const MERMAID_VIEWPORT_MIN_HEIGHT = 220;
 const MERMAID_MAX_EDGES = 500;
 const MERMAID_VIEWPORT_MAX_PINCH_DELTA = 100;
 const MERMAID_VIEWPORT_PINCH_SENSITIVITY = 0.002;
@@ -39,6 +41,7 @@ interface MermaidViewportState {
 }
 
 export interface MermaidViewportStateSnapshot {
+    readonly height?: number;
     readonly isCustom: boolean;
     readonly offsetX: number;
     readonly offsetY: number;
@@ -65,6 +68,12 @@ interface MermaidDragState {
     readonly offsetY: number;
     readonly pointerId: number;
     readonly startX: number;
+    readonly startY: number;
+}
+
+interface MermaidResizeState {
+    readonly pointerId: number;
+    readonly startHeight: number;
     readonly startY: number;
 }
 
@@ -221,6 +230,25 @@ export function clampMermaidZoom(zoom: number): number {
     return Math.min(
         MERMAID_VIEWPORT_MAX_ZOOM,
         Math.max(MERMAID_VIEWPORT_MIN_ZOOM, zoom),
+    );
+}
+
+export function clampMermaidViewportHeight(height: number): number {
+    const maximumHeight =
+        typeof window === "undefined"
+            ? 520
+            : Math.max(
+                  MERMAID_VIEWPORT_MIN_HEIGHT,
+                  Math.floor(window.innerHeight * 0.75),
+              );
+
+    if (!Number.isFinite(height)) {
+        return MERMAID_VIEWPORT_MIN_HEIGHT;
+    }
+
+    return Math.min(
+        maximumHeight,
+        Math.max(MERMAID_VIEWPORT_MIN_HEIGHT, height),
     );
 }
 
@@ -689,6 +717,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
 }: MarkdownMermaidDiagramProps) {
     const reactId = useId();
     const dragStateRef = useRef<MermaidDragState | null>(null);
+    const resizeStateRef = useRef<MermaidResizeState | null>(null);
     const elementIdRef = useRef(createMermaidElementId(reactId));
     const hasCustomViewportRef = useRef(false);
     const mermaidSvgRef = useRef<HTMLDivElement>(null);
@@ -704,8 +733,12 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         useState<MermaidRenderState>(initialRenderState);
     const [viewportState, setViewportState] =
         useState<MermaidViewportState>(initialViewportState);
+    const [viewportHeight, setViewportHeight] = useState<number | null>(() =>
+        savedViewportState?.height
+            ? clampMermaidViewportHeight(savedViewportState.height)
+            : null,
+    );
     const viewportScaleRef = useRef(viewportState.scale);
-    viewportScaleRef.current = viewportState.scale;
     const visibleRenderState =
         trimmedSource.length > MERMAID_SOURCE_MAX_LENGTH
             ? {
@@ -717,6 +750,10 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
             : renderState.renderKey === currentRenderKey
               ? renderState
               : initialRenderState;
+
+    useLayoutEffect(() => {
+        viewportScaleRef.current = viewportState.scale;
+    }, [viewportState.scale]);
 
     useEffect(() => {
         let cancelled = false;
@@ -896,12 +933,13 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         }
 
         onViewportStateChange?.({
+            height: viewportHeight ?? undefined,
             isCustom: hasCustomViewportRef.current,
             offsetX: viewportState.offsetX,
             offsetY: viewportState.offsetY,
             scale: viewportState.scale,
         });
-    }, [onViewportStateChange, viewportState]);
+    }, [onViewportStateChange, viewportHeight, viewportState]);
 
     useLayoutEffect(() => {
         if (
@@ -1106,6 +1144,81 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         [],
     );
 
+    const handleViewportResizePointerDown = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            if (!event.isPrimary || event.button !== 0) {
+                return;
+            }
+
+            const viewportHeight =
+                mermaidViewportRef.current?.getBoundingClientRect().height;
+            if (!viewportHeight) {
+                return;
+            }
+
+            event.preventDefault();
+            event.currentTarget.setPointerCapture?.(event.pointerId);
+            resizeStateRef.current = {
+                pointerId: event.pointerId,
+                startHeight: viewportHeight,
+                startY: event.clientY,
+            };
+        },
+        [],
+    );
+
+    const handleViewportResizePointerMove = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            const resizeState = resizeStateRef.current;
+            if (!resizeState || resizeState.pointerId !== event.pointerId) {
+                return;
+            }
+
+            event.preventDefault();
+            setViewportHeight(
+                clampMermaidViewportHeight(
+                    resizeState.startHeight + event.clientY - resizeState.startY,
+                ),
+            );
+        },
+        [],
+    );
+
+    const stopViewportResize = useCallback(
+        (event: ReactPointerEvent<HTMLDivElement>) => {
+            const resizeState = resizeStateRef.current;
+            if (!resizeState || resizeState.pointerId !== event.pointerId) {
+                return;
+            }
+
+            event.currentTarget.releasePointerCapture?.(event.pointerId);
+            resizeStateRef.current = null;
+        },
+        [],
+    );
+
+    const handleViewportResizeKeyDown = useCallback(
+        (event: ReactKeyboardEvent<HTMLDivElement>) => {
+            if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+                return;
+            }
+
+            const currentHeight =
+                mermaidViewportRef.current?.getBoundingClientRect().height;
+            if (!currentHeight) {
+                return;
+            }
+
+            event.preventDefault();
+            setViewportHeight(
+                clampMermaidViewportHeight(
+                    currentHeight + (event.key === "ArrowDown" ? 40 : -40),
+                ),
+            );
+        },
+        [],
+    );
+
     const isDiagramReady =
         visibleRenderState.status === "ready" && Boolean(visibleRenderState.svg);
     const isZoomOutDisabled =
@@ -1203,26 +1316,44 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
                     </div>
                 ) : null}
                 {visibleRenderState.status === "ready" && visibleRenderState.svg ? (
-                    <div
-                        className={viewportClassName}
-                        onPointerCancel={stopViewportDrag}
-                        onPointerDown={handleViewportPointerDown}
-                        onPointerMove={handleViewportPointerMove}
-                        onPointerUp={stopViewportDrag}
-                        ref={mermaidViewportRef}
-                    >
+                    <>
                         <div
-                            className="markdown-file-preview__mermaid-svg"
-                            ref={mermaidSvgRef}
-                            style={{
-                                transform: `translate(${viewportState.offsetX}px, ${viewportState.offsetY}px) scale(${viewportState.scale})`,
-                            }}
-                            // Mermaid only returns SVG strings; sanitize before inserting.
-                            dangerouslySetInnerHTML={{
-                                __html: visibleRenderState.svg,
-                            }}
+                            className={viewportClassName}
+                            onPointerCancel={stopViewportDrag}
+                            onPointerDown={handleViewportPointerDown}
+                            onPointerMove={handleViewportPointerMove}
+                            onPointerUp={stopViewportDrag}
+                            ref={mermaidViewportRef}
+                            style={
+                                viewportHeight
+                                    ? { height: `${viewportHeight}px` }
+                                    : undefined
+                            }
+                        >
+                            <div
+                                className="markdown-file-preview__mermaid-svg"
+                                ref={mermaidSvgRef}
+                                style={{
+                                    transform: `translate(${viewportState.offsetX}px, ${viewportState.offsetY}px) scale(${viewportState.scale})`,
+                                }}
+                                // Mermaid only returns SVG strings; sanitize before inserting.
+                                dangerouslySetInnerHTML={{
+                                    __html: visibleRenderState.svg,
+                                }}
+                            />
+                        </div>
+                        <div
+                            aria-label="Resize Mermaid diagram height"
+                            className="markdown-file-preview__mermaid-resize-handle"
+                            onKeyDown={handleViewportResizeKeyDown}
+                            onPointerCancel={stopViewportResize}
+                            onPointerDown={handleViewportResizePointerDown}
+                            onPointerMove={handleViewportResizePointerMove}
+                            onPointerUp={stopViewportResize}
+                            role="separator"
+                            tabIndex={0}
                         />
-                    </div>
+                    </>
                 ) : null}
             </div>
         </div>

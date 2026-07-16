@@ -1418,6 +1418,35 @@ body {
     cursor: grabbing;
 }
 
+.markdown-file-preview__mermaid-resize-handle {
+    position: relative;
+    height: 10px;
+    margin: -5px 0;
+    cursor: ns-resize;
+    touch-action: none;
+}
+
+.markdown-file-preview__mermaid-resize-handle::after {
+    position: absolute;
+    top: 4px;
+    right: 35%;
+    left: 35%;
+    height: 2px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-border) 82%, transparent);
+    content: "";
+}
+
+.markdown-file-preview__mermaid-resize-handle:hover::after,
+.markdown-file-preview__mermaid-resize-handle:focus-visible::after {
+    background: color-mix(in srgb, var(--color-accent) 68%, var(--color-border));
+}
+
+.markdown-file-preview__mermaid-resize-handle:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 42%, transparent);
+    outline-offset: 2px;
+}
+
 .markdown-file-preview__mermaid-svg {
     display: flex;
     min-width: 0;
