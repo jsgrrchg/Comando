@@ -442,6 +442,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     getNavigationSnapshot: () => workspaceStoreToNavigationSnapshot(get()),
 
     applySurfaceNavigationSnapshot: (snapshot) => {
+        // A persistent surface already owns the live runtime tabs for its
+        // workspace. Host snapshot notifications are bookkeeping updates, not
+        // a request to reconstruct that mounted workspace on every switch.
+        if (isWorkspaceSurfaceRenderer && get().hydrated) {
+            return;
+        }
         const navigation = normalizeWorkspaceNavigationSnapshot(snapshot).snapshot;
         const contextsByKey = Object.fromEntries(
             navigation.contexts.map((context) => [
@@ -3579,6 +3585,12 @@ async function activateWorkspaceRuntimePanes(
 function getDeferredWorkspacePaneIds(
     workspace: WorkspaceTreeState,
 ): ReadonlySet<string> {
+    // A persistent workspace surface owns a single workspace and keeps its
+    // rendered panes alive while hidden. Deferring those panes would turn a
+    // workspace switch into a partial remount instead of a view swap.
+    if (isWorkspaceSurfaceRenderer) {
+        return new Set();
+    }
     return new Set(
         collectPaneNodes(workspace.rootNode)
             .filter((pane) => pane.id !== workspace.activePaneId)
