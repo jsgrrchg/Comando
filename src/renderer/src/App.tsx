@@ -1196,6 +1196,17 @@ export function App() {
             return;
         }
 
+        return comandoApi.onSidebarToggleRequested(() => {
+            toggleLeftCollapsed();
+        });
+    }, [toggleLeftCollapsed]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+
         const unsubscribe = comandoApi.onWorkspaceCloseActiveTab(() => {
             requestCloseActiveWorkspaceTab();
         });

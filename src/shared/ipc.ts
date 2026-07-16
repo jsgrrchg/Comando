@@ -194,6 +194,7 @@ export const IPC_EVENTS = {
     themeUpdated: "app:theme-updated",
     settingsUpdated: "settings:updated",
     projectSettingsUpdated: "settings:project-updated",
+    sidebarToggleRequested: "shell:sidebar-toggle-requested",
     workspaceCloseActiveTab: "workspace:close-active-tab",
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
     workspaceFlushRequested: "workspace:flush-requested",
@@ -3440,6 +3441,7 @@ export interface ComandoApi {
     onProjectSettingsUpdated: (
         listener: (payload: ProjectSettingsUpdatedEvent) => void,
     ) => () => void;
+    onSidebarToggleRequested: (listener: () => void) => () => void;
     onWorkspaceCloseActiveTab: (listener: () => void) => () => void;
     onWorkspaceReopenLastClosedTab: (listener: () => void) => () => void;
     onWorkspaceFlushRequested: (
