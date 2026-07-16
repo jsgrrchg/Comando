@@ -430,6 +430,16 @@ if (!hasSingleInstanceLock) {
                         IPC_EVENTS.workspaceReopenLastClosedTab,
                     );
                 },
+                toggleSidebar: () => {
+                    const focusedWindow = windowRegistry.getFocusedMainWindow();
+                    if (!focusedWindow) {
+                        return;
+                    }
+
+                    focusedWindow.webContents.send(
+                        IPC_EVENTS.sidebarToggleRequested,
+                    );
+                },
                 openSettingsWindow: (projectId) =>
                     openSettingsWindow(
                         { projectId },
