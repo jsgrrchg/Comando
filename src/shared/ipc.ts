@@ -130,6 +130,7 @@ export const IPC_CHANNELS = {
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
+    dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
     requestWorkspaceSurfaceContext: "workspace:request-surface-context",
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
@@ -200,6 +201,7 @@ export const IPC_EVENTS = {
     workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
     workspaceSurfaceFocused: "workspace:surface-focused",
     workspaceSurfaceContextRequested: "workspace:surface-context-requested",
+    workspaceSurfaceDrag: "workspace:surface-drag",
     workspaceSurfaceGitScopeMenuRequested:
         "workspace:surface-git-scope-menu-requested",
     workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
@@ -225,6 +227,11 @@ export type WorkspaceSurfaceLifecycleState =
 export interface WorkspaceSurfaceLifecycleEvent {
     readonly generation: number;
     readonly state: WorkspaceSurfaceLifecycleState;
+}
+
+export interface WorkspaceSurfaceDragEvent {
+    readonly detail: object;
+    readonly kind: "agent" | "github";
 }
 
 export interface SystemTheme {
@@ -3265,6 +3272,9 @@ export interface ComandoApi {
     captureWorkspaceSurfaceContext: (
         contextKey: WorkspaceContextKey,
     ) => Promise<WorkspaceNavigationSnapshot | null>;
+    dispatchWorkspaceSurfaceDrag: (
+        event: WorkspaceSurfaceDragEvent,
+    ) => Promise<void>;
     notifyWorkspaceSurfaceFocused: () => Promise<void>;
     onWorkspaceSurfaceSnapshotRequested: (
         listener: () => WorkspaceNavigationSnapshot,
@@ -3405,6 +3415,9 @@ export interface ComandoApi {
     onWorkspaceSurfaceFocused: (listener: () => void) => () => void;
     onWorkspaceSurfaceContextRequested: (
         listener: (input: WorkspaceSurfaceContextRequest) => void,
+    ) => () => void;
+    onWorkspaceSurfaceDrag: (
+        listener: (event: WorkspaceSurfaceDragEvent) => void,
     ) => () => void;
     onWorkspaceSurfaceGitScopeMenuRequested: (
         listener: (anchor: { readonly width: number; readonly x: number }) => void,

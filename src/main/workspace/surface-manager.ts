@@ -10,6 +10,7 @@ import { IPC_EVENTS } from "@shared/ipc";
 import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
+    WorkspaceSurfaceDragEvent,
     WorkspaceSurfaceLifecycleState,
 } from "@shared/ipc";
 
@@ -185,6 +186,29 @@ class WorkspaceSurfaceManager {
         );
     }
 
+    dispatchActiveSurfaceDrag(
+        hostWindowId: string,
+        event: WorkspaceSurfaceDragEvent,
+    ): void {
+        const surface = this.#getActiveSurface(hostWindowId);
+        if (!surface || surface.webContents.isDestroyed()) {
+            return;
+        }
+
+        const bounds = surface.bounds;
+        const detail = event.detail as Record<string, unknown>;
+        const x = detail.x;
+        const y = detail.y;
+        const translatedDetail =
+            bounds && typeof x === "number" && typeof y === "number"
+                ? { ...detail, x: x - bounds.x, y: y - bounds.y }
+                : detail;
+        surface.webContents.send(IPC_EVENTS.workspaceSurfaceDrag, {
+            ...event,
+            detail: translatedDetail,
+        } satisfies WorkspaceSurfaceDragEvent);
+    }
+
     setContentInset(hostWindowId: string, height: number): void {
         const host = this.#hostsByWindowId.get(hostWindowId);
         if (!host || !Number.isFinite(height)) {
@@ -311,11 +335,7 @@ class WorkspaceSurfaceManager {
     }
 
     getActiveWebContents(hostWindowId: string): WebContents | null {
-        const host = this.#hostsByWindowId.get(hostWindowId);
-        const surfaceId = host?.activeContextKey
-            ? host.surfaceIdsByContextKey.get(host.activeContextKey)
-            : null;
-        const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
+        const surface = this.#getActiveSurface(hostWindowId);
         return surface && !surface.webContents.isDestroyed()
             ? surface.webContents
             : null;
@@ -476,6 +496,14 @@ class WorkspaceSurfaceManager {
             this.#surfaceIdsByWebContentsId.delete(webContentsId);
         });
         loadRendererContents(webContents, `window=workspace-surface&surface=${id}`);
+    }
+
+    #getActiveSurface(hostWindowId: string): WorkspaceSurfaceRecord | null {
+        const host = this.#hostsByWindowId.get(hostWindowId);
+        const surfaceId = host?.activeContextKey
+            ? host.surfaceIdsByContextKey.get(host.activeContextKey)
+            : null;
+        return surfaceId ? (this.#surfacesById.get(surfaceId) ?? null) : null;
     }
 
     #destroySurface(host: WorkspaceSurfaceHostRecord, surfaceId: string): void {

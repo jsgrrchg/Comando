@@ -252,6 +252,13 @@ type QuickCreateMenuItem = {
     readonly type?: "item";
 };
 
+type WorkspaceExternalDragPreview = {
+    readonly kind: "agent" | "github";
+    readonly title: string;
+    readonly x: number;
+    readonly y: number;
+};
+
 type QuickCreateMenuSeparator = {
     readonly type: "separator";
 };
@@ -776,6 +783,8 @@ export function WorkspaceView({
     }, [hotChatTabIds, workspaceViewLifecycles]);
     const [externalDropTarget, setExternalDropTarget] =
         useState<WorkspacePaneDropTarget | null>(null);
+    const [externalDragPreview, setExternalDragPreview] =
+        useState<WorkspaceExternalDragPreview | null>(null);
     const workspaceRootRef = useRef<HTMLDivElement | null>(null);
     const reviewTabKeys = useWorkspaceStore(
         useShallow(selectWorkspaceReviewTabHandleKeys),
@@ -992,7 +1001,19 @@ export function WorkspaceView({
 
         if (detail.phase === "cancel") {
             clearExternalDropTarget();
+            setExternalDragPreview(null);
             return;
+        }
+
+        if (detail.phase === "end") {
+            setExternalDragPreview(null);
+        } else {
+            setExternalDragPreview({
+                kind: "agent",
+                title: detail.title,
+                x: detail.x,
+                y: detail.y,
+            });
         }
 
         const target = resolveExternalPaneDropTarget(detail.x, detail.y);
@@ -1040,7 +1061,19 @@ export function WorkspaceView({
 
         if (detail.phase === "cancel") {
             clearExternalDropTarget();
+            setExternalDragPreview(null);
             return;
+        }
+
+        if (detail.phase === "end") {
+            setExternalDragPreview(null);
+        } else {
+            setExternalDragPreview({
+                kind: "github",
+                title: detail.title,
+                x: detail.x,
+                y: detail.y,
+            });
         }
 
         const target = resolveExternalPaneDropTarget(detail.x, detail.y);
@@ -1160,6 +1193,47 @@ export function WorkspaceView({
                 target={tabDrag.activeDropTarget}
                 visible={tabDrag.isDragging}
             />
+            {externalDragPreview ? (
+                <WorkspaceExternalDragGhost preview={externalDragPreview} />
+            ) : null}
+        </div>
+    );
+}
+
+function WorkspaceExternalDragGhost({
+    preview,
+}: {
+    readonly preview: WorkspaceExternalDragPreview;
+}) {
+    const label = preview.kind === "agent" ? "AI chat" : "GitHub item";
+
+    return (
+        <div
+            aria-hidden="true"
+            className="pointer-events-none fixed min-w-40 max-w-72 rounded-lg border border-accent/30 bg-bg-panel/96 px-2.5 py-2 text-text-primary shadow-[0_14px_34px_rgba(15,23,42,0.28)] backdrop-blur-sm"
+            style={{
+                left: preview.x + 14,
+                top: preview.y + 14,
+                transform: "translate3d(0, 0, 0) scale(1.02)",
+                zIndex: 10050,
+            }}
+        >
+            <div className="flex min-w-0 items-center gap-2">
+                <span
+                    aria-hidden="true"
+                    className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-accent/10 text-[10px] font-semibold text-accent"
+                >
+                    {preview.kind === "agent" ? "AI" : "GH"}
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="truncate text-[11.5px] font-medium leading-tight">
+                        {preview.title}
+                    </div>
+                    <div className="mt-0.5 truncate text-[10px] leading-tight text-text-secondary">
+                        Drag to pane or composer · {label}
+                    </div>
+                </div>
+            </div>
         </div>
     );
 }

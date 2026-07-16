@@ -160,6 +160,7 @@ import {
     type WriteTerminalInput,
     type WorkspaceNavigationSnapshot,
     type WorkspaceSurfaceContextRequest,
+    type WorkspaceSurfaceDragEvent,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
 import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
@@ -353,6 +354,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
+    ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
     ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
@@ -1789,6 +1791,49 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             if (workspaceSurfaceManager.isSurface(event.sender)) {
                 return;
             }
+            const activeSurface = workspaceSurfaceManager.getActiveWebContents(
+                context.windowId,
+            );
+            const hostSnapshot =
+                workspaceSurfaceManager.getHostSnapshotForWindow(
+                    context.windowId,
+                );
+            const canUpdateActiveSurface =
+                activeSurface &&
+                hostSnapshot &&
+                hostSnapshot.activeContextKey === normalizedSnapshot.activeContextKey &&
+                hostSnapshot.openContextKeys.length ===
+                    normalizedSnapshot.openContextKeys.length &&
+                hostSnapshot.openContextKeys.every((key) =>
+                    normalizedSnapshot.openContextKeys.includes(key),
+                );
+            if (canUpdateActiveSurface) {
+                const surfaceUpdate = workspaceSurfaceManager.mergeSurfaceSnapshot(
+                    activeSurface,
+                    normalizedSnapshot,
+                );
+                if (surfaceUpdate) {
+                    await options.workspaceService.saveSnapshot(
+                        context.workspaceId!,
+                        surfaceUpdate.snapshot,
+                    );
+                    const surfaceSnapshot =
+                        workspaceSurfaceManager.getSurfaceSnapshot(activeSurface);
+                    if (surfaceSnapshot) {
+                        activeSurface.send(
+                            IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                            surfaceSnapshot,
+                        );
+                    }
+                    workspaceSurfaceManager
+                        .getHostWebContents(surfaceUpdate.hostWindowId)
+                        ?.send(
+                            IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                            surfaceUpdate.snapshot,
+                        );
+                    return;
+                }
+            }
             await options.workspaceService.saveSnapshot(
                 context.workspaceId!,
                 normalizedSnapshot,
@@ -1858,6 +1903,29 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 );
             }
             return snapshot;
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.dispatchWorkspaceSurfaceDrag,
+        (event, payload: unknown) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
+            if (
+                !payload ||
+                typeof payload !== "object" ||
+                ((payload as { kind?: unknown }).kind !== "agent" &&
+                    (payload as { kind?: unknown }).kind !== "github") ||
+                typeof (payload as { detail?: unknown }).detail !== "object" ||
+                (payload as { detail: object | null }).detail === null
+            ) {
+                throw new Error("An agent or GitHub drag payload is required.");
+            }
+            workspaceSurfaceManager.dispatchActiveSurfaceDrag(
+                context.windowId,
+                payload as WorkspaceSurfaceDragEvent,
+            );
         },
     );
     ipcMain.handle(IPC_CHANNELS.notifyWorkspaceSurfaceFocused, (event) => {

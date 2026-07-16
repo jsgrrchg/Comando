@@ -121,6 +121,14 @@ import {
     type AIComposerPart,
 } from "./components/workspace/chat/composerParts";
 import {
+    SIDEBAR_AGENT_DRAG_EVENT,
+    type SidebarAgentDragDetail,
+} from "./components/sidebar/sidebarAgentDragEvents";
+import {
+    SIDEBAR_GITHUB_DRAG_EVENT,
+    type SidebarGitHubDragDetail,
+} from "./components/sidebar/sidebarGitHubDragEvents";
+import {
     useRestorableSidebarScroll,
     type SidebarScrollPositionStore,
 } from "./components/sidebar/useRestorableSidebarScroll";
@@ -798,6 +806,76 @@ export function App() {
         return getComandoApi()?.onWorkspaceSurfaceSnapshotRequested(() =>
             useWorkspaceStore.getState().getNavigationSnapshot(),
         );
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceSnapshotUpdated((snapshot) => {
+            useWorkspaceStore
+                .getState()
+                .applySurfaceNavigationSnapshot(snapshot);
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceDrag((event) => {
+            window.dispatchEvent(
+                new CustomEvent(
+                    event.kind === "agent"
+                        ? SIDEBAR_AGENT_DRAG_EVENT
+                        : SIDEBAR_GITHUB_DRAG_EVENT,
+                    { detail: event.detail },
+                ),
+            );
+        });
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+        const forwardDrag = (
+            kind: "agent" | "github",
+            event: CustomEvent<
+                SidebarAgentDragDetail | SidebarGitHubDragDetail
+            >,
+        ) => {
+            void comandoApi.dispatchWorkspaceSurfaceDrag({
+                detail: event.detail,
+                kind,
+            });
+        };
+        const handleAgentDrag = (event: Event) =>
+            forwardDrag(
+                "agent",
+                event as CustomEvent<SidebarAgentDragDetail>,
+            );
+        const handleGitHubDrag = (event: Event) =>
+            forwardDrag(
+                "github",
+                event as CustomEvent<SidebarGitHubDragDetail>,
+            );
+        window.addEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleAgentDrag);
+        window.addEventListener(SIDEBAR_GITHUB_DRAG_EVENT, handleGitHubDrag);
+        return () => {
+            window.removeEventListener(
+                SIDEBAR_AGENT_DRAG_EVENT,
+                handleAgentDrag,
+            );
+            window.removeEventListener(
+                SIDEBAR_GITHUB_DRAG_EVENT,
+                handleGitHubDrag,
+            );
+        };
     }, []);
 
     useEffect(() => {
