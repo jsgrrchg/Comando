@@ -159,6 +159,8 @@ import {
     type WindowContextSnapshot,
     type WriteTerminalInput,
     type WorkspaceNavigationSnapshot,
+    type WorkspaceContextMenuAction,
+    type WorkspaceContextMenuInput,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceDragEvent,
 } from "@shared/ipc";
@@ -170,6 +172,7 @@ import {
     clipboard,
     dialog,
     ipcMain,
+    Menu,
     nativeTheme,
     shell,
     type MessageBoxOptions,
@@ -359,6 +362,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
+    ipcMain.removeHandler(IPC_CHANNELS.showWorkspaceContextMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
     ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
@@ -2017,6 +2021,49 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         }
         workspaceSurfaceManager.requestActiveProjectMenu(context.windowId);
     });
+    ipcMain.handle(
+        IPC_CHANNELS.showWorkspaceContextMenu,
+        (event, input: WorkspaceContextMenuInput) => {
+            requireWindowContext(event.sender, "main");
+            const window = BrowserWindow.fromWebContents(event.sender);
+            if (!window || workspaceSurfaceManager.isSurface(event.sender)) {
+                return null;
+            }
+
+            return new Promise<WorkspaceContextMenuAction | null>((resolve) => {
+                let selected = false;
+                const select = (action: WorkspaceContextMenuAction) => {
+                    selected = true;
+                    resolve(action);
+                };
+                const menu = Menu.buildFromTemplate([
+                    {
+                        click: () => select("copy_full_path"),
+                        enabled: input.canCopyFullPath,
+                        label: "Copy Full Path",
+                    },
+                    { type: "separator" },
+                    {
+                        click: () => select("move_to_new_window"),
+                        label: "Move to New Window",
+                    },
+                    { type: "separator" },
+                    {
+                        click: () => select("close"),
+                        label: "Close",
+                    },
+                ]);
+                menu.popup({
+                    callback: () => {
+                        if (!selected) resolve(null);
+                    },
+                    window,
+                    x: Math.max(0, Math.round(input.x)),
+                    y: Math.max(0, Math.round(input.y)),
+                });
+            });
+        },
+    );
     ipcMain.handle(
         IPC_CHANNELS.setWorkspaceSurfaceContentInset,
         (event, height: number) => {
