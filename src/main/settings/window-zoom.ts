@@ -11,6 +11,7 @@ import {
 } from "@shared/ipc";
 
 import { applyWindowTransparencyToWindow, forEachLiveWindow } from "../window";
+import { windowRegistry } from "../windows/registry";
 
 export function applyAppZoomToWindow(
     window: BrowserWindow,
@@ -46,7 +47,7 @@ export function broadcastSettingsUpdated(
         terminal,
     };
 
-    forEachLiveWindow((window) => {
-        window.webContents.send(IPC_EVENTS.settingsUpdated, payload);
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.settingsUpdated, payload);
     });
 }
