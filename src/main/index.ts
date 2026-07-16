@@ -414,7 +414,19 @@ if (!hasSingleInstanceLock) {
                 },
                 reopenLastClosedTab: () => {
                     const focusedWindow = windowRegistry.getFocusedMainWindow();
-                    focusedWindow?.webContents.send(
+                    if (!focusedWindow) {
+                        return;
+                    }
+
+                    const context =
+                        windowRegistry.getContextByBrowserWindow(focusedWindow);
+                    const targetContents =
+                        context?.windowKind === "main"
+                            ? (workspaceSurfaceManager.getActiveWebContents(
+                                  context.windowId,
+                              ) ?? focusedWindow.webContents)
+                            : focusedWindow.webContents;
+                    targetContents.send(
                         IPC_EVENTS.workspaceReopenLastClosedTab,
                     );
                 },
