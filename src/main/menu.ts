@@ -15,6 +15,7 @@ interface InstallApplicationMenuOptions {
         projectId?: string | null,
     ) => Promise<void> | void;
     readonly reopenLastClosedTab: () => void;
+    readonly toggleSidebar: () => void;
     readonly openSettingsWindow: (
         projectId: string | null,
     ) => Promise<void> | void;
@@ -129,6 +130,9 @@ function buildMenuTemplate(
             { type: "separator" },
             {
                 accelerator: "CmdOrCtrl+B",
+                click: () => {
+                    options.toggleSidebar();
+                },
                 label: "Toggle Sidebar",
             },
             { type: "separator" },

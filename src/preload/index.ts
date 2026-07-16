@@ -809,6 +809,20 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onSidebarToggleRequested: (listener) => {
+        const handleEvent = () => {
+            listener();
+        };
+
+        ipcRenderer.on(IPC_EVENTS.sidebarToggleRequested, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.sidebarToggleRequested,
+                handleEvent,
+            );
+        };
+    },
     onWorkspaceCloseActiveTab: (listener) => {
         const handleEvent = () => {
             listener();
