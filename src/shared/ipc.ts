@@ -197,7 +197,6 @@ export const IPC_EVENTS = {
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
     workspaceSurfaceSnapshotRequested: "workspace:surface-snapshot-requested",
     workspaceSurfaceSnapshotCaptured: "workspace:surface-snapshot-captured",
-    workspaceSurfaceLifecycleChanged: "workspace:surface-lifecycle-changed",
     workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
     workspaceSurfaceFocused: "workspace:surface-focused",
     workspaceSurfaceContextRequested: "workspace:surface-context-requested",
@@ -218,16 +217,6 @@ export const IPC_EVENTS = {
     aiSessionStreamPort: "ai:session-stream-port",
     nativeBackendEvent: "native-backend:event",
 } as const;
-
-export type WorkspaceSurfaceLifecycleState =
-    | "visible"
-    | "suspended"
-    | "disposing";
-
-export interface WorkspaceSurfaceLifecycleEvent {
-    readonly generation: number;
-    readonly state: WorkspaceSurfaceLifecycleState;
-}
 
 export interface WorkspaceSurfaceDragEvent {
     readonly detail: object;
@@ -3278,9 +3267,6 @@ export interface ComandoApi {
     notifyWorkspaceSurfaceFocused: () => Promise<void>;
     onWorkspaceSurfaceSnapshotRequested: (
         listener: () => WorkspaceNavigationSnapshot,
-    ) => () => void;
-    onWorkspaceSurfaceLifecycleChanged: (
-        listener: (event: WorkspaceSurfaceLifecycleEvent) => void,
     ) => () => void;
     notifyFileBuffer: (input: FileBufferNotificationInput) => Promise<void>;
     getChatSessionState: (

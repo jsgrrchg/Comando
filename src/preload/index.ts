@@ -178,7 +178,6 @@ import {
     type WriteTerminalInput,
     type PersistedWorkspaceSnapshot,
     type WorkspaceNavigationSnapshot,
-    type WorkspaceSurfaceLifecycleEvent,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceContextRequest,
 } from "@shared/ipc";
@@ -889,19 +888,6 @@ const comandoApi: ComandoApi = {
         return () => {
             ipcRenderer.removeListener(
                 IPC_EVENTS.workspaceSurfaceSnapshotRequested,
-                handleEvent,
-            );
-        };
-    },
-    onWorkspaceSurfaceLifecycleChanged: (listener) => {
-        const handleEvent = (
-            _event: Electron.IpcRendererEvent,
-            payload: WorkspaceSurfaceLifecycleEvent,
-        ) => listener(payload);
-        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceLifecycleChanged, handleEvent);
-        return () => {
-            ipcRenderer.removeListener(
-                IPC_EVENTS.workspaceSurfaceLifecycleChanged,
                 handleEvent,
             );
         };
