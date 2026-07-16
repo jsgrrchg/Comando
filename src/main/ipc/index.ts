@@ -164,6 +164,7 @@ import {
     type WorkspaceContextMenuInput,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceDragEvent,
+    type WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
 import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
@@ -360,6 +361,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
+    ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitHubItem);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
     ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
@@ -1935,6 +1937,22 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             );
         },
     );
+    ipcMain.handle(
+        IPC_CHANNELS.openWorkspaceSurfaceGitHubItem,
+        (event, input: WorkspaceSurfaceGitHubItemOpenRequest) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
+            if (!isWorkspaceSurfaceGitHubItemOpenRequest(input)) {
+                throw new Error("A valid GitHub item is required.");
+            }
+            workspaceSurfaceManager.requestActiveGitHubItemOpen(
+                context.windowId,
+                input,
+            );
+        },
+    );
     ipcMain.handle(IPC_CHANNELS.notifyWorkspaceSurfaceFocused, (event) => {
         const surfaceContext = workspaceSurfaceManager.getSurfaceContext(
             event.sender,
@@ -2440,6 +2458,32 @@ function showNativeContextMenu(
             y: Number.isFinite(input.y) ? Math.max(0, Math.round(input.y)) : 0,
         });
     });
+}
+
+function isWorkspaceSurfaceGitHubItemOpenRequest(
+    input: unknown,
+): input is WorkspaceSurfaceGitHubItemOpenRequest {
+    if (!input || typeof input !== "object") {
+        return false;
+    }
+    const candidate = input as Record<string, unknown>;
+    const ref = candidate.ref;
+    return (
+        (candidate.itemKind === "issue" ||
+            candidate.itemKind === "pull_request") &&
+        typeof candidate.itemNumber === "number" &&
+        Number.isSafeInteger(candidate.itemNumber) &&
+        candidate.itemNumber > 0 &&
+        (candidate.projectId === null ||
+            typeof candidate.projectId === "string") &&
+        (candidate.worktreeId === null ||
+            typeof candidate.worktreeId === "string") &&
+        Boolean(ref) &&
+        typeof ref === "object" &&
+        typeof (ref as Record<string, unknown>).host === "string" &&
+        typeof (ref as Record<string, unknown>).owner === "string" &&
+        typeof (ref as Record<string, unknown>).repo === "string"
+    );
 }
 
 function normalizeNativeContextMenuEntries(

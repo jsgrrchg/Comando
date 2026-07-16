@@ -18,6 +18,7 @@ import type {
     GitHubPullRequestSummary,
     GitHubRepositoryRef,
     GitRepositorySnapshot,
+    WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 
 import {
@@ -200,6 +201,7 @@ export function SidebarGitHubPanel({
     filter,
     kind,
     onAddToChat,
+    onOpenItem,
     onOpenSettings,
     projectId,
     selectionResetSignal = 0,
@@ -208,6 +210,9 @@ export function SidebarGitHubPanel({
     readonly filter?: string;
     readonly kind: SidebarGitHubPanelKind;
     readonly onAddToChat?: (request: SidebarGitHubAddToChatRequest) => void;
+    readonly onOpenItem?: (
+        request: WorkspaceSurfaceGitHubItemOpenRequest,
+    ) => void;
     readonly onOpenSettings: () => void;
     readonly projectId: string | null;
     readonly selectionResetSignal?: number;
@@ -678,6 +683,17 @@ export function SidebarGitHubPanel({
                 return;
             }
 
+            const input = {
+                itemKind: "issue" as const,
+                itemNumber: issueNumber,
+                projectId,
+                ref: repoRef,
+                worktreeId,
+            };
+            if (onOpenItem) {
+                onOpenItem(input);
+                return;
+            }
             void openGitHubIssueTab({
                 issueNumber,
                 projectId,
@@ -685,7 +701,32 @@ export function SidebarGitHubPanel({
                 worktreeId,
             });
         },
-        [openGitHubIssueTab, projectId, repoRef, worktreeId],
+        [onOpenItem, openGitHubIssueTab, projectId, repoRef, worktreeId],
+    );
+    const openPullRequestTab = useCallback(
+        (pullRequestNumber: number) => {
+            if (!repoRef) {
+                return;
+            }
+            const input = {
+                itemKind: "pull_request" as const,
+                itemNumber: pullRequestNumber,
+                projectId,
+                ref: repoRef,
+                worktreeId,
+            };
+            if (onOpenItem) {
+                onOpenItem(input);
+                return;
+            }
+            void openGitHubPullRequestTab({
+                projectId,
+                pullRequestNumber,
+                ref: repoRef,
+                worktreeId,
+            });
+        },
+        [onOpenItem, openGitHubPullRequestTab, projectId, repoRef, worktreeId],
     );
     const openLabelPicker = useCallback(
         (
@@ -779,13 +820,9 @@ export function SidebarGitHubPanel({
                       kind === "issues"
                           ? () => openIssueTab(contextIssues[0].number)
                           : () =>
-                                void openGitHubPullRequestTab({
-                                    projectId,
-                                    pullRequestNumber:
-                                        contextPullRequests[0].number,
-                                    ref: repoRef,
-                                    worktreeId,
-                                }),
+                                openPullRequestTab(
+                                    contextPullRequests[0].number,
+                                ),
                   onOpenInGitHub: () =>
                       openGitHubWebUrl(
                           kind === "issues"
@@ -1216,13 +1253,7 @@ export function SidebarGitHubPanel({
                                         )
                                     }
                                     onOpen={() =>
-                                        void openGitHubPullRequestTab({
-                                            projectId,
-                                            pullRequestNumber:
-                                                pullRequest.number,
-                                            ref: activeRepoRef,
-                                            worktreeId,
-                                        })
+                                        openPullRequestTab(pullRequest.number)
                                     }
                                     onPointerDown={handleItemPointerDown}
                                     onRowClick={(event) =>
@@ -1230,13 +1261,9 @@ export function SidebarGitHubPanel({
                                             event,
                                             pullRequest.number,
                                             () =>
-                                                void openGitHubPullRequestTab({
-                                                    projectId,
-                                                    pullRequestNumber:
-                                                        pullRequest.number,
-                                                    ref: activeRepoRef,
-                                                    worktreeId,
-                                                }),
+                                                openPullRequestTab(
+                                                    pullRequest.number,
+                                                ),
                                         )
                                     }
                                     pullRequest={pullRequest}

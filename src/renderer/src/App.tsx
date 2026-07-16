@@ -21,6 +21,7 @@ import type {
     ProjectTreeNode,
     SettingsWindowCategory,
     SettingsSnapshot,
+    WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
 import { isActiveAiRuntimeId } from "@shared/ai-runtimes";
@@ -805,6 +806,32 @@ export function App() {
         }
         return getComandoApi()?.onWorkspaceSurfaceSnapshotRequested(() =>
             useWorkspaceStore.getState().getNavigationSnapshot(),
+        );
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceGitHubItemOpenRequested(
+            (input) => {
+                const workspaceState = useWorkspaceStore.getState();
+                if (input.itemKind === "issue") {
+                    void workspaceState.openGitHubIssueTab({
+                        issueNumber: input.itemNumber,
+                        projectId: input.projectId,
+                        ref: input.ref,
+                        worktreeId: input.worktreeId,
+                    });
+                    return;
+                }
+                void workspaceState.openGitHubPullRequestTab({
+                    projectId: input.projectId,
+                    pullRequestNumber: input.itemNumber,
+                    ref: input.ref,
+                    worktreeId: input.worktreeId,
+                });
+            },
         );
     }, []);
 
@@ -2785,6 +2812,13 @@ export function App() {
         [createChatTab, lastFocusedRuntimeId, setDraftComposerParts],
     );
 
+    const handleOpenSidebarGitHubItem = useCallback(
+        (input: WorkspaceSurfaceGitHubItemOpenRequest) => {
+            void getComandoApi()?.openWorkspaceSurfaceGitHubItem(input);
+        },
+        [],
+    );
+
     const sidebarFileNodes = useMemo(
         () =>
             buildGitTreeNodesFromProjectTree(
@@ -4329,6 +4363,7 @@ export function App() {
                             void handleAddGitHubItemsToChat(request)
                         }
                         onOpenSettings={openSettingsWindow}
+                        onOpenItem={handleOpenSidebarGitHubItem}
                         projectId={activeProjectId}
                         selectionResetSignal={gitHubSidebarSelectionResetSignal}
                         worktreeId={activeWorktreeId}
@@ -4341,6 +4376,7 @@ export function App() {
                             void handleAddGitHubItemsToChat(request)
                         }
                         onOpenSettings={openSettingsWindow}
+                        onOpenItem={handleOpenSidebarGitHubItem}
                         projectId={activeProjectId}
                         selectionResetSignal={gitHubSidebarSelectionResetSignal}
                         worktreeId={activeWorktreeId}
