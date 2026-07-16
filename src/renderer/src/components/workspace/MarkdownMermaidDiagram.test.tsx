@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
     calculateMermaidFitScale,
+    calculateMermaidPinchZoom,
     calculateNextMermaidZoom,
     calculateMermaidPanBounds,
     clampMermaidZoom,
@@ -270,6 +271,29 @@ function dispatchMermaidPointerEvent(
     element.dispatchEvent(event);
 }
 
+function dispatchMermaidWheelEvent(
+    element: Element,
+    options: {
+        readonly clientX: number;
+        readonly clientY: number;
+        readonly ctrlKey?: boolean;
+        readonly deltaY: number;
+    },
+): WheelEvent {
+    const event = new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        clientX: options.clientX,
+        clientY: options.clientY,
+        ctrlKey: options.ctrlKey ?? false,
+        deltaY: options.deltaY,
+    });
+
+    element.dispatchEvent(event);
+
+    return event;
+}
+
 describe("MarkdownMermaidDiagram", () => {
     it("clamps Mermaid viewport zoom to the supported range", () => {
         expect(clampMermaidZoom(0)).toBe(MERMAID_VIEWPORT_MIN_ZOOM);
@@ -285,6 +309,19 @@ describe("MarkdownMermaidDiagram", () => {
             MERMAID_VIEWPORT_MIN_ZOOM,
         );
         expect(calculateNextMermaidZoom({ direction: 1, scale: 9.9 })).toBe(
+            MERMAID_VIEWPORT_MAX_ZOOM,
+        );
+    });
+
+    it("calculates continuous Mermaid pinch zoom within the supported range", () => {
+        expect(calculateMermaidPinchZoom({ deltaY: -100, scale: 0.5 })).toBeCloseTo(
+            0.6107,
+            4,
+        );
+        expect(calculateMermaidPinchZoom({ deltaY: 100, scale: 0.25 })).toBe(
+            MERMAID_VIEWPORT_MIN_ZOOM,
+        );
+        expect(calculateMermaidPinchZoom({ deltaY: -1000, scale: 9.9 })).toBe(
             MERMAID_VIEWPORT_MAX_ZOOM,
         );
     });
@@ -767,6 +804,100 @@ describe("MarkdownMermaidDiagram", () => {
             "scale(0.5)",
         );
         expect(container.textContent).toContain("50%");
+        getBoundingClientRect.mockRestore();
+    });
+
+    it("zooms Mermaid from a trackpad pinch without intercepting regular scroll", async () => {
+        const getBoundingClientRect = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function getMockBounds(this: HTMLElement) {
+                if (
+                    this.classList.contains(
+                        "markdown-file-preview__mermaid-viewport",
+                    )
+                ) {
+                    return {
+                        bottom: 250,
+                        height: 250,
+                        left: 0,
+                        right: 500,
+                        toJSON: () => ({}),
+                        top: 0,
+                        width: 500,
+                        x: 0,
+                        y: 0,
+                    };
+                }
+
+                return {
+                    bottom: 0,
+                    height: 0,
+                    left: 0,
+                    right: 0,
+                    toJSON: () => ({}),
+                    top: 0,
+                    width: 0,
+                    x: 0,
+                    y: 0,
+                };
+            });
+        const mermaid = createMermaidRenderer(() =>
+            Promise.resolve({
+                svg: '<svg viewBox="0 0 1000 400"><text>Large diagram</text></svg>',
+            }),
+        );
+        const { container } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.5)",
+        );
+
+        const viewport = container.querySelector<HTMLElement>(
+            ".markdown-file-preview__mermaid-viewport",
+        );
+        expect(viewport).not.toBeNull();
+
+        let regularScrollEvent: WheelEvent;
+        act(() => {
+            regularScrollEvent = dispatchMermaidWheelEvent(viewport!, {
+                clientX: 350,
+                clientY: 125,
+                deltaY: 100,
+            });
+        });
+
+        expect(regularScrollEvent!.defaultPrevented).toBe(false);
+        expect(
+            container
+                .querySelector(".markdown-file-preview__mermaid-svg")
+                ?.getAttribute("style"),
+        ).toContain("scale(0.5)");
+
+        let pinchEvent: WheelEvent;
+        act(() => {
+            pinchEvent = dispatchMermaidWheelEvent(viewport!, {
+                clientX: 350,
+                clientY: 125,
+                ctrlKey: true,
+                deltaY: -100,
+            });
+        });
+
+        expect(pinchEvent!.defaultPrevented).toBe(true);
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "scale(0.6107013790800849)",
+        );
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "translate(-22.14027581601698px, 0px)",
+        );
         getBoundingClientRect.mockRestore();
     });
 

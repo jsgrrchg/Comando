@@ -15,6 +15,8 @@ export const MERMAID_VIEWPORT_FIT_MAX_ZOOM = 2;
 export const MERMAID_VIEWPORT_MAX_ZOOM = 10;
 export const MERMAID_VIEWPORT_MIN_ZOOM = 0.25;
 const MERMAID_MAX_EDGES = 500;
+const MERMAID_VIEWPORT_MAX_PINCH_DELTA = 100;
+const MERMAID_VIEWPORT_PINCH_SENSITIVITY = 0.002;
 const MERMAID_VIEWPORT_ZOOM_STEP = 0.2;
 
 type MermaidRenderStatus = "error" | "loading" | "ready" | "too-large";
@@ -224,6 +226,27 @@ export function calculateNextMermaidZoom({
     const roundedScale = Math.round(nextScale * 100) / 100;
 
     return clampMermaidZoom(roundedScale);
+}
+
+export function calculateMermaidPinchZoom({
+    deltaY,
+    scale,
+}: {
+    readonly deltaY: number;
+    readonly scale: number;
+}): number {
+    if (!Number.isFinite(deltaY)) {
+        return clampMermaidZoom(scale);
+    }
+
+    const clampedDeltaY = Math.min(
+        MERMAID_VIEWPORT_MAX_PINCH_DELTA,
+        Math.max(-MERMAID_VIEWPORT_MAX_PINCH_DELTA, deltaY),
+    );
+
+    return clampMermaidZoom(
+        scale * Math.exp(-clampedDeltaY * MERMAID_VIEWPORT_PINCH_SENSITIVITY),
+    );
 }
 
 export function calculateMermaidFitScale({
@@ -802,6 +825,60 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         }));
     }, []);
 
+    const handleViewportWheel = useCallback((event: WheelEvent) => {
+        // Chromium exposes a trackpad pinch as a Ctrl-modified wheel event.
+        // Leave ordinary wheel input untouched so the Markdown preview scrolls.
+        if (!event.ctrlKey || event.deltaY === 0) {
+            return;
+        }
+
+        event.preventDefault();
+
+        const viewportElement = mermaidViewportRef.current;
+
+        if (!viewportElement) {
+            return;
+        }
+
+        const viewportBounds = viewportElement.getBoundingClientRect();
+        const deltaY =
+            event.deltaMode === WheelEvent.DOM_DELTA_LINE
+                ? event.deltaY * 16
+                : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+                  ? event.deltaY * viewportBounds.height
+                  : event.deltaY;
+        const cursorX = event.clientX - viewportBounds.left - viewportBounds.width / 2;
+        const cursorY = event.clientY - viewportBounds.top - viewportBounds.height / 2;
+
+        hasCustomViewportRef.current = true;
+        setViewportState((currentViewportState) => {
+            const scale = calculateMermaidPinchZoom({
+                deltaY,
+                scale: currentViewportState.scale,
+            });
+            const scaleRatio = scale / currentViewportState.scale;
+            const offset = clampMermaidPanOffset({
+                metrics: mermaidViewportMetricsRef.current,
+                offset: {
+                    x:
+                        cursorX -
+                        (cursorX - currentViewportState.offsetX) * scaleRatio,
+                    y:
+                        cursorY -
+                        (cursorY - currentViewportState.offsetY) * scaleRatio,
+                },
+                scale,
+            });
+
+            return {
+                ...currentViewportState,
+                offsetX: offset.x,
+                offsetY: offset.y,
+                scale,
+            };
+        });
+    }, []);
+
     useEffect(() => {
         if (!hasMeasuredViewportRef.current) {
             return;
@@ -929,6 +1006,22 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         visibleRenderState.svg,
         savedViewportState,
     ]);
+
+    useEffect(() => {
+        const viewportElement = mermaidViewportRef.current;
+
+        if (!viewportElement) {
+            return undefined;
+        }
+
+        viewportElement.addEventListener("wheel", handleViewportWheel, {
+            passive: false,
+        });
+
+        return () => {
+            viewportElement.removeEventListener("wheel", handleViewportWheel);
+        };
+    }, [handleViewportWheel, visibleRenderState.status, visibleRenderState.svg]);
 
     const handleViewportPointerDown = useCallback(
         (event: ReactPointerEvent<HTMLDivElement>) => {
