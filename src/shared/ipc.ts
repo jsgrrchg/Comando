@@ -131,11 +131,13 @@ export const IPC_CHANNELS = {
     activateWorkspaceSurface: "workspace:activate-surface",
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
     dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
+    openWorkspaceSurfaceGitHubItem: "workspace:open-surface-github-item",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
     requestWorkspaceSurfaceContext: "workspace:request-surface-context",
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
     openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
     showWorkspaceContextMenu: "workspace:show-context-menu",
+    showNativeContextMenu: "app:show-native-context-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
     setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
     notifyFileBuffer: "workspace:notify-file-buffer",
@@ -203,6 +205,8 @@ export const IPC_EVENTS = {
     workspaceSurfaceFocused: "workspace:surface-focused",
     workspaceSurfaceContextRequested: "workspace:surface-context-requested",
     workspaceSurfaceDrag: "workspace:surface-drag",
+    workspaceSurfaceGitHubItemOpenRequested:
+        "workspace:surface-github-item-open-requested",
     workspaceSurfaceGitScopeMenuRequested:
         "workspace:surface-git-scope-menu-requested",
     workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
@@ -2173,6 +2177,14 @@ export interface WorkspaceSurfaceContextRequest {
     readonly worktreeId?: string | null;
 }
 
+export interface WorkspaceSurfaceGitHubItemOpenRequest {
+    readonly itemKind: "issue" | "pull_request";
+    readonly itemNumber: number;
+    readonly projectId: string | null;
+    readonly ref: GitHubRepositoryRef;
+    readonly worktreeId: string | null;
+}
+
 export interface WorkspaceContextMenuInput {
     readonly canCopyFullPath: boolean;
     readonly x: number;
@@ -2183,6 +2195,23 @@ export type WorkspaceContextMenuAction =
     | "copy_full_path"
     | "move_to_new_window"
     | "close";
+
+export type NativeContextMenuEntry =
+    | {
+          readonly type: "separator";
+      }
+    | {
+          readonly id: string;
+          readonly label: string;
+          readonly enabled: boolean;
+          readonly children?: readonly NativeContextMenuEntry[];
+      };
+
+export interface NativeContextMenuInput {
+    readonly entries: readonly NativeContextMenuEntry[];
+    readonly x: number;
+    readonly y: number;
+}
 
 export interface WindowWorkspaceRestoreRecord {
     readonly revision: number;
@@ -3039,6 +3068,9 @@ export interface ComandoApi {
     showWorkspaceContextMenu: (
         input: WorkspaceContextMenuInput,
     ) => Promise<WorkspaceContextMenuAction | null>;
+    showNativeContextMenu: (
+        input: NativeContextMenuInput,
+    ) => Promise<string | null>;
     setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
     setWorkspaceSurfaceContentLeftInset: (width: number) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;
@@ -3280,6 +3312,9 @@ export interface ComandoApi {
     dispatchWorkspaceSurfaceDrag: (
         event: WorkspaceSurfaceDragEvent,
     ) => Promise<void>;
+    openWorkspaceSurfaceGitHubItem: (
+        input: WorkspaceSurfaceGitHubItemOpenRequest,
+    ) => Promise<void>;
     notifyWorkspaceSurfaceFocused: () => Promise<void>;
     onWorkspaceSurfaceSnapshotRequested: (
         listener: () => WorkspaceNavigationSnapshot,
@@ -3421,6 +3456,9 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceSurfaceDrag: (
         listener: (event: WorkspaceSurfaceDragEvent) => void,
+    ) => () => void;
+    onWorkspaceSurfaceGitHubItemOpenRequested: (
+        listener: (input: WorkspaceSurfaceGitHubItemOpenRequest) => void,
     ) => () => void;
     onWorkspaceSurfaceGitScopeMenuRequested: (
         listener: (anchor: { readonly width: number; readonly x: number }) => void,

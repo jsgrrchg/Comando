@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useEffectEvent,
     useMemo,
     useRef,
     useState,
@@ -17,6 +18,7 @@ import type {
     GitHubPullRequestSummary,
     GitHubRepositoryRef,
     GitRepositorySnapshot,
+    WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 
 import {
@@ -43,11 +45,12 @@ import {
     useGitHubStore,
 } from "@renderer/app/store/github-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
+import { useShellStore } from "@renderer/app/store/shell-store";
 import {
-    ContextMenu,
     type ContextMenuEntry,
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
+import { requestNativeContextMenuAction } from "@renderer/components/context-menu/nativeContextMenu";
 import {
     formatGitHubRelativeTime,
     GitHubEmptyState,
@@ -198,6 +201,7 @@ export function SidebarGitHubPanel({
     filter,
     kind,
     onAddToChat,
+    onOpenItem,
     onOpenSettings,
     projectId,
     selectionResetSignal = 0,
@@ -206,6 +210,9 @@ export function SidebarGitHubPanel({
     readonly filter?: string;
     readonly kind: SidebarGitHubPanelKind;
     readonly onAddToChat?: (request: SidebarGitHubAddToChatRequest) => void;
+    readonly onOpenItem?: (
+        request: WorkspaceSurfaceGitHubItemOpenRequest,
+    ) => void;
     readonly onOpenSettings: () => void;
     readonly projectId: string | null;
     readonly selectionResetSignal?: number;
@@ -332,8 +339,11 @@ export function SidebarGitHubPanel({
     const openGitHubPullRequestTab = useWorkspaceStore(
         (state) => state.openGitHubPullRequestTab,
     );
+    const sidebarWidth = useShellStore((state) => state.leftWidth);
     const [githubContextMenu, setGitHubContextMenu] =
         useState<ContextMenuState<SidebarGitHubContextMenuPayload> | null>(null);
+    const activeNativeContextMenuRef =
+        useRef<ContextMenuState<SidebarGitHubContextMenuPayload> | null>(null);
     const [labelPicker, setLabelPicker] =
         useState<SidebarGitHubLabelPickerState | null>(null);
     const [selectionAnchorNumber, setSelectionAnchorNumber] = useState<
@@ -673,6 +683,17 @@ export function SidebarGitHubPanel({
                 return;
             }
 
+            const input = {
+                itemKind: "issue" as const,
+                itemNumber: issueNumber,
+                projectId,
+                ref: repoRef,
+                worktreeId,
+            };
+            if (onOpenItem) {
+                onOpenItem(input);
+                return;
+            }
             void openGitHubIssueTab({
                 issueNumber,
                 projectId,
@@ -680,7 +701,32 @@ export function SidebarGitHubPanel({
                 worktreeId,
             });
         },
-        [openGitHubIssueTab, projectId, repoRef, worktreeId],
+        [onOpenItem, openGitHubIssueTab, projectId, repoRef, worktreeId],
+    );
+    const openPullRequestTab = useCallback(
+        (pullRequestNumber: number) => {
+            if (!repoRef) {
+                return;
+            }
+            const input = {
+                itemKind: "pull_request" as const,
+                itemNumber: pullRequestNumber,
+                projectId,
+                ref: repoRef,
+                worktreeId,
+            };
+            if (onOpenItem) {
+                onOpenItem(input);
+                return;
+            }
+            void openGitHubPullRequestTab({
+                projectId,
+                pullRequestNumber,
+                ref: repoRef,
+                worktreeId,
+            });
+        },
+        [onOpenItem, openGitHubPullRequestTab, projectId, repoRef, worktreeId],
     );
     const openLabelPicker = useCallback(
         (
@@ -774,13 +820,9 @@ export function SidebarGitHubPanel({
                       kind === "issues"
                           ? () => openIssueTab(contextIssues[0].number)
                           : () =>
-                                void openGitHubPullRequestTab({
-                                    projectId,
-                                    pullRequestNumber:
-                                        contextPullRequests[0].number,
-                                    ref: repoRef,
-                                    worktreeId,
-                                }),
+                                openPullRequestTab(
+                                    contextPullRequests[0].number,
+                                ),
                   onOpenInGitHub: () =>
                       openGitHubWebUrl(
                           kind === "issues"
@@ -789,6 +831,41 @@ export function SidebarGitHubPanel({
                       ),
               })
             : [];
+    const openNativeContextMenu = useEffectEvent(
+        async (menu: ContextMenuState<SidebarGitHubContextMenuPayload>) => {
+            if (contextMenuEntries.length === 0) {
+                setGitHubContextMenu(null);
+                return;
+            }
+            let action: (() => void) | null = null;
+            try {
+                action = await requestNativeContextMenuAction(
+                    contextMenuEntries,
+                    menu,
+                );
+            } catch {
+                // Treat native menu failures like a dismissed menu.
+            } finally {
+                setGitHubContextMenu(null);
+            }
+            if (action) queueMicrotask(action);
+        },
+    );
+
+    useEffect(() => {
+        if (!githubContextMenu) {
+            activeNativeContextMenuRef.current = null;
+            return;
+        }
+        if (
+            activeNativeContextMenuRef.current === githubContextMenu
+        ) {
+            return;
+        }
+
+        activeNativeContextMenuRef.current = githubContextMenu;
+        void openNativeContextMenu(githubContextMenu);
+    }, [githubContextMenu]);
     const handleItemClickSelection = useCallback(
         (
             event: ReactMouseEvent<HTMLElement>,
@@ -1176,13 +1253,7 @@ export function SidebarGitHubPanel({
                                         )
                                     }
                                     onOpen={() =>
-                                        void openGitHubPullRequestTab({
-                                            projectId,
-                                            pullRequestNumber:
-                                                pullRequest.number,
-                                            ref: activeRepoRef,
-                                            worktreeId,
-                                        })
+                                        openPullRequestTab(pullRequest.number)
                                     }
                                     onPointerDown={handleItemPointerDown}
                                     onRowClick={(event) =>
@@ -1190,13 +1261,9 @@ export function SidebarGitHubPanel({
                                             event,
                                             pullRequest.number,
                                             () =>
-                                                void openGitHubPullRequestTab({
-                                                    projectId,
-                                                    pullRequestNumber:
-                                                        pullRequest.number,
-                                                    ref: activeRepoRef,
-                                                    worktreeId,
-                                                }),
+                                                openPullRequestTab(
+                                                    pullRequest.number,
+                                                ),
                                         )
                                     }
                                     pullRequest={pullRequest}
@@ -1212,14 +1279,6 @@ export function SidebarGitHubPanel({
                     </ul>
                 ) : null}
             </div>
-            {githubContextMenu && contextMenuEntries.length > 0 ? (
-                <ContextMenu
-                    entries={contextMenuEntries}
-                    menu={githubContextMenu}
-                    minWidth={230}
-                    onClose={() => setGitHubContextMenu(null)}
-                />
-            ) : null}
             {activeLabelPickerItem && labelPicker ? (
                 <GitHubLabelPicker
                     anchor={{ x: labelPicker.x, y: labelPicker.y }}
@@ -1231,6 +1290,7 @@ export function SidebarGitHubPanel({
                     labels={labels}
                     onClose={() => setLabelPicker(null)}
                     onSave={(labelNames) => void handleSaveLabels(labelNames)}
+                    rightBoundary={sidebarWidth}
                 />
             ) : null}
         </div>

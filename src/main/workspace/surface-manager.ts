@@ -11,6 +11,7 @@ import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
     WorkspaceSurfaceDragEvent,
+    WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 
 import {
@@ -180,6 +181,21 @@ class WorkspaceSurfaceManager {
 
         surface.webContents.send(
             IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
+        );
+    }
+
+    requestActiveGitHubItemOpen(
+        hostWindowId: string,
+        input: WorkspaceSurfaceGitHubItemOpenRequest,
+    ): void {
+        const surface = this.#getActiveSurface(hostWindowId);
+        if (!surface || surface.webContents.isDestroyed()) {
+            return;
+        }
+
+        surface.webContents.send(
+            IPC_EVENTS.workspaceSurfaceGitHubItemOpenRequested,
+            input,
         );
     }
 

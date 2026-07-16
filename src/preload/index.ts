@@ -179,6 +179,7 @@ import {
     type PersistedWorkspaceSnapshot,
     type WorkspaceNavigationSnapshot,
     type WorkspaceSurfaceDragEvent,
+    type WorkspaceSurfaceGitHubItemOpenRequest,
     type WorkspaceSurfaceContextRequest,
 } from "@shared/ipc";
 
@@ -916,6 +917,22 @@ const comandoApi: ComandoApi = {
             ipcRenderer.removeListener(IPC_EVENTS.workspaceSurfaceDrag, handleEvent);
         };
     },
+    onWorkspaceSurfaceGitHubItemOpenRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            input: WorkspaceSurfaceGitHubItemOpenRequest,
+        ) => listener(input);
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceGitHubItemOpenRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceGitHubItemOpenRequested,
+                handleEvent,
+            );
+        };
+    },
     onWorkspaceSurfaceSnapshotUpdated: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -1073,6 +1090,8 @@ const comandoApi: ComandoApi = {
         ),
     dispatchWorkspaceSurfaceDrag: (event) =>
         ipcRenderer.invoke(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag, event),
+    openWorkspaceSurfaceGitHubItem: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceGitHubItem, input),
     notifyWorkspaceSurfaceFocused: () =>
         ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceFocused),
     requestWorkspaceSurfaceContext: (input) =>
@@ -1083,6 +1102,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu),
     showWorkspaceContextMenu: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.showWorkspaceContextMenu, input),
+    showNativeContextMenu: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.showNativeContextMenu, input),
     setWorkspaceSurfaceContentInset: (height: number) =>
         ipcRenderer.invoke(IPC_CHANNELS.setWorkspaceSurfaceContentInset, height),
     setWorkspaceSurfaceContentLeftInset: (width: number) =>

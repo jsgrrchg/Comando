@@ -35,6 +35,7 @@ import {
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
     type FileBufferNotificationInput,
+    type NativeContextMenuInput,
     type EnqueueAiPromptInput,
     type GitBranchListInput,
     type GitBranchSummary as SharedGitBranchSummary,
@@ -163,6 +164,7 @@ import {
     type WorkspaceContextMenuInput,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceDragEvent,
+    type WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
 import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
@@ -176,6 +178,7 @@ import {
     nativeTheme,
     shell,
     type MessageBoxOptions,
+    type MenuItemConstructorOptions,
     type OpenDialogOptions,
 } from "electron";
 
@@ -358,11 +361,13 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
+    ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitHubItem);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
     ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
     ipcMain.removeHandler(IPC_CHANNELS.showWorkspaceContextMenu);
+    ipcMain.removeHandler(IPC_CHANNELS.showNativeContextMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
     ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
@@ -1932,6 +1937,22 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             );
         },
     );
+    ipcMain.handle(
+        IPC_CHANNELS.openWorkspaceSurfaceGitHubItem,
+        (event, input: WorkspaceSurfaceGitHubItemOpenRequest) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                return;
+            }
+            if (!isWorkspaceSurfaceGitHubItemOpenRequest(input)) {
+                throw new Error("A valid GitHub item is required.");
+            }
+            workspaceSurfaceManager.requestActiveGitHubItemOpen(
+                context.windowId,
+                input,
+            );
+        },
+    );
     ipcMain.handle(IPC_CHANNELS.notifyWorkspaceSurfaceFocused, (event) => {
         const surfaceContext = workspaceSurfaceManager.getSurfaceContext(
             event.sender,
@@ -2062,6 +2083,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     y: Math.max(0, Math.round(input.y)),
                 });
             });
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.showNativeContextMenu,
+        (event, input: NativeContextMenuInput) => {
+            requireWindowContext(event.sender, "main");
+            const window = BrowserWindow.fromWebContents(event.sender);
+            if (!window || workspaceSurfaceManager.isSurface(event.sender)) {
+                return null;
+            }
+
+            return showNativeContextMenu(window, input);
         },
     );
     ipcMain.handle(
@@ -2395,6 +2428,118 @@ async function resolveGeneratedImageIpcPath(imagePath: string): Promise<string> 
     }
 
     return resolvedPath;
+}
+
+function showNativeContextMenu(
+    window: BrowserWindow,
+    input: NativeContextMenuInput,
+): Promise<string | null> {
+    return new Promise((resolve) => {
+        let selected = false;
+        const select = (id: string) => {
+            selected = true;
+            resolve(id);
+        };
+        const template = normalizeNativeContextMenuEntries(
+            input?.entries,
+            select,
+        );
+        if (!template || template.length === 0) {
+            resolve(null);
+            return;
+        }
+
+        Menu.buildFromTemplate(template).popup({
+            callback: () => {
+                if (!selected) resolve(null);
+            },
+            window,
+            x: Number.isFinite(input.x) ? Math.max(0, Math.round(input.x)) : 0,
+            y: Number.isFinite(input.y) ? Math.max(0, Math.round(input.y)) : 0,
+        });
+    });
+}
+
+function isWorkspaceSurfaceGitHubItemOpenRequest(
+    input: unknown,
+): input is WorkspaceSurfaceGitHubItemOpenRequest {
+    if (!input || typeof input !== "object") {
+        return false;
+    }
+    const candidate = input as Record<string, unknown>;
+    const ref = candidate.ref;
+    return (
+        (candidate.itemKind === "issue" ||
+            candidate.itemKind === "pull_request") &&
+        typeof candidate.itemNumber === "number" &&
+        Number.isSafeInteger(candidate.itemNumber) &&
+        candidate.itemNumber > 0 &&
+        (candidate.projectId === null ||
+            typeof candidate.projectId === "string") &&
+        (candidate.worktreeId === null ||
+            typeof candidate.worktreeId === "string") &&
+        Boolean(ref) &&
+        typeof ref === "object" &&
+        typeof (ref as Record<string, unknown>).host === "string" &&
+        typeof (ref as Record<string, unknown>).owner === "string" &&
+        typeof (ref as Record<string, unknown>).repo === "string"
+    );
+}
+
+function normalizeNativeContextMenuEntries(
+    entries: unknown,
+    select: (id: string) => void,
+    depth = 0,
+): MenuItemConstructorOptions[] | null {
+    if (!Array.isArray(entries) || entries.length > 100 || depth > 4) {
+        return null;
+    }
+
+    const template: MenuItemConstructorOptions[] = [];
+    for (const rawEntry of entries as unknown[]) {
+        if (!rawEntry || typeof rawEntry !== "object") {
+            return null;
+        }
+        const entry = rawEntry as Record<string, unknown>;
+        if (entry.type === "separator") {
+            template.push({ type: "separator" });
+            continue;
+        }
+        const id = entry.id;
+        const label = entry.label;
+        const enabled = entry.enabled;
+        if (
+            typeof id !== "string" ||
+            id.length === 0 ||
+            id.length > 128 ||
+            typeof label !== "string" ||
+            label.length === 0 ||
+            label.length > 512 ||
+            typeof enabled !== "boolean"
+        ) {
+            return null;
+        }
+
+        let submenu: MenuItemConstructorOptions[] | undefined;
+        if (entry.children !== undefined) {
+            const normalizedChildren = normalizeNativeContextMenuEntries(
+                entry.children,
+                select,
+                depth + 1,
+            );
+            if (!normalizedChildren) {
+                return null;
+            }
+            submenu = normalizedChildren;
+        }
+        template.push({
+            click: submenu ? undefined : () => select(id),
+            enabled,
+            label,
+            submenu,
+        });
+    }
+    return template;
 }
 
 function broadcastProjectSettingsUpdated(

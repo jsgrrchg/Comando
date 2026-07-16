@@ -21,6 +21,7 @@ import type {
     ProjectTreeNode,
     SettingsWindowCategory,
     SettingsSnapshot,
+    WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
 import { isActiveAiRuntimeId } from "@shared/ai-runtimes";
@@ -107,6 +108,7 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "./components/context-menu/ContextMenu";
+import { requestNativeContextMenuAction } from "./components/context-menu/nativeContextMenu";
 import {
     SidebarAgentsPanel,
     SidebarGitHubPanel,
@@ -528,6 +530,8 @@ export function App() {
     const [dragState, setDragState] = useState<DragState>(null);
     const [fileTreeContextMenu, setFileTreeContextMenu] =
         useState<ContextMenuState<FileTreeContextMenuPayload> | null>(null);
+    const activeNativeFileTreeMenuRef =
+        useRef<ContextMenuState<FileTreeContextMenuPayload> | null>(null);
     const [isFileTreeSearchOpen, setIsFileTreeSearchOpen] = useState(false);
     const [projectRootExpandedByContext, setProjectRootExpandedByContext] =
         useState<Record<string, boolean>>({});
@@ -802,6 +806,32 @@ export function App() {
         }
         return getComandoApi()?.onWorkspaceSurfaceSnapshotRequested(() =>
             useWorkspaceStore.getState().getNavigationSnapshot(),
+        );
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceGitHubItemOpenRequested(
+            (input) => {
+                const workspaceState = useWorkspaceStore.getState();
+                if (input.itemKind === "issue") {
+                    void workspaceState.openGitHubIssueTab({
+                        issueNumber: input.itemNumber,
+                        projectId: input.projectId,
+                        ref: input.ref,
+                        worktreeId: input.worktreeId,
+                    });
+                    return;
+                }
+                void workspaceState.openGitHubPullRequestTab({
+                    projectId: input.projectId,
+                    pullRequestNumber: input.itemNumber,
+                    ref: input.ref,
+                    worktreeId: input.worktreeId,
+                });
+            },
         );
     }, []);
 
@@ -2793,6 +2823,13 @@ export function App() {
         [createChatTab, lastFocusedRuntimeId, setDraftComposerParts],
     );
 
+    const handleOpenSidebarGitHubItem = useCallback(
+        (input: WorkspaceSurfaceGitHubItemOpenRequest) => {
+            void getComandoApi()?.openWorkspaceSurfaceGitHubItem(input);
+        },
+        [],
+    );
+
     const sidebarFileNodes = useMemo(
         () =>
             buildGitTreeNodesFromProjectTree(
@@ -3491,6 +3528,43 @@ export function App() {
         openFileTreeMovePicker,
         refreshProjectTree,
     ]);
+
+    const openNativeFileTreeContextMenu = useEffectEvent(
+        async (
+            menu: ContextMenuState<FileTreeContextMenuPayload>,
+            entries: readonly ContextMenuEntry[],
+        ) => {
+            let action: (() => void) | null = null;
+            try {
+                action = await requestNativeContextMenuAction(entries, menu);
+            } catch {
+                // Treat native menu failures like a dismissed menu.
+            } finally {
+                closeFileTreeContextMenu();
+            }
+
+            if (action) queueMicrotask(action);
+        },
+    );
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer || !fileTreeContextMenu) {
+            activeNativeFileTreeMenuRef.current = null;
+            return;
+        }
+        if (
+            fileTreeContextMenuEntries.length === 0 ||
+            activeNativeFileTreeMenuRef.current === fileTreeContextMenu
+        ) {
+            return;
+        }
+
+        activeNativeFileTreeMenuRef.current = fileTreeContextMenu;
+        void openNativeFileTreeContextMenu(
+            fileTreeContextMenu,
+            fileTreeContextMenuEntries,
+        );
+    }, [fileTreeContextMenu, fileTreeContextMenuEntries]);
 
     const { stickyFolders, stickyFolderPaths } = useStickyFolders({
         scrollContainer: fileTreeScrollElement,
@@ -4300,6 +4374,7 @@ export function App() {
                             void handleAddGitHubItemsToChat(request)
                         }
                         onOpenSettings={openSettingsWindow}
+                        onOpenItem={handleOpenSidebarGitHubItem}
                         projectId={activeProjectId}
                         selectionResetSignal={gitHubSidebarSelectionResetSignal}
                         worktreeId={activeWorktreeId}
@@ -4312,6 +4387,7 @@ export function App() {
                             void handleAddGitHubItemsToChat(request)
                         }
                         onOpenSettings={openSettingsWindow}
+                        onOpenItem={handleOpenSidebarGitHubItem}
                         projectId={activeProjectId}
                         selectionResetSignal={gitHubSidebarSelectionResetSignal}
                         worktreeId={activeWorktreeId}
