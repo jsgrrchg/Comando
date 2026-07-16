@@ -21,7 +21,10 @@ import { HighlightedCodeText } from "@renderer/app/editor/staticCodeHighlight";
 import { useMarkdownCodeLanguageSupport } from "@renderer/app/editor/useCodeLanguageSupport";
 import { openExternalUrl } from "@renderer/app/utils/external-url";
 import { useTextContextMenu } from "@renderer/components/context-menu/useTextContextMenu";
-import { MarkdownMermaidDiagram } from "./MarkdownMermaidDiagram";
+import {
+    MarkdownMermaidDiagram,
+    type MermaidViewportStateSnapshot,
+} from "./MarkdownMermaidDiagram";
 
 import { MarkdownCodeFrame } from "./MarkdownCodeFrame";
 
@@ -30,6 +33,11 @@ interface MarkdownFilePreviewProps {
     readonly filePath: string;
     readonly fontFamily: string;
     readonly fontSize: number;
+    readonly mermaidViewportStateCache?: Map<
+        string,
+        MermaidViewportStateSnapshot
+    >;
+    readonly tabId?: string;
 }
 
 function getSafeExternalHref(href: string | null | undefined): string | null {
@@ -276,13 +284,51 @@ function MarkdownPreviewInput({
     );
 }
 
+function createMermaidViewportStateKey({
+    source,
+    startOffset,
+    tabId,
+}: {
+    readonly source: string;
+    readonly startOffset: number | null;
+    readonly tabId: string;
+}): string {
+    let hash = 2_166_136_261;
+    for (let index = 0; index < source.length; index += 1) {
+        hash = Math.imul(hash ^ source.charCodeAt(index), 16_777_619);
+    }
+
+    return `${tabId}:${startOffset ?? "unknown"}:${(hash >>> 0).toString(36)}`;
+}
+
+function getMarkdownNodeStartOffset(node: unknown): number | null {
+    if (!node || typeof node !== "object") {
+        return null;
+    }
+
+    const position = (node as {
+        readonly position?: { readonly start?: { readonly offset?: unknown } };
+    }).position;
+    const offset = position?.start?.offset;
+
+    return typeof offset === "number" ? offset : null;
+}
+
 function MarkdownPreviewPre({
     children,
     className,
-    node: _node,
+    mermaidViewportStateCache,
+    node,
+    tabId,
     ...props
-}: HTMLAttributes<HTMLPreElement> & { readonly node?: unknown }) {
-    void _node;
+}: HTMLAttributes<HTMLPreElement> & {
+    readonly mermaidViewportStateCache?: Map<
+        string,
+        MermaidViewportStateSnapshot
+    >;
+    readonly node?: unknown;
+    readonly tabId?: string;
+}) {
 
     const codeBlockClassName = ["markdown-code-block", className]
         .filter(Boolean)
@@ -300,7 +346,31 @@ function MarkdownPreviewPre({
     }
 
     if (language.toLowerCase() === "mermaid") {
-        return <MarkdownMermaidDiagram source={codeText} />;
+        const viewportStateKey = tabId
+            ? createMermaidViewportStateKey({
+                  source: codeText,
+                  startOffset: getMarkdownNodeStartOffset(node),
+                  tabId,
+              })
+            : null;
+
+        return (
+            <MarkdownMermaidDiagram
+                onViewportStateChange={
+                    viewportStateKey && mermaidViewportStateCache
+                        ? (state) => {
+                              mermaidViewportStateCache.set(viewportStateKey, state);
+                          }
+                        : undefined
+                }
+                source={codeText}
+                viewportState={
+                    viewportStateKey
+                        ? mermaidViewportStateCache?.get(viewportStateKey)
+                        : undefined
+                }
+            />
+        );
     }
 
     return (
@@ -308,6 +378,28 @@ function MarkdownPreviewPre({
             {codeBlock}
         </MarkdownCodeFrame>
     );
+}
+
+function createMarkdownPreviewComponents({
+    mermaidViewportStateCache,
+    tabId,
+}: {
+    readonly mermaidViewportStateCache?: Map<
+        string,
+        MermaidViewportStateSnapshot
+    >;
+    readonly tabId?: string;
+}): Components {
+    return {
+        ...markdownPreviewComponents,
+        pre: (props) => (
+            <MarkdownPreviewPre
+                {...props}
+                mermaidViewportStateCache={mermaidViewportStateCache}
+                tabId={tabId}
+            />
+        ),
+    };
 }
 
 function MarkdownPreviewTable({
@@ -349,6 +441,8 @@ export const MarkdownFilePreview = memo(function MarkdownFilePreview({
     filePath,
     fontFamily,
     fontSize,
+    mermaidViewportStateCache,
+    tabId,
 }: MarkdownFilePreviewProps) {
     const previewRef = useRef<HTMLDivElement | null>(null);
     const { contextMenu, handleContextMenu } =
@@ -360,7 +454,10 @@ export const MarkdownFilePreview = memo(function MarkdownFilePreview({
     const renderedMarkdown = useMemo(
         () => (
             <ReactMarkdown
-                components={markdownPreviewComponents}
+                components={createMarkdownPreviewComponents({
+                    mermaidViewportStateCache,
+                    tabId,
+                })}
                 rehypePlugins={markdownRehypePlugins}
                 remarkPlugins={markdownRemarkPlugins}
                 skipHtml
@@ -368,7 +465,7 @@ export const MarkdownFilePreview = memo(function MarkdownFilePreview({
                 {content}
             </ReactMarkdown>
         ),
-        [content],
+        [content, mermaidViewportStateCache, tabId],
     );
 
     return (

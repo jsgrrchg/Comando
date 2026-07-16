@@ -36,6 +36,13 @@ interface MermaidViewportState {
     readonly scale: number;
 }
 
+export interface MermaidViewportStateSnapshot {
+    readonly isCustom: boolean;
+    readonly offsetX: number;
+    readonly offsetY: number;
+    readonly scale: number;
+}
+
 interface MermaidViewportSize {
     readonly height: number;
     readonly width: number;
@@ -90,8 +97,12 @@ type MermaidSvgSanitizer = (svg: string) => string;
 
 interface MarkdownMermaidDiagramProps {
     readonly loadMermaid?: MermaidLoader;
+    readonly onViewportStateChange?: (
+        state: MermaidViewportStateSnapshot,
+    ) => void;
     readonly sanitizeSvg?: MermaidSvgSanitizer;
     readonly source: string;
+    readonly viewportState?: MermaidViewportStateSnapshot;
 }
 
 interface MermaidThemeSnapshot {
@@ -639,8 +650,10 @@ function useMermaidThemeSnapshot(): MermaidThemeSnapshot {
 
 export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
     loadMermaid = loadMermaidRenderer,
+    onViewportStateChange,
     sanitizeSvg = sanitizeMermaidSvg,
     source,
+    viewportState: savedViewportState,
 }: MarkdownMermaidDiagramProps) {
     const reactId = useId();
     const dragStateRef = useRef<MermaidDragState | null>(null);
@@ -650,6 +663,8 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
     const mermaidViewportMetricsRef =
         useRef<MermaidViewportMetrics>(initialViewportMetrics);
     const mermaidViewportRef = useRef<HTMLDivElement>(null);
+    const hasMeasuredViewportRef = useRef(false);
+    const restoredViewportRenderKeyRef = useRef<string | null>(null);
     const themeSnapshot = useMermaidThemeSnapshot();
     const trimmedSource = source.trim();
     const currentRenderKey = `${themeSnapshot.signature}\n${trimmedSource}`;
@@ -787,6 +802,19 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
         }));
     }, []);
 
+    useEffect(() => {
+        if (!hasMeasuredViewportRef.current) {
+            return;
+        }
+
+        onViewportStateChange?.({
+            isCustom: hasCustomViewportRef.current,
+            offsetX: viewportState.offsetX,
+            offsetY: viewportState.offsetY,
+            scale: viewportState.scale,
+        });
+    }, [onViewportStateChange, viewportState]);
+
     useLayoutEffect(() => {
         if (
             visibleRenderState.status !== "ready" ||
@@ -795,8 +823,9 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
             return undefined;
         }
 
-        // A new diagram always starts at its computed fit scale.
-        hasCustomViewportRef.current = false;
+        hasMeasuredViewportRef.current = false;
+        hasCustomViewportRef.current = savedViewportState?.isCustom ?? false;
+        restoredViewportRenderKeyRef.current = null;
 
         const updateViewportFit = () => {
             const viewportElement = mermaidViewportRef.current;
@@ -822,6 +851,33 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
 
             if (!hasCustomViewportRef.current) {
                 setViewportState(createMermaidFitViewportState(metrics));
+                hasMeasuredViewportRef.current = true;
+                return;
+            }
+
+            if (
+                savedViewportState?.isCustom &&
+                restoredViewportRenderKeyRef.current !== currentRenderKey
+            ) {
+                const scale = clampMermaidZoom(savedViewportState?.scale ?? 1);
+                const offset = clampMermaidPanOffset({
+                    metrics,
+                    offset: {
+                        x: savedViewportState?.offsetX ?? 0,
+                        y: savedViewportState?.offsetY ?? 0,
+                    },
+                    scale,
+                });
+
+                restoredViewportRenderKeyRef.current = currentRenderKey;
+                hasMeasuredViewportRef.current = true;
+                setViewportState({
+                    fitScale: calculateMermaidFitScale(metrics),
+                    isDragging: false,
+                    offsetX: offset.x,
+                    offsetY: offset.y,
+                    scale,
+                });
                 return;
             }
 
@@ -847,6 +903,7 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
                     offsetY: offset.y,
                 };
             });
+            hasMeasuredViewportRef.current = true;
         };
 
         updateViewportFit();
@@ -866,9 +923,11 @@ export const MarkdownMermaidDiagram = memo(function MarkdownMermaidDiagram({
             window.removeEventListener("resize", updateViewportFit);
         };
     }, [
+        currentRenderKey,
         visibleRenderState.renderKey,
         visibleRenderState.status,
         visibleRenderState.svg,
+        savedViewportState,
     ]);
 
     const handleViewportPointerDown = useCallback(

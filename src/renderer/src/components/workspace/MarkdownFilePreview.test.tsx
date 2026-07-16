@@ -408,6 +408,46 @@ describe("MarkdownFilePreview", () => {
         expect(markup).not.toContain("markdown-file-preview__code-block");
     });
 
+    it("restores Mermaid viewport state after the preview remounts", async () => {
+        const content = "```mermaid\nflowchart TD\n    A --> B\n```";
+        const mermaidViewportStateCache = new Map();
+        const { container, rerender } = mountInteractiveMarkdownFilePreview({
+            content,
+            mermaidViewportStateCache,
+            tabId: "file-tab-1",
+        });
+
+        await waitForPreviewToken(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+        );
+
+        const zoomInButton = container.querySelector<HTMLButtonElement>(
+            '[aria-label="Zoom in"]',
+        );
+        act(() => {
+            zoomInButton?.click();
+        });
+
+        await act(async () => {
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
+        });
+        expect(mermaidViewportStateCache.size).toBe(1);
+
+        rerender({
+            content: "",
+            mermaidViewportStateCache,
+            tabId: "file-tab-1",
+        });
+        rerender({ content, mermaidViewportStateCache, tabId: "file-tab-1" });
+
+        await waitForPreviewToken(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+        );
+        expect(container.textContent).toContain("120%");
+    });
+
     it("renders tilde Mermaid fences with the diagram renderer", () => {
         const markup = renderStaticMarkdownFilePreview({
             content: "~~~mermaid\nsequenceDiagram\n    Alice->>Bob: Hello\n~~~",

@@ -145,6 +145,7 @@ import {
     type WorkspacePaneRecentProject,
 } from "@renderer/components/workspace/WorkspacePaneEmptyState";
 import { MarkdownFilePreview } from "@renderer/components/workspace/MarkdownFilePreview";
+import type { MermaidViewportStateSnapshot } from "@renderer/components/workspace/MarkdownMermaidDiagram";
 import { persistChatDraftForTab } from "@renderer/components/workspace/chatDraftPersistence";
 import { resolveHotChatTabIds } from "@renderer/components/workspace/chatViewResourceBudget";
 import {
@@ -3092,6 +3093,9 @@ export function WorkspaceFileEditorHost({
     ) => Promise<void>;
     readonly recentActiveTabIds: readonly string[];
 }) {
+    const [mermaidViewportStateCache] = useState(
+        () => new Map<string, MermaidViewportStateSnapshot>(),
+    );
     const hostedTab = useMemo(() => {
         if (activeFileTab) {
             return activeFileTab;
@@ -3129,6 +3133,7 @@ export function WorkspaceFileEditorHost({
                 onDraftChange={onDraftChange}
                 onReload={onReload}
                 onSave={onSave}
+                mermaidViewportStateCache={mermaidViewportStateCache}
                 tab={hostedTab}
             />
         </div>
@@ -4240,6 +4245,7 @@ function FileTabView({
     onDraftChange,
     onReload,
     onSave,
+    mermaidViewportStateCache,
     tab,
 }: {
     readonly isActivePane: boolean;
@@ -4256,6 +4262,10 @@ function FileTabView({
             readonly force?: boolean;
         },
     ) => Promise<void>;
+    readonly mermaidViewportStateCache: Map<
+        string,
+        MermaidViewportStateSnapshot
+    >;
     readonly tab: RuntimeWorkspaceFileTab;
 }) {
     const document = tab.document;
@@ -6779,6 +6789,8 @@ function FileTabView({
                             filePath={document.relativePath}
                             fontFamily={editorFontFamily}
                             fontSize={editorSettings.fontSize}
+                            mermaidViewportStateCache={mermaidViewportStateCache}
+                            tabId={tab.id}
                         />
                     </MarkdownPreviewScrollSurface>
                 ) : null}

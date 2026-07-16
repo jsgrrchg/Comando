@@ -1049,6 +1049,64 @@ describe("MarkdownMermaidDiagram", () => {
         expect(loadMermaid).not.toHaveBeenCalled();
     });
 
+    it("restores a saved manual viewport after the diagram remounts", async () => {
+        const getBoundingClientRect = vi
+            .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+            .mockImplementation(function getMockBounds(this: HTMLElement) {
+                if (
+                    this.classList.contains(
+                        "markdown-file-preview__mermaid-viewport",
+                    )
+                ) {
+                    return {
+                        bottom: 250,
+                        height: 250,
+                        left: 0,
+                        right: 500,
+                        toJSON: () => ({}),
+                        top: 0,
+                        width: 500,
+                        x: 0,
+                        y: 0,
+                    };
+                }
+
+                return {
+                    bottom: 0,
+                    height: 0,
+                    left: 0,
+                    right: 0,
+                    toJSON: () => ({}),
+                    top: 0,
+                    width: 0,
+                    x: 0,
+                    y: 0,
+                };
+            });
+        const mermaid = createMermaidRenderer(() =>
+            Promise.resolve({
+                svg: '<svg viewBox="0 0 1000 400"><text>Large diagram</text></svg>',
+            }),
+        );
+        const { container } = renderMarkdownMermaidDiagram({
+            loadMermaid: () => Promise.resolve(mermaid),
+            viewportState: {
+                isCustom: true,
+                offsetX: 20,
+                offsetY: -10,
+                scale: 0.7,
+            },
+        });
+
+        await waitForElementStyle(
+            container,
+            ".markdown-file-preview__mermaid-svg",
+            "translate(20px, -10px) scale(0.7)",
+        );
+        expect(container.textContent).toContain("70%");
+        getBoundingClientRect.mockRestore();
+    });
+
     it("removes dangerous SVG nodes and attributes from Mermaid output", () => {
         const sanitizedSvg = sanitizeMermaidSvg(
             [
