@@ -7,7 +7,6 @@ import {
     useRef,
     useState,
     type KeyboardEvent as ReactKeyboardEvent,
-    type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
@@ -63,11 +62,6 @@ import {
     runDeduplicatedContextRefresh,
 } from "./app/workspace/context-activation-refresh";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
-import {
-    edgePeekConfig,
-    isPointInsideInflatedRect,
-    type EdgePeekPointerPosition,
-} from "./app/layout/edge-peek";
 import {
     COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
@@ -126,14 +120,6 @@ import {
     createEmptyComposerParts,
     type AIComposerPart,
 } from "./components/workspace/chat/composerParts";
-import {
-    SIDEBAR_AGENT_DRAG_EVENT,
-    type SidebarAgentDragDetail,
-} from "./components/sidebar/sidebarAgentDragEvents";
-import {
-    SIDEBAR_GITHUB_DRAG_EVENT,
-    type SidebarGitHubDragDetail,
-} from "./components/sidebar/sidebarGitHubDragEvents";
 import {
     useRestorableSidebarScroll,
     type SidebarScrollPositionStore,
@@ -563,7 +549,6 @@ export function App() {
     const [fileTreeMovePickerSelectedIndex, setFileTreeMovePickerSelectedIndex] =
         useState(0);
     const [persistenceReady, setPersistenceReady] = useState(false);
-    const [sidebarOverlayVisible, setSidebarOverlayVisible] = useState(false);
     const [workspaceSurfaceGitScopeMenuRequest, setWorkspaceSurfaceGitScopeMenuRequest] =
         useState<{
             readonly id: number;
@@ -572,7 +557,6 @@ export function App() {
         } | null>(null);
     const [workspaceSurfaceProjectMenuRequest, setWorkspaceSurfaceProjectMenuRequest] =
         useState<{ readonly id: number } | null>(null);
-    const [sidebarOverlayClosing, setSidebarOverlayClosing] = useState(false);
     const pendingContextTreeRefreshesRef = useRef(
         new Map<string, Promise<void>>(),
     );
@@ -671,9 +655,6 @@ export function App() {
         [setFileTreeEntryIndexByContext],
     );
     const fileTreeBackendSearchRequestRef = useRef(0);
-    const sidebarOverlayRef = useRef<HTMLDivElement | null>(null);
-    const sidebarPointerRef = useRef<EdgePeekPointerPosition | null>(null);
-    const sidebarDragActiveRef = useRef(false);
     const quickOpenSearchRequestRef = useRef(0);
     const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
     const sidebarScrollPositionsRef = useRef<SidebarScrollPositionStore>(
@@ -887,12 +868,10 @@ export function App() {
         }
         void getComandoApi()?.setWorkspaceSurfaceContentLeftInset(
             leftCollapsed
-                ? (sidebarOverlayVisible
-                  ? leftWidth
-                  : edgePeekConfig.hotspotWidth)
+                ? 0
                 : leftWidth + shellLayoutConstraints.handleWidth,
         );
-    }, [leftCollapsed, leftWidth, sidebarOverlayVisible]);
+    }, [leftCollapsed, leftWidth]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -1266,7 +1245,7 @@ export function App() {
                 ROOT_NODE_KEY,
             ),
             sidebarView,
-            sidebarVisible: !leftCollapsed || sidebarOverlayVisible,
+            sidebarVisible: !leftCollapsed,
         });
 
         if (refreshPlan.projectTree) {
@@ -1289,7 +1268,6 @@ export function App() {
         refreshGitProject,
         refreshProjectTree,
         setActiveWorktree,
-        sidebarOverlayVisible,
         sidebarView,
     ]);
 
@@ -1477,197 +1455,6 @@ export function App() {
             );
         };
     }, [dragState, setResizingPanel]);
-
-    const cancelSidebarOverlayClose = useCallback(() => {
-        setSidebarOverlayClosing(false);
-    }, []);
-
-    const hideSidebarOverlayImmediately = useCallback(() => {
-        sidebarDragActiveRef.current = false;
-        setSidebarOverlayClosing(false);
-        setSidebarOverlayVisible(false);
-    }, []);
-
-    const rememberSidebarPointer = useCallback(
-        (event: ReactMouseEvent<HTMLDivElement>) => {
-            sidebarPointerRef.current = {
-                x: event.clientX,
-                y: event.clientY,
-            };
-        },
-        [],
-    );
-
-    const isSidebarPointerInSafeZone = useCallback(() => {
-        const rect = sidebarOverlayRef.current?.getBoundingClientRect() ?? null;
-        return isPointInsideInflatedRect(
-            sidebarPointerRef.current,
-            rect,
-            edgePeekConfig.safeGap,
-        );
-    }, []);
-
-    const showSidebarOverlay = useCallback(
-        (event: ReactMouseEvent<HTMLDivElement>) => {
-            rememberSidebarPointer(event);
-            cancelSidebarOverlayClose();
-            setSidebarOverlayVisible(true);
-        },
-        [cancelSidebarOverlayClose, rememberSidebarPointer],
-    );
-
-    const hideSidebarOverlayWithAnimation = useCallback(() => {
-        if (
-            sidebarDragActiveRef.current ||
-            sidebarOverlayClosing ||
-            isSidebarPointerInSafeZone()
-        ) {
-            return;
-        }
-
-        setSidebarOverlayClosing(true);
-    }, [isSidebarPointerInSafeZone, sidebarOverlayClosing]);
-
-    const startSidebarOriginDrag = useCallback(() => {
-        sidebarDragActiveRef.current = true;
-        cancelSidebarOverlayClose();
-        setSidebarOverlayVisible(true);
-    }, [cancelSidebarOverlayClose]);
-
-    const finishSidebarOriginDrag = useCallback(() => {
-        if (!sidebarDragActiveRef.current) {
-            return;
-        }
-
-        sidebarDragActiveRef.current = false;
-        if (leftCollapsed) {
-            hideSidebarOverlayWithAnimation();
-        }
-    }, [hideSidebarOverlayWithAnimation, leftCollapsed]);
-
-    const isPointInsideSidebarOverlay = useCallback(
-        (point: EdgePeekPointerPosition) => {
-            const rect =
-                sidebarOverlayRef.current?.getBoundingClientRect() ?? null;
-            if (!rect || (rect.width <= 0 && rect.height <= 0)) {
-                return false;
-            }
-
-            return (
-                point.x >= rect.left &&
-                point.x <= rect.right &&
-                point.y >= rect.top &&
-                point.y <= rect.bottom
-            );
-        },
-        [],
-    );
-
-    useEffect(() => {
-        const handleSidebarOriginDrag = (
-            detail: SidebarAgentDragDetail | SidebarGitHubDragDetail,
-        ) => {
-            if (!detail) {
-                return;
-            }
-
-            if (Number.isFinite(detail.x) && Number.isFinite(detail.y)) {
-                sidebarPointerRef.current = {
-                    x: detail.x,
-                    y: detail.y,
-                };
-            }
-
-            if (detail.phase === "start" || detail.phase === "move") {
-                const startedInsideSidebarOverlay =
-                    detail.phase === "start" &&
-                    leftCollapsed &&
-                    sidebarOverlayVisible &&
-                    isPointInsideSidebarOverlay({
-                        x: detail.x,
-                        y: detail.y,
-                    });
-
-                if (
-                    !sidebarDragActiveRef.current &&
-                    !startedInsideSidebarOverlay
-                ) {
-                    return;
-                }
-
-                startSidebarOriginDrag();
-                return;
-            }
-
-            if (detail.phase === "end" || detail.phase === "cancel") {
-                finishSidebarOriginDrag();
-            }
-        };
-
-        const handleSidebarAgentDrag = (event: Event) => {
-            handleSidebarOriginDrag(
-                (event as CustomEvent<SidebarAgentDragDetail>).detail,
-            );
-        };
-
-        const handleSidebarGitHubDrag = (event: Event) => {
-            handleSidebarOriginDrag(
-                (event as CustomEvent<SidebarGitHubDragDetail>).detail,
-            );
-        };
-
-        window.addEventListener(SIDEBAR_AGENT_DRAG_EVENT, handleSidebarAgentDrag);
-        window.addEventListener(
-            SIDEBAR_GITHUB_DRAG_EVENT,
-            handleSidebarGitHubDrag,
-        );
-        return () => {
-            window.removeEventListener(
-                SIDEBAR_AGENT_DRAG_EVENT,
-                handleSidebarAgentDrag,
-            );
-            window.removeEventListener(
-                SIDEBAR_GITHUB_DRAG_EVENT,
-                handleSidebarGitHubDrag,
-            );
-        };
-    }, [
-        finishSidebarOriginDrag,
-        isPointInsideSidebarOverlay,
-        leftCollapsed,
-        sidebarOverlayVisible,
-        startSidebarOriginDrag,
-    ]);
-
-    useEffect(() => {
-        if (!sidebarOverlayVisible) {
-            return;
-        }
-
-        const handlePointerMove = (event: PointerEvent) => {
-            sidebarPointerRef.current = {
-                x: event.clientX,
-                y: event.clientY,
-            };
-
-            if (isSidebarPointerInSafeZone()) {
-                cancelSidebarOverlayClose();
-                return;
-            }
-
-            hideSidebarOverlayWithAnimation();
-        };
-
-        window.addEventListener("pointermove", handlePointerMove);
-        return () => {
-            window.removeEventListener("pointermove", handlePointerMove);
-        };
-    }, [
-        cancelSidebarOverlayClose,
-        hideSidebarOverlayWithAnimation,
-        isSidebarPointerInSafeZone,
-        sidebarOverlayVisible,
-    ]);
 
     const gridTemplateColumns = useMemo(() => {
         const leftCol = leftCollapsed ? 0 : leftWidth;
@@ -3678,7 +3465,6 @@ export function App() {
 
         setLeftCollapsed(false);
         setSidebarView("files");
-        hideSidebarOverlayImmediately();
         setFileTreeFilter("");
         setProjectRootExpandedByContext((currentState) => ({
             ...currentState,
@@ -3697,7 +3483,6 @@ export function App() {
         );
     }, [
         activeWorkspaceTab,
-        hideSidebarOverlayImmediately,
         revealPathInTree,
         setLeftCollapsed,
         setSidebarView,
@@ -4021,26 +3806,6 @@ export function App() {
         isMac,
         openWorkspaceContextKeys,
         workspaceActiveContextKey,
-    ]);
-
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === "b" && (event.metaKey || event.ctrlKey)) {
-                event.preventDefault();
-                toggleLeftCollapsed();
-                hideSidebarOverlayImmediately();
-            }
-            if (event.key === "Escape") {
-                if (sidebarOverlayVisible) hideSidebarOverlayImmediately();
-            }
-        };
-
-        window.addEventListener("keydown", handleKeyDown);
-        return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [
-        hideSidebarOverlayImmediately,
-        sidebarOverlayVisible,
-        toggleLeftCollapsed,
     ]);
 
     useEffect(() => {
@@ -4771,7 +4536,7 @@ export function App() {
         void useWorkspaceStore.getState().activateContext(contextKey);
     };
     const workspaceSurfaceContentLeftInset = leftCollapsed
-        ? (sidebarOverlayVisible ? leftWidth : edgePeekConfig.hotspotWidth)
+        ? 0
         : leftWidth + shellLayoutConstraints.handleWidth;
     const openWorkspaceSurfaceGitScopeMenu = useCallback(
         (anchor: { readonly width: number; readonly x: number }) => {
@@ -4830,10 +4595,7 @@ export function App() {
                     .getState()
                     .reorderContext(contextKey, targetIndex);
             }}
-            onToggleLeftSidebar={() => {
-                toggleLeftCollapsed();
-                hideSidebarOverlayImmediately();
-            }}
+            onToggleLeftSidebar={toggleLeftCollapsed}
             platform={bootstrap?.platform ?? null}
             settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
         />
@@ -4900,72 +4662,6 @@ export function App() {
                     <div className="min-h-0" />
                 </div>
 
-                {leftCollapsed && (
-                    <div
-                        style={{
-                            position: "absolute",
-                            left: 0,
-                            top: "var(--desktop-titlebar-height, 40px)",
-                            bottom: 0,
-                            width: sidebarOverlayVisible
-                                ? 0
-                                : edgePeekConfig.hotspotWidth,
-                            zIndex: 10,
-                        }}
-                        onMouseEnter={showSidebarOverlay}
-                    />
-                )}
-
-                {leftCollapsed && sidebarOverlayVisible && (
-                    <div
-                        ref={sidebarOverlayRef}
-                        className="app-sidebar flex min-h-0 flex-col"
-                        data-edge-peek-overlay="left"
-                        data-edge-peek-state={
-                            sidebarOverlayClosing ? "closing" : "opening"
-                        }
-                        style={{
-                            position: "absolute",
-                            left: 0,
-                            top: "var(--desktop-titlebar-height, 40px)",
-                            bottom: 0,
-                            width: leftWidth,
-                            zIndex: 10,
-                            boxShadow: "var(--shadow-soft)",
-                            borderRight: "1px solid var(--color-border)",
-                        }}
-                        onMouseEnter={(event) => {
-                            rememberSidebarPointer(event);
-                            cancelSidebarOverlayClose();
-                        }}
-                        onMouseMove={rememberSidebarPointer}
-                        onMouseLeave={(event) => {
-                            rememberSidebarPointer(event);
-                            hideSidebarOverlayWithAnimation();
-                        }}
-                        onDragStartCapture={startSidebarOriginDrag}
-                        onDragEndCapture={(event) => {
-                            sidebarPointerRef.current = {
-                                x: event.clientX,
-                                y: event.clientY,
-                            };
-                            finishSidebarOriginDrag();
-                        }}
-                        onAnimationEnd={(event) => {
-                            if (
-                                event.currentTarget !== event.target ||
-                                !sidebarOverlayClosing
-                            ) {
-                                return;
-                            }
-
-                            setSidebarOverlayClosing(false);
-                            setSidebarOverlayVisible(false);
-                        }}
-                    >
-                        {sidebarContent}
-                    </div>
-                )}
             </div>
         );
     }
@@ -5118,72 +4814,6 @@ export function App() {
                     </div>
                 </div>
 
-                {leftCollapsed && (
-                    <div
-                        style={{
-                            position: "absolute",
-                            left: 0,
-                            top: "var(--desktop-titlebar-height, 40px)",
-                            bottom: 0,
-                            width: sidebarOverlayVisible
-                                ? 0
-                                : edgePeekConfig.hotspotWidth,
-                            zIndex: 10,
-                        }}
-                        onMouseEnter={showSidebarOverlay}
-                    />
-                )}
-
-                {leftCollapsed && sidebarOverlayVisible && (
-                    <div
-                        ref={sidebarOverlayRef}
-                        className="flex min-h-0 flex-col bg-bg-panel"
-                        data-edge-peek-overlay="left"
-                        data-edge-peek-state={
-                            sidebarOverlayClosing ? "closing" : "opening"
-                        }
-                        style={{
-                            position: "absolute",
-                            left: 0,
-                            top: "var(--desktop-titlebar-height, 40px)",
-                            bottom: 0,
-                            width: leftWidth,
-                            zIndex: 10,
-                            boxShadow: "var(--shadow-soft)",
-                            borderRight: "1px solid var(--color-border)",
-                        }}
-                        onMouseEnter={(event) => {
-                            rememberSidebarPointer(event);
-                            cancelSidebarOverlayClose();
-                        }}
-                        onMouseMove={rememberSidebarPointer}
-                        onMouseLeave={(event) => {
-                            rememberSidebarPointer(event);
-                            hideSidebarOverlayWithAnimation();
-                        }}
-                        onDragStartCapture={startSidebarOriginDrag}
-                        onDragEndCapture={(event) => {
-                            sidebarPointerRef.current = {
-                                x: event.clientX,
-                                y: event.clientY,
-                            };
-                            finishSidebarOriginDrag();
-                        }}
-                        onAnimationEnd={(event) => {
-                            if (
-                                event.currentTarget !== event.target ||
-                                !sidebarOverlayClosing
-                            ) {
-                                return;
-                            }
-
-                            setSidebarOverlayClosing(false);
-                            setSidebarOverlayVisible(false);
-                        }}
-                    >
-                        {sidebarContent}
-                    </div>
-                )}
             </div>
 
             {topStatus ? (
