@@ -4765,6 +4765,21 @@ export function App() {
                         recentProjects={workspaceRecentProjects}
                     />
                 </main>
+                <QuickOpenFilePalette
+                    loading={isQuickOpenLoading}
+                    onChangeQuery={setQuickOpenQuery}
+                    onClose={closeQuickOpen}
+                    onHoverIndex={setQuickOpenSelectedIndex}
+                    onInputKeyDown={handleQuickOpenInputKeyDown}
+                    onSelect={(item) => {
+                        void handleQuickOpenSelect(item);
+                    }}
+                    open={isQuickOpenOpen}
+                    projectName={activeProject?.name ?? null}
+                    query={quickOpenQuery}
+                    results={quickOpenResults}
+                    selectedIndex={quickOpenSelectedIndex}
+                />
             </div>
         );
     }
