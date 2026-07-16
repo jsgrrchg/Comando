@@ -168,6 +168,7 @@
             "entitlementsInherit": "resources/entitlements.mac.inherit.plist",
             "hardenedRuntime": true,
             "icon": "resources/icons/macos.icns",
+            "sign": "scripts/sign-macos-app.cjs",
             "x64ArchFiles": "{Contents/Resources/ai/**/*,Contents/Resources/native/**/*}",
             "target": [
                 {
