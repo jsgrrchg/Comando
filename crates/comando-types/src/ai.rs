@@ -584,6 +584,30 @@ pub struct NativeAiTranscriptBlock {
 pub const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION: u32 = 1;
 pub const AI_TRANSCRIPT_CURSOR_LIMIT_MAX: usize = 1_024;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiAppendTranscriptEntriesInput {
+    pub session_id: SessionId,
+    pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptCursorInput {
+    pub session_id: SessionId,
+    pub sequence: Option<u64>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptAroundInput {
+    pub session_id: SessionId,
+    pub sequence: u64,
+    pub before: usize,
+    pub after: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSessionTranscriptPage {

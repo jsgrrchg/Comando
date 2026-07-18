@@ -5,9 +5,11 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use comando_types::ai::{
-    NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth, NativeAiListSessionHistoryInput,
-    NativeAiLoadSessionTranscriptPageInput, NativeAiRuntimeSessionMapping, NativeAiSessionSnapshot,
-    NativeAiSessionStatus, NativeAiSessionTranscriptPage,
+    AI_TRANSCRIPT_CURSOR_LIMIT_MAX, NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth,
+    NativeAiListSessionHistoryInput, NativeAiLoadSessionTranscriptPageInput,
+    NativeAiRuntimeSessionMapping, NativeAiSessionSnapshot, NativeAiSessionStatus,
+    NativeAiSessionTranscriptPage, NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadata,
+    NativeAiTranscriptCursorInput, NativeAiTranscriptEntryEnvelope,
 };
 use comando_types::ids::{ProjectId, RuntimeId, RuntimeSessionId, SessionId, WorktreeId};
 use rusqlite::{Connection, OptionalExtension};
@@ -25,6 +27,8 @@ const SESSIONS_DIR: &str = "sessions";
 const SESSION_META_FILE: &str = "session-meta.json";
 const SESSION_STATE_FILE: &str = "session-state.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
+const SESSION_TRANSCRIPT_ENTRIES_FILE: &str = "transcript-entries.json";
+const TRANSCRIPT_BLOCK_SIZE: usize = 256;
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_COMPACT_STATE_FILE: &str = "compact-state.json";
 const DEFAULT_PAGE_LIMIT: usize = 50;
@@ -525,6 +529,121 @@ impl AiHistoryStore {
         }))
     }
 
+    pub fn append_transcript_entries(
+        &self,
+        session_id: &SessionId,
+        entries: Vec<NativeAiTranscriptEntryEnvelope>,
+    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
+        self.ensure_session_dir(session_id)?;
+        let mut stored = self.load_transcript_entries(session_id)?;
+        let mut index_by_id = stored
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.id.clone(), index))
+            .collect::<BTreeMap<_, _>>();
+        let mut next_sequence = stored.last().map_or(1, |entry| entry.sequence + 1);
+
+        for mut entry in entries {
+            if entry.session_id != *session_id {
+                return Err(AiError::InvalidInput(
+                    "Transcript entry belongs to a different session".to_string(),
+                ));
+            }
+            if let Some(index) = index_by_id.get(&entry.id).copied() {
+                entry.sequence = stored[index].sequence;
+                stored[index] = entry;
+                continue;
+            }
+            entry.sequence = next_sequence;
+            next_sequence += 1;
+            index_by_id.insert(entry.id.clone(), stored.len());
+            stored.push(entry);
+        }
+        atomic_write_json(&self.transcript_entries_path(session_id), &stored)?;
+        Ok(stored)
+    }
+
+    pub fn load_transcript_block_metadata(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<Vec<NativeAiTranscriptBlockMetadata>> {
+        let entries = self.load_transcript_entries(session_id)?;
+        Ok(entries
+            .chunks(TRANSCRIPT_BLOCK_SIZE)
+            .enumerate()
+            .filter_map(|(index, entries)| transcript_block_metadata(session_id, index, entries))
+            .collect())
+    }
+
+    pub fn load_transcript_before(
+        &self,
+        input: NativeAiTranscriptCursorInput,
+    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
+        let entries = self.load_transcript_entries(&input.session_id)?;
+        let end = input.sequence.map_or(entries.len(), |sequence| {
+            entries.partition_point(|entry| entry.sequence < sequence)
+        });
+        let limit = input.limit.clamp(1, AI_TRANSCRIPT_CURSOR_LIMIT_MAX);
+        Ok(entries[end.saturating_sub(limit)..end].to_vec())
+    }
+
+    pub fn load_transcript_after(
+        &self,
+        input: NativeAiTranscriptCursorInput,
+    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
+        let entries = self.load_transcript_entries(&input.session_id)?;
+        let start = input.sequence.map_or(0, |sequence| {
+            entries.partition_point(|entry| entry.sequence <= sequence)
+        });
+        let limit = input.limit.clamp(1, AI_TRANSCRIPT_CURSOR_LIMIT_MAX);
+        Ok(entries[start..start.saturating_add(limit).min(entries.len())].to_vec())
+    }
+
+    pub fn load_transcript_block(
+        &self,
+        session_id: &SessionId,
+        block_id: &str,
+    ) -> AiResult<Option<NativeAiTranscriptBlock>> {
+        let entries = self.load_transcript_entries(session_id)?;
+        let Some(index) = block_id
+            .strip_prefix(&format!("{}:", session_id.0))
+            .and_then(|value| value.parse::<usize>().ok())
+        else {
+            return Ok(None);
+        };
+        let start = index.saturating_mul(TRANSCRIPT_BLOCK_SIZE);
+        if start >= entries.len() {
+            return Ok(None);
+        }
+        let block_entries =
+            entries[start..(start + TRANSCRIPT_BLOCK_SIZE).min(entries.len())].to_vec();
+        let Some(metadata) = transcript_block_metadata(session_id, index, &block_entries) else {
+            return Ok(None);
+        };
+        Ok(Some(NativeAiTranscriptBlock {
+            metadata,
+            entries: block_entries,
+        }))
+    }
+
+    fn load_transcript_entries(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
+        let path = self.transcript_entries_path(session_id);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let bytes = fs::read(&path)
+            .map_err(|error| history_io("read AI transcript entries", &path, error))?;
+        serde_json::from_slice(&bytes).map_err(|error| {
+            AiError::Internal(format!(
+                "Invalid AI transcript entries {}: {error}",
+                path.display()
+            ))
+        })
+    }
+
     pub fn load_session_snapshot(
         &self,
         session_id: &SessionId,
@@ -1002,6 +1121,11 @@ impl AiHistoryStore {
 
     fn transcript_path(&self, session_id: &SessionId) -> PathBuf {
         self.session_dir(session_id).join(SESSION_TRANSCRIPT_FILE)
+    }
+
+    fn transcript_entries_path(&self, session_id: &SessionId) -> PathBuf {
+        self.session_dir(session_id)
+            .join(SESSION_TRANSCRIPT_ENTRIES_FILE)
     }
 
     fn index_path(&self, session_id: &SessionId) -> PathBuf {
@@ -2196,6 +2320,27 @@ fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> AiResult<T> {
     serde_json::from_str(&text).map_err(|error| history_json("parse AI history JSON", error))
 }
 
+fn transcript_block_metadata(
+    session_id: &SessionId,
+    index: usize,
+    entries: &[NativeAiTranscriptEntryEnvelope],
+) -> Option<NativeAiTranscriptBlockMetadata> {
+    let first = entries.first()?;
+    let last = entries.last()?;
+    Some(NativeAiTranscriptBlockMetadata {
+        block_id: format!("{}:{index}", session_id.0),
+        session_id: session_id.clone(),
+        start_sequence: first.sequence,
+        end_sequence: last.sequence,
+        entry_count: entries.len(),
+        estimated_row_count: entries.len(),
+        estimated_height: entries.len() as u64 * 72,
+        first_created_at: first.created_at.clone(),
+        last_created_at: last.created_at.clone(),
+        revision: 1,
+    })
+}
+
 fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> AiResult<()> {
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| history_json("serialize AI history JSON", error))?;
@@ -3220,5 +3365,41 @@ mod tests {
         assert_eq!(copied.migrated_sessions, 1);
         assert!(store.has_session(&SessionId("legacy_1".to_string())));
         assert!(!store.has_session(&SessionId("legacy_2".to_string())));
+    }
+
+    #[test]
+    fn sequenced_entries_are_idempotent_and_cursor_bounded() {
+        let (_temp, store) = store();
+        let session_id = SessionId("blocks_1".to_string());
+        let entry = NativeAiTranscriptEntryEnvelope {
+            id: "message-1".to_string(),
+            session_id: session_id.clone(),
+            sequence: 0,
+            kind: comando_types::ai::NativeAiTranscriptEntryKind::Message,
+            created_at: "2026-07-18T00:00:00.000Z".to_string(),
+            updated_at: "2026-07-18T00:00:00.000Z".to_string(),
+            summary: comando_types::ai::NativeAiTranscriptEntrySummary {
+                label: None,
+                preview: Some("fixture".to_string()),
+                status: Some("completed".to_string()),
+            },
+            payload_ref: Some("payload-1".to_string()),
+        };
+
+        store
+            .append_transcript_entries(&session_id, vec![entry.clone(), entry])
+            .unwrap();
+        let loaded = store
+            .load_transcript_after(NativeAiTranscriptCursorInput {
+                session_id: session_id.clone(),
+                sequence: None,
+                limit: 100,
+            })
+            .unwrap();
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].sequence, 1);
+        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        assert_eq!(metadata[0].entry_count, 1);
     }
 }
