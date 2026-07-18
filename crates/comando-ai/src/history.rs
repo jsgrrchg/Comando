@@ -533,7 +533,7 @@ impl AiHistoryStore {
         &self,
         session_id: &SessionId,
         entries: Vec<NativeAiTranscriptEntryEnvelope>,
-    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
+    ) -> AiResult<()> {
         self.ensure_session_dir(session_id)?;
         let mut stored = self.load_transcript_entries(session_id)?;
         let mut index_by_id = stored
@@ -560,7 +560,7 @@ impl AiHistoryStore {
             stored.push(entry);
         }
         atomic_write_json(&self.transcript_entries_path(session_id), &stored)?;
-        Ok(stored)
+        Ok(())
     }
 
     pub fn load_transcript_block_metadata(

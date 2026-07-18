@@ -27,17 +27,19 @@ export class TranscriptPayloadCache<T> {
         }
         const pending = this.pending.get(payloadRef);
         if (pending) return pending;
-        const request = this.loader.load(payloadRef).then((payload) => {
-            this.pending.delete(payloadRef);
-            this.payloads.set(payloadRef, {
-                estimatedBytes: this.estimateBytes(payload),
-                payload,
-                protected: false,
-                touchedAt: performance.now(),
-            });
-            this.evict();
-            return payload;
-        });
+        const request = this.loader
+            .load(payloadRef)
+            .then((payload) => {
+                this.payloads.set(payloadRef, {
+                    estimatedBytes: this.estimateBytes(payload),
+                    payload,
+                    protected: false,
+                    touchedAt: performance.now(),
+                });
+                this.evict();
+                return payload;
+            })
+            .finally(() => this.pending.delete(payloadRef));
         this.pending.set(payloadRef, request);
         return request;
     }

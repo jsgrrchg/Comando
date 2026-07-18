@@ -2364,10 +2364,7 @@ impl NativeBackend {
                         .append_transcript_entries(&input.session_id, input.entries)
                         .map_err(|error| error.to_native_error())
                 }) {
-                    Ok(entries) => response_only(
-                        request.id,
-                        serde_json::to_value(entries).expect("AI transcript entries serialize"),
-                    ),
+                    Ok(()) => response_only(request.id, json!({ "ok": true })),
                     Err(error) => error_only(request.id, error),
                 }
             }

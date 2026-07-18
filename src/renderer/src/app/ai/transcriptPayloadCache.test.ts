@@ -16,4 +16,16 @@ describe("TranscriptPayloadCache", () => {
         expect(load).toHaveBeenCalledTimes(2);
         expect(cache.residentBytes).toBeLessThanOrEqual(100);
     });
+
+    it("allows retry after a rejected payload request", async () => {
+        const load = vi
+            .fn<(payloadRef: string) => Promise<string>>()
+            .mockRejectedValueOnce(new Error("temporary"))
+            .mockResolvedValueOnce("recovered");
+        const cache = new TranscriptPayloadCache({ load }, 100, (value) => value.length);
+
+        await expect(cache.load("payload-1")).rejects.toThrow("temporary");
+        await expect(cache.load("payload-1")).resolves.toBe("recovered");
+        expect(load).toHaveBeenCalledTimes(2);
+    });
 });
