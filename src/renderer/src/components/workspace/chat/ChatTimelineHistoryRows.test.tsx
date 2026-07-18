@@ -388,7 +388,7 @@ describe("ChatTimelineHistoryRows", () => {
     });
 
     it("keeps the ten-thousand-message fixture DOM-bounded in the main timeline", () => {
-        const fixture = createChatPerformanceFixtureById("chat-long");
+        const fixture = createChatPerformanceFixtureById("chat-long-10k");
         const timeline = reconcileChatTimelineModel(null, fixture.snapshot);
         const markup = renderHistoryRows(timeline.historyRows);
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    CHAT_INTERACTION_BUDGETS,
     CHAT_PERFORMANCE_FIXTURES,
     createChatPerformanceFixture,
     createChatPerformanceFixtureById,
@@ -17,8 +18,14 @@ describe("chatPerformanceFixtures", () => {
                 trackedFileCount: 2,
             },
             {
-                id: "chat-long",
+                id: "chat-long-10k",
                 messageCount: 10_000,
+                toolActivityCount: 0,
+                trackedFileCount: 0,
+            },
+            {
+                id: "chat-extreme-100k",
+                messageCount: 100_000,
                 toolActivityCount: 0,
                 trackedFileCount: 0,
             },
@@ -63,7 +70,7 @@ describe("chatPerformanceFixtures", () => {
     });
 
     it("creates the configured stress fixtures only when explicitly requested", () => {
-        const fixture = createChatPerformanceFixtureById("chat-long");
+        const fixture = createChatPerformanceFixtureById("chat-long-10k");
 
         expect(fixture.snapshot.messages).toHaveLength(10_000);
         expect(fixture.snapshot.toolActivity).toHaveLength(0);
@@ -80,11 +87,20 @@ describe("chatPerformanceFixtures", () => {
             ),
         ).toBe(true);
         expect(fixture.panes.flatMap((pane) => pane.retainedSessionIds)).toHaveLength(
-            16,
+            20,
         );
         expect(fixture.activeStreamingSessionIds).toEqual([
             "workspace-pane-1-session-1",
             "workspace-pane-2-session-1",
         ]);
+    });
+
+    it("defines deterministic structural budgets for extreme chats", () => {
+        expect(CHAT_INTERACTION_BUDGETS).toEqual({
+            activityInitialItems: 20,
+            maxFullRebuildsDuringStreaming: 0,
+            maxMountedRows: 80,
+            transcriptBlockEntries: 256,
+        });
     });
 });

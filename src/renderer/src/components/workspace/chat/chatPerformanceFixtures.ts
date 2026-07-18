@@ -29,8 +29,14 @@ export const CHAT_PERFORMANCE_FIXTURES = [
         trackedFileCount: 2,
     },
     {
-        id: "chat-long",
+        id: "chat-long-10k",
         messageCount: 10_000,
+        toolActivityCount: 0,
+        trackedFileCount: 0,
+    },
+    {
+        id: "chat-extreme-100k",
+        messageCount: 100_000,
         toolActivityCount: 0,
         trackedFileCount: 0,
     },
@@ -41,6 +47,13 @@ export const CHAT_PERFORMANCE_FIXTURES = [
         trackedFileCount: 2_000,
     },
 ] as const satisfies readonly ChatPerformanceFixtureDefinition[];
+
+export const CHAT_INTERACTION_BUDGETS = {
+    activityInitialItems: 20,
+    maxFullRebuildsDuringStreaming: 0,
+    maxMountedRows: 80,
+    transcriptBlockEntries: 256,
+} as const;
 
 export type ChatPerformanceFixtureId =
     (typeof CHAT_PERFORMANCE_FIXTURES)[number]["id"];
@@ -127,7 +140,7 @@ export function createChatPerformanceFixtureById(
 export function createChatPerformanceWorkspaceFixture(): ChatPerformanceWorkspaceFixture {
     const panes = Array.from({ length: 4 }, (_, paneIndex) => {
         const retainedSessionIds = Array.from(
-            { length: 4 },
+            { length: 5 },
             (_, tabIndex) => `workspace-pane-${paneIndex + 1}-session-${tabIndex + 1}`,
         );
         const activeSessionId = retainedSessionIds[0];
