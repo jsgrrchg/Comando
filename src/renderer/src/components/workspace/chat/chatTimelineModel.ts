@@ -24,6 +24,7 @@ import {
     type ToolActivityPresentationContext,
     type ToolActivityPresentationPolicy,
 } from "./toolActivityPresentation";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 import { isTurnStartedActivity } from "./toolActivityKinds";
 import {
     deriveActivitySegmentChangeStats,
@@ -1036,6 +1037,7 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
     input: ChatTimelineTranscriptInput,
 ): ChatTimelineModel {
     if (!previous || !previousTranscript) {
+        incrementChatPerformanceCounter("timeline_full_rebuilds");
         return reconcileChatTimelineModelFromTranscript(previous, input);
     }
     if (
@@ -1045,6 +1047,7 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
         )
     ) {
         chatTimelineFallbackCount += 1;
+        incrementChatPerformanceCounter("timeline_full_rebuilds");
         return reconcileChatTimelineModelFromTranscript(previous, input);
     }
 
@@ -1069,6 +1072,7 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
     }
 
     chatTimelineFallbackCount += 1;
+    incrementChatPerformanceCounter("timeline_full_rebuilds");
     return reconcileChatTimelineModelFromTranscript(previous, input);
 }
 

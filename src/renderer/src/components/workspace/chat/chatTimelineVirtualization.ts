@@ -59,7 +59,9 @@ export function shouldVirtualizeChatTimeline(
 export function calculateChatTimelineVirtualizationCost(
     rows: readonly ChatTimelineRow[],
 ): number {
-    return rows.reduce((cost, row) => {
+    const cached = virtualizationCostByRows.get(rows);
+    if (cached !== undefined) return cached;
+    const cost = rows.reduce((cost, row) => {
         if (row.kind !== "activity-segment") {
             return cost + 1;
         }
@@ -81,7 +83,14 @@ export function calculateChatTimelineVirtualizationCost(
         );
         return cost + 1 + expandedItemWeight;
     }, 0);
+    virtualizationCostByRows.set(rows, cost);
+    return cost;
 }
+
+const virtualizationCostByRows = new WeakMap<
+    readonly ChatTimelineRow[],
+    number
+>();
 
 export function getChatTimelineRowKey(row: ChatTimelineRow): string {
     return row.id;
