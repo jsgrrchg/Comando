@@ -20,6 +20,7 @@ import {
 } from "@renderer/components/virtual/MeasuredVirtualList";
 
 import type { ChatTimelineRow } from "./chatTimelineModel";
+import { ChatPresentationErrorBoundary } from "./ChatPresentationErrorBoundary";
 import {
     CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
     CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN,
@@ -415,13 +416,22 @@ export const ChatTimelineHistoryRows = memo(
                                 : undefined
                         }
                     >
-                        {renderRow({ row: item })}
+                        <ChatPresentationErrorBoundary
+                            fallbackKind="row"
+                            identity={getChatTimelineRowIdentityKey(
+                                item,
+                                buildRowContext(item, index),
+                            )}
+                        >
+                            {renderRow({ row: item })}
+                        </ChatPresentationErrorBoundary>
                     </div>
                 );
             },
             [
                 renderRow,
                 resolveRowGapPx,
+                buildRowContext,
             ],
         );
 
@@ -430,7 +440,12 @@ export const ChatTimelineHistoryRows = memo(
                 <>
                     {historyRows.map((row) => (
                         <Fragment key={row.id}>
-                            {renderRow({ row })}
+                            <ChatPresentationErrorBoundary
+                                fallbackKind="row"
+                                identity={row.id}
+                            >
+                                {renderRow({ row })}
+                            </ChatPresentationErrorBoundary>
                         </Fragment>
                     ))}
                 </>

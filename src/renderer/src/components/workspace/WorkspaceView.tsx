@@ -126,6 +126,7 @@ import {
 } from "@renderer/app/workspace/pending-review";
 import { ChatHistoryTabView } from "@renderer/components/workspace/ChatHistoryTabView";
 import { ChatTabView } from "@renderer/components/workspace/ChatTabView";
+import { ChatPresentationErrorBoundary } from "@renderer/components/workspace/chat/ChatPresentationErrorBoundary";
 import { GitHubIssuesTabView } from "@renderer/components/workspace/GitHubIssuesTabView";
 import { GitHubIssueTabView } from "@renderer/components/workspace/GitHubIssueTabView";
 import { GitHubPullRequestsTabView } from "@renderer/components/workspace/GitHubPullRequestsTabView";
@@ -2995,16 +2996,21 @@ function WorkspacePaneView({
                                         inert={!isActiveChat}
                                         key={tab.id}
                                     >
-                                        <ChatTabView
-                                            active={isActiveChat}
-                                            onDraftChange={handleChatDraftChange}
-                                            onOpenFile={handleOpenWorkspaceFile}
-                                            onOpenImage={handleOpenChatImage}
-                                            onOpenReview={() =>
-                                                handleOpenChatReview(tab)
-                                            }
-                                            tab={tab}
-                                        />
+                                        <ChatPresentationErrorBoundary
+                                            fallbackKind="chat"
+                                            identity={`${tab.id}:${tab.sessionId}`}
+                                        >
+                                            <ChatTabView
+                                                active={isActiveChat}
+                                                onDraftChange={handleChatDraftChange}
+                                                onOpenFile={handleOpenWorkspaceFile}
+                                                onOpenImage={handleOpenChatImage}
+                                                onOpenReview={() =>
+                                                    handleOpenChatReview(tab)
+                                                }
+                                                tab={tab}
+                                            />
+                                        </ChatPresentationErrorBoundary>
                                     </div>
                                 );
                             })}
