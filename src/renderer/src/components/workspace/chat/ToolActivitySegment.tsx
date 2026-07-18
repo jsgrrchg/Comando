@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 
 import { useSettingsStore } from "@renderer/app/store/settings-store";
 
@@ -16,6 +16,7 @@ import {
     type ThinkingMessageProps,
 } from "./ChatMessageRow";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 
 const ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT = 20;
 const ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT = 20;
@@ -238,6 +239,12 @@ function ExpandedActivitySegmentItems({
     );
     const visibleItems = items.slice(0, fallbackRenderLimit);
     const hasMoreFallbackItems = visibleItems.length < items.length;
+    useEffect(() => {
+        incrementChatPerformanceCounter(
+            "activity_items_mounted",
+            visibleItems.length,
+        );
+    }, [visibleItems.length]);
 
     return (
         <div
