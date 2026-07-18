@@ -423,7 +423,7 @@ function getToolTranscriptId(sessionId: string, toolCallId: string): string {
     return `tool:${sessionId}:${toolCallId}`;
 }
 
-function buildAiSessionTranscriptModelFromEntries(
+export function buildAiSessionTranscriptModelFromEntries(
     entries: readonly AiSessionTranscriptEntry[],
 ): AiSessionTranscriptModel {
     const sortedEntries = [...entries].sort(compareTranscriptEntries);
