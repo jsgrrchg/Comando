@@ -372,6 +372,34 @@ export type NativeAiLoadSessionTranscriptPageInput = {
     readonly limit: number;
 };
 
+export type NativeAiTranscriptEntryEnvelope = {
+    readonly id: string;
+    readonly sessionId: NativeSessionId;
+    readonly sequence: number;
+    readonly kind: "message" | "thinking" | "tool" | "status" | "plan";
+    readonly createdAt: string;
+    readonly updatedAt: string;
+    readonly summary: {
+        readonly label: string | null;
+        readonly preview: string | null;
+        readonly status: string | null;
+    };
+    readonly payloadRef: string | null;
+};
+
+export type NativeAiTranscriptBlockMetadata = {
+    readonly blockId: string;
+    readonly sessionId: NativeSessionId;
+    readonly startSequence: number;
+    readonly endSequence: number;
+    readonly entryCount: number;
+    readonly estimatedRowCount: number;
+    readonly estimatedHeight: number;
+    readonly firstCreatedAt: string;
+    readonly lastCreatedAt: string;
+    readonly revision: number;
+};
+
 export type NativeAiSessionTranscriptPage = {
     readonly sessionId: NativeSessionId;
     readonly offset: number;

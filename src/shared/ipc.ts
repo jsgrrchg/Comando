@@ -2600,6 +2600,71 @@ export interface AiSessionSnapshot {
     readonly worktreeId?: string | null;
 }
 
+export type AiTranscriptEntryKind =
+    | "message"
+    | "thinking"
+    | "tool"
+    | "status"
+    | "plan";
+
+export interface AiTranscriptEntrySummary {
+    readonly label: string | null;
+    readonly preview: string | null;
+    readonly status: string | null;
+}
+
+export interface AiTranscriptEntryEnvelope {
+    readonly createdAt: string;
+    readonly id: string;
+    readonly kind: AiTranscriptEntryKind;
+    readonly payloadRef: string | null;
+    readonly sequence: number;
+    readonly sessionId: string;
+    readonly summary: AiTranscriptEntrySummary;
+    readonly updatedAt: string;
+}
+
+export interface AiTranscriptBlockMetadata {
+    readonly blockId: string;
+    readonly endSequence: number;
+    readonly entryCount: number;
+    readonly estimatedHeight: number;
+    readonly estimatedRowCount: number;
+    readonly firstCreatedAt: string;
+    readonly lastCreatedAt: string;
+    readonly revision: number;
+    readonly sessionId: string;
+    readonly startSequence: number;
+}
+
+export interface AiTranscriptBlock extends AiTranscriptBlockMetadata {
+    readonly entries: readonly AiTranscriptEntryEnvelope[];
+}
+
+export interface AiTranscriptCursorInput {
+    readonly limit: number;
+    readonly sequence: number | null;
+    readonly sessionId: string;
+}
+
+export interface AiTranscriptAroundInput {
+    readonly after: number;
+    readonly before: number;
+    readonly sequence: number;
+    readonly sessionId: string;
+}
+
+export const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION = 1;
+export const AI_TRANSCRIPT_CURSOR_LIMIT_MAX = 1_024;
+
+export function normalizeAiTranscriptLimit(limit: number): number {
+    if (!Number.isFinite(limit)) return 1;
+    return Math.min(
+        AI_TRANSCRIPT_CURSOR_LIMIT_MAX,
+        Math.max(1, Math.trunc(limit)),
+    );
+}
+
 export type AiSessionPatchChanges = Partial<
     Omit<AiSessionSnapshot, "runtimeId" | "sessionId">
 >;

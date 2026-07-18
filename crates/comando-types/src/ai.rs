@@ -527,6 +527,63 @@ pub struct NativeAiLoadSessionTranscriptPageInput {
     pub limit: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeAiTranscriptEntryKind {
+    Message,
+    Thinking,
+    Tool,
+    Status,
+    Plan,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptEntrySummary {
+    pub label: Option<String>,
+    pub preview: Option<String>,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptEntryEnvelope {
+    pub id: String,
+    pub session_id: SessionId,
+    pub sequence: u64,
+    pub kind: NativeAiTranscriptEntryKind,
+    pub created_at: String,
+    pub updated_at: String,
+    pub summary: NativeAiTranscriptEntrySummary,
+    pub payload_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptBlockMetadata {
+    pub block_id: String,
+    pub session_id: SessionId,
+    pub start_sequence: u64,
+    pub end_sequence: u64,
+    pub entry_count: usize,
+    pub estimated_row_count: usize,
+    pub estimated_height: u64,
+    pub first_created_at: String,
+    pub last_created_at: String,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptBlock {
+    #[serde(flatten)]
+    pub metadata: NativeAiTranscriptBlockMetadata,
+    pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
+}
+
+pub const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION: u32 = 1;
+pub const AI_TRANSCRIPT_CURSOR_LIMIT_MAX: usize = 1_024;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSessionTranscriptPage {
