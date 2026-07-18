@@ -4,7 +4,9 @@ import { TranscriptPayloadCache } from "./transcriptPayloadCache";
 
 describe("TranscriptPayloadCache", () => {
     it("loads heavy payloads only on demand and enforces its byte budget", async () => {
-        const load = vi.fn(async (payloadRef: string) => payloadRef.repeat(10));
+        const load = vi.fn((payloadRef: string) =>
+            Promise.resolve(payloadRef.repeat(10)),
+        );
         const cache = new TranscriptPayloadCache({ load }, 100, (value) => value.length * 2);
 
         expect(load).not.toHaveBeenCalled();

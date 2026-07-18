@@ -400,6 +400,10 @@ export type NativeAiTranscriptBlockMetadata = {
     readonly revision: number;
 };
 
+export type NativeAiTranscriptBlock = NativeAiTranscriptBlockMetadata & {
+    readonly entries: readonly NativeAiTranscriptEntryEnvelope[];
+};
+
 export type NativeAiSessionTranscriptPage = {
     readonly sessionId: NativeSessionId;
     readonly offset: number;

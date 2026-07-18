@@ -17,6 +17,10 @@ import type {
     AiSessionSnapshot,
     AiSessionStatus,
     AiSessionTranscriptPage,
+    AiTranscriptBlock,
+    AiTranscriptBlockMetadata,
+    AiTranscriptCursorInput,
+    AiTranscriptEntryEnvelope,
     AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
@@ -40,6 +44,9 @@ import {
     type NativeAiRuntimeSessionMapping,
     type NativeAiSessionSnapshot,
     type NativeAiSessionTranscriptPage,
+    type NativeAiTranscriptBlock,
+    type NativeAiTranscriptBlockMetadata,
+    type NativeAiTranscriptEntryEnvelope,
     type NativeAiRuntimeConnectionPayload,
     type NativeAiRuntimeStatus,
     type NativeAiSendPromptOutput,
@@ -353,6 +360,63 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         return nativeTranscriptPageToIpc(
             requireRecord(output, "Native AI transcript page") as unknown as NativeAiSessionTranscriptPage,
         );
+    }
+
+    async appendTranscriptEntries(
+        sessionId: string,
+        entries: readonly AiTranscriptEntryEnvelope[],
+    ): Promise<void> {
+        await this.#client.request("ai_append_transcript_entries", {
+            entries,
+            sessionId,
+        });
+    }
+
+    async loadTranscriptBlockMetadata(
+        sessionId: string,
+    ): Promise<readonly AiTranscriptBlockMetadata[]> {
+        const output = await this.#client.request<unknown>(
+            "ai_load_transcript_block_metadata",
+            { sessionId },
+        );
+        if (!Array.isArray(output)) throw new Error("Native transcript metadata must be an array.");
+        return output as NativeAiTranscriptBlockMetadata[];
+    }
+
+    async loadTranscriptBefore(
+        input: AiTranscriptCursorInput,
+    ): Promise<readonly AiTranscriptEntryEnvelope[]> {
+        return this.#loadTranscriptCursor("ai_load_transcript_before", input);
+    }
+
+    async loadTranscriptAfter(
+        input: AiTranscriptCursorInput,
+    ): Promise<readonly AiTranscriptEntryEnvelope[]> {
+        return this.#loadTranscriptCursor("ai_load_transcript_after", input);
+    }
+
+    async loadTranscriptBlock(
+        sessionId: string,
+        blockId: string,
+    ): Promise<AiTranscriptBlock | null> {
+        const output = await this.#client.request<unknown>("ai_load_transcript_block", {
+            blockId,
+            sessionId,
+        });
+        return output as NativeAiTranscriptBlock | null;
+    }
+
+    async #loadTranscriptCursor(
+        command: "ai_load_transcript_before" | "ai_load_transcript_after",
+        input: AiTranscriptCursorInput,
+    ): Promise<readonly AiTranscriptEntryEnvelope[]> {
+        const output = await this.#client.request<unknown>(command, {
+            limit: input.limit,
+            sequence: input.sequence,
+            sessionId: input.sessionId,
+        });
+        if (!Array.isArray(output)) throw new Error("Native transcript cursor output must be an array.");
+        return output as NativeAiTranscriptEntryEnvelope[];
     }
 
     async loadSessionSnapshot(sessionId: string): Promise<AiSessionSnapshot | null> {

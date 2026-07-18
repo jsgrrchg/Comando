@@ -608,6 +608,13 @@ pub struct NativeAiTranscriptAroundInput {
     pub after: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiLoadTranscriptBlockInput {
+    pub session_id: SessionId,
+    pub block_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSessionTranscriptPage {

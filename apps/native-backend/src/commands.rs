@@ -223,6 +223,11 @@ impl NativeBackend {
             | "ai_rename_session"
             | "ai_list_session_history"
             | "ai_load_session_transcript_page"
+            | "ai_append_transcript_entries"
+            | "ai_load_transcript_block_metadata"
+            | "ai_load_transcript_before"
+            | "ai_load_transcript_after"
+            | "ai_load_transcript_block"
             | "ai_load_session_snapshot"
             | "ai_list_session_runtime_mappings"
             | "ai_set_session_pinned"
@@ -348,6 +353,11 @@ impl NativeBackend {
             | "ai_rename_session"
             | "ai_list_session_history"
             | "ai_load_session_transcript_page"
+            | "ai_append_transcript_entries"
+            | "ai_load_transcript_block_metadata"
+            | "ai_load_transcript_before"
+            | "ai_load_transcript_after"
+            | "ai_load_transcript_block"
             | "ai_load_session_snapshot"
             | "ai_list_session_runtime_mappings"
             | "ai_set_session_pinned"
@@ -2339,6 +2349,82 @@ impl NativeBackend {
                     Ok(page) => response_only(
                         request.id,
                         serde_json::to_value(page).expect("ai transcript page serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_append_transcript_entries" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiAppendTranscriptEntriesInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .append_transcript_entries(&input.session_id, input.entries)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(entries) => response_only(
+                        request.id,
+                        serde_json::to_value(entries).expect("AI transcript entries serialize"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_transcript_block_metadata" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadSessionSnapshotInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .load_transcript_block_metadata(&input.session_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(metadata) => response_only(
+                        request.id,
+                        serde_json::to_value(metadata).expect("AI transcript metadata serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_transcript_before" | "ai_load_transcript_after" => {
+                let command = request.command.clone();
+                let input = match parse_args::<native_ai::NativeAiTranscriptCursorInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_history_store().and_then(|store| {
+                    let result = if command == "ai_load_transcript_before" {
+                        store.load_transcript_before(input)
+                    } else {
+                        store.load_transcript_after(input)
+                    };
+                    result.map_err(|error| error.to_native_error())
+                }) {
+                    Ok(entries) => response_only(
+                        request.id,
+                        serde_json::to_value(entries)
+                            .expect("AI transcript cursor entries serialize"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_transcript_block" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadTranscriptBlockInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .load_transcript_block(&input.session_id, &input.block_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(block) => response_only(
+                        request.id,
+                        serde_json::to_value(block).expect("AI transcript block serializes"),
                     ),
                     Err(error) => error_only(request.id, error),
                 }

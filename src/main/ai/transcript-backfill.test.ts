@@ -21,16 +21,18 @@ describe("backfillLegacyTranscript", () => {
         let checkpoint = 0;
         const appended = new Map<string, AiTranscriptEntryEnvelope>();
         const adapter = {
-            append: vi.fn(async (_sessionId: string, entries: readonly AiTranscriptEntryEnvelope[]) => {
+            append: vi.fn((_sessionId: string, entries: readonly AiTranscriptEntryEnvelope[]) => {
                 for (const entry of entries) appended.set(entry.id, entry);
+                return Promise.resolve();
             }),
-            loadCheckpoint: vi.fn(async () => checkpoint),
-            loadLegacyPage: vi.fn(async (_sessionId: string, offset: number, limit: number) => ({
+            loadCheckpoint: vi.fn(() => Promise.resolve(checkpoint)),
+            loadLegacyPage: vi.fn((_sessionId: string, offset: number, limit: number) => Promise.resolve({
                 messages: messages.slice(offset, offset + limit),
                 total: messages.length,
             })),
-            saveCheckpoint: vi.fn(async (_sessionId: string, offset: number) => {
+            saveCheckpoint: vi.fn((_sessionId: string, offset: number) => {
                 checkpoint = offset;
+                return Promise.resolve();
             }),
         };
 

@@ -22,8 +22,8 @@ function block(blockId: string, count: number): AiTranscriptBlock {
 
 describe("TranscriptWindowStore", () => {
     it("deduplicates loads and evicts only recoverable blocks", async () => {
-        const loadBlock = vi.fn(async (_sessionId: string, blockId: string) =>
-            block(blockId, 256),
+        const loadBlock = vi.fn((_sessionId: string, blockId: string) =>
+            Promise.resolve(block(blockId, 256)),
         );
         const store = new TranscriptWindowStore({ loadBlock }, 512);
 

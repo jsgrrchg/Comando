@@ -23,5 +23,7 @@ export function toAiSessionOperationalSnapshot(
 ): AiSessionOperationalSnapshot {
     const { messages: _messages, toolActivity: _toolActivity, ...operational } =
         snapshot;
+    void _messages;
+    void _toolActivity;
     return { ...operational, transcript };
 }

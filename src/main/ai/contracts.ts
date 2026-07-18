@@ -20,6 +20,10 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
     AiSessionTranscriptPage,
+    AiTranscriptBlock,
+    AiTranscriptBlockMetadata,
+    AiTranscriptCursorInput,
+    AiTranscriptEntryEnvelope,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
     GetAiSessionTranscriptPageInput,
@@ -128,6 +132,10 @@ export type AiSessionFreezeSkippedReason =
     | "pending_user_input";
 
 export interface NativeAiGateway {
+    appendTranscriptEntries?(
+        sessionId: string,
+        entries: readonly AiTranscriptEntryEnvelope[],
+    ): Promise<void>;
     cancelSession(sessionId: string): Promise<void>;
     captureReviewBaseline?(sessionId: string): Promise<boolean>;
     close(): Promise<void> | void;
@@ -144,6 +152,10 @@ export interface NativeAiGateway {
     loadSessionTranscriptPage(
         input: GetAiSessionTranscriptPageInput,
     ): Promise<AiSessionTranscriptPage | null>;
+    loadTranscriptBlock?(sessionId: string, blockId: string): Promise<AiTranscriptBlock | null>;
+    loadTranscriptBlockMetadata?(sessionId: string): Promise<readonly AiTranscriptBlockMetadata[]>;
+    loadTranscriptBefore?(input: AiTranscriptCursorInput): Promise<readonly AiTranscriptEntryEnvelope[]>;
+    loadTranscriptAfter?(input: AiTranscriptCursorInput): Promise<readonly AiTranscriptEntryEnvelope[]>;
     getRuntimeStatus?(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus>;
     saveRuntimeSettings?(input: NativeAiRuntimeSettingsRpcInput): Promise<AiRuntimeStatus>;
     launchRuntimeAuth?(input: AiRuntimeAuthLaunchInput): Promise<void>;
