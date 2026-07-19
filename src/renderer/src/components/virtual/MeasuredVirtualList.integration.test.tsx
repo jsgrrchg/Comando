@@ -121,6 +121,10 @@ interface MountConfig {
     readonly overscan: number;
     readonly preserveScrollAnchorOnItemsChange?: boolean;
     readonly preserveScrollAnchorOnMeasure: boolean;
+    readonly shouldPreserveScrollAnchorForItemMeasurement?: (
+        item: Item,
+        index: number,
+    ) => boolean;
     readonly getItemMeasurementKey?: (item: Item, index: number) => string;
     readonly getItemIdentityKey?: (item: Item, index: number) => string;
     readonly shouldPreserveScrollAnchorOnMeasure?: () => boolean;
@@ -178,6 +182,9 @@ function mountList(config: MountConfig): MountedList {
             }
             shouldPreserveScrollAnchorOnMeasure={
                 config.shouldPreserveScrollAnchorOnMeasure
+            }
+            shouldPreserveScrollAnchorForItemMeasurement={
+                config.shouldPreserveScrollAnchorForItemMeasurement
             }
             scrollContainerRef={scrollContainerRef}
             scrollMarginTop={0}
@@ -406,6 +413,30 @@ describe("MeasuredVirtualList scroll anchoring (integration)", () => {
 
         // 20 → 8 is -12, so scrollTop drops from 300 to 288.
         expect(list.scrollContainer.scrollTop).toBe(300 + (8 - ITEM_HEIGHT));
+
+        list.root.unmount();
+    });
+
+    it("can skip anchor compensation for one measured row", () => {
+        const list = mountList({
+            items: createItems(60),
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+            shouldPreserveScrollAnchorForItemMeasurement: (
+                _item,
+                index,
+            ) => index >= 15,
+        });
+
+        scrollTo(list, 300);
+        const aboveIndex = renderedIndexes(list.mountNode)[0];
+        expect(aboveIndex).toBeLessThan(300 / ITEM_HEIGHT);
+
+        act(() => {
+            fireRowResize(rowWrapper(list.mountNode, aboveIndex), 60);
+        });
+
+        expect(list.scrollContainer.scrollTop).toBe(300);
 
         list.root.unmount();
     });

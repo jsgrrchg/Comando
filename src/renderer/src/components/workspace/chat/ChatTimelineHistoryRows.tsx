@@ -51,6 +51,7 @@ interface ChatTimelineHistoryRowsProps {
     readonly onVirtualResizeStart?: () => void;
     readonly renderRow: (params: { readonly row: ChatTimelineRow }) => ReactNode;
     readonly scrollRef: RefObject<HTMLElement | null>;
+    readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
 }
@@ -74,6 +75,23 @@ export function resolveChatTimelineFrozenContentWidth(input: {
         : null;
 }
 
+function getTrailingUserRowId(
+    rows: readonly TranscriptTimelineHistoryRow[],
+): string | null {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        if (!row || isTranscriptBlockSpacerRow(row)) {
+            continue;
+        }
+
+        return row.kind === "message" && row.message.kind === "user"
+            ? row.id
+            : null;
+    }
+
+    return null;
+}
+
 export const ChatTimelineHistoryRows = memo(
     function ChatTimelineHistoryRows({
         active = true,
@@ -87,6 +105,7 @@ export const ChatTimelineHistoryRows = memo(
         onVirtualResizeStart,
         renderRow,
         scrollRef,
+        shouldDeferTrailingUserMeasurementAnchor,
         shouldPreserveVirtualMeasureAnchor,
         shouldPreserveVirtualResizeAnchor,
     }: ChatTimelineHistoryRowsProps) {
@@ -103,9 +122,28 @@ export const ChatTimelineHistoryRows = memo(
             null,
         );
         const virtualResizeActiveRef = useRef(false);
+        const handledTrailingUserMeasurementRef = useRef<string | null>(null);
         const [scrollMarginTop, setScrollMarginTop] = useState(0);
         const [contentMeasurementWidth, setContentMeasurementWidth] =
             useState(0);
+        const trailingUserRowId = getTrailingUserRowId(historyRows);
+        const shouldPreserveVirtualMeasureAnchorForItem = useCallback(
+            (row: TranscriptTimelineHistoryRow) => {
+                if (
+                    !shouldDeferTrailingUserMeasurementAnchor?.() ||
+                    row.id !== trailingUserRowId ||
+                    handledTrailingUserMeasurementRef.current === row.id
+                ) {
+                    return true;
+                }
+
+                // The newest prompt is entering at the followed edge. Let the
+                // final bottom-follow pass absorb its first real measurement.
+                handledTrailingUserMeasurementRef.current = row.id;
+                return false;
+            },
+            [shouldDeferTrailingUserMeasurementAnchor, trailingUserRowId],
+        );
         // While the pane splitter is being dragged we freeze the timeline: the
         // content keeps its pre-drag width (so rows don't reflow) and all metric
         // updates are skipped, then we re-sync once on release. frozenContentWidth
@@ -489,6 +527,9 @@ export const ChatTimelineHistoryRows = memo(
                     }
                     shouldPreserveScrollAnchorOnMeasure={
                         shouldPreserveVirtualMeasureAnchor
+                    }
+                    shouldPreserveScrollAnchorForItemMeasurement={
+                        shouldPreserveVirtualMeasureAnchorForItem
                     }
                     scrollContainerRef={scrollRef}
                     scrollMarginTop={scrollMarginTop}

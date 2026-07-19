@@ -1482,6 +1482,10 @@ export const ChatTabView = memo(function ChatTabView({
         return !resizeBottomLockRef.current;
     }, []);
 
+    const shouldDeferTimelineTrailingUserMeasurementAnchor = useCallback(() => {
+        return shouldAutoFollowRef.current && !resizeBottomLockRef.current;
+    }, []);
+
     const persistCurrentViewState = useCallback(
         (overrides?: {
             readonly isNearBottom?: boolean;
@@ -2464,6 +2468,9 @@ export const ChatTabView = memo(function ChatTabView({
                     shouldPreserveVirtualMeasureAnchor={
                         shouldPreserveTimelineVirtualMeasureAnchor
                     }
+                    shouldDeferTrailingUserMeasurementAnchor={
+                        shouldDeferTimelineTrailingUserMeasurementAnchor
+                    }
                     shouldPreserveVirtualResizeAnchor={
                         shouldPreserveTimelineVirtualResizeAnchor
                     }
@@ -2967,6 +2974,7 @@ type ChatTimelineProps = {
     readonly scrollRef: RefObject<HTMLDivElement | null>;
     readonly sessionId: string;
     readonly showJumpToBottom: boolean;
+    readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
@@ -3018,6 +3026,7 @@ const ChatTimeline = memo(function ChatTimeline({
     scrollRef,
     sessionId,
     showJumpToBottom,
+    shouldDeferTrailingUserMeasurementAnchor,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     timelineContentRef,
@@ -3085,6 +3094,9 @@ const ChatTimeline = memo(function ChatTimeline({
                             resolveFileReference={resolveFileReference}
                             scrollRef={scrollRef}
                             sessionId={sessionId}
+                            shouldDeferTrailingUserMeasurementAnchor={
+                                shouldDeferTrailingUserMeasurementAnchor
+                            }
                             shouldPreserveVirtualMeasureAnchor={
                                 shouldPreserveVirtualMeasureAnchor
                             }
@@ -3218,6 +3230,7 @@ type ChatTimelineHistoryProps = {
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
     readonly sessionId: string;
+    readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly worktreeId: string | null;
@@ -3244,6 +3257,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     resolveFileReference,
     scrollRef,
     sessionId,
+    shouldDeferTrailingUserMeasurementAnchor,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     worktreeId,
@@ -3302,6 +3316,9 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             renderRow={renderRow}
             scrollRef={scrollRef}
             sessionId={sessionId}
+            shouldDeferTrailingUserMeasurementAnchor={
+                shouldDeferTrailingUserMeasurementAnchor
+            }
             shouldPreserveVirtualMeasureAnchor={
                 shouldPreserveVirtualMeasureAnchor
             }
