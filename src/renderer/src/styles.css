@@ -3332,6 +3332,8 @@ button {
 /* ── Chat ── */
 
 .chat-scroll {
+    /* Keep browser scroll anchoring from competing with timeline compensation. */
+    overflow-anchor: none;
     scrollbar-color: color-mix(
             in srgb,
             var(--color-text-secondary) 24%,
