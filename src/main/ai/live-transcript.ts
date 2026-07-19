@@ -9,6 +9,16 @@ import type {
     AiTranscriptBlockMetadata,
     AiTranscriptEntryEnvelope,
 } from "@shared/ipc";
+import {
+    AI_TRANSCRIPT_PLAN_ENTRY_ID,
+    AI_TRANSCRIPT_STATUS_ENTRY_ID,
+    appendAiTranscriptDelta,
+    getAiTranscriptMessageEntryId,
+    getAiTranscriptToolEntryId,
+    getAiTranscriptTurnEntryId,
+    mergeAiTranscriptMessage,
+    mergeAiTranscriptToolActivity,
+} from "@shared/ai-transcript";
 
 export type AiLiveTranscriptPayload =
     | {
@@ -69,8 +79,8 @@ interface SessionLiveTranscriptTail {
     turnStartedAt: string | null;
 }
 
-const STATUS_ENTRY_ID = "status:active-turn";
-const PLAN_ENTRY_ID = "plan:active";
+const STATUS_ENTRY_ID = AI_TRANSCRIPT_STATUS_ENTRY_ID;
+const PLAN_ENTRY_ID = AI_TRANSCRIPT_PLAN_ENTRY_ID;
 const SUMMARY_PREVIEW_LENGTH = 280;
 
 export class AiLiveTranscriptTailStore {
@@ -650,7 +660,7 @@ function createEntryFromEvent(
                 : null;
         return createMessageEntry(event.sessionId, {
             attachments: existingMessage?.attachments ?? [],
-            content: chooseMessageContent(
+            content: appendAiTranscriptDelta(
                 existingMessage?.content ?? "",
                 event.content,
                 event.delta,
@@ -760,7 +770,7 @@ function createToolEntry(
     sessionId: string,
     activity: AiToolActivity,
 ): AiLiveTranscriptEntry {
-    const id = `tool:${sessionId}:${activity.id}`;
+    const id = getAiTranscriptToolEntryId(sessionId, activity.id);
     return {
         envelope: {
             createdAt: activity.createdAt,
@@ -861,33 +871,7 @@ function mergeLiveEntry(
     ) {
         const existingMessage = existing.payload.message;
         const incomingMessage = incoming.payload.message;
-        const content = chooseDeterministicContent(
-            existingMessage.content,
-            incomingMessage.content,
-            existing.envelope.updatedAt,
-            incoming.envelope.updatedAt,
-        );
-        const message: AiMessage = {
-            ...richerMessage(existingMessage, incomingMessage),
-            attachments:
-                incomingMessage.attachments.length > 0
-                    ? incomingMessage.attachments
-                    : existingMessage.attachments,
-            content,
-            createdAt:
-                existingMessage.createdAt < incomingMessage.createdAt
-                    ? existingMessage.createdAt
-                    : incomingMessage.createdAt,
-            generatedImage:
-                incomingMessage.generatedImage ??
-                existingMessage.generatedImage ??
-                null,
-            status:
-                existingMessage.status === "completed" ||
-                incomingMessage.status === "completed"
-                    ? "completed"
-                    : "streaming",
-        };
+        const message = mergeAiTranscriptMessage(existingMessage, incomingMessage, existing.envelope.updatedAt, incoming.envelope.updatedAt);
         return createMessageEntry(
             incoming.envelope.sessionId,
             message,
@@ -903,20 +887,7 @@ function mergeLiveEntry(
     ) {
         const existingActivity = existing.payload.activity;
         const incomingActivity = incoming.payload.activity;
-        const incomingWins =
-            incomingActivity.updatedAt > existingActivity.updatedAt ||
-            (incomingActivity.updatedAt === existingActivity.updatedAt &&
-                stableJson(incomingActivity) >= stableJson(existingActivity));
-        const winner = incomingWins ? incomingActivity : existingActivity;
-        return createToolEntry(incoming.envelope.sessionId, {
-            ...winner,
-            diffs:
-                winner.diffs.length > 0
-                    ? winner.diffs
-                    : existingActivity.diffs.length > 0
-                      ? existingActivity.diffs
-                      : incomingActivity.diffs,
-        });
+        return createToolEntry(incoming.envelope.sessionId, mergeAiTranscriptToolActivity(existingActivity, incomingActivity));
     }
     if (incoming.envelope.updatedAt < existing.envelope.updatedAt) {
         return existing;
@@ -930,48 +901,6 @@ function mergeLiveEntry(
     return incoming;
 }
 
-function richerMessage(left: AiMessage, right: AiMessage): AiMessage {
-    const leftWeight = messageMetadataWeight(left);
-    const rightWeight = messageMetadataWeight(right);
-    if (leftWeight !== rightWeight) {
-        return leftWeight > rightWeight ? left : right;
-    }
-    return stableJson(left) >= stableJson(right) ? left : right;
-}
-
-function messageMetadataWeight(message: AiMessage): number {
-    return (
-        message.attachments.length * 2 +
-        (message.generatedImage ? 2 : 0) +
-        (message.status === "completed" ? 1 : 0)
-    );
-}
-
-function chooseMessageContent(
-    existing: string,
-    content: string,
-    delta: string,
-): string {
-    if (content.length >= existing.length) {
-        return content;
-    }
-    return existing.endsWith(delta) ? existing : `${existing}${delta}`;
-}
-
-function chooseDeterministicContent(
-    existing: string,
-    incoming: string,
-    existingUpdatedAt: string,
-    incomingUpdatedAt: string,
-): string {
-    if (existing.length !== incoming.length) {
-        return existing.length > incoming.length ? existing : incoming;
-    }
-    if (existingUpdatedAt !== incomingUpdatedAt) {
-        return existingUpdatedAt > incomingUpdatedAt ? existing : incoming;
-    }
-    return existing > incoming ? existing : incoming;
-}
 
 function findInsertIndex(
     orderedEntryIds: readonly string[],
@@ -1014,7 +943,7 @@ function compareToolActivity(
 }
 
 function messageEntryId(messageId: string): string {
-    return `message:${messageId}`;
+    return getAiTranscriptMessageEntryId(messageId);
 }
 
 function payloadRefFor(entryId: string): string {
@@ -1022,7 +951,7 @@ function payloadRefFor(entryId: string): string {
 }
 
 function scopedTurnEntryId(baseId: string, turnStartedAt: string): string {
-    return `${baseId}:${turnStartedAt}`;
+    return getAiTranscriptTurnEntryId(baseId, turnStartedAt);
 }
 
 function maximumTimestamp(left: string, right: string): string {

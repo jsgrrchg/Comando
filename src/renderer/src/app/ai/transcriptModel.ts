@@ -7,6 +7,14 @@ import type {
     AiSessionStatus,
     AiToolActivity,
 } from "@shared/ipc";
+import {
+    AI_TRANSCRIPT_PLAN_ENTRY_ID,
+    AI_TRANSCRIPT_STATUS_ENTRY_ID,
+    getAiTranscriptMessageEntryId,
+    getAiTranscriptToolEntryId,
+    mergeAiTranscriptMessage,
+    mergeAiTranscriptToolActivity,
+} from "@shared/ai-transcript";
 
 export type AiSessionTranscriptEntry =
     | {
@@ -93,8 +101,8 @@ interface TranscriptMergeOptions {
     readonly includeTools: boolean;
 }
 
-const PLAN_ENTRY_ID = "plan:active";
-const STATUS_ENTRY_ID = "status:active-turn";
+const PLAN_ENTRY_ID = AI_TRANSCRIPT_PLAN_ENTRY_ID;
+const STATUS_ENTRY_ID = AI_TRANSCRIPT_STATUS_ENTRY_ID;
 const OPAQUE_ENCRYPTED_MESSAGE_PATTERN = /^gAAAAA[A-Za-z0-9_-]{40,}={0,2}$/;
 const transcriptMutationByModel = new WeakMap<
     AiSessionTranscriptModel,
@@ -416,11 +424,11 @@ function createToolTranscriptEntry(
 }
 
 function getMessageTranscriptId(messageId: string): string {
-    return `message:${messageId}`;
+    return getAiTranscriptMessageEntryId(messageId);
 }
 
 function getToolTranscriptId(sessionId: string, toolCallId: string): string {
-    return `tool:${sessionId}:${toolCallId}`;
+    return getAiTranscriptToolEntryId(sessionId, toolCallId);
 }
 
 export function buildAiSessionTranscriptModelFromEntries(
@@ -909,18 +917,17 @@ function mergeTranscriptEntry(
             createdAt: options.preserveCreatedAt
                 ? existing.createdAt
                 : incoming.createdAt,
-            message: mergeAiMessage(existing.message, incoming.message),
+            message: mergeAiTranscriptMessage(existing.message, incoming.message, existing.updatedAt, incoming.updatedAt),
         };
     }
 
     if (existing.kind === "tool" && incoming.kind === "tool") {
         return {
             ...incoming,
-            activity: mergeAiToolActivity(
-                existing.activity,
-                incoming.activity,
-                options,
-            ),
+            activity: {
+                ...mergeAiTranscriptToolActivity(existing.activity, incoming.activity),
+                createdAt: options.preserveCreatedAt ? existing.createdAt : incoming.createdAt,
+            },
             createdAt: options.preserveCreatedAt
                 ? existing.createdAt
                 : incoming.createdAt,
@@ -930,41 +937,6 @@ function mergeTranscriptEntry(
     return incoming;
 }
 
-function mergeAiMessage(existing: AiMessage, incoming: AiMessage): AiMessage {
-    return {
-        ...incoming,
-        attachments:
-            existing.attachments.length > incoming.attachments.length
-                ? existing.attachments
-                : incoming.attachments,
-        content:
-            existing.content.length > incoming.content.length
-                ? existing.content
-                : incoming.content,
-        generatedImage: incoming.generatedImage ?? existing.generatedImage,
-        status:
-            existing.status === "completed" && incoming.status !== "completed"
-                ? "completed"
-                : incoming.status,
-    };
-}
-
-function mergeAiToolActivity(
-    existing: AiToolActivity,
-    incoming: AiToolActivity,
-    options: {
-        readonly preserveCreatedAt?: boolean;
-    } = {},
-): AiToolActivity {
-    return {
-        ...incoming,
-        createdAt: options.preserveCreatedAt
-            ? existing.createdAt
-            : incoming.createdAt,
-        exitCode: incoming.exitCode ?? existing.exitCode,
-        terminalOutput: incoming.terminalOutput ?? existing.terminalOutput,
-    };
-}
 
 function shouldIncludeIncomingEntry(
     entry: AiSessionTranscriptEntry,
