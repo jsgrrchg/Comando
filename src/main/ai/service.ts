@@ -3,7 +3,6 @@ import fs from "node:fs";
 import type {
     AiHistorySessionSummary,
     AiFileDiff,
-    AiMessage,
     AiPermissionResponseInput,
     AiPromptResult,
     AiPromptQueueSnapshot,
@@ -135,6 +134,10 @@ import {
 } from "./review-core";
 import { buildRuntimeSpawnEnv } from "./runtime-env";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
+import {
+    AiLiveTranscriptTailStore,
+    type AiLiveTranscriptTailSnapshot,
+} from "./live-transcript";
 import {
     applyCodexAuthEnv,
     buildCodexSecretPatches,
@@ -461,6 +464,9 @@ export class AiService {
     readonly #lastRetentionSkippedRecords: AiSessionRetentionSkippedRecord[] = [];
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
+    readonly #liveTranscriptTails = new AiLiveTranscriptTailStore();
+    readonly #loadedTranscriptBlockMetadataSessionIds = new Set<string>();
+    readonly #loadingTranscriptBlockMetadataSessionIds = new Set<string>();
     readonly #liveSessionTouches = new Map<
         string,
         {
@@ -562,6 +568,9 @@ export class AiService {
         this.#pendingNativeCatalogPatches.clear();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
+        this.#liveTranscriptTails.clear();
+        this.#loadedTranscriptBlockMetadataSessionIds.clear();
+        this.#loadingTranscriptBlockMetadataSessionIds.clear();
         this.#liveSessionTouches.clear();
         for (const sessionId of this.#retentionCloseRuntimeSessionIds.keys()) {
             this.#forgetRetentionCloseRuntimeSessions(sessionId);
@@ -614,7 +623,11 @@ export class AiService {
                 continue;
             }
 
-            const snapshot = this.#liveSnapshots.get(context.sessionId) ?? null;
+            const storedSnapshot =
+                this.#liveSnapshots.get(context.sessionId) ?? null;
+            const snapshot = storedSnapshot
+                ? this.#liveTranscriptTails.projectLegacySnapshot(storedSnapshot)
+                : null;
             if (snapshot && isResyncEligibleAiSessionStatus(snapshot.status)) {
                 snapshots.push(snapshot);
             }
@@ -636,7 +649,16 @@ export class AiService {
             return null;
         }
 
-        return this.#liveSnapshots.get(sessionId) ?? null;
+        const snapshot = this.#liveSnapshots.get(sessionId) ?? null;
+        return snapshot
+            ? this.#liveTranscriptTails.projectLegacySnapshot(snapshot)
+            : null;
+    }
+
+    getLiveTranscriptTail(
+        sessionId: string,
+    ): AiLiveTranscriptTailSnapshot | null {
+        return this.#liveTranscriptTails.getSnapshot(sessionId);
     }
 
     handleNativeRuntimeStatus(status: AiRuntimeStatus): void {
@@ -677,8 +699,13 @@ export class AiService {
             ),
             ownerWindowId,
         );
+        this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
+        this.#scheduleTranscriptBlockMetadataLoad(nextSnapshot.sessionId);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
-            nextSnapshot,
+            preserveCanonicalTranscriptArrays(
+                previousSnapshot,
+                nextSnapshot,
+            ),
             ownerWindowId,
         );
         this.#persistence.saveSessionSnapshot(cachedSnapshot);
@@ -710,6 +737,8 @@ export class AiService {
         if (this.#consumeRetentionCloseEvent(event)) {
             return;
         }
+
+        this.#liveTranscriptTails.applyEvent(event);
 
         const previousSnapshot = this.#liveSnapshots.get(event.sessionId);
         if (previousSnapshot) {
@@ -2416,6 +2445,37 @@ export class AiService {
         return this.#nativeAi;
     }
 
+    #scheduleTranscriptBlockMetadataLoad(sessionId: string): void {
+        const nativeAi = this.#nativeAi;
+        if (
+            !nativeAi?.loadTranscriptBlockMetadata ||
+            this.#loadedTranscriptBlockMetadataSessionIds.has(sessionId) ||
+            this.#loadingTranscriptBlockMetadataSessionIds.has(sessionId)
+        ) {
+            return;
+        }
+
+        this.#loadingTranscriptBlockMetadataSessionIds.add(sessionId);
+        void nativeAi
+            .loadTranscriptBlockMetadata(sessionId)
+            .then((blocks) => {
+                if (this.#deletedSessionIds.has(sessionId)) {
+                    return;
+                }
+                this.#liveTranscriptTails.setStableBlocks(sessionId, blocks);
+                this.#loadedTranscriptBlockMetadataSessionIds.add(sessionId);
+            })
+            .catch((error: unknown) => {
+                debugBenignError(
+                    "ai.service.loadTranscriptBlockMetadata",
+                    error,
+                );
+            })
+            .finally(() => {
+                this.#loadingTranscriptBlockMetadataSessionIds.delete(sessionId);
+            });
+    }
+
     #requireNativeAiGatewayForRuntime(runtimeId: AiRuntimeId): NativeAiGateway {
         const nativeAi = this.#selectNativeAiGateway(runtimeId);
         if (!nativeAi) {
@@ -2534,6 +2594,13 @@ export class AiService {
         for (const currentSessionId of sessionIdsToClear) {
             this.#nativeChildParentSessionIds.delete(currentSessionId);
             this.#liveSnapshots.delete(currentSessionId);
+            this.#liveTranscriptTails.clearSession(currentSessionId);
+            this.#loadedTranscriptBlockMetadataSessionIds.delete(
+                currentSessionId,
+            );
+            this.#loadingTranscriptBlockMetadataSessionIds.delete(
+                currentSessionId,
+            );
             this.#liveSessionContexts.delete(currentSessionId);
             this.#liveSessionTouches.delete(currentSessionId);
             this.#freezingSessionIds.delete(currentSessionId);
@@ -2951,10 +3018,15 @@ export class AiService {
             ),
             ownerWindowId,
         );
+        this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
-            nextSnapshot,
+            preserveCanonicalTranscriptArrays(
+                previousSnapshot,
+                nextSnapshot,
+            ),
             ownerWindowId,
         );
+        this.#scheduleTranscriptBlockMetadataLoad(cachedSnapshot.sessionId);
         if (!this.#isNativeAiSession(cachedSnapshot.sessionId)) {
             this.#persistence.saveSessionSnapshot(cachedSnapshot);
         }
@@ -3201,76 +3273,16 @@ export class AiService {
             };
         }
 
-        if (event.kind === "message-started") {
-            return {
-                ...base,
-                messages: upsertNativeMessage(
-                    snapshot.messages,
-                    event.message,
-                ),
-            };
-        }
-
-        if (event.kind === "message-delta") {
-            return {
-                ...base,
-                messages: updateNativeMessageContent(
-                    snapshot.messages,
-                    event.messageId,
-                    event.content,
-                ),
-            };
-        }
-
-        if (event.kind === "message-completed") {
-            return {
-                ...base,
-                messages: completeNativeMessage(
-                    snapshot.messages,
-                    event.messageId,
-                ),
-            };
-        }
-
-        if (event.kind === "thinking-started") {
-            return {
-                ...base,
-                messages: upsertNativeMessage(
-                    snapshot.messages,
-                    event.message,
-                ),
-            };
-        }
-
-        if (event.kind === "thinking-delta") {
-            return {
-                ...base,
-                messages: updateNativeMessageContent(
-                    snapshot.messages,
-                    event.messageId,
-                    event.content,
-                ),
-            };
-        }
-
-        if (event.kind === "thinking-completed") {
-            return {
-                ...base,
-                messages: completeNativeMessage(
-                    snapshot.messages,
-                    event.messageId,
-                ),
-            };
-        }
-
-        if (event.kind === "image-generation") {
-            return {
-                ...base,
-                messages: upsertNativeMessage(
-                    snapshot.messages,
-                    event.message,
-                ),
-            };
+        if (
+            event.kind === "message-started" ||
+            event.kind === "message-delta" ||
+            event.kind === "message-completed" ||
+            event.kind === "thinking-started" ||
+            event.kind === "thinking-delta" ||
+            event.kind === "thinking-completed" ||
+            event.kind === "image-generation"
+        ) {
+            return base;
         }
 
         if (event.kind === "subagent-created") {
@@ -3298,15 +3310,8 @@ export class AiService {
         }
 
         if (event.kind === "tool-activity") {
-            const nextSnapshot = {
-                ...base,
-                toolActivity: upsertNativeToolActivity(
-                    snapshot.toolActivity,
-                    event.activity,
-                ),
-            };
             return this.#applyNativeToolActivityReviewDiffs(
-                nextSnapshot,
+                base,
                 event.activity,
                 event.origin,
             );
@@ -5535,75 +5540,18 @@ function resolveCodexSecretBundle(
     };
 }
 
-function upsertNativeMessage(
-    messages: readonly AiMessage[],
-    message: AiMessage,
-): readonly AiMessage[] {
-    const existingIndex = messages.findIndex(
-        (candidate) => candidate.id === message.id,
-    );
-    if (existingIndex < 0) {
-        return [...messages, message];
+function preserveCanonicalTranscriptArrays(
+    previousSnapshot: AiSessionSnapshot | null,
+    nextSnapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    if (!previousSnapshot) {
+        return nextSnapshot;
     }
-
-    return messages.map((candidate, index) =>
-        index === existingIndex ? { ...candidate, ...message } : candidate,
-    );
-}
-
-function updateNativeMessageContent(
-    messages: readonly AiMessage[],
-    messageId: string,
-    content: string,
-): readonly AiMessage[] {
-    return messages.map((message) =>
-        message.id === messageId
-            ? {
-                  ...message,
-                  content,
-                  status: "streaming" as const,
-              }
-            : message,
-    );
-}
-
-function completeNativeMessage(
-    messages: readonly AiMessage[],
-    messageId: string,
-): readonly AiMessage[] {
-    return messages.map((message) =>
-        message.id === messageId
-            ? {
-                  ...message,
-                  status: "completed" as const,
-              }
-            : message,
-    );
-}
-
-function upsertNativeToolActivity(
-    activities: readonly AiToolActivity[],
-    activity: AiToolActivity,
-): readonly AiToolActivity[] {
-    const existingIndex = activities.findIndex(
-        (candidate) => candidate.id === activity.id,
-    );
-    if (existingIndex < 0) {
-        return [...activities, activity];
-    }
-
-    return activities.map((candidate, index) =>
-        index === existingIndex
-            ? {
-                  ...candidate,
-                  ...activity,
-                  diffs:
-                      activity.diffs.length > 0
-                          ? activity.diffs
-                          : candidate.diffs,
-              }
-            : candidate,
-    );
+    return {
+        ...nextSnapshot,
+        messages: previousSnapshot.messages,
+        toolActivity: previousSnapshot.toolActivity,
+    };
 }
 
 function mergePersistedCatalogIntoSessionSnapshot(
