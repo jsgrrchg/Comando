@@ -10,7 +10,7 @@ use comando_ai::events::{
 };
 use comando_ai::history::{
     AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
-    AiTranscriptPayloadWrite, LegacyAiHistoryReader,
+    LegacyAiHistoryReader,
 };
 use comando_ai::runtime_setup::invalidate_runtime_auth_on_error;
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
@@ -2391,14 +2391,6 @@ impl NativeBackend {
                     Ok(input) => input,
                     Err(error) => return error_only(request.id, error),
                 };
-                let payloads = input
-                    .payloads
-                    .into_iter()
-                    .map(|payload| AiTranscriptPayloadWrite {
-                        payload_ref: payload.payload_ref,
-                        value: payload.value,
-                    })
-                    .collect();
                 match self.ai_history_store().and_then(|store| {
                     store
                         .checkpoint_open_transcript_tail(
@@ -2406,7 +2398,7 @@ impl NativeBackend {
                             &input.turn_id,
                             input.terminal_status,
                             input.entries,
-                            payloads,
+                            input.payloads,
                             input.removed_entry_ids,
                             input.entry_order,
                         )
@@ -2440,21 +2432,13 @@ impl NativeBackend {
                     Ok(input) => input,
                     Err(error) => return error_only(request.id, error),
                 };
-                let payloads = input
-                    .payloads
-                    .into_iter()
-                    .map(|payload| AiTranscriptPayloadWrite {
-                        payload_ref: payload.payload_ref,
-                        value: payload.value,
-                    })
-                    .collect();
                 match self.ai_history_store().and_then(|store| {
                     store
                         .seal_transcript_turn(
                             &input.session_id,
                             &input.turn_id,
                             input.entries,
-                            payloads,
+                            input.payloads,
                         )
                         .map_err(|error| error.to_native_error())
                 }) {
