@@ -747,6 +747,12 @@ export function resetAiStoreRuntimeBuffersForTests(): void {
     transcriptPayloadCachesBySession.clear();
 }
 
+export function applyAiTranscriptMemoryPressure(factor = 0.5): void {
+    for (const cache of transcriptPayloadCachesBySession.values()) {
+        cache.applyMemoryPressure(factor);
+    }
+}
+
 function transcriptPayloadCacheFor(
     sessionId: string,
 ): TranscriptPayloadCache<AiTranscriptPayload> {

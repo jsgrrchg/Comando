@@ -94,7 +94,11 @@ import {
     useRenderProbe,
 } from "@renderer/app/debug/renderProbe";
 import { recordWorkspacePerformanceEvent } from "@renderer/app/debug/workspacePerformanceProbe";
-import { useAiStore } from "@renderer/app/store/ai-store";
+import {
+    applyAiTranscriptMemoryPressure,
+    useAiStore,
+} from "@renderer/app/store/ai-store";
+import { rendererArtifactCache } from "@renderer/app/workspace/resource-budget";
 import { useGitStore } from "@renderer/app/store/git-store";
 import {
     getGitHubRepoKey,
@@ -783,6 +787,18 @@ export function WorkspaceView({
             `mounted=${hotChatTabIds.size}; panes=${workspaceViewLifecycles.lifecycleByPaneId.size}`,
         );
     }, [hotChatTabIds, workspaceViewLifecycles]);
+    useEffect(() => {
+        const releaseRecoverableArtifacts = () => {
+            rendererArtifactCache.applyMemoryPressure();
+            applyAiTranscriptMemoryPressure();
+        };
+        window.addEventListener("memorypressure", releaseRecoverableArtifacts);
+        return () =>
+            window.removeEventListener(
+                "memorypressure",
+                releaseRecoverableArtifacts,
+            );
+    }, []);
     const [externalDropTarget, setExternalDropTarget] =
         useState<WorkspacePaneDropTarget | null>(null);
     const [externalDragPreview, setExternalDragPreview] =

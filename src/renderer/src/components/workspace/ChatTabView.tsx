@@ -51,6 +51,7 @@ import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
+import { chatActivationScheduler } from "@renderer/app/workspace/chatActivationScheduler";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
@@ -279,6 +280,9 @@ export const ChatTabView = memo(function ChatTabView({
     const cancelQueuedPromptEdit = useAiStore((s) => s.cancelQueuedPromptEdit);
     const clearQueuedPrompts = useAiStore((s) => s.clearQueuedPrompts);
     const ensureSession = useAiStore((s) => s.ensureSession);
+    const hydrateTranscriptWindow = useAiStore(
+        (s) => s.hydrateTranscriptWindow,
+    );
     const prefetchTranscriptWindow = useAiStore(
         (s) => s.prefetchTranscriptWindow,
     );
@@ -594,6 +598,24 @@ export const ChatTabView = memo(function ChatTabView({
             void ensureSession(latestSessionTabRef.current);
         }
     }, [active, ensureSession, sessionPreparationKey]);
+
+    useEffect(() => {
+        if (!active) return;
+        return chatActivationScheduler.activate(tab.id, async (phase) => {
+            if (phase === "window") {
+                await hydrateTranscriptWindow(tab.sessionId);
+            }
+            if (phase === "prefetch") {
+                await prefetchTranscriptWindow(tab.sessionId, "backward");
+            }
+        });
+    }, [
+        active,
+        hydrateTranscriptWindow,
+        prefetchTranscriptWindow,
+        tab.id,
+        tab.sessionId,
+    ]);
 
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);

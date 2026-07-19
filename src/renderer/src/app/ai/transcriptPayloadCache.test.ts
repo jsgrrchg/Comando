@@ -28,4 +28,19 @@ describe("TranscriptPayloadCache", () => {
         await expect(cache.load("payload-1")).resolves.toBe("recovered");
         expect(load).toHaveBeenCalledTimes(2);
     });
+
+    it("releases only unprotected payloads under memory pressure", async () => {
+        const cache = new TranscriptPayloadCache(
+            { load: (payloadRef: string) => Promise.resolve(payloadRef.repeat(8)) },
+            256,
+            (value) => value.length,
+        );
+        await cache.load("protected");
+        cache.protect("protected");
+        await cache.load("recoverable");
+
+        cache.applyMemoryPressure(0);
+
+        expect(cache.residentBytes).toBe("protected".repeat(8).length);
+    });
 });
