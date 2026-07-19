@@ -49,7 +49,7 @@ export class TranscriptWindowStore {
                 session.blocks.delete(blockId);
                 session.touchedAt.delete(blockId);
                 session.protectedBlockIds.delete(blockId);
-                this.recordEviction(sessionId, blockId);
+                this.recordEviction(sessionId);
             }
         }
         session.metadata = metadata;
@@ -66,8 +66,8 @@ export class TranscriptWindowStore {
 
     clear(sessionId: string): void {
         const session = this.sessions.get(sessionId);
-        for (const blockId of session?.blocks.keys() ?? []) {
-            this.recordEviction(sessionId, blockId);
+        if ((session?.blocks.size ?? 0) > 0) {
+            this.recordEviction(sessionId);
         }
         this.sessions.delete(sessionId);
         this.evictedSessionIds.delete(sessionId);
@@ -133,7 +133,7 @@ export class TranscriptWindowStore {
             if (!candidate) return;
             candidate.session.blocks.delete(candidate.blockId);
             candidate.session.touchedAt.delete(candidate.blockId);
-            this.recordEviction(candidate.sessionId, candidate.blockId);
+            this.recordEviction(candidate.sessionId);
             incrementChatPerformanceCounter("transcript_blocks_evicted");
         }
     }

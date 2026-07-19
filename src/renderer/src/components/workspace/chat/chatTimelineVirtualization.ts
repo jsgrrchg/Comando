@@ -124,6 +124,9 @@ function getChatTimelineRowLayoutBase(
 export function isWidthSensitiveChatTimelineRow(
     row: TimelineMeasuredRow,
 ): boolean {
+    if (row.kind === "content-chunk") {
+        return true;
+    }
     if (row.kind === "activity-entry") {
         return row.item.kind === "thinking";
     }
@@ -184,6 +187,13 @@ let nextRowMeasurementToken = 0;
 const rowMeasurementTokens = new WeakMap<object, number>();
 
 function getRowMeasurementToken(row: TimelineMeasuredRow): string {
+    if (row.kind === "content-chunk") {
+        // Chunk objects are rebuilt with the surrounding presentation list.
+        // Anchor their measurement to the immutable message revision instead.
+        return `content-chunk:${getObjectMeasurementToken(
+            row.message,
+        )}:${row.chunkIndex}`;
+    }
     if (row.kind === "activity-summary") {
         return `activity-summary:${getObjectMeasurementToken(
             row.segment,
@@ -279,6 +289,15 @@ export function estimateChatTimelineRowHeight(
     context: ChatTimelineRowEstimateContext,
 ): number {
     const gapPx = Math.max(0, context.gapPx ?? 0);
+
+    if (row.kind === "content-chunk") {
+        return Math.ceil(
+            estimateMessageRowHeight(
+                { ...row.message, content: row.content },
+                context,
+            ) + gapPx,
+        );
+    }
 
     if (row.kind === "message") {
         return Math.ceil(

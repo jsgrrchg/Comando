@@ -146,6 +146,7 @@ import {
     type TranscriptTimelineItem,
     type TranscriptTimelineVirtualRow,
 } from "./chat/transcriptBlockVirtualization";
+import { splitLongContentRows } from "./chat/longContentVirtualization";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
@@ -1298,15 +1299,24 @@ export const ChatTabView = memo(function ChatTabView({
                       createTranscriptStreamingIndicatorItem(elapsed),
                   ]
                 : sourceItems;
-            return flattenTranscriptTimelineItems(itemsWithStreamingIndicator, {
-                activeGroupId:
-                    timelineModel.liveTailRow?.kind === "activity-segment"
-                        ? timelineModel.liveTailRow.id
-                        : null,
-                defaultExpanded:
-                    aiChatSettings.toolActivityDefaultExpansion === "expanded",
-                expansionByGroupId: activityExpansionByGroupId,
-            });
+            const flattenedItems = flattenTranscriptTimelineItems(
+                itemsWithStreamingIndicator,
+                {
+                    activeGroupId:
+                        timelineModel.liveTailRow?.kind === "activity-segment"
+                            ? timelineModel.liveTailRow.id
+                            : null,
+                    defaultExpanded:
+                        aiChatSettings.toolActivityDefaultExpansion ===
+                        "expanded",
+                    expansionByGroupId: activityExpansionByGroupId,
+                },
+            );
+            return splitLongContentRows(
+                flattenedItems,
+                (item): item is typeof item & { readonly kind: "message" } =>
+                    item.kind === "message",
+            );
         },
         [
             activityExpansionByGroupId,
@@ -3663,6 +3673,29 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     row,
     worktreeId,
 }: ChatTimelineRowViewProps) {
+    if (row.kind === "content-chunk") {
+        return (
+            <div
+                className="min-w-0 w-full"
+                data-content-chunk={row.chunkIndex}
+            >
+                <ChatMessageRow
+                    canRenderFileReference={canRenderFileReference}
+                    chatFontFamily={chatFontFamily}
+                    chatFontSize={chatFontSize}
+                    // Chunks are only emitted for attachment-free assistant text.
+                    // The persisted message retains the complete, copyable payload.
+                    message={{ ...row.message, content: row.content }}
+                    onAddFileReferenceToChat={onAddFileReferenceToChat}
+                    onOpenFile={onOpenResolvedFileReference}
+                    onOpenImage={onOpenImage}
+                    onRevealFileReference={onRevealFileReference}
+                    resolveFileReference={resolveFileReference}
+                />
+            </div>
+        );
+    }
+
     if (row.kind === "message") {
         return (
             <div className="min-w-0 w-full">

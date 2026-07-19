@@ -9,6 +9,7 @@ import type {
     ChatTimelineAtomicRow,
     ChatTimelineRow,
 } from "./chatTimelineModel";
+import type { LongContentChunkRow } from "./longContentVirtualization";
 
 export const ACTIVITY_GROUP_WINDOW_SIZE = 200;
 
@@ -75,6 +76,7 @@ export interface TranscriptActivityEntryItem {
 export type TranscriptTimelineVirtualRow =
     | ChatTimelineAtomicRow
     | ChatTimelineActivitySegmentRow
+    | LongContentChunkRow
     | TranscriptActivitySummaryItem
     | TranscriptActivityRangeItem
     | TranscriptActivityEntryItem;
@@ -317,6 +319,9 @@ export function getTranscriptTimelineItemAnchorEntryId(
 ): string | null {
     if (!isChatTimelineRowItem(item)) {
         return null;
+    }
+    if (item.kind === "content-chunk") {
+        return item.sourceRowId;
     }
     if (item.kind === "activity-entry") {
         return getActivitySegmentItemId(item.item);

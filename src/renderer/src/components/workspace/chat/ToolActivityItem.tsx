@@ -1,4 +1,4 @@
-import { memo, useEffect, type ReactNode } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 
 import type {
     AiToolActivity,
@@ -46,6 +46,9 @@ export type ToolPayloadVisibilityChangeHandler = (
     activityId: string,
     visible: boolean,
 ) => void;
+
+const TOOL_DETAIL_INITIAL_VISIBLE_CHARACTERS = 48_000;
+const TOOL_DETAIL_VISIBLE_CHARACTER_PAGE = 48_000;
 
 function useReportToolPayloadVisibility(
     activityId: string,
@@ -811,38 +814,90 @@ function ToolDetailCodeBlock({
     readonly preserveLayout?: boolean;
 }) {
     const languageSupport = useMarkdownCodeLanguageSupport(languageInfo);
+    const isLongContent =
+        content.length > TOOL_DETAIL_INITIAL_VISIBLE_CHARACTERS;
+    const [visibleCharacterCount, setVisibleCharacterCount] = useState(
+        () =>
+            isLongContent
+                ? TOOL_DETAIL_INITIAL_VISIBLE_CHARACTERS
+                : content.length,
+    );
+    const visibleContent = isLongContent
+        ? content.slice(0, visibleCharacterCount)
+        : content;
+    const hasHiddenContent = visibleContent.length < content.length;
+
+    const copyFullContent = async () => {
+        // The complete tool payload stays in session state; only its DOM window
+        // is bounded, so full copy must never depend on what is currently shown.
+        await window.comando?.writeClipboardText(content);
+    };
 
     return (
-        <pre
-            className="max-h-48 select-text rounded px-2 py-1.5"
-            style={{
-                backgroundColor,
-                border: accentBorder ?? "1px solid var(--color-border)",
-                color,
-                fontFamily: "var(--font-mono, monospace)",
-                fontSize: "0.92em",
-                lineHeight: 1.4,
-                margin: 0,
-                overflowX: preserveLayout ? "auto" : "hidden",
-                overflowY: "auto",
-                overflowWrap: preserveLayout ? "normal" : "anywhere",
-                whiteSpace: preserveLayout ? "pre" : "pre-wrap",
-                wordBreak: preserveLayout ? "normal" : "break-word",
-            }}
-        >
-            <code
+        <div className="min-w-0">
+            <pre
+                className="max-h-48 select-text rounded px-2 py-1.5"
                 style={{
-                    color: "inherit",
-                    whiteSpace: "inherit",
+                    backgroundColor,
+                    border: accentBorder ?? "1px solid var(--color-border)",
+                    color,
+                    fontFamily: "var(--font-mono, monospace)",
+                    fontSize: "0.92em",
+                    lineHeight: 1.4,
+                    margin: 0,
+                    overflowX: preserveLayout ? "auto" : "hidden",
+                    overflowY: "auto",
+                    overflowWrap: preserveLayout ? "normal" : "anywhere",
+                    whiteSpace: preserveLayout ? "pre" : "pre-wrap",
+                    wordBreak: preserveLayout ? "normal" : "break-word",
                 }}
             >
-                <HighlightedCodeText
-                    language={languageSupport}
-                    segmentKeyPrefix={`tool-activity:${languageInfo ?? "plain"}:${content.length}`}
-                    text={content}
-                />
-            </code>
-        </pre>
+                <code
+                    style={{
+                        color: "inherit",
+                        whiteSpace: "inherit",
+                    }}
+                >
+                    <HighlightedCodeText
+                        language={languageSupport}
+                        segmentKeyPrefix={`tool-activity:${languageInfo ?? "plain"}:${content.length}:${visibleContent.length}`}
+                        text={visibleContent}
+                    />
+                </code>
+            </pre>
+            {isLongContent ? (
+                <div className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
+                    <span>
+                        Showing {visibleContent.length.toLocaleString()} of{" "}
+                        {content.length.toLocaleString()} characters
+                    </span>
+                    {hasHiddenContent ? (
+                        <button
+                            className="rounded px-1.5 py-0.5 hover:bg-bg-tertiary hover:text-text-primary"
+                            onClick={() =>
+                                setVisibleCharacterCount((current) =>
+                                    Math.min(
+                                        content.length,
+                                        current +
+                                            TOOL_DETAIL_VISIBLE_CHARACTER_PAGE,
+                                    ),
+                                )
+                            }
+                            type="button"
+                        >
+                            Show more
+                        </button>
+                    ) : null}
+                    <button
+                        className="rounded px-1.5 py-0.5 hover:bg-bg-tertiary hover:text-text-primary"
+                        onClick={() => void copyFullContent()}
+                        type="button"
+                    >
+                        Copy full output
+                    </button>
+                </div>
+            ) : null}
+        </div>
     );
 }
 
