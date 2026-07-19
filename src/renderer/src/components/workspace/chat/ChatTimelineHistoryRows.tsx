@@ -1,5 +1,4 @@
 import {
-    Fragment,
     memo,
     useCallback,
     useEffect,
@@ -28,7 +27,6 @@ import {
 import {
     CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
     CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN,
-    calculateChatTimelineVirtualizationCost,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
     getChatTimelineEffectiveContentWidth,
@@ -36,7 +34,6 @@ import {
     getChatTimelineRowMeasurementKey,
     getChatTimelineVirtualMeasurementWidth,
     getChatTimelineVirtualRowGapPx,
-    shouldVirtualizeChatTimeline,
     type ChatTimelineRowMeasurementContext,
 } from "./chatTimelineVirtualization";
 
@@ -122,15 +119,6 @@ export const ChatTimelineHistoryRows = memo(
         const isActiveRef = useRef(active);
         isFreezeActiveRef.current = frozenContentWidth !== null;
         isActiveRef.current = active;
-        const timelineRows = historyRows.filter(
-            (row): row is ChatTimelineRow =>
-                !isTranscriptBlockSpacerRow(row),
-        );
-        const virtualizationCost = calculateChatTimelineVirtualizationCost(timelineRows);
-        const shouldVirtualize =
-            timelineRows.length !== historyRows.length ||
-            shouldVirtualizeChatTimeline(virtualizationCost);
-
         const restorePendingResizeAnchor = useCallback(() => {
             const anchor = pendingResizeAnchorRef.current;
             pendingResizeAnchorRef.current = null;
@@ -185,10 +173,8 @@ export const ChatTimelineHistoryRows = memo(
                 nextContentMeasurementWidth;
 
             if (
-                shouldVirtualize &&
                 previousContentMeasurementWidth !== null &&
-                previousContentMeasurementWidth !==
-                    nextContentMeasurementWidth
+                previousContentMeasurementWidth !== nextContentMeasurementWidth
             ) {
                 if (shouldPreserveVirtualResizeAnchor?.() ?? true) {
                     pendingResizeAnchorRef.current =
@@ -213,7 +199,6 @@ export const ChatTimelineHistoryRows = memo(
             scheduleResizeAnchorRestore,
             scrollRef,
             shouldPreserveVirtualResizeAnchor,
-            shouldVirtualize,
         ]);
 
         const handleVirtualListReady = useCallback(
@@ -224,18 +209,16 @@ export const ChatTimelineHistoryRows = memo(
         );
 
         useLayoutEffect(() => {
-            if (!active || !shouldVirtualize) {
+            if (!active) {
                 return;
             }
 
             syncLayoutMetrics();
-        }, [active, historyRows.length, shouldVirtualize, syncLayoutMetrics]);
+        }, [active, historyRows.length, syncLayoutMetrics]);
 
         useEffect(() => {
             if (
-                !active ||
-                !shouldVirtualize ||
-                typeof ResizeObserver === "undefined"
+                !active || typeof ResizeObserver === "undefined"
             ) {
                 return;
             }
@@ -260,7 +243,7 @@ export const ChatTimelineHistoryRows = memo(
                 observer.disconnect();
                 window.removeEventListener("resize", syncLayoutMetrics);
             };
-        }, [active, scrollRef, shouldVirtualize, syncLayoutMetrics]);
+        }, [active, scrollRef, syncLayoutMetrics]);
 
         useLayoutEffect(() => {
             restorePendingResizeAnchor();
@@ -281,7 +264,7 @@ export const ChatTimelineHistoryRows = memo(
         // before the first width change lands (pointerdown precedes pointermove),
         // so the pinned width matches the pre-drag layout exactly.
         useLayoutEffect(() => {
-            if (!active || !shouldVirtualize) {
+            if (!active) {
                 if (virtualResizeActiveRef.current) {
                     virtualResizeActiveRef.current = false;
                     pendingVirtualResizeEndRef.current = false;
@@ -318,13 +301,12 @@ export const ChatTimelineHistoryRows = memo(
             onVirtualResizeEnd,
             onVirtualResizeStart,
             scrollRef,
-            shouldVirtualize,
         ]);
 
         // Once the freeze lifts the DOM holds the real width again, so adopt it
         // and re-anchor exactly once — instead of on every drag frame.
         useLayoutEffect(() => {
-            if (!active || !shouldVirtualize || frozenContentWidth !== null) {
+            if (!active || frozenContentWidth !== null) {
                 return;
             }
 
@@ -339,7 +321,6 @@ export const ChatTimelineHistoryRows = memo(
             active,
             frozenContentWidth,
             onVirtualResizeEnd,
-            shouldVirtualize,
             syncLayoutMetrics,
         ]);
 
@@ -461,31 +442,6 @@ export const ChatTimelineHistoryRows = memo(
                 buildRowContext,
             ],
         );
-
-        if (!shouldVirtualize) {
-            return (
-                <>
-                    {historyRows.map((row) => (
-                        <Fragment key={row.id}>
-                            {isTranscriptBlockSpacerRow(row) ? (
-                                <div
-                                    aria-hidden="true"
-                                    data-transcript-block-spacer={row.blockId}
-                                    style={{ height: `${row.estimatedHeight}px` }}
-                                />
-                            ) : (
-                                <ChatPresentationErrorBoundary
-                                    fallbackKind="row"
-                                    identity={row.id}
-                                >
-                                    {renderRow({ row })}
-                                </ChatPresentationErrorBoundary>
-                            )}
-                        </Fragment>
-                    ))}
-                </>
-            );
-        }
 
         return (
             <div

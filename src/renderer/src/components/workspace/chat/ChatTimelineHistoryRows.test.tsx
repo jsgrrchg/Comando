@@ -370,19 +370,27 @@ describe("ChatTimelineHistoryRows", () => {
         document.body.innerHTML = "";
     });
 
-    it("keeps the non-virtualized path below the threshold", () => {
+    it("virtualizes history below the threshold to preserve row identity", () => {
         const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1);
         const markup = renderHistoryRows(rows);
 
-        expect(measuredVirtualListMock).not.toHaveBeenCalled();
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                firstKey: "message:message-0",
+                itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1,
+            }),
+        );
         expect(markup).toContain("message:message-0");
         expect(markup).toContain(
             `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 2}`,
         );
     });
 
-    it.fails("keeps visible history mounted when block-native hydration starts", () => {
-        const visibleRow = createRows(1)[0]!;
+    it("keeps visible history mounted when block-native hydration starts", () => {
+        const [visibleRow] = createRows(1);
+        if (!visibleRow) {
+            throw new Error("expected a visible row");
+        }
         const scrollContainer = document.createElement("div");
         const mountNode = document.createElement("div");
         document.body.append(scrollContainer, mountNode);
