@@ -158,6 +158,18 @@ export interface MeasuredVirtualListProps<T> {
         item: T,
         index: number,
     ) => boolean;
+    /**
+     * Observes real row heights without making the virtual list responsible for
+     * a caller-specific estimation policy.
+     */
+    readonly onItemMeasured?: (
+        item: T,
+        index: number,
+        measurement: {
+            readonly height: number;
+            readonly previousHeight: number | undefined;
+        },
+    ) => void;
     readonly renderItem: (params: {
         readonly index: number;
         readonly isVisible: boolean;
@@ -519,6 +531,7 @@ export function MeasuredVirtualList<T>({
     shouldPreserveScrollAnchorOnItemsChange,
     shouldPreserveScrollAnchorOnMeasure,
     shouldPreserveScrollAnchorForItemMeasurement,
+    onItemMeasured,
     renderItem,
 }: MeasuredVirtualListProps<T>) {
     const isBrowser = typeof window !== "undefined";
@@ -577,12 +590,14 @@ export function MeasuredVirtualList<T>({
     const shouldPreserveScrollAnchorOnItemsChangeRef = useRef(
         shouldPreserveScrollAnchorOnItemsChange,
     );
+    const onItemMeasuredRef = useRef(onItemMeasured);
     shouldPreserveScrollAnchorOnMeasureRef.current =
         shouldPreserveScrollAnchorOnMeasure;
     shouldPreserveScrollAnchorForItemMeasurementRef.current =
         shouldPreserveScrollAnchorForItemMeasurement;
     shouldPreserveScrollAnchorOnItemsChangeRef.current =
         shouldPreserveScrollAnchorOnItemsChange;
+    onItemMeasuredRef.current = onItemMeasured;
     const cachedGeometry = useMemo(() => {
         const geometry = initialMeasurementsRef.current?.geometry ?? null;
         if (!geometry || geometry.items !== items) {
@@ -752,6 +767,13 @@ export function MeasuredVirtualList<T>({
             previousMeasuredSize,
             previousIdentitySize,
         });
+        const item = itemsRef.current[itemIndex];
+        if (item !== undefined) {
+            onItemMeasuredRef.current?.(item, itemIndex, {
+                height: normalizedSize,
+                previousHeight: previousKnownSize,
+            });
+        }
         const range = layoutRangeRef.current;
         const anchorAdjustment = calculateMeasuredVirtualScrollAnchorAdjustment(
             {

@@ -20,13 +20,35 @@ export const CHAT_ACTIVITY_RAIL_CONTENT_TOP_PX = 4;
 export const CHAT_ACTIVITY_RAIL_ENTRY_GAP_PX = 6;
 export const CHAT_ACTIVITY_RAIL_ENTRY_PADDING_Y_PX = 4;
 export const CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX = 28;
+export const CHAT_TIMELINE_ESTIMATE_CALIBRATION_ALPHA = 0.18;
+export const CHAT_TIMELINE_ESTIMATE_CALIBRATION_MIN_MULTIPLIER = 0.65;
+export const CHAT_TIMELINE_ESTIMATE_CALIBRATION_MAX_MULTIPLIER = 1.75;
 
 export interface ChatTimelineRowEstimateContext {
+    readonly estimateCalibration?: ReadonlyMap<string, number>;
     readonly chatFontSize?: number;
     readonly gapPx?: number;
     readonly toolActivityDefaultExpansion?: AiToolActivityDefaultExpansion;
     readonly width?: number;
 }
+
+export type ChatTimelineRowEstimateClass =
+    | "activity-entry-thinking"
+    | "activity-entry-tool"
+    | "activity-range"
+    | "activity-segment-collapsed"
+    | "activity-segment-expanded"
+    | "activity-summary"
+    | "content-chunk"
+    | "message-assistant"
+    | "message-assistant-code"
+    | "message-thinking"
+    | "message-user"
+    | "tool-file"
+    | "tool-terminal"
+    | "tool-terminal-expanded"
+    | "tool-failed"
+    | "tool";
 
 export interface ChatTimelineRowMeasurementContext
     extends ChatTimelineRowEstimateContext {
@@ -43,6 +65,60 @@ type TimelineMeasuredRow = ChatTimelineRow | TranscriptTimelineVirtualRow;
 
 export function getChatTimelineRowKey(row: TimelineMeasuredRow): string {
     return row.id;
+}
+
+/**
+ * Groups rows that share a similar layout. Width-sensitive groups are kept
+ * separate so a narrow-pane measurement cannot bias a wide-pane estimate.
+ */
+export function getChatTimelineRowEstimateBucket(
+    row: TimelineMeasuredRow,
+    context: ChatTimelineRowEstimateContext,
+): string {
+    const width = isWidthSensitiveChatTimelineRow(row)
+        ? getChatTimelineVirtualMeasurementWidth(context.width ?? 0)
+        : "static";
+    return `${getChatTimelineRowEstimateClass(row, context)}:${width}`;
+}
+
+export function getChatTimelineRowEstimateClass(
+    row: TimelineMeasuredRow,
+    context: ChatTimelineRowEstimateContext,
+): ChatTimelineRowEstimateClass {
+    if (row.kind === "content-chunk") return "content-chunk";
+    if (row.kind === "message") {
+        if (row.message.kind === "user") return "message-user";
+        if (row.message.kind === "thinking") return "message-thinking";
+        return countCodeBlocks(row.message.content) > 0
+            ? "message-assistant-code"
+            : "message-assistant";
+    }
+    if (row.kind === "activity-summary") return "activity-summary";
+    if (row.kind === "activity-range") return "activity-range";
+    if (row.kind === "activity-entry") {
+        return row.item.kind === "thinking"
+            ? "activity-entry-thinking"
+            : "activity-entry-tool";
+    }
+    if (row.kind === "activity-segment") {
+        return context.toolActivityDefaultExpansion === "expanded"
+            ? "activity-segment-expanded"
+            : "activity-segment-collapsed";
+    }
+
+    const activity = row.reviewEntry.activity;
+    if (isTerminalToolActivity(activity)) {
+        const startsExpanded =
+            !!activity.terminalOutput &&
+            (activity.status === "failed" ||
+                (activity.exitCode !== null && activity.exitCode !== 0));
+        return startsExpanded ? "tool-terminal-expanded" : "tool-terminal";
+    }
+    if (isFileToolActivity(activity, row.reviewEntry.trackedFiles)) {
+        return "tool-file";
+    }
+    if (activity.status === "failed") return "tool-failed";
+    return "tool";
 }
 
 // Height-affecting layout dimensions that are independent of the row's width.
@@ -227,6 +303,20 @@ export function estimateChatTimelineRowHeight(
     row: TimelineMeasuredRow,
     context: ChatTimelineRowEstimateContext,
 ): number {
+    const baseHeight = estimateChatTimelineRowBaseHeight(row, context);
+    const multiplier = getChatTimelineRowEstimateMultiplier(row, context);
+    return Math.ceil(baseHeight * multiplier);
+}
+
+/**
+ * Keeps calibration feedback separate from the heuristic that produced it, so
+ * each observed row adjusts future estimates instead of recursively amplifying
+ * its own correction.
+ */
+export function estimateChatTimelineRowBaseHeight(
+    row: TimelineMeasuredRow,
+    context: ChatTimelineRowEstimateContext,
+): number {
     const gapPx = Math.max(0, context.gapPx ?? 0);
 
     if (row.kind === "content-chunk") {
@@ -286,6 +376,22 @@ export function estimateChatTimelineRowHeight(
 
     return Math.ceil(
         estimateToolActivityHeight(row.reviewEntry, context) + gapPx,
+    );
+}
+
+function getChatTimelineRowEstimateMultiplier(
+    row: TimelineMeasuredRow,
+    context: ChatTimelineRowEstimateContext,
+): number {
+    const multiplier = context.estimateCalibration?.get(
+        getChatTimelineRowEstimateBucket(row, context),
+    );
+    if (multiplier === undefined || !Number.isFinite(multiplier)) {
+        return 1;
+    }
+    return Math.min(
+        CHAT_TIMELINE_ESTIMATE_CALIBRATION_MAX_MULTIPLIER,
+        Math.max(CHAT_TIMELINE_ESTIMATE_CALIBRATION_MIN_MULTIPLIER, multiplier),
     );
 }
 

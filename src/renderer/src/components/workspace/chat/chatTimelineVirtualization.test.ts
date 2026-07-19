@@ -9,11 +9,14 @@ import {
 import {
     CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX,
     CHAT_ACTIVITY_RAIL_HEADER_HEIGHT_PX,
+    CHAT_TIMELINE_ESTIMATE_CALIBRATION_MAX_MULTIPLIER,
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
     CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
     calculateChatTimelineVirtualScrollMarginTop,
+    estimateChatTimelineRowBaseHeight,
     estimateChatTimelineRowHeight,
     getChatTimelineEffectiveContentWidth,
+    getChatTimelineRowEstimateBucket,
     getChatTimelineRowIdentityKey,
     getChatTimelineRowMeasurementKey,
     getChatTimelineRowKey,
@@ -352,6 +355,55 @@ describe("chatTimelineVirtualization", () => {
         });
 
         expect(narrowHeight).toBeGreaterThan(wideHeight);
+    });
+
+    it("calibrates only estimates from the matching row class and width bucket", () => {
+        const longMessage = createMessageRow({
+            content: "A stable estimate learns from rows with the same layout. ".repeat(
+                30,
+            ),
+        });
+        const narrowContext = {
+            chatFontSize: 13,
+            gapPx: CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
+            width: 320,
+        };
+        const wideContext = { ...narrowContext, width: 960 };
+        const narrowBaseHeight = estimateChatTimelineRowBaseHeight(
+            longMessage,
+            narrowContext,
+        );
+        const calibration = new Map([
+            [getChatTimelineRowEstimateBucket(longMessage, narrowContext), 1.5],
+        ]);
+
+        expect(
+            estimateChatTimelineRowHeight(longMessage, {
+                ...narrowContext,
+                estimateCalibration: calibration,
+            }),
+        ).toBe(Math.ceil(narrowBaseHeight * 1.5));
+        expect(
+            estimateChatTimelineRowHeight(longMessage, {
+                ...wideContext,
+                estimateCalibration: calibration,
+            }),
+        ).toBe(estimateChatTimelineRowBaseHeight(longMessage, wideContext));
+        calibration.set(
+            getChatTimelineRowEstimateBucket(longMessage, narrowContext),
+            10,
+        );
+        expect(
+            estimateChatTimelineRowHeight(longMessage, {
+                ...narrowContext,
+                estimateCalibration: calibration,
+            }),
+        ).toBe(
+            Math.ceil(
+                narrowBaseHeight *
+                    CHAT_TIMELINE_ESTIMATE_CALIBRATION_MAX_MULTIPLIER,
+            ),
+        );
     });
 
     it("estimates collapsed thinking rows from their header, not hidden content", () => {

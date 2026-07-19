@@ -30,10 +30,15 @@ import {
 } from "./transcriptBlockVirtualization";
 import {
     CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
+    CHAT_TIMELINE_ESTIMATE_CALIBRATION_ALPHA,
+    CHAT_TIMELINE_ESTIMATE_CALIBRATION_MAX_MULTIPLIER,
+    CHAT_TIMELINE_ESTIMATE_CALIBRATION_MIN_MULTIPLIER,
     CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN,
     calculateChatTimelineVirtualScrollMarginTop,
+    estimateChatTimelineRowBaseHeight,
     estimateChatTimelineRowHeight,
     getChatTimelineEffectiveContentWidth,
+    getChatTimelineRowEstimateBucket,
     getChatTimelineRowIdentityKey,
     getChatTimelineRowMeasurementKey,
     getChatTimelineVirtualMeasurementWidth,
@@ -43,6 +48,7 @@ import {
 
 const MIN_FREEZABLE_CHAT_TIMELINE_WIDTH_PX = 240;
 const NEW_TURN_ANCHOR_OFFSET_PX = 20;
+const MAX_ESTIMATE_CALIBRATION_BUCKETS = 96;
 
 interface ChatTimelineHistoryRowsProps {
     readonly active?: boolean;
@@ -141,6 +147,9 @@ export const ChatTimelineHistoryRows = memo(
         );
         const virtualResizeActiveRef = useRef(false);
         const handledTrailingUserMeasurementRef = useRef<string | null>(null);
+        // This is intentionally local to the mounted timeline: measurements are
+        // only a rendering hint and must never become persisted chat state.
+        const estimateCalibrationRef = useRef(new Map<string, number>());
         const [scrollMarginTop, setScrollMarginTop] = useState(0);
         const [contentMeasurementWidth, setContentMeasurementWidth] =
             useState(0);
@@ -460,6 +469,7 @@ export const ChatTimelineHistoryRows = memo(
             ): ChatTimelineRowMeasurementContext => ({
                 chatFontFamily,
                 chatFontSize,
+                estimateCalibration: estimateCalibrationRef.current,
                 gapPx: resolveRowGapPx(index),
                 toolActivityDefaultExpansion,
                 width: contentMeasurementWidth,
@@ -471,6 +481,72 @@ export const ChatTimelineHistoryRows = memo(
                 resolveRowGapPx,
                 toolActivityDefaultExpansion,
             ],
+        );
+
+        const handleVirtualItemMeasured = useCallback(
+            (
+                item: TranscriptTimelineItem,
+                index: number,
+                measurement: {
+                    readonly height: number;
+                    readonly previousHeight: number | undefined;
+                },
+            ) => {
+                if (!isChatTimelineRowItem(item)) {
+                    return;
+                }
+                if (
+                    item.kind === "message" &&
+                    item.message.status === "streaming"
+                ) {
+                    // A moving stream is not representative training data for
+                    // future stable rows; it will be measured again on completion.
+                    return;
+                }
+
+                const context = buildRowContext(item, index);
+                const baseHeight = estimateChatTimelineRowBaseHeight(
+                    item,
+                    context,
+                );
+                if (!Number.isFinite(baseHeight) || baseHeight <= 0) {
+                    return;
+                }
+
+                const observedMultiplier = Math.min(
+                    CHAT_TIMELINE_ESTIMATE_CALIBRATION_MAX_MULTIPLIER,
+                    Math.max(
+                        CHAT_TIMELINE_ESTIMATE_CALIBRATION_MIN_MULTIPLIER,
+                        measurement.height / baseHeight,
+                    ),
+                );
+                const bucket = getChatTimelineRowEstimateBucket(item, context);
+                const previousMultiplier = estimateCalibrationRef.current.get(
+                    bucket,
+                );
+                const nextMultiplier =
+                    previousMultiplier === undefined
+                        ? observedMultiplier
+                        : previousMultiplier +
+                          (observedMultiplier - previousMultiplier) *
+                              CHAT_TIMELINE_ESTIMATE_CALIBRATION_ALPHA;
+
+                // Keep the calibration bounded while retaining recently seen
+                // width/type combinations for a long-lived chat view.
+                estimateCalibrationRef.current.delete(bucket);
+                estimateCalibrationRef.current.set(bucket, nextMultiplier);
+                if (
+                    estimateCalibrationRef.current.size >
+                    MAX_ESTIMATE_CALIBRATION_BUCKETS
+                ) {
+                    const oldestBucket = estimateCalibrationRef.current.keys().next()
+                        .value;
+                    if (oldestBucket) {
+                        estimateCalibrationRef.current.delete(oldestBucket);
+                    }
+                }
+            },
+            [buildRowContext],
         );
 
         const estimateSize = useCallback(
@@ -618,6 +694,7 @@ export const ChatTimelineHistoryRows = memo(
                         sessionId ? `chat-timeline:${sessionId}` : undefined
                     }
                     onRangeChange={onVirtualRangeChange}
+                    onItemMeasured={handleVirtualItemMeasured}
                     onReady={handleVirtualListReady}
                     overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
                     preserveScrollAnchorOnItemsChange
