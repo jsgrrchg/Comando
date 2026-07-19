@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AiTranscriptBlock, AiTranscriptBlockMetadata } from "@shared/ipc";
+import { resolveTranscriptPrefetchBlockId } from "@renderer/app/ai/transcriptWindowNavigation";
 
 import {
     buildTranscriptTimelineHistoryRows,
@@ -9,7 +10,6 @@ import {
     resolveAnchorBlockId,
     resolveTranscriptBlockIdsInRange,
     resolveUnloadedTranscriptBlockIdsInRange,
-    resolveTranscriptPrefetchBlockId,
     transcriptBlockEstimate,
 } from "./transcriptBlockVirtualization";
 
@@ -170,7 +170,7 @@ describe("transcriptBlockVirtualization", () => {
         });
         expect(
             resolveTranscriptPrefetchBlockId(
-                blocks,
+                blocks.map((block) => block.id),
                 new Set(["block-2"]),
                 "backward",
             ),

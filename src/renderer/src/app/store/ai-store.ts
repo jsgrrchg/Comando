@@ -91,6 +91,7 @@ import {
     type TranscriptWindowSnapshot,
 } from "@renderer/app/ai/transcriptWindowStore";
 import { TranscriptPayloadCache } from "@renderer/app/ai/transcriptPayloadCache";
+import { resolveTranscriptPrefetchBlockId } from "@renderer/app/ai/transcriptWindowNavigation";
 import { transcriptTimelineBlockCache } from "@renderer/app/ai/timelineBlockCache";
 import { matchesTrackedFilePath } from "@renderer/app/ai/trackedFilePath";
 import {
@@ -1799,19 +1800,13 @@ export const useAiStore = create<AiStore>((set, get) => ({
     prefetchTranscriptWindow: async (sessionId, direction) => {
         const windowState = get().sessions[sessionId]?.transcriptWindow;
         if (!windowState?.capabilityVersion) return;
-        const loadedIndexes = windowState.metadata
-            .map((block, index) =>
-                windowState.blocksById.has(block.blockId) ? index : -1,
-            )
-            .filter((index) => index >= 0);
-        if (loadedIndexes.length === 0) return;
-        const targetIndex =
-            direction === "backward"
-                ? Math.min(...loadedIndexes) - 1
-                : Math.max(...loadedIndexes) + 1;
-        const target = windowState.metadata[targetIndex] ?? null;
-        if (!target) return;
-        await get().loadTranscriptWindowBlock(sessionId, target.blockId);
+        const targetBlockId = resolveTranscriptPrefetchBlockId(
+            windowState.metadata.map((block) => block.blockId),
+            new Set(windowState.blocksById.keys()),
+            direction,
+        );
+        if (!targetBlockId) return;
+        await get().loadTranscriptWindowBlock(sessionId, targetBlockId);
     },
 
     setTranscriptWindowAnchor: (sessionId, anchorBlockId, followTail) => {
