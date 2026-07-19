@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act } from "react";
+import { act, useEffect } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -155,6 +155,28 @@ function createRows(count: number): ChatTimelineRow[] {
             message,
         };
     });
+}
+
+function createLoadedBlockSpacer(): TranscriptTimelineHistoryRow {
+    return {
+        blockId: "block-1",
+        estimatedHeight: 1,
+        id: "transcript-block:block-1",
+        isLoaded: true,
+        kind: "transcript-block-spacer",
+        metadata: {
+            blockId: "block-1",
+            endSequence: 1,
+            entryCount: 1,
+            estimatedHeight: 72,
+            estimatedRowCount: 1,
+            firstCreatedAt: "2026-04-14T00:00:00.000Z",
+            lastCreatedAt: "2026-04-14T00:00:00.000Z",
+            revision: 1,
+            sessionId: "session-1",
+            startSequence: 1,
+        },
+    };
 }
 
 function createSegmentRow(entryCount = 1): ChatTimelineRow {
@@ -357,6 +379,55 @@ describe("ChatTimelineHistoryRows", () => {
         expect(markup).toContain(
             `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 2}`,
         );
+    });
+
+    it.fails("keeps visible history mounted when block-native hydration starts", () => {
+        const visibleRow = createRows(1)[0]!;
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        let mounts = 0;
+        let unmounts = 0;
+
+        function InstrumentedRow({ row }: { readonly row: ChatTimelineRow }) {
+            useEffect(() => {
+                mounts += 1;
+                return () => {
+                    unmounts += 1;
+                };
+            }, []);
+
+            return <div data-row-id={row.id}>{row.id}</div>;
+        }
+
+        const render = (historyRows: readonly TranscriptTimelineHistoryRow[]) => {
+            root.render(
+                <ChatTimelineHistoryRows
+                    historyRows={historyRows}
+                    renderRow={({ row }) => <InstrumentedRow row={row} />}
+                    scrollRef={{ current: scrollContainer }}
+                />,
+            );
+        };
+
+        act(() => {
+            render([visibleRow]);
+        });
+        expect(mounts).toBe(1);
+
+        act(() => {
+            render([createLoadedBlockSpacer(), visibleRow]);
+        });
+
+        // This is the exact transition performed when a sealed turn becomes
+        // block-native. Replacing the direct list with MeasuredVirtualList
+        // currently unmounts the visible row, producing the visual blink.
+        expect(unmounts).toBe(0);
+
+        act(() => {
+            root.unmount();
+        });
     });
 
     it("virtualizes unloaded transcript blocks at their estimated height", () => {
