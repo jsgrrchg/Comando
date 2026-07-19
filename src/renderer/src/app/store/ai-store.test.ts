@@ -384,6 +384,68 @@ describe("ai-store queue", () => {
         ).toBe(false);
     });
 
+    it("does not inject historical messages when the first live follow-up snapshot arrives", () => {
+        const historicalMessage = createMessage({
+            content: "Earlier message that belongs to an unloaded block.",
+            id: "historical-message",
+            status: "completed",
+        });
+        const restoredTailMessage = createMessage({
+            content: "Most recent restored message.",
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "restored-tail-message",
+            status: "completed",
+        });
+        const followUpMessage = createMessage({
+            content: "Continue this chat.",
+            createdAt: "2026-04-14T00:02:00.000Z",
+            id: "follow-up-message",
+            kind: "user",
+            status: "streaming",
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [restoredTailMessage],
+                updatedAt: restoredTailMessage.createdAt,
+            }),
+        );
+        useAiStore.setState((state) => {
+            const session = state.sessions[TAB.sessionId]!;
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [TAB.sessionId]: {
+                        ...session,
+                        transcriptWindow: {
+                            ...session.transcriptWindow,
+                            capabilityVersion: 1,
+                        },
+                    },
+                },
+            };
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                activeTurnStartedAt: followUpMessage.createdAt,
+                messages: [
+                    historicalMessage,
+                    restoredTailMessage,
+                    followUpMessage,
+                ],
+                status: "streaming",
+                updatedAt: followUpMessage.createdAt,
+            }),
+        );
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcript.messages.map((message) => message.id),
+        ).toEqual([restoredTailMessage.id, followUpMessage.id]);
+    });
+
     it("evicts transcript payloads from both the cache and UI state", async () => {
         const payloadSize = 9 * 1024 * 1024;
         Object.defineProperty(globalThis, "window", {
