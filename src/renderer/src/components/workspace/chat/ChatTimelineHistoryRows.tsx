@@ -22,6 +22,10 @@ import {
 import type { ChatTimelineRow } from "./chatTimelineModel";
 import { ChatPresentationErrorBoundary } from "./ChatPresentationErrorBoundary";
 import {
+    isTranscriptBlockSpacerRow,
+    type TranscriptTimelineHistoryRow,
+} from "./transcriptBlockVirtualization";
+import {
     CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
     CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN,
     calculateChatTimelineVirtualizationCost,
@@ -30,7 +34,6 @@ import {
     getChatTimelineEffectiveContentWidth,
     getChatTimelineRowIdentityKey,
     getChatTimelineRowMeasurementKey,
-    getChatTimelineRowKey,
     getChatTimelineVirtualMeasurementWidth,
     getChatTimelineVirtualRowGapPx,
     shouldVirtualizeChatTimeline,
@@ -43,7 +46,7 @@ interface ChatTimelineHistoryRowsProps {
     readonly active?: boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
-    readonly historyRows: readonly ChatTimelineRow[];
+    readonly historyRows: readonly TranscriptTimelineHistoryRow[];
     readonly sessionId?: string;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeEnd?: () => void;
@@ -119,10 +122,13 @@ export const ChatTimelineHistoryRows = memo(
         const isActiveRef = useRef(active);
         isFreezeActiveRef.current = frozenContentWidth !== null;
         isActiveRef.current = active;
-        const virtualizationCost = calculateChatTimelineVirtualizationCost(
-            historyRows,
+        const timelineRows = historyRows.filter(
+            (row): row is ChatTimelineRow =>
+                !isTranscriptBlockSpacerRow(row),
         );
+        const virtualizationCost = calculateChatTimelineVirtualizationCost(timelineRows);
         const shouldVirtualize =
+            timelineRows.length !== historyRows.length ||
             shouldVirtualizeChatTimeline(virtualizationCost);
 
         const restorePendingResizeAnchor = useCallback(() => {
@@ -377,23 +383,35 @@ export const ChatTimelineHistoryRows = memo(
         );
 
         const estimateSize = useCallback(
-            (row: ChatTimelineRow, index: number) =>
-                estimateChatTimelineRowHeight(row, buildRowContext(row, index)),
+            (row: TranscriptTimelineHistoryRow, index: number) =>
+                isTranscriptBlockSpacerRow(row)
+                    ? row.estimatedHeight
+                    : estimateChatTimelineRowHeight(
+                          row,
+                          buildRowContext(row, index),
+                      ),
             [buildRowContext],
         );
 
         const getItemMeasurementKey = useCallback(
-            (row: ChatTimelineRow, index: number) =>
-                getChatTimelineRowMeasurementKey(
-                    row,
-                    buildRowContext(row, index),
-                ),
+            (row: TranscriptTimelineHistoryRow, index: number) =>
+                isTranscriptBlockSpacerRow(row)
+                    ? `${row.id}:${row.estimatedHeight}`
+                    : getChatTimelineRowMeasurementKey(
+                          row,
+                          buildRowContext(row, index),
+                      ),
             [buildRowContext],
         );
 
         const getItemIdentityKey = useCallback(
-            (row: ChatTimelineRow, index: number) =>
-                getChatTimelineRowIdentityKey(row, buildRowContext(row, index)),
+            (row: TranscriptTimelineHistoryRow, index: number) =>
+                isTranscriptBlockSpacerRow(row)
+                    ? row.id
+                    : getChatTimelineRowIdentityKey(
+                          row,
+                          buildRowContext(row, index),
+                      ),
             [buildRowContext],
         );
 
@@ -404,8 +422,17 @@ export const ChatTimelineHistoryRows = memo(
             }: {
                 readonly index: number;
                 readonly isVisible: boolean;
-                readonly item: ChatTimelineRow;
+                readonly item: TranscriptTimelineHistoryRow;
             }) => {
+                if (isTranscriptBlockSpacerRow(item)) {
+                    return (
+                        <div
+                            aria-hidden="true"
+                            data-transcript-block-spacer={item.blockId}
+                            style={{ height: `${item.estimatedHeight}px` }}
+                        />
+                    );
+                }
                 const gapPx = resolveRowGapPx(index);
 
                 return (
@@ -440,12 +467,20 @@ export const ChatTimelineHistoryRows = memo(
                 <>
                     {historyRows.map((row) => (
                         <Fragment key={row.id}>
-                            <ChatPresentationErrorBoundary
-                                fallbackKind="row"
-                                identity={row.id}
-                            >
-                                {renderRow({ row })}
-                            </ChatPresentationErrorBoundary>
+                            {isTranscriptBlockSpacerRow(row) ? (
+                                <div
+                                    aria-hidden="true"
+                                    data-transcript-block-spacer={row.blockId}
+                                    style={{ height: `${row.estimatedHeight}px` }}
+                                />
+                            ) : (
+                                <ChatPresentationErrorBoundary
+                                    fallbackKind="row"
+                                    identity={row.id}
+                                >
+                                    {renderRow({ row })}
+                                </ChatPresentationErrorBoundary>
+                            )}
                         </Fragment>
                     ))}
                 </>
@@ -470,7 +505,7 @@ export const ChatTimelineHistoryRows = memo(
                         CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
                     }
                     estimateSize={estimateSize}
-                    getItemKey={getChatTimelineRowKey}
+                    getItemKey={getTranscriptTimelineHistoryRowKey}
                     getItemIdentityKey={getItemIdentityKey}
                     getItemMeasurementKey={getItemMeasurementKey}
                     geometryCacheSignature={
@@ -509,3 +544,9 @@ export const ChatTimelineHistoryRows = memo(
 );
 
 ChatTimelineHistoryRows.displayName = "ChatTimelineHistoryRows";
+
+function getTranscriptTimelineHistoryRowKey(
+    row: TranscriptTimelineHistoryRow,
+): string {
+    return row.id;
+}

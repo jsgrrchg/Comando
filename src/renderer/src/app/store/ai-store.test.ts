@@ -342,6 +342,33 @@ describe("ai-store queue", () => {
                     "payload:thinking-1",
                 ),
         ).toBe(true);
+
+        useAiStore
+            .getState()
+            .setTranscriptWindowAnchor(TAB.sessionId, "block-1", false);
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcriptWindow.payloadsByRef.has(
+                    "payload:thinking-1",
+                ),
+        ).toBe(true);
+        useAiStore
+            .getState()
+            .setTranscriptWindowAnchor(TAB.sessionId, "block-2", false);
+        expect(
+            [...(
+                useAiStore.getState().sessions[TAB.sessionId]?.transcriptWindow
+                    .protectedBlockIds ?? []
+            )],
+        ).toEqual(expect.arrayContaining(["block-2", "block-3"]));
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcriptWindow.protectedBlockIds.has(
+                    "block-1",
+                ),
+        ).toBe(false);
     });
 
     it("keeps a command-only runtime catalog from status updates", () => {

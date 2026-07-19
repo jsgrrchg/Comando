@@ -121,7 +121,14 @@ import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
 import { ToolActivitySegment } from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
 import { TimelineBlockCache } from "./chat/timelineBlocks";
-import { captureTranscriptSemanticAnchor } from "./chat/transcriptBlockVirtualization";
+import {
+    buildTranscriptTimelineHistoryRows,
+    captureTranscriptSemanticAnchor,
+    isTranscriptBlockSpacerRow,
+    resolveTranscriptBlockIdsInRange,
+    resolveUnloadedTranscriptBlockIdsInRange,
+    type TranscriptTimelineHistoryRow,
+} from "./chat/transcriptBlockVirtualization";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
@@ -286,6 +293,12 @@ export const ChatTabView = memo(function ChatTabView({
     const prefetchTranscriptWindow = useAiStore(
         (s) => s.prefetchTranscriptWindow,
     );
+    const loadTranscriptWindowBlock = useAiStore(
+        (s) => s.loadTranscriptWindowBlock,
+    );
+    const setTranscriptWindowAnchor = useAiStore(
+        (s) => s.setTranscriptWindowAnchor,
+    );
     const editQueuedPrompt = useAiStore((s) => s.editQueuedPrompt);
     const refreshRuntimeStatus = useAiStore((s) => s.refreshRuntimeStatus);
     const registerSessionTab = useAiStore((s) => s.registerSessionTab);
@@ -391,7 +404,6 @@ export const ChatTabView = memo(function ChatTabView({
         trackedFiles: null,
         transcript: null,
     });
-    const previousVirtualRangeRef = useRef<MeasuredVirtualRange | null>(null);
     const semanticAnchorRef = useRef<{
         readonly alignment: "center" | "end" | "start";
         readonly entryId: string;
@@ -1158,6 +1170,22 @@ export const ChatTabView = memo(function ChatTabView({
         tab.sessionId,
         transcript,
     ]);
+    const transcriptHistoryRows = useMemo(
+        () =>
+            transcriptWindow?.capabilityVersion
+                ? buildTranscriptTimelineHistoryRows(
+                      transcriptWindow.metadata,
+                      transcriptWindow.blocksById,
+                      timelineModel.historyRows,
+                  )
+                : timelineModel.historyRows,
+        [
+            timelineModel.historyRows,
+            transcriptWindow?.blocksById,
+            transcriptWindow?.capabilityVersion,
+            transcriptWindow?.metadata,
+        ],
+    );
     /* eslint-enable react-hooks/refs */
     // Commit the reconciled timeline to the ref after render so StrictMode's
     // double-render cannot leave a stale/discarded model written during memo.
@@ -1311,9 +1339,30 @@ export const ChatTabView = memo(function ChatTabView({
     ]);
 
     const handleTimelineVirtualRangeChange = useCallback((range: MeasuredVirtualRange) => {
+        const firstVisibleTimelineRow = transcriptHistoryRows
+            .slice(range.visibleStartIndex, range.visibleEndIndex + 1)
+            .find((row) => !isTranscriptBlockSpacerRow(row));
         semanticAnchorRef.current = captureTranscriptSemanticAnchor({
-            entryId: timelineModel.historyRows[range.visibleStartIndex]?.id ?? null,
+            entryId: firstVisibleTimelineRow?.id ?? null,
         });
+        const visibleBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
+            transcriptHistoryRows,
+            range.visibleStartIndex,
+            range.visibleEndIndex,
+        );
+        const residentBlockIds = resolveTranscriptBlockIdsInRange(
+            transcriptHistoryRows,
+            range.visibleStartIndex,
+            range.visibleEndIndex,
+        );
+        setTranscriptWindowAnchor(
+            tab.sessionId,
+            residentBlockIds[0] ?? null,
+            shouldAutoFollowRef.current,
+        );
+        for (const blockId of visibleBlockIds) {
+            void loadTranscriptWindowBlock(tab.sessionId, blockId);
+        }
         recordChatPerformanceMetric("virtual_range", {
             sessionId: tab.sessionId,
             values: {
@@ -1326,20 +1375,13 @@ export const ChatTabView = memo(function ChatTabView({
         });
         if (shouldAutoFollowRef.current) {
             scheduleScrollToBottom();
-        } else if (
-            transcriptWindow?.capabilityVersion &&
-            range.visibleStartIndex === 0 &&
-            previousVirtualRangeRef.current?.visibleStartIndex !== 0
-        ) {
-            void prefetchTranscriptWindow(tab.sessionId, "backward");
         }
-        previousVirtualRangeRef.current = range;
     }, [
-        prefetchTranscriptWindow,
+        loadTranscriptWindowBlock,
         scheduleScrollToBottom,
+        setTranscriptWindowAnchor,
         tab.sessionId,
-        timelineModel.historyRows,
-        transcriptWindow?.capabilityVersion,
+        transcriptHistoryRows,
     ]);
 
     const handleTimelineVirtualResizeAutoFollow = useCallback(() => {
@@ -2171,7 +2213,7 @@ export const ChatTabView = memo(function ChatTabView({
                 durationMs: actualDuration,
                 sessionId: tab.sessionId,
                 values: {
-                    historyRows: timelineModel.historyRows.length,
+                    historyRows: transcriptHistoryRows.length,
                     liveTailRows: timelineModel.liveTailRow ? 1 : 0,
                     toolRows: timelineModel.orderedAtomicRows.filter(
                         (row) => row.kind === "tool",
@@ -2181,7 +2223,7 @@ export const ChatTabView = memo(function ChatTabView({
         },
         [
             tab.sessionId,
-            timelineModel.historyRows.length,
+            transcriptHistoryRows.length,
             timelineModel.liveTailRow,
             timelineModel.orderedAtomicRows,
         ],
@@ -2306,7 +2348,7 @@ export const ChatTabView = memo(function ChatTabView({
                     chatFontSize={aiChatSettings.chatFontSize}
                     elapsed={elapsed}
                     covered={composerExpanded}
-                    historyRows={timelineModel.historyRows}
+                    historyRows={transcriptHistoryRows}
                     isStreaming={isStreaming}
                     liveTailRow={timelineModel.liveTailRow}
                     onAddFileReferenceToChat={
@@ -2799,7 +2841,7 @@ type ChatTimelineProps = {
     readonly chatFontSize?: number;
     readonly elapsed: string;
     readonly covered?: boolean;
-    readonly historyRows: readonly ChatTimelineRow[];
+    readonly historyRows: readonly TranscriptTimelineHistoryRow[];
     readonly isStreaming: boolean;
     readonly liveTailRow: ChatTimelineRow | null;
     readonly onAddFileReferenceToChat?: (
@@ -3045,7 +3087,7 @@ type ChatTimelineHistoryProps = {
     ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
-    readonly historyRows: readonly ChatTimelineRow[];
+    readonly historyRows: readonly TranscriptTimelineHistoryRow[];
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;

@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import type { AiTranscriptBlock, AiTranscriptBlockMetadata } from "@shared/ipc";
 
 import {
+    buildTranscriptTimelineHistoryRows,
     buildTranscriptVirtualBlocks,
     captureTranscriptSemanticAnchor,
     resolveAnchorBlockId,
+    resolveTranscriptBlockIdsInRange,
+    resolveUnloadedTranscriptBlockIdsInRange,
     resolveTranscriptPrefetchBlockId,
     transcriptBlockEstimate,
 } from "./transcriptBlockVirtualization";
@@ -28,6 +31,92 @@ describe("transcriptBlockVirtualization", () => {
         const blocks = buildTranscriptVirtualBlocks([metadata], new Map());
         expect(blocks[0]?.kind).toBe("spacer");
         expect(blocks[0] && transcriptBlockEstimate(blocks[0])).toBe(72);
+    });
+
+    it("keeps block positions stable while resident blocks are loaded and evicted", () => {
+        const blockMetadata = ["block-0", "block-1", "block-2"].map(
+            (blockId, index) => ({
+                ...metadata,
+                blockId,
+                endSequence: index + 1,
+                startSequence: index + 1,
+            }),
+        );
+        const loadedBlock: AiTranscriptBlock = {
+            ...blockMetadata[1],
+            capabilityVersion: 1,
+            entries: [
+                {
+                    createdAt: metadata.firstCreatedAt,
+                    id: "message:message-1",
+                    kind: "message",
+                    payloadRef: "payload:message-1",
+                    sequence: 2,
+                    sessionId: metadata.sessionId,
+                    summary: {
+                        label: "assistant",
+                        preview: "Loaded message",
+                        status: "completed",
+                    },
+                    updatedAt: metadata.lastCreatedAt,
+                },
+            ],
+            transcriptRevision: 1,
+        };
+        const message = {
+            attachments: [],
+            content: "Loaded message",
+            createdAt: metadata.firstCreatedAt,
+            id: "message-1",
+            kind: "assistant" as const,
+            status: "completed" as const,
+        };
+        const loadedRows = buildTranscriptTimelineHistoryRows(
+            blockMetadata,
+            new Map([["block-1", loadedBlock]]),
+            [{ id: "message:message-1", kind: "message", message }],
+        );
+
+        expect(loadedRows.map((row) => row.id)).toEqual([
+            "transcript-block:block-0",
+            "transcript-block:block-1",
+            "message:message-1",
+            "transcript-block:block-2",
+        ]);
+        expect(loadedRows[0]).toMatchObject({
+            estimatedHeight: 72,
+            isLoaded: false,
+            kind: "transcript-block-spacer",
+        });
+        expect(loadedRows[1]).toMatchObject({
+            estimatedHeight: 1,
+            isLoaded: true,
+            kind: "transcript-block-spacer",
+        });
+        expect(resolveTranscriptBlockIdsInRange(loadedRows, 2, 3)).toEqual([
+            "block-1",
+            "block-2",
+        ]);
+        expect(
+            resolveUnloadedTranscriptBlockIdsInRange(loadedRows, 0, 3),
+        ).toEqual(["block-0", "block-2"]);
+
+        const evictedRows = buildTranscriptTimelineHistoryRows(
+            blockMetadata,
+            new Map(),
+            [],
+        );
+        expect(evictedRows).toHaveLength(3);
+        expect(
+            evictedRows.reduce(
+                (height, row) =>
+                    height +
+                    (row.kind === "transcript-block-spacer"
+                        ? row.estimatedHeight
+                        : 0),
+                0,
+            ),
+        ).toBe(216);
     });
 
     it("resolves semantic anchors independently from scrollTop", () => {

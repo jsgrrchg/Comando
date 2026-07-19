@@ -778,6 +778,30 @@ function transcriptPayloadCacheFor(
     return cache;
 }
 
+function retainResidentTranscriptPayloads(
+    sessionId: string,
+    blocksById: ReadonlyMap<string, AiTranscriptBlock>,
+    payloadsByRef: ReadonlyMap<string, AiTranscriptPayload>,
+): ReadonlyMap<string, AiTranscriptPayload> {
+    const residentPayloadRefs = new Set(
+        [...blocksById.values()].flatMap((block) =>
+            block.entries.flatMap((entry) =>
+                entry.payloadRef ? [entry.payloadRef] : [],
+            ),
+        ),
+    );
+    const retained = new Map<string, AiTranscriptPayload>();
+    const cache = transcriptPayloadCacheFor(sessionId);
+    for (const [payloadRef, payload] of payloadsByRef) {
+        if (residentPayloadRefs.has(payloadRef)) {
+            retained.set(payloadRef, payload);
+        } else {
+            cache.release(payloadRef);
+        }
+    }
+    return retained;
+}
+
 export const useAiStore = create<AiStore>((set, get) => ({
     claudeSettings: createEmptyClaudeSettings(),
     codexBinaryPath: "",
@@ -1511,7 +1535,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     );
                 return updateTranscriptWindowState(state, sessionId, {
                     ...next,
-                    payloadsByRef: current?.payloadsByRef ?? new Map(),
+                    payloadsByRef: retainResidentTranscriptPayloads(
+                        sessionId,
+                        windowSnapshot.blocksById,
+                        current?.payloadsByRef ?? new Map(),
+                    ),
                 });
             });
         })().catch((error: unknown) => {
@@ -1560,7 +1588,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
             );
             return updateTranscriptWindowState(state, sessionId, {
                 ...next,
-                payloadsByRef: current.payloadsByRef,
+                payloadsByRef: retainResidentTranscriptPayloads(
+                    sessionId,
+                    windowSnapshot.blocksById,
+                    current.payloadsByRef,
+                ),
             });
         });
         return block;
@@ -1622,22 +1654,44 @@ export const useAiStore = create<AiStore>((set, get) => ({
     setTranscriptWindowAnchor: (sessionId, anchorBlockId, followTail) => {
         const session = get().sessions[sessionId];
         if (!session) return;
-        const protectedBlockIds = new Set(session.transcriptWindow.protectedBlockIds);
+        const protectedBlockIds = new Set(
+            session.transcriptWindow.metadata
+                .slice(-2)
+                .map((block) => block.blockId),
+        );
         if (anchorBlockId) protectedBlockIds.add(anchorBlockId);
+        if (
+            session.transcriptWindow.anchorBlockId === anchorBlockId &&
+            session.transcriptWindow.followTail === followTail &&
+            session.transcriptWindow.protectedBlockIds.size ===
+                protectedBlockIds.size &&
+            [...protectedBlockIds].every((blockId) =>
+                session.transcriptWindow.protectedBlockIds.has(blockId),
+            )
+        ) {
+            return;
+        }
         transcriptWindowStore.protect(sessionId, protectedBlockIds);
         const windowSnapshot = transcriptWindowStore.snapshot(sessionId);
-        set((state) => updateTranscriptWindowState(
-            state,
-            sessionId,
-            transcriptWindowStateFromSnapshot(
+        set((state) => {
+            const current = state.sessions[sessionId]?.transcriptWindow;
+            const next = transcriptWindowStateFromSnapshot(
                 windowSnapshot,
                 session.transcriptWindow.capabilityVersion,
                 session.transcriptWindow.transcriptRevision,
                 protectedBlockIds,
                 anchorBlockId,
                 followTail,
-            ),
-        ));
+            );
+            return updateTranscriptWindowState(state, sessionId, {
+                ...next,
+                payloadsByRef: retainResidentTranscriptPayloads(
+                    sessionId,
+                    windowSnapshot.blocksById,
+                    current?.payloadsByRef ?? new Map(),
+                ),
+            });
+        });
     },
 
     keepAllTrackedFiles: async (sessionId) => {

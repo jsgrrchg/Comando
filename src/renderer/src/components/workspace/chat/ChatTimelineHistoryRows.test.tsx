@@ -12,6 +12,7 @@ import {
     reconcileChatTimelineModel,
     type ChatTimelineRow,
 } from "./chatTimelineModel";
+import type { TranscriptTimelineHistoryRow } from "./transcriptBlockVirtualization";
 import { createChatPerformanceFixtureById } from "./chatPerformanceFixtures";
 import {
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
@@ -214,7 +215,7 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
 }
 
 function renderHistoryRows(
-    historyRows: readonly ChatTimelineRow[],
+    historyRows: readonly TranscriptTimelineHistoryRow[],
     active = true,
 ) {
     return renderToStaticMarkup(
@@ -356,6 +357,39 @@ describe("ChatTimelineHistoryRows", () => {
         expect(markup).toContain(
             `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 2}`,
         );
+    });
+
+    it("virtualizes unloaded transcript blocks at their estimated height", () => {
+        const markup = renderHistoryRows([
+            {
+                blockId: "block-1",
+                estimatedHeight: 18_432,
+                id: "transcript-block:block-1",
+                isLoaded: false,
+                kind: "transcript-block-spacer",
+                metadata: {
+                    blockId: "block-1",
+                    endSequence: 256,
+                    entryCount: 256,
+                    estimatedHeight: 18_432,
+                    estimatedRowCount: 256,
+                    firstCreatedAt: "2026-04-14T00:00:00.000Z",
+                    lastCreatedAt: "2026-04-14T00:01:00.000Z",
+                    revision: 1,
+                    sessionId: "session-1",
+                    startSequence: 1,
+                },
+            },
+        ]);
+
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                firstEstimate: 18_432,
+                firstKey: "transcript-block:block-1",
+                itemCount: 1,
+            }),
+        );
+        expect(markup).toContain('data-transcript-block-spacer="block-1"');
     });
 
     it("passes all history rows to MeasuredVirtualList at the threshold", () => {
