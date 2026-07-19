@@ -54,6 +54,7 @@ interface ChatTimelineHistoryRowsProps {
     readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
+    readonly onNewTurnScrollTarget?: (target: number) => void;
     readonly liveTailRowId?: string | null;
     readonly newTurnAnchorRowId?: string | null;
     readonly renderRow: (params: {
@@ -116,6 +117,7 @@ export const ChatTimelineHistoryRows = memo(
         onVirtualResizeEnd,
         onVirtualResizeAutoFollow,
         onVirtualResizeStart,
+        onNewTurnScrollTarget,
         liveTailRowId,
         newTurnAnchorRowId,
         renderRow,
@@ -298,16 +300,20 @@ export const ChatTimelineHistoryRows = memo(
                 tail.start + tail.size -
                     (anchor.start + scrollContainer.clientHeight),
             );
-            scrollContainer.scrollTop = Math.max(
-                0,
-                anchor.start + scrollMarginTop - NEW_TURN_ANCHOR_OFFSET_PX +
-                    requiredEnd,
+            // The parent serializes every scroll write against navigation intent.
+            onNewTurnScrollTarget?.(
+                Math.max(
+                    0,
+                    anchor.start + scrollMarginTop - NEW_TURN_ANCHOR_OFFSET_PX +
+                        requiredEnd,
+                ),
             );
         }, [
             active,
             historyRows,
             liveTailRowId,
             newTurnAnchorRowId,
+            onNewTurnScrollTarget,
             scrollMarginTop,
             scrollRef,
         ]);
