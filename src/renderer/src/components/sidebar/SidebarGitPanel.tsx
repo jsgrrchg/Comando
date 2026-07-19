@@ -1,6 +1,10 @@
 import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
 
-import type { GitChangeEntry, GitRepositorySnapshot } from "@shared/ipc";
+import type {
+    GitChangeEntry,
+    GitRepositorySnapshot,
+    WorkspaceSurfaceActionRequest,
+} from "@shared/ipc";
 
 import {
     buildGitChangeGroups,
@@ -23,13 +27,40 @@ function getContextKey(projectId: string, worktreeId: string | null): string {
     return getGitContextKey(projectId, worktreeId);
 }
 
+export function createSidebarGitSurfaceAction(
+    input:
+        | {
+              readonly contextKey: string;
+              readonly kind: "file";
+              readonly projectId: string;
+              readonly relativePath: string;
+              readonly worktreeId: string | null;
+          }
+        | {
+              readonly contextKey: string;
+              readonly kind: "git-history" | "git-worktree-diff";
+              readonly projectId: string;
+              readonly worktreeId: string | null;
+          },
+): WorkspaceSurfaceActionRequest {
+    return input.kind === "file"
+        ? { ...input, origin: "git" }
+        : input;
+}
+
 export function SidebarGitPanel({
     filter,
+    onRequestWorkspaceAction,
     projectId,
+    workspaceContextKey,
     worktreeId,
 }: {
     readonly filter?: string;
+    readonly onRequestWorkspaceAction?: (
+        request: WorkspaceSurfaceActionRequest,
+    ) => void;
     readonly projectId: string;
+    readonly workspaceContextKey?: string | null;
     readonly worktreeId: string | null;
 }) {
     const contextKey = getContextKey(projectId, worktreeId);
@@ -217,10 +248,26 @@ export function SidebarGitPanel({
     const handleNodeClick = useCallback(
         (node: GitTreeNode) => {
             if (node.kind === "file") {
+                if (onRequestWorkspaceAction && workspaceContextKey) {
+                    onRequestWorkspaceAction(createSidebarGitSurfaceAction({
+                        contextKey: workspaceContextKey,
+                        kind: "file",
+                        projectId,
+                        relativePath: node.path,
+                        worktreeId,
+                    }));
+                    return;
+                }
                 void openFileTab(projectId, node.path, worktreeId);
             }
         },
-        [openFileTab, projectId, worktreeId],
+        [
+            onRequestWorkspaceAction,
+            openFileTab,
+            projectId,
+            workspaceContextKey,
+            worktreeId,
+        ],
     );
 
     const handleToggleGroup = useCallback(
@@ -245,13 +292,47 @@ export function SidebarGitPanel({
     }, [commitChanges, commitMessage, projectId, worktreeId]);
 
     const handleOpenHistory = useCallback(
-        () => void openGitTab(projectId, worktreeId),
-        [openGitTab, projectId, worktreeId],
+        () => {
+            if (onRequestWorkspaceAction && workspaceContextKey) {
+                onRequestWorkspaceAction(createSidebarGitSurfaceAction({
+                    contextKey: workspaceContextKey,
+                    kind: "git-history",
+                    projectId,
+                    worktreeId,
+                }));
+                return;
+            }
+            void openGitTab(projectId, worktreeId);
+        },
+        [
+            onRequestWorkspaceAction,
+            openGitTab,
+            projectId,
+            workspaceContextKey,
+            worktreeId,
+        ],
     );
 
     const handleReviewChanges = useCallback(
-        () => void openGitWorktreeDiffTab(projectId, worktreeId),
-        [openGitWorktreeDiffTab, projectId, worktreeId],
+        () => {
+            if (onRequestWorkspaceAction && workspaceContextKey) {
+                onRequestWorkspaceAction(createSidebarGitSurfaceAction({
+                    contextKey: workspaceContextKey,
+                    kind: "git-worktree-diff",
+                    projectId,
+                    worktreeId,
+                }));
+                return;
+            }
+            void openGitWorktreeDiffTab(projectId, worktreeId);
+        },
+        [
+            onRequestWorkspaceAction,
+            openGitWorktreeDiffTab,
+            projectId,
+            workspaceContextKey,
+            worktreeId,
+        ],
     );
 
     const renderNodeMeta = useCallback(

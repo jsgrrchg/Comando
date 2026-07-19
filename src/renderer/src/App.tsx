@@ -294,6 +294,29 @@ export function App() {
     const activeProjectId =
         activeWorkspaceContext?.projectId ??
         (workspaceNavigationHydrated ? null : persistedActiveProjectId);
+    const dispatchWorkspaceSurfaceAction = useCallback(
+        async (request: WorkspaceSurfaceActionRequest): Promise<void> => {
+            const api = getComandoApi();
+            if (!api) {
+                throw new Error("The desktop bridge is unavailable.");
+            }
+            const result = await api.dispatchWorkspaceSurfaceAction(request);
+            if (!result.delivered) {
+                throw new Error(
+                    `The workspace action could not be delivered (${result.reason}).`,
+                );
+            }
+        },
+        [],
+    );
+    const requestWorkspaceSurfaceAction = useCallback(
+        (request: WorkspaceSurfaceActionRequest) => {
+            void dispatchWorkspaceSurfaceAction(request).catch((error) => {
+                console.error("[workspace-host] action delivery failed", error);
+            });
+        },
+        [dispatchWorkspaceSurfaceAction],
+    );
     const addProjects = useProjectsStore((state) => state.addProjects);
     const cloneRepository = useProjectsStore((state) => state.cloneRepository);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
@@ -2073,13 +2096,41 @@ export function App() {
                 if (kind === "file") {
                     await createWorkspaceQuickFile({
                         createEntry,
-                        openFileTab,
+                        openFileTab: async (
+                            projectId,
+                            relativePath,
+                            worktreeId,
+                        ) => {
+                            if (
+                                isWorkspaceHostRenderer &&
+                                workspaceActiveContextKey
+                            ) {
+                                await dispatchWorkspaceSurfaceAction({
+                                    contextKey: workspaceActiveContextKey,
+                                    kind: "file",
+                                    origin: "quick-create",
+                                    projectId,
+                                    relativePath,
+                                    worktreeId: worktreeId ?? null,
+                                });
+                                return;
+                            }
+                            await openFileTab(
+                                projectId,
+                                relativePath,
+                                worktreeId,
+                            );
+                        },
                         parentRelativePath,
                         projectId: activeProjectId,
                         reportError: (message) => {
                             window.alert(message);
                         },
-                        setLastQuickCreateAction,
+                        setLastQuickCreateAction: (action) => {
+                            if (!isWorkspaceHostRenderer) {
+                                setLastQuickCreateAction(action);
+                            }
+                        },
                         worktreeId: activeWorktreeId,
                     });
                     return;
@@ -2122,9 +2173,11 @@ export function App() {
             activeProjectId,
             activeWorktreeId,
             createEntry,
+            dispatchWorkspaceSurfaceAction,
             openFileTab,
             revealPathInTree,
             setLastQuickCreateAction,
+            workspaceActiveContextKey,
         ],
     );
 
@@ -2685,6 +2738,21 @@ export function App() {
                 return;
             }
 
+            if (isWorkspaceHostRenderer && workspaceActiveContextKey) {
+                requestWorkspaceSurfaceAction({
+                    contextKey: workspaceActiveContextKey,
+                    files: fileNodes.map((node) => ({
+                        name: node.name,
+                        relativePath: node.path,
+                    })),
+                    forceNewChat: options.forceNewChat === true,
+                    kind: "add-files-to-chat",
+                    projectId: activeProjectId,
+                    worktreeId: activeWorktreeId ?? null,
+                });
+                return;
+            }
+
             const currentTabsById = useWorkspaceStore.getState().tabsById;
             const worktreeId = activeWorktreeId ?? null;
             const existingChatTab = Object.values(currentTabsById).find(
@@ -2761,6 +2829,8 @@ export function App() {
             addDraftFileContext,
             createChatTab,
             lastFocusedRuntimeId,
+            requestWorkspaceSurfaceAction,
+            workspaceActiveContextKey,
         ],
     );
 
@@ -3049,6 +3119,17 @@ export function App() {
             }
 
             clearFileTreeSelection();
+            if (isWorkspaceHostRenderer && workspaceActiveContextKey) {
+                requestWorkspaceSurfaceAction({
+                    contextKey: workspaceActiveContextKey,
+                    kind: "file",
+                    origin: "tree",
+                    projectId: activeProjectId,
+                    relativePath: node.path,
+                    worktreeId: activeWorktreeId ?? null,
+                });
+                return;
+            }
             void openFileTab(activeProjectId, node.path, activeWorktreeId);
         },
         [
@@ -3058,7 +3139,9 @@ export function App() {
             effectiveFileTreeSelectedPaths,
             effectiveFileTreeSelectionAnchorPath,
             openFileTab,
+            requestWorkspaceSurfaceAction,
             visibleSidebarNodePaths,
+            workspaceActiveContextKey,
         ],
     );
 
@@ -3352,11 +3435,21 @@ export function App() {
                     label: "Open",
                     action: () =>
                         activeProjectId
-                            ? void openFileTab(
-                                  activeProjectId,
-                                  node.path,
-                                  activeWorktreeId,
-                              )
+                            ? isWorkspaceHostRenderer &&
+                              workspaceActiveContextKey
+                                ? requestWorkspaceSurfaceAction({
+                                      contextKey: workspaceActiveContextKey,
+                                      kind: "file",
+                                      origin: "tree",
+                                      projectId: activeProjectId,
+                                      relativePath: node.path,
+                                      worktreeId: activeWorktreeId ?? null,
+                                  })
+                                : void openFileTab(
+                                      activeProjectId,
+                                      node.path,
+                                      activeWorktreeId,
+                                  )
                             : undefined,
                     disabled: !activeProjectId,
                 },
@@ -3545,6 +3638,8 @@ export function App() {
         openFileTab,
         openFileTreeMovePicker,
         refreshProjectTree,
+        requestWorkspaceSurfaceAction,
+        workspaceActiveContextKey,
     ]);
 
     const openNativeFileTreeContextMenu = useEffectEvent(
@@ -4381,7 +4476,11 @@ export function App() {
                 {sidebarView === "git" && activeProjectId ? (
                     <SidebarGitPanel
                         filter={gitChangesFilter}
+                        onRequestWorkspaceAction={
+                            requestWorkspaceSurfaceAction
+                        }
                         projectId={activeProjectId}
+                        workspaceContextKey={workspaceActiveContextKey}
                         worktreeId={activeWorktreeId}
                     />
                 ) : sidebarView === "issues" ? (
