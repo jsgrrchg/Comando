@@ -3,6 +3,8 @@ import type {
     GitHubRepositoryRef,
     PersistedWorkspaceContext,
     WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceActionContext,
+    WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 
 const MAX_ACTION_ITEMS = 100;
@@ -91,8 +93,25 @@ export function isWorkspaceSurfaceActionRequest(
     }
 }
 
+export function isWorkspaceSurfaceFileRevealRequest(
+    input: unknown,
+): input is WorkspaceSurfaceFileRevealRequest {
+    return (
+        isRecord(input) &&
+        hasValidContext(input) &&
+        isNonEmptyString(input.relativePath, MAX_PATH_OR_URL_LENGTH)
+    );
+}
+
 export function doesWorkspaceSurfaceActionMatchContext(
     request: WorkspaceSurfaceActionRequest,
+    context: PersistedWorkspaceContext,
+): boolean {
+    return doesWorkspaceSurfaceContextMatchContext(request, context);
+}
+
+export function doesWorkspaceSurfaceContextMatchContext(
+    request: WorkspaceSurfaceActionContext,
     context: PersistedWorkspaceContext,
 ): boolean {
     return (

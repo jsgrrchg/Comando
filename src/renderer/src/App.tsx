@@ -22,6 +22,7 @@ import type {
     SettingsWindowCategory,
     SettingsSnapshot,
     WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
 import { isActiveAiRuntimeId } from "@shared/ai-runtimes";
@@ -3664,20 +3665,12 @@ export function App() {
         enabled: stickyFoldersEnabled && !isFilteringFileTree,
     });
 
-    const handleRevealActiveFileInTree = useCallback(async () => {
-        if (
-            activeWorkspaceTab?.kind !== "file" ||
-            !activeWorkspaceTab.projectId
-        ) {
-            return;
-        }
-
-        const targetProjectId = activeWorkspaceTab.projectId;
-        const targetWorktreeId = activeWorkspaceTab.worktreeId ?? null;
-        const targetPath = activeWorkspaceTab.relativePath;
+    const revealFileInHostTree = useCallback(async (
+        request: WorkspaceSurfaceFileRevealRequest,
+    ) => {
         const targetProjectContextKey = getProjectContextKey(
-            targetProjectId,
-            targetWorktreeId,
+            request.projectId,
+            request.worktreeId,
         );
 
         setLeftCollapsed(false);
@@ -3691,20 +3684,73 @@ export function App() {
         if (workspaceActiveContextKey !== targetProjectContextKey) {
             await useWorkspaceStore
                 .getState()
-                .openContext(targetProjectId, targetWorktreeId);
+                .openContext(request.projectId, request.worktreeId);
         }
 
-        await revealPathInTree(targetProjectId, targetPath, targetWorktreeId);
+        await revealPathInTree(
+            request.projectId,
+            request.relativePath,
+            request.worktreeId,
+        );
         setFileTreeRevealSignal((currentSignal) =>
             currentSignal === null ? 0 : currentSignal + 1,
         );
     }, [
-        activeWorkspaceTab,
         revealPathInTree,
         setLeftCollapsed,
         setSidebarView,
         workspaceActiveContextKey,
     ]);
+
+    const handleRevealActiveFileInTree = useCallback(async () => {
+        if (
+            activeWorkspaceTab?.kind !== "file" ||
+            !activeWorkspaceTab.projectId
+        ) {
+            return;
+        }
+        const request: WorkspaceSurfaceFileRevealRequest = {
+            contextKey: getProjectContextKey(
+                activeWorkspaceTab.projectId,
+                activeWorkspaceTab.worktreeId ?? null,
+            ),
+            projectId: activeWorkspaceTab.projectId,
+            relativePath: activeWorkspaceTab.relativePath,
+            worktreeId: activeWorkspaceTab.worktreeId ?? null,
+        };
+
+        if (isWorkspaceSurfaceRenderer) {
+            const result =
+                await getComandoApi()?.revealWorkspaceSurfaceFileInHostTree(
+                    request,
+                );
+            if (result && !result.delivered) {
+                console.error(
+                    "[workspace-surface] file reveal delivery failed",
+                    result,
+                );
+            }
+            return;
+        }
+
+        await revealFileInHostTree(request);
+    }, [activeWorkspaceTab, revealFileInHostTree]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceFileRevealRequested(
+            (request) => {
+                void revealFileInHostTree(request).catch((error) => {
+                    console.error(
+                        "[workspace-host] file reveal execution failed",
+                        error,
+                    );
+                });
+            },
+        );
+    }, [revealFileInHostTree]);
 
     const handleSidebarViewChange = useCallback(
         (nextSidebarView: SidebarView) => {

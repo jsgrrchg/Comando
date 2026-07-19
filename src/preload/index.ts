@@ -179,6 +179,7 @@ import {
     type PersistedWorkspaceSnapshot,
     type WorkspaceNavigationSnapshot,
     type WorkspaceSurfaceActionRequest,
+    type WorkspaceSurfaceFileRevealRequest,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceContextRequest,
 } from "@shared/ipc";
@@ -930,6 +931,22 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfaceFileRevealRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            request: WorkspaceSurfaceFileRevealRequest,
+        ) => listener(request);
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceFileRevealRequested,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceFileRevealRequested,
+                handleEvent,
+            );
+        };
+    },
     onWorkspaceSurfaceSnapshotUpdated: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -1090,6 +1107,11 @@ const comandoApi: ComandoApi = {
     dispatchWorkspaceSurfaceAction: (request) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.dispatchWorkspaceSurfaceAction,
+            request,
+        ),
+    revealWorkspaceSurfaceFileInHostTree: (request) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree,
             request,
         ),
     notifyWorkspaceSurfaceFocused: () =>

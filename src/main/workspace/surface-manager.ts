@@ -12,6 +12,7 @@ import type {
     WorkspaceNavigationSnapshot,
     WorkspaceSurfaceActionDeliveryResult,
     WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceFileRevealRequest,
     WorkspaceSurfaceDragEvent,
 } from "@shared/ipc";
 
@@ -21,7 +22,9 @@ import {
     loadRendererContents,
 } from "@main/window";
 import { windowRegistry } from "@main/windows/registry";
-import { doesWorkspaceSurfaceActionMatchContext } from "./surface-actions";
+import {
+    doesWorkspaceSurfaceContextMatchContext,
+} from "./surface-actions";
 
 interface WorkspaceSurfaceRecord {
     bounds: WorkspaceSurfaceBounds | null;
@@ -200,7 +203,7 @@ export class WorkspaceSurfaceManager {
         );
         if (
             !activeContext ||
-            !doesWorkspaceSurfaceActionMatchContext(request, activeContext)
+            !doesWorkspaceSurfaceContextMatchContext(request, activeContext)
         ) {
             return { delivered: false, reason: "invalid-context" };
         }
@@ -212,6 +215,41 @@ export class WorkspaceSurfaceManager {
 
         surface.webContents.send(
             IPC_EVENTS.workspaceSurfaceActionRequested,
+            request,
+        );
+        return { delivered: true };
+    }
+
+    revealSurfaceFileInHostTree(
+        webContents: WebContents,
+        request: WorkspaceSurfaceFileRevealRequest,
+    ): WorkspaceSurfaceActionDeliveryResult {
+        const surface = this.#getSurfaceByWebContents(webContents);
+        const host = surface
+            ? this.#hostsByWindowId.get(surface.hostWindowId)
+            : null;
+        if (!surface || !host || surface.webContents.isDestroyed()) {
+            return { delivered: false, reason: "missing-surface" };
+        }
+        if (host.activeContextKey !== request.contextKey) {
+            return { delivered: false, reason: "inactive-context" };
+        }
+        const activeContext = host.snapshot.contexts.find(
+            (context) => context.key === host.activeContextKey,
+        );
+        if (
+            surface.contextKey !== request.contextKey ||
+            !activeContext ||
+            !doesWorkspaceSurfaceContextMatchContext(request, activeContext)
+        ) {
+            return { delivered: false, reason: "invalid-context" };
+        }
+        if (host.hostWindow.webContents.isDestroyed()) {
+            return { delivered: false, reason: "missing-surface" };
+        }
+
+        host.hostWindow.webContents.send(
+            IPC_EVENTS.workspaceSurfaceFileRevealRequested,
             request,
         );
         return { delivered: true };

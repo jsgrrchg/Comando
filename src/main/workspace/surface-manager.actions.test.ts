@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { BrowserWindow } from "electron";
+import type { BrowserWindow, WebContents } from "electron";
 import { IPC_EVENTS } from "@shared/ipc";
 import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
     WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 
 const electronMocks = vi.hoisted(() => {
@@ -133,15 +134,66 @@ describe("WorkspaceSurfaceManager action routing", () => {
         });
         expect(surfaceB.webContents.send).toHaveBeenCalledTimes(1);
     });
+
+    it("reveals a surface file only through its active host context", () => {
+        const manager = new WorkspaceSurfaceManager();
+        const host = createHostWindow();
+        manager.syncHost(host.window, createHostContext(), createSnapshot());
+        const [surfaceA, surfaceB] = electronMocks.views;
+        const requestA = createFileRevealRequest(
+            "project-a::__primary__",
+            "project-a",
+        );
+
+        expect(
+            manager.revealSurfaceFileInHostTree(
+                asWebContents(surfaceA.webContents),
+                requestA,
+            ),
+        ).toEqual({ delivered: true });
+        expect(host.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceFileRevealRequested,
+            requestA,
+        );
+
+        manager.activate("host-1", "project-b::__primary__");
+        expect(
+            manager.revealSurfaceFileInHostTree(
+                asWebContents(surfaceA.webContents),
+                requestA,
+            ),
+        ).toEqual({ delivered: false, reason: "inactive-context" });
+        expect(
+            manager.revealSurfaceFileInHostTree(
+                asWebContents(surfaceB.webContents),
+                {
+                    ...requestA,
+                    contextKey: "project-b::__primary__",
+                    projectId: "project-a",
+                },
+            ),
+        ).toEqual({ delivered: false, reason: "invalid-context" });
+        expect(
+            manager.revealSurfaceFileInHostTree(
+                asWebContents(surfaceB.webContents),
+                createFileRevealRequest(
+                    "project-b::__primary__",
+                    "project-b",
+                ),
+            ),
+        ).toEqual({ delivered: true });
+    });
 });
 
 function createHostWindow(): {
+    readonly send: ReturnType<typeof vi.fn>;
     readonly window: BrowserWindow;
 } {
+    const send = vi.fn();
     const webContents = {
         getZoomFactor: () => 1,
         isDestroyed: () => false,
-        send: vi.fn(),
+        send,
     };
     const window = {
         contentView: {
@@ -153,7 +205,7 @@ function createHostWindow(): {
         on: vi.fn(),
         webContents,
     } as unknown as BrowserWindow;
-    return { window };
+    return { send, window };
 }
 
 function createHostContext(): WindowContextSnapshot {
@@ -213,4 +265,20 @@ function createFileAction(
         relativePath: "README.md",
         worktreeId: null,
     };
+}
+
+function createFileRevealRequest(
+    contextKey: string,
+    projectId: string,
+): WorkspaceSurfaceFileRevealRequest {
+    return {
+        contextKey,
+        projectId,
+        relativePath: "README.md",
+        worktreeId: null,
+    };
+}
+
+function asWebContents(value: unknown): WebContents {
+    return value as WebContents;
 }

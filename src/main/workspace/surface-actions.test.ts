@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import type {
     PersistedWorkspaceContext,
     WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 import {
     doesWorkspaceSurfaceActionMatchContext,
+    isWorkspaceSurfaceFileRevealRequest,
     isWorkspaceSurfaceActionRequest,
 } from "./surface-actions";
 
@@ -122,6 +124,24 @@ describe("workspace surface actions", () => {
                 })),
                 kind: "add-github-items-to-chat",
                 ref,
+            }),
+        ).toBe(false);
+    });
+
+    it("accepts only a bounded, scoped surface file reveal", () => {
+        const request: WorkspaceSurfaceFileRevealRequest = {
+            ...context,
+            relativePath: "src/index.ts",
+        };
+        expect(isWorkspaceSurfaceFileRevealRequest(request)).toBe(true);
+        expect(
+            isWorkspaceSurfaceFileRevealRequest({ ...request, relativePath: "" }),
+        ).toBe(false);
+        expect(
+            isWorkspaceSurfaceFileRevealRequest({
+                projectId: context.projectId,
+                relativePath: request.relativePath,
+                worktreeId: null,
             }),
         ).toBe(false);
     });

@@ -132,6 +132,8 @@ export const IPC_CHANNELS = {
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
     dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
     dispatchWorkspaceSurfaceAction: "workspace:dispatch-surface-action",
+    revealWorkspaceSurfaceFileInHostTree:
+        "workspace:reveal-surface-file-in-host-tree",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
     requestWorkspaceSurfaceContext: "workspace:request-surface-context",
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
@@ -206,6 +208,8 @@ export const IPC_EVENTS = {
     workspaceSurfaceContextRequested: "workspace:surface-context-requested",
     workspaceSurfaceDrag: "workspace:surface-drag",
     workspaceSurfaceActionRequested: "workspace:surface-action-requested",
+    workspaceSurfaceFileRevealRequested:
+        "workspace:surface-file-reveal-requested",
     workspaceSurfaceGitScopeMenuRequested:
         "workspace:surface-git-scope-menu-requested",
     workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
@@ -2176,10 +2180,16 @@ export interface WorkspaceSurfaceContextRequest {
     readonly worktreeId?: string | null;
 }
 
-interface WorkspaceSurfaceActionContext {
+export interface WorkspaceSurfaceActionContext {
     readonly contextKey: WorkspaceContextKey;
     readonly projectId: string;
     readonly worktreeId: string | null;
+}
+
+/** A request emitted by a workspace surface to reveal its active file in the host sidebar. */
+export interface WorkspaceSurfaceFileRevealRequest
+    extends WorkspaceSurfaceActionContext {
+    readonly relativePath: string;
 }
 
 export interface WorkspaceSurfaceGitHubComposerItem {
@@ -3390,6 +3400,9 @@ export interface ComandoApi {
     dispatchWorkspaceSurfaceAction: (
         request: WorkspaceSurfaceActionRequest,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
+    revealWorkspaceSurfaceFileInHostTree: (
+        request: WorkspaceSurfaceFileRevealRequest,
+    ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
     notifyWorkspaceSurfaceFocused: () => Promise<void>;
     onWorkspaceSurfaceSnapshotRequested: (
         listener: () => WorkspaceNavigationSnapshot,
@@ -3534,6 +3547,9 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceSurfaceActionRequested: (
         listener: (request: WorkspaceSurfaceActionRequest) => void,
+    ) => () => void;
+    onWorkspaceSurfaceFileRevealRequested: (
+        listener: (request: WorkspaceSurfaceFileRevealRequest) => void,
     ) => () => void;
     onWorkspaceSurfaceGitScopeMenuRequested: (
         listener: (anchor: { readonly width: number; readonly x: number }) => void,

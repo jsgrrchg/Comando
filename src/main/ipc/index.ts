@@ -227,7 +227,10 @@ import {
 import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
-import { isWorkspaceSurfaceActionRequest } from "@main/workspace/surface-actions";
+import {
+    isWorkspaceSurfaceActionRequest,
+    isWorkspaceSurfaceFileRevealRequest,
+} from "@main/workspace/surface-actions";
 
 interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
@@ -1950,6 +1953,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             }
             return workspaceSurfaceManager.dispatchActiveSurfaceAction(
                 context.windowId,
+                input,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree,
+        (event, input) => {
+            if (!isWorkspaceSurfaceFileRevealRequest(input)) {
+                throw new Error("A valid workspace surface file reveal is required.");
+            }
+            return workspaceSurfaceManager.revealSurfaceFileInHostTree(
+                event.sender,
                 input,
             );
         },
