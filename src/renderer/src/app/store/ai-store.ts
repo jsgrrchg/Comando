@@ -1341,6 +1341,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     applySessionSnapshot: (snapshot) => {
         flushBufferedSessionDeltas(get, snapshot.sessionId);
         let syncedTitle: string | null = null;
+        let shouldRefreshSealedTranscript = false;
         set((state) => {
             const session =
                 state.sessions[snapshot.sessionId] ?? createSessionState();
@@ -1370,6 +1371,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
             if (nextMeta !== session.meta) {
                 syncedTitle = resolvedSnapshot.title;
             }
+            shouldRefreshSealedTranscript =
+                snapshot.status === "idle" &&
+                snapshot.messages.length === 0 &&
+                session.transcriptWindow.capabilityVersion !== null;
             // Runtime defaults must come from provider state, never from the
             // optimistic session overlay applied by the resolver.
             const nextCatalog = extractRuntimeCatalog(incomingSnapshot);
@@ -1403,6 +1408,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
             void useWorkspaceStore
                 .getState()
                 .updateSessionTabTitles(snapshot.sessionId, syncedTitle);
+        }
+        if (shouldRefreshSealedTranscript) {
+            void get().hydrateTranscriptWindow(snapshot.sessionId);
         }
 
         scheduleAiSessionResyncWatchdog(snapshot.sessionId, get);

@@ -475,6 +475,7 @@ export class AiService {
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
     readonly #liveTranscriptTails = new AiLiveTranscriptTailStore();
     readonly #loadedTranscriptBlockMetadataSessionIds = new Set<string>();
+    readonly #legacyTranscriptSessionIds = new Set<string>();
     readonly #loadingTranscriptBlockMetadataSessionIds = new Set<string>();
     readonly #recoveredTranscriptTailSessionIds = new Set<string>();
     readonly #transcriptRecoveryPromises = new Map<string, Promise<void>>();
@@ -1275,12 +1276,13 @@ export class AiService {
 
         const persistedSnapshot =
             await this.#loadPersistedSessionSnapshot(sessionId);
-        await this.#refreshTranscriptStorageMode(sessionId);
-        return persistedSnapshot
-            ? this.#toRendererSessionSnapshot(
-                  this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot),
-              )
-            : null;
+        if (!persistedSnapshot) return null;
+        await this.#refreshTranscriptStorageMode(sessionId, {
+            preserveLegacyFallback: true,
+        });
+        return this.#toRendererSessionSnapshot(
+            this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot),
+        );
     }
 
     async listSessionHistory(
@@ -2646,9 +2648,13 @@ export class AiService {
             undefined,
             {
                 onSealed: (sessionId) => {
+                    if (this.#legacyTranscriptSessionIds.has(sessionId)) {
+                        return;
+                    }
                     this.#transcriptStorageModes.set(sessionId, "block-native");
                     this.#loadedTranscriptBlockMetadataSessionIds.delete(sessionId);
                     this.#scheduleTranscriptBlockMetadataLoad(sessionId);
+                    this.#emitSealedTranscriptSnapshot(sessionId);
                 },
             },
         );
@@ -5459,22 +5465,48 @@ export class AiService {
         return this.#transcriptStorageModes.get(sessionId) === "block-native";
     }
 
-    async #refreshTranscriptStorageMode(sessionId: string): Promise<boolean> {
+    async #refreshTranscriptStorageMode(
+        sessionId: string,
+        options: { readonly preserveLegacyFallback?: boolean } = {},
+    ): Promise<boolean> {
         const nativeAi = this.#nativeAi;
         if (!nativeAi?.getTranscriptStorageState) {
             this.#transcriptStorageModes.set(sessionId, "legacy");
+            if (options.preserveLegacyFallback) {
+                this.#legacyTranscriptSessionIds.add(sessionId);
+            }
             return false;
         }
         try {
             const state = await nativeAi.getTranscriptStorageState(sessionId);
             this.#transcriptStorageModes.set(sessionId, state.mode);
+            if (state.mode === "block-native") {
+                this.#legacyTranscriptSessionIds.delete(sessionId);
+            } else if (options.preserveLegacyFallback) {
+                this.#legacyTranscriptSessionIds.add(sessionId);
+            }
             return state.mode === "block-native";
         } catch (error) {
             // A failed mode lookup must preserve the readable legacy snapshot.
             debugBenignError("ai.service.transcriptStorageState", error);
             this.#transcriptStorageModes.set(sessionId, "legacy");
+            if (options.preserveLegacyFallback) {
+                this.#legacyTranscriptSessionIds.add(sessionId);
+            }
             return false;
         }
+    }
+
+    #emitSealedTranscriptSnapshot(sessionId: string): void {
+        const snapshot = this.#liveSnapshots.get(sessionId);
+        if (!snapshot) return;
+        this.#onSessionSnapshot(
+            this.#liveSessionContexts.get(sessionId)?.ownerWindowId ?? "",
+            {
+                kind: "snapshot",
+                snapshot: this.#toRendererSessionSnapshot(snapshot),
+            },
+        );
     }
 
     #persistNativeCatalogPatch(

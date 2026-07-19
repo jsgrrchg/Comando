@@ -3861,8 +3861,6 @@ function buildBlockNativeTranscript(
             ...messages,
             ...liveTranscript.messages.filter(
                 (message) =>
-                    activeTurnStartedAt !== null &&
-                    message.createdAt >= activeTurnStartedAt &&
                     !sealedEntryIds.has(`message:${message.id}`),
             ),
         ],
@@ -3871,8 +3869,6 @@ function buildBlockNativeTranscript(
             ...toolActivity,
             ...liveTranscript.toolActivity.filter(
                 (activity) =>
-                    activeTurnStartedAt !== null &&
-                    activity.createdAt >= activeTurnStartedAt &&
                     !sealedEntryIds.has(
                         `tool:${activity.sessionId}:${activity.id}`,
                     ),
