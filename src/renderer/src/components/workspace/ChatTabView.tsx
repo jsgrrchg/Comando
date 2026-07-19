@@ -296,6 +296,7 @@ export const ChatTabView = memo(function ChatTabView({
     const loadTranscriptWindowBlock = useAiStore(
         (s) => s.loadTranscriptWindowBlock,
     );
+    const loadTranscriptPayload = useAiStore((s) => s.loadTranscriptPayload);
     const setTranscriptWindowAnchor = useAiStore(
         (s) => s.setTranscriptWindowAnchor,
     );
@@ -629,6 +630,13 @@ export const ChatTabView = memo(function ChatTabView({
         tab.sessionId,
     ]);
 
+    useEffect(() => {
+        if (active) return;
+        // Cold tabs retain their metadata and persisted anchor, but must not
+        // pin transcript blocks that prevent the global budget from evicting.
+        setTranscriptWindowAnchor(tab.sessionId, null, false);
+    }, [active, setTranscriptWindowAnchor, tab.sessionId]);
+
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
     const storedTranscript =
@@ -653,6 +661,29 @@ export const ChatTabView = memo(function ChatTabView({
             transcriptWindow?.metadata,
             transcriptWindow?.payloadsByRef,
         ],
+    );
+    const toolPayloadRefByActivityId = useMemo(() => {
+        const payloadRefs = new Map<string, string>();
+        for (const block of transcriptWindow?.blocksById.values() ?? []) {
+            for (const entry of block.entries) {
+                if (entry.kind === "tool" && entry.payloadRef) {
+                    payloadRefs.set(
+                        toolActivityIdForTranscriptEntry(entry),
+                        entry.payloadRef,
+                    );
+                }
+            }
+        }
+        return payloadRefs;
+    }, [transcriptWindow?.blocksById]);
+    const handleLoadToolPayload = useCallback(
+        (activityId: string) => {
+            const payloadRef = toolPayloadRefByActivityId.get(activityId);
+            if (payloadRef) {
+                void loadTranscriptPayload(tab.sessionId, payloadRef);
+            }
+        },
+        [loadTranscriptPayload, tab.sessionId, toolPayloadRefByActivityId],
     );
     const isStreaming = isChatStreamingStatus(snapshot.status);
     const activeTurnKey = isActiveChatTurnStatus(snapshot.status)
@@ -1342,8 +1373,27 @@ export const ChatTabView = memo(function ChatTabView({
         const firstVisibleTimelineRow = transcriptHistoryRows
             .slice(range.visibleStartIndex, range.visibleEndIndex + 1)
             .find((row) => !isTranscriptBlockSpacerRow(row));
+        const scrollElement = scrollRef.current;
+        const listItemElement = firstVisibleTimelineRow
+            ? [...(
+                  timelineContentRef.current?.querySelectorAll<HTMLElement>(
+                      "[data-list-key]",
+                  ) ?? []
+              )].find((element) => element.dataset.listKey === firstVisibleTimelineRow.id)
+            : null;
+        const offsetWithinEntry =
+            scrollElement && listItemElement
+                ? Math.max(
+                      0,
+                      scrollElement.scrollTop -
+                          (scrollElement.scrollTop +
+                              listItemElement.getBoundingClientRect().top -
+                              scrollElement.getBoundingClientRect().top),
+                  )
+                : 0;
         semanticAnchorRef.current = captureTranscriptSemanticAnchor({
             entryId: firstVisibleTimelineRow?.id ?? null,
+            offsetWithinEntry,
         });
         const visibleBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
             transcriptHistoryRows,
@@ -2358,6 +2408,7 @@ export const ChatTabView = memo(function ChatTabView({
                     onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={handleOpenResolvedFileReference}
                     onOpenSession={openAiSessionById}
+                    onLoadToolPayload={handleLoadToolPayload}
                     onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
                     onWheelCapture={handleTimelineWheelCapture}
@@ -2847,6 +2898,7 @@ type ChatTimelineProps = {
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onLoadToolPayload?: (activityId: string) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -2909,6 +2961,7 @@ const ChatTimeline = memo(function ChatTimeline({
     isStreaming,
     liveTailRow,
     onAddFileReferenceToChat,
+    onLoadToolPayload,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -2973,6 +3026,7 @@ const ChatTimeline = memo(function ChatTimeline({
                             onAddFileReferenceToChat={
                                 onAddFileReferenceToChat
                             }
+                            onLoadToolPayload={onLoadToolPayload}
                             onOpenFile={onOpenFile}
                             onOpenImage={onOpenImage}
                             onOpenResolvedFileReference={
@@ -3007,6 +3061,7 @@ const ChatTimeline = memo(function ChatTimeline({
                             onAddFileReferenceToChat={
                                 onAddFileReferenceToChat
                             }
+                            onLoadToolPayload={onLoadToolPayload}
                             onOpenFile={onOpenFile}
                             onOpenImage={onOpenImage}
                             onOpenResolvedFileReference={
@@ -3091,6 +3146,7 @@ type ChatTimelineHistoryProps = {
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onLoadToolPayload?: (activityId: string) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -3128,6 +3184,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     chatFontSize,
     historyRows,
     onAddFileReferenceToChat,
+    onLoadToolPayload,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -3155,6 +3212,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 onAddFileReferenceToChat={onAddFileReferenceToChat}
+                onLoadToolPayload={onLoadToolPayload}
                 onOpenFile={onOpenFile}
                 onOpenImage={onOpenImage}
                 onOpenResolvedFileReference={onOpenResolvedFileReference}
@@ -3171,6 +3229,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontFamily,
             chatFontSize,
             onAddFileReferenceToChat,
+            onLoadToolPayload,
             onOpenFile,
             onOpenImage,
             onOpenResolvedFileReference,
@@ -3217,6 +3276,7 @@ type ChatTimelineLiveTailProps = {
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onLoadToolPayload?: (activityId: string) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -3245,6 +3305,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     chatFontFamily,
     chatFontSize,
     onAddFileReferenceToChat,
+    onLoadToolPayload,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -3266,6 +3327,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
             chatFontSize={chatFontSize}
             key={row.id}
             onAddFileReferenceToChat={onAddFileReferenceToChat}
+            onLoadToolPayload={onLoadToolPayload}
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
             onOpenResolvedFileReference={onOpenResolvedFileReference}
@@ -3293,6 +3355,7 @@ type ChatTimelineRowViewProps = {
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onLoadToolPayload?: (activityId: string) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -3322,6 +3385,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     chatFontSize,
     isCurrentTurnTail = false,
     onAddFileReferenceToChat,
+    onLoadToolPayload,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -3359,6 +3423,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
                     chatFontSize={chatFontSize}
                     isCurrentTurnTail={isCurrentTurnTail}
                     onAddFileReferenceToChat={onAddFileReferenceToChat}
+                    onLoadToolPayload={onLoadToolPayload}
                     onOpenFile={onOpenFile}
                     onOpenFileReference={onOpenResolvedFileReference}
                     onOpenSession={onOpenSession}
@@ -3373,7 +3438,12 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     }
 
     return (
-        <div className="min-w-0 w-full">
+        <div
+            className="min-w-0 w-full"
+            onClickCapture={() =>
+                onLoadToolPayload?.(row.reviewEntry.activity.id)
+            }
+        >
             <ToolActivityItem
                 activity={row.reviewEntry.activity}
                 canRenderFileReference={canRenderFileReference}
@@ -3842,6 +3912,8 @@ function buildBlockNativeTranscript(
                 messages.push(payload.message);
             } else if (isTranscriptToolPayload(payload)) {
                 toolActivity.push(payload.activity);
+            } else if (entry.kind === "tool") {
+                toolActivity.push(createTranscriptToolSummary(entry));
             } else if (entry.kind !== "plan" && entry.kind !== "status") {
                 messages.push({
                     attachments: [],
@@ -3876,6 +3948,38 @@ function buildBlockNativeTranscript(
         ],
         updatedAt: snapshot.updatedAt,
     });
+}
+
+function createTranscriptToolSummary(
+    entry: AiTranscriptBlock["entries"][number],
+): AiToolActivity {
+    const status = entry.summary.status;
+    return {
+        createdAt: entry.createdAt,
+        diffs: [],
+        exitCode: null,
+        id: toolActivityIdForTranscriptEntry(entry),
+        kind: "tool",
+        locations: [],
+        rawInputJson: null,
+        rawOutputJson: null,
+        sessionId: entry.sessionId,
+        status:
+            status === "failed" || status === "in_progress" || status === "pending"
+                ? status
+                : "completed",
+        summary: entry.summary.preview,
+        terminalOutput: null,
+        title: entry.summary.label ?? "Tool activity",
+        updatedAt: entry.updatedAt,
+    };
+}
+
+function toolActivityIdForTranscriptEntry(
+    entry: AiTranscriptBlock["entries"][number],
+): string {
+    const prefix = `tool:${entry.sessionId}:`;
+    return entry.id.startsWith(prefix) ? entry.id.slice(prefix.length) : entry.id;
 }
 
 function isTranscriptMessagePayload(

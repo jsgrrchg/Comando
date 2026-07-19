@@ -318,11 +318,12 @@ describe("ai-store queue", () => {
             expect.arrayContaining([
                 "payload:message-2",
                 "payload:thinking-2",
-                "payload:tool-2",
                 "payload:message-3",
                 "payload:thinking-3",
-                "payload:tool-3",
             ]),
+        );
+        expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).not.toContain(
+            "payload:tool-2",
         );
 
         await useAiStore
@@ -330,11 +331,10 @@ describe("ai-store queue", () => {
             .prefetchTranscriptWindow(TAB.sessionId, "backward");
 
         expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).toEqual(
-            expect.arrayContaining([
-                "payload:message-1",
-                "payload:thinking-1",
-                "payload:tool-1",
-            ]),
+            expect.arrayContaining(["payload:message-1", "payload:thinking-1"]),
+        );
+        expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).not.toContain(
+            "payload:tool-1",
         );
         expect(
             useAiStore
@@ -343,6 +343,14 @@ describe("ai-store queue", () => {
                     "payload:thinking-1",
                 ),
         ).toBe(true);
+
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(TAB.sessionId, "payload:tool-1");
+        expect(getAiTranscriptPayload).toHaveBeenCalledWith({
+            payloadRef: "payload:tool-1",
+            sessionId: TAB.sessionId,
+        });
 
         useAiStore
             .getState()
@@ -362,12 +370,12 @@ describe("ai-store queue", () => {
                 useAiStore.getState().sessions[TAB.sessionId]?.transcriptWindow
                     .protectedBlockIds ?? []
             )],
-        ).toEqual(expect.arrayContaining(["block-2", "block-3"]));
+        ).toEqual(expect.arrayContaining(["block-2"]));
         expect(
             useAiStore
                 .getState()
                 .sessions[TAB.sessionId]?.transcriptWindow.protectedBlockIds.has(
-                    "block-1",
+                    "block-3",
                 ),
         ).toBe(false);
     });

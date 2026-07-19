@@ -1600,18 +1600,19 @@ export const useAiStore = create<AiStore>((set, get) => ({
     loadTranscriptWindowBlock: async (sessionId, blockId) => {
         const block = await transcriptWindowStore.load(sessionId, blockId);
         if (block) {
-            const payloadRefs = new Set(
+            // Message and thinking text is needed to render a visible block.
+            // Tool payloads can include terminal output, diffs, and raw JSON,
+            // so they remain unloaded until an explicit payload request.
+            const visibleTextPayloadRefs = new Set(
                 block.entries.flatMap((entry) =>
                     entry.payloadRef &&
-                    (entry.kind === "message" ||
-                        entry.kind === "thinking" ||
-                        entry.kind === "tool")
+                    (entry.kind === "message" || entry.kind === "thinking")
                         ? [entry.payloadRef]
                         : [],
                 ),
             );
             await Promise.all(
-                [...payloadRefs].map((payloadRef) =>
+                [...visibleTextPayloadRefs].map((payloadRef) =>
                     get().loadTranscriptPayload(sessionId, payloadRef),
                 ),
             );
@@ -1713,11 +1714,12 @@ export const useAiStore = create<AiStore>((set, get) => ({
     setTranscriptWindowAnchor: (sessionId, anchorBlockId, followTail) => {
         const session = get().sessions[sessionId];
         if (!session) return;
-        const protectedBlockIds = new Set(
-            session.transcriptWindow.metadata
-                .slice(-2)
-                .map((block) => block.blockId),
-        );
+        const protectedBlockIds = new Set<string>();
+        if (followTail) {
+            for (const block of session.transcriptWindow.metadata.slice(-2)) {
+                protectedBlockIds.add(block.blockId);
+            }
+        }
         if (anchorBlockId) protectedBlockIds.add(anchorBlockId);
         if (
             session.transcriptWindow.anchorBlockId === anchorBlockId &&

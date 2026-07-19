@@ -240,6 +240,7 @@ const DEFAULT_AI_SESSION_RETENTION_CONFIG: AiSessionRetentionConfig = {
 };
 const RECENT_NATIVE_REVIEW_CONTEXT_TTL_MS = 60_000;
 const RETENTION_CLOSE_EVENT_GRACE_MS = 60_000;
+const TRANSCRIPT_BACKFILL_RETRY_DELAY_MS = 25;
 
 function isResyncEligibleAiSessionStatus(
     status: AiSessionSnapshot["status"],
@@ -479,6 +480,10 @@ export class AiService {
     readonly #loadingTranscriptBlockMetadataSessionIds = new Set<string>();
     readonly #recoveredTranscriptTailSessionIds = new Set<string>();
     readonly #transcriptRecoveryPromises = new Map<string, Promise<void>>();
+    readonly #transcriptMigrationTimers = new Map<
+        string,
+        ReturnType<typeof setTimeout>
+    >();
     readonly #liveSessionTouches = new Map<
         string,
         {
@@ -597,6 +602,10 @@ export class AiService {
         this.#loadingTranscriptBlockMetadataSessionIds.clear();
         this.#recoveredTranscriptTailSessionIds.clear();
         this.#transcriptRecoveryPromises.clear();
+        for (const timer of this.#transcriptMigrationTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.#transcriptMigrationTimers.clear();
         this.#liveSessionTouches.clear();
         for (const sessionId of this.#retentionCloseRuntimeSessionIds.keys()) {
             this.#forgetRetentionCloseRuntimeSessions(sessionId);
@@ -2812,6 +2821,13 @@ export class AiService {
             this.#transcriptPersistence?.clearSession(currentSessionId);
             this.#recoveredTranscriptTailSessionIds.delete(currentSessionId);
             this.#transcriptRecoveryPromises.delete(currentSessionId);
+            const migrationTimer = this.#transcriptMigrationTimers.get(
+                currentSessionId,
+            );
+            if (migrationTimer) {
+                clearTimeout(migrationTimer);
+                this.#transcriptMigrationTimers.delete(currentSessionId);
+            }
             this.#loadedTranscriptBlockMetadataSessionIds.delete(
                 currentSessionId,
             );
@@ -5482,8 +5498,18 @@ export class AiService {
             this.#transcriptStorageModes.set(sessionId, state.mode);
             if (state.mode === "block-native") {
                 this.#legacyTranscriptSessionIds.delete(sessionId);
-            } else if (options.preserveLegacyFallback) {
-                this.#legacyTranscriptSessionIds.add(sessionId);
+                const migrationTimer = this.#transcriptMigrationTimers.get(sessionId);
+                if (migrationTimer) {
+                    clearTimeout(migrationTimer);
+                    this.#transcriptMigrationTimers.delete(sessionId);
+                }
+            } else {
+                if (options.preserveLegacyFallback) {
+                    this.#legacyTranscriptSessionIds.add(sessionId);
+                }
+                if (state.mode === "migrating") {
+                    this.#scheduleTranscriptBackfill(sessionId);
+                }
             }
             return state.mode === "block-native";
         } catch (error) {
@@ -5495,6 +5521,28 @@ export class AiService {
             }
             return false;
         }
+    }
+
+    #scheduleTranscriptBackfill(sessionId: string): void {
+        if (this.#transcriptMigrationTimers.has(sessionId)) {
+            return;
+        }
+        const timer = setTimeout(() => {
+            this.#transcriptMigrationTimers.delete(sessionId);
+            void this.#refreshTranscriptStorageMode(sessionId)
+                .then((isBlockNative) => {
+                    if (isBlockNative) {
+                        this.#loadedTranscriptBlockMetadataSessionIds.delete(
+                            sessionId,
+                        );
+                        this.#scheduleTranscriptBlockMetadataLoad(sessionId);
+                    }
+                })
+                .catch((error: unknown) => {
+                    debugBenignError("ai.service.transcriptBackfill", error);
+                });
+        }, TRANSCRIPT_BACKFILL_RETRY_DELAY_MS);
+        this.#transcriptMigrationTimers.set(sessionId, timer);
     }
 
     #emitSealedTranscriptSnapshot(sessionId: string): void {

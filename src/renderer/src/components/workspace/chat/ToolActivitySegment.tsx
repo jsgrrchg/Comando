@@ -33,6 +33,7 @@ type ToolActivitySegmentProps = Pick<
 > & {
     /** True only while this segment is the trailing activity of an active turn. */
     readonly isCurrentTurnTail?: boolean;
+    readonly onLoadToolPayload?: (activityId: string) => void;
     readonly segment: ChatTimelineActivitySegmentRow;
 } & Pick<
         ThinkingMessageProps,
@@ -142,6 +143,7 @@ type ActivitySegmentItemRendererProps = Pick<
     | "chatFontSize"
     | "highlightQuery"
     | "onAddFileReferenceToChat"
+    | "onLoadToolPayload"
     | "onOpenFile"
     | "onOpenFileReference"
     | "onOpenSession"
@@ -203,23 +205,31 @@ function ActivitySegmentItemRow({
                         resolveFileReference={resolveThinkingFileReference}
                     />
                 ) : (
-                    <ToolActivityItem
-                        activity={item.entry.reviewEntry.activity}
-                        canRenderFileReference={props.canRenderFileReference}
-                        compactTerminal
-                        onOpenFile={props.onOpenFile}
-                        onOpenFileReference={props.onOpenFileReference}
-                        onOpenSession={props.onOpenSession}
-                        projectId={props.projectId}
-                        resolveFileReference={props.resolveFileReference}
-                        surface={
-                            item.entry.policy === "standalone-change"
-                                ? "card"
-                                : "rail-row"
+                    <div
+                        onClickCapture={() =>
+                            props.onLoadToolPayload?.(
+                                item.entry.reviewEntry.activity.id,
+                            )
                         }
-                        trackedFiles={item.entry.reviewEntry.trackedFiles}
-                        worktreeId={props.worktreeId}
-                    />
+                    >
+                        <ToolActivityItem
+                            activity={item.entry.reviewEntry.activity}
+                            canRenderFileReference={props.canRenderFileReference}
+                            compactTerminal
+                            onOpenFile={props.onOpenFile}
+                            onOpenFileReference={props.onOpenFileReference}
+                            onOpenSession={props.onOpenSession}
+                            projectId={props.projectId}
+                            resolveFileReference={props.resolveFileReference}
+                            surface={
+                                item.entry.policy === "standalone-change"
+                                    ? "card"
+                                    : "rail-row"
+                            }
+                            trackedFiles={item.entry.reviewEntry.trackedFiles}
+                            worktreeId={props.worktreeId}
+                        />
+                    </div>
                 )}
             </div>
         </div>
@@ -290,6 +300,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     chatFontSize,
     highlightQuery,
     onAddFileReferenceToChat,
+    onLoadToolPayload,
     onOpenFile,
     onOpenFileReference,
     onOpenSession,
@@ -431,6 +442,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                     highlightQuery={highlightQuery}
                     items={segment.items}
                     onAddFileReferenceToChat={onAddFileReferenceToChat}
+                    onLoadToolPayload={onLoadToolPayload}
                     onOpenFile={onOpenFile}
                     onOpenFileReference={onOpenFileReference}
                     onOpenSession={onOpenSession}
