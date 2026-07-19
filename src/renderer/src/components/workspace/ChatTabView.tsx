@@ -9,6 +9,7 @@ import {
     useState,
     type ReactNode,
     type RefObject,
+    type TouchEvent,
     type WheelEvent,
 } from "react";
 
@@ -95,6 +96,13 @@ import {
     isScrollViewportNearBottom,
     resolveChatScrollPersistenceState,
 } from "./chat/chatScroll";
+import {
+    canApplyChatScrollOperation,
+    createChatScrollIntent,
+    followChatScrollEnd,
+    isFollowingChatScrollEnd,
+    readChatScroll,
+} from "./chat/chatScrollIntent";
 import type { AIComposerPart } from "./chat/composerParts";
 import {
     appendSelectionMentionPart,
@@ -376,6 +384,7 @@ export const ChatTabView = memo(function ChatTabView({
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const timelineContentRef = useRef<HTMLDivElement | null>(null);
+    const scrollIntentRef = useRef(createChatScrollIntent());
     const shouldAutoFollowRef = useRef(true);
     const pendingScrollFrameRef = useRef<number | null>(null);
     const restoreScrollFrameRef = useRef<number | null>(null);
@@ -1353,6 +1362,7 @@ export const ChatTabView = memo(function ChatTabView({
     }, []);
 
     const scheduleBottomFollowSettle = useCallback(() => {
+        const generation = scrollIntentRef.current.navigationGeneration;
         if (bottomFollowSettleFrameRef.current !== null) {
             window.cancelAnimationFrame(bottomFollowSettleFrameRef.current);
             bottomFollowSettleFrameRef.current = null;
@@ -1367,7 +1377,10 @@ export const ChatTabView = memo(function ChatTabView({
 
                     if (
                         !bottomFollowSettleActiveRef.current ||
-                        !shouldAutoFollowRef.current
+                        !canApplyChatScrollOperation(
+                            scrollIntentRef.current,
+                            generation,
+                        )
                     ) {
                         bottomFollowSettleActiveRef.current = false;
                         return;
@@ -1398,6 +1411,10 @@ export const ChatTabView = memo(function ChatTabView({
     }, []);
 
     const scheduleScrollToBottom = useCallback(() => {
+        if (!isFollowingChatScrollEnd(scrollIntentRef.current)) {
+            return;
+        }
+
         // A pending frame reads the latest layout, and the settling frames keep
         // following subsequent measurements. Restarting either for every
         // snapshot, resize, and virtual-range notification makes a new turn
@@ -1410,9 +1427,19 @@ export const ChatTabView = memo(function ChatTabView({
         }
 
         bottomFollowSettleActiveRef.current = true;
+        const generation = scrollIntentRef.current.navigationGeneration;
 
         pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
             pendingScrollFrameRef.current = null;
+            if (
+                !canApplyChatScrollOperation(
+                    scrollIntentRef.current,
+                    generation,
+                )
+            ) {
+                bottomFollowSettleActiveRef.current = false;
+                return;
+            }
             scrollToBottom();
             scheduleBottomFollowSettle();
         });
@@ -1668,6 +1695,29 @@ export const ChatTabView = memo(function ChatTabView({
             cancelBottomFollowSettle();
             cancelResizeBottomSettle();
             shouldAutoFollowRef.current = false;
+            scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
+            resizeBottomLockRef.current = false;
+            resizeStartedNearBottomRef.current = false;
+        },
+        [
+            cancelBottomFollowSettle,
+            cancelPendingScrollToBottom,
+            cancelResizeBottomSettle,
+        ],
+    );
+
+    const handleTimelineTouchStart = useCallback(
+        () => {
+            if (!shouldAutoFollowRef.current) {
+                return;
+            }
+
+            // Touch scrolling has no wheel event, so invalidate follow eagerly.
+            cancelPendingScrollToBottom();
+            cancelBottomFollowSettle();
+            cancelResizeBottomSettle();
+            shouldAutoFollowRef.current = false;
+            scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
@@ -1755,10 +1805,12 @@ export const ChatTabView = memo(function ChatTabView({
 
         if (shouldRestoreBottom) {
             shouldAutoFollowRef.current = true;
+            scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
             scheduleScrollToBottom();
             setJumpToBottomVisibility(false);
         } else {
             shouldAutoFollowRef.current = false;
+            scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
             scrollEl.scrollTop = restoreScrollTop;
             setJumpToBottomVisibility(!isNearBottom(scrollEl));
         }
@@ -1853,6 +1905,9 @@ export const ChatTabView = memo(function ChatTabView({
 
         const nextIsNearBottom = isNearBottom(el);
         shouldAutoFollowRef.current = nextIsNearBottom;
+        scrollIntentRef.current = nextIsNearBottom
+            ? followChatScrollEnd(scrollIntentRef.current)
+            : readChatScroll(scrollIntentRef.current);
         setShowJumpToBottom(!nextIsNearBottom);
         scheduleScrollPersist(el.scrollTop, nextIsNearBottom);
     }, [composerExpanded, isNearBottom, scheduleScrollPersist]);
@@ -1862,6 +1917,7 @@ export const ChatTabView = memo(function ChatTabView({
         cancelBottomFollowSettle();
         cancelResizeBottomSettle();
         shouldAutoFollowRef.current = true;
+        scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
         resizeBottomLockRef.current = false;
         resizeStartedNearBottomRef.current = false;
         scrollToBottom();
@@ -2460,6 +2516,7 @@ export const ChatTabView = memo(function ChatTabView({
                     }
                     onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
+                    onTouchStart={handleTimelineTouchStart}
                     onWheelCapture={handleTimelineWheelCapture}
                     onJumpToBottom={handleJumpToBottom}
                     onVirtualRangeChange={handleTimelineVirtualRangeChange}
@@ -2968,6 +3025,7 @@ type ChatTimelineProps = {
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onScroll: () => void;
+    readonly onTouchStart?: (event: TouchEvent<HTMLDivElement>) => void;
     readonly onWheelCapture?: (event: WheelEvent<HTMLDivElement>) => void;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeEnd?: () => void;
@@ -3020,6 +3078,7 @@ const ChatTimeline = memo(function ChatTimeline({
     onJumpToBottom,
     onRevealFileReference,
     onScroll,
+    onTouchStart,
     onWheelCapture,
     onVirtualRangeChange,
     onVirtualResizeEnd,
@@ -3057,6 +3116,7 @@ const ChatTimeline = memo(function ChatTimeline({
                     ref={scrollRef}
                     className="chat-scroll h-full min-h-0 min-w-0 overflow-y-auto px-3 py-3"
                     onScroll={onScroll}
+                    onTouchStart={onTouchStart}
                     onWheelCapture={onWheelCapture}
                 >
                     <ChatContentColumn
