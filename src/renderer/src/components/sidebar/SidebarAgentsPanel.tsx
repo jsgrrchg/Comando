@@ -189,11 +189,6 @@ export function SidebarAgentsPanel({
         () => getSidebarAgentsHistoryCacheKey(projectId, worktreeId),
         [projectId, worktreeId],
     );
-    const historyQueryWorktreeId =
-        projectId &&
-        areGitWorktreeIdsEquivalent(projectId, worktreeId ?? null, null)
-            ? null
-            : (worktreeId ?? null);
     const folderScopeKey = useMemo(
         () => getSidebarAgentsFolderStorageKey(projectId, worktreeId),
         [projectId, worktreeId],
@@ -388,7 +383,7 @@ export function SidebarAgentsPanel({
             const nextSessions = await api.listAiSessionHistory({
                 limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
                 projectId,
-                worktreeId: historyQueryWorktreeId,
+                worktreeId: worktreeId ?? null,
             });
             if (requestIdRef.current !== requestId) {
                 return;
@@ -410,7 +405,7 @@ export function SidebarAgentsPanel({
                 setIsLoading(false);
             }
         }
-    }, [historyQueryWorktreeId, historyScopeKey, projectId, worktreeId]);
+    }, [historyScopeKey, projectId, worktreeId]);
 
     const clearRefreshTimer = useCallback(() => {
         if (refreshTimerRef.current !== null) {

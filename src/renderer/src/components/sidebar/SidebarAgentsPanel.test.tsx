@@ -278,6 +278,44 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).not.toContain("Loading...");
     });
 
+    it("queries the canonical primary worktree supplied by the host", async () => {
+        const listAiSessionHistory = vi.fn().mockResolvedValue([]);
+        Object.defineProperty(window, "comando", {
+            configurable: true,
+            value: {
+                checkCommandAvailability: vi.fn().mockResolvedValue({
+                    found: true,
+                    path: "/usr/local/bin/claude",
+                }),
+                listAiSessionHistory,
+                onAiSessionSnapshot: vi.fn(() => () => undefined),
+            } satisfies Partial<ComandoApi>,
+            writable: true,
+        });
+
+        const container = document.createElement("div");
+        document.body.appendChild(container);
+        mountedContainers.push(container);
+        const root = createRoot(container);
+        mountedRoots.push(root);
+
+        await act(async () => {
+            root.render(
+                <SidebarAgentsPanel
+                    projectId="project-1"
+                    worktreeId="project-1:primary"
+                />,
+            );
+            await Promise.resolve();
+        });
+
+        expect(listAiSessionHistory).toHaveBeenCalledWith({
+            limit: 250,
+            projectId: "project-1",
+            worktreeId: "project-1:primary",
+        });
+    });
+
     it("renders title-only rows with provider icons", () => {
         const fullTitle =
             "Investigate the model selector behavior without shortening this title";

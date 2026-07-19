@@ -860,7 +860,11 @@ impl AiHistoryStore {
             if metadata.project_id != input.project_id {
                 continue;
             }
-            if metadata.worktree_id != input.worktree_id {
+            if !history_worktree_scope_matches(
+                metadata.project_id.as_ref(),
+                metadata.worktree_id.as_ref(),
+                input.worktree_id.as_ref(),
+            ) {
                 continue;
             }
             if metadata.message_count == 0 && metadata.parent_session_id.is_none() {
@@ -1844,18 +1848,39 @@ impl<'a> LegacyAiHistoryReader<'a> {
             WHERE ",
         );
         let mut args: Vec<Option<String>> = Vec::new();
-        if let Some(project_id) = project_id {
+        if let Some(project_id) = project_id.as_ref() {
             sql.push_str("chat_sessions.project_id = ? ");
-            args.push(Some(project_id.0));
+            args.push(Some(project_id.0.clone()));
         } else {
             sql.push_str("chat_sessions.project_id IS NULL ");
         }
         sql.push_str("AND ");
-        if let Some(worktree_id) = worktree_id {
-            sql.push_str("chat_sessions.worktree_id = ? ");
-            args.push(Some(worktree_id.0));
-        } else {
-            sql.push_str("chat_sessions.worktree_id IS NULL ");
+        match worktree_id.as_ref() {
+            Some(worktree_id)
+                if project_id
+                    .as_ref()
+                    .is_some_and(|project_id| is_primary_worktree_id(project_id, worktree_id)) =>
+            {
+                sql.push_str(
+                    "(chat_sessions.worktree_id = ? OR chat_sessions.worktree_id IS NULL) ",
+                );
+                args.push(Some(worktree_id.0.clone()));
+            }
+            Some(worktree_id) => {
+                sql.push_str("chat_sessions.worktree_id = ? ");
+                args.push(Some(worktree_id.0.clone()));
+            }
+            None => {
+                if let Some(project_id) = project_id.as_ref() {
+                    // Keep null-primary legacy rows visible from canonical scopes.
+                    sql.push_str(
+                        "(chat_sessions.worktree_id IS NULL OR chat_sessions.worktree_id = ?) ",
+                    );
+                    args.push(Some(primary_worktree_id(project_id)));
+                } else {
+                    sql.push_str("chat_sessions.worktree_id IS NULL ");
+                }
+            }
         }
         sql.push_str(
             "
@@ -2465,6 +2490,36 @@ fn compare_history_summaries(
     }
 }
 
+fn history_worktree_scope_matches(
+    project_id: Option<&ProjectId>,
+    stored_worktree_id: Option<&WorktreeId>,
+    requested_worktree_id: Option<&WorktreeId>,
+) -> bool {
+    if stored_worktree_id == requested_worktree_id {
+        return true;
+    }
+
+    let Some(project_id) = project_id else {
+        return false;
+    };
+
+    // Primary sessions were historically persisted with either representation.
+    match (stored_worktree_id, requested_worktree_id) {
+        (None, Some(worktree_id)) | (Some(worktree_id), None) => {
+            is_primary_worktree_id(project_id, worktree_id)
+        }
+        _ => false,
+    }
+}
+
+fn is_primary_worktree_id(project_id: &ProjectId, worktree_id: &WorktreeId) -> bool {
+    worktree_id.0 == format!("{}:primary", project_id.0)
+}
+
+fn primary_worktree_id(project_id: &ProjectId) -> String {
+    format!("{}:primary", project_id.0)
+}
+
 fn should_compact_transcript(
     policy: &HistoryCompactionPolicy,
     physical_bytes: u64,
@@ -3059,6 +3114,38 @@ mod tests {
     }
 
     #[test]
+    fn list_treats_null_and_canonical_primary_worktrees_as_one_scope() {
+        let (_temp, store) = store();
+        let mut null_primary = metadata("null_primary");
+        null_primary.message_count = 1;
+        null_primary.worktree_id = None;
+        store.create_session(null_primary.clone()).unwrap();
+
+        let mut canonical_primary = metadata("canonical_primary");
+        canonical_primary.message_count = 1;
+        canonical_primary.worktree_id = Some(WorktreeId("project_1:primary".to_string()));
+        store.create_session(canonical_primary.clone()).unwrap();
+
+        for worktree_id in [None, Some(WorktreeId("project_1:primary".to_string()))] {
+            let history = store
+                .list_session_history(NativeAiListSessionHistoryInput {
+                    project_id: Some(ProjectId("project_1".to_string())),
+                    worktree_id,
+                    limit: None,
+                })
+                .unwrap();
+            let session_ids = history
+                .iter()
+                .map(|session| session.session_id.clone())
+                .collect::<HashSet<_>>();
+
+            assert_eq!(session_ids.len(), 2);
+            assert!(session_ids.contains(&null_primary.session_id));
+            assert!(session_ids.contains(&canonical_primary.session_id));
+        }
+    }
+
+    #[test]
     fn subagent_nickname_is_used_as_the_display_title() {
         let (_temp, store) = store();
         let mut child = metadata("child");
@@ -3437,6 +3524,52 @@ mod tests {
             history[0].runtime_session_id.as_ref().unwrap().0,
             "runtime_legacy_1"
         );
+    }
+
+    #[test]
+    fn legacy_reader_treats_null_and_canonical_primary_worktrees_as_one_scope() {
+        let connection = legacy_connection();
+        insert_legacy_session(
+            &connection,
+            "legacy_null_primary",
+            vec![message("one", "hello")],
+        );
+        insert_legacy_session(
+            &connection,
+            "legacy_canonical_primary",
+            vec![message("two", "hello")],
+        );
+        connection
+            .execute(
+                "UPDATE chat_sessions SET worktree_id = NULL WHERE id = 'legacy_null_primary'",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE chat_sessions SET worktree_id = ?1 WHERE id = 'legacy_canonical_primary'",
+                ["project_1:primary"],
+            )
+            .unwrap();
+
+        let reader = LegacyAiHistoryReader::new(&connection);
+        for worktree_id in [None, Some(WorktreeId("project_1:primary".to_string()))] {
+            let history = reader
+                .list_session_history(NativeAiListSessionHistoryInput {
+                    project_id: Some(ProjectId("project_1".to_string())),
+                    worktree_id,
+                    limit: None,
+                })
+                .unwrap();
+            let session_ids = history
+                .iter()
+                .map(|session| session.session_id.clone())
+                .collect::<HashSet<_>>();
+
+            assert_eq!(session_ids.len(), 2);
+            assert!(session_ids.contains(&SessionId("legacy_null_primary".to_string())));
+            assert!(session_ids.contains(&SessionId("legacy_canonical_primary".to_string())));
+        }
     }
 
     #[test]
