@@ -163,6 +163,7 @@ import {
     type WorkspaceContextMenuAction,
     type WorkspaceContextMenuInput,
     type WorkspaceSurfaceActionRequest,
+    type WorkspaceSurfaceActionCompletion,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceDragEvent,
 } from "@shared/ipc";
@@ -229,6 +230,7 @@ import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
 import {
     isWorkspaceSurfaceActionRequest,
+    isWorkspaceSurfaceActionCompletion,
     isWorkspaceSurfaceFileRevealRequest,
 } from "@main/workspace/surface-actions";
 
@@ -1962,6 +1964,24 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(IPC_CHANNELS.notifyWorkspaceSurfaceReady, (event) => {
         workspaceSurfaceManager.notifySurfaceReady(event.sender);
     });
+    ipcMain.handle(
+        IPC_CHANNELS.claimWorkspaceSurfaceAction,
+        (event, actionId: string) =>
+            typeof actionId === "string" &&
+            workspaceSurfaceManager.claimSurfaceAction(event.sender, actionId),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.completeWorkspaceSurfaceAction,
+        (event, completion: WorkspaceSurfaceActionCompletion) => {
+            if (!isWorkspaceSurfaceActionCompletion(completion)) {
+                return;
+            }
+            workspaceSurfaceManager.completeSurfaceAction(
+                event.sender,
+                completion,
+            );
+        },
+    );
     ipcMain.handle(
         IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree,
         (event, input) => {

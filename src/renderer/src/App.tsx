@@ -21,6 +21,7 @@ import type {
     ProjectTreeNode,
     SettingsWindowCategory,
     SettingsSnapshot,
+    WorkspaceSurfaceActionEnvelope,
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
@@ -294,6 +295,27 @@ export function App() {
     const activeProjectId =
         activeWorkspaceContext?.projectId ??
         (workspaceNavigationHydrated ? null : persistedActiveProjectId);
+    const [workspaceSurfaceActionError, setWorkspaceSurfaceActionError] =
+        useState<string | null>(null);
+    const workspaceSurfaceActionErrorTimerRef = useRef<number | null>(null);
+    const reportWorkspaceSurfaceActionError = useCallback((message: string) => {
+        if (workspaceSurfaceActionErrorTimerRef.current !== null) {
+            window.clearTimeout(workspaceSurfaceActionErrorTimerRef.current);
+        }
+        setWorkspaceSurfaceActionError(message);
+        workspaceSurfaceActionErrorTimerRef.current = window.setTimeout(() => {
+            workspaceSurfaceActionErrorTimerRef.current = null;
+            setWorkspaceSurfaceActionError(null);
+        }, 6_000);
+    }, []);
+    useEffect(
+        () => () => {
+            if (workspaceSurfaceActionErrorTimerRef.current !== null) {
+                window.clearTimeout(workspaceSurfaceActionErrorTimerRef.current);
+            }
+        },
+        [],
+    );
     const dispatchWorkspaceSurfaceAction = useCallback(
         async (request: WorkspaceSurfaceActionRequest): Promise<void> => {
             const api = getComandoApi();
@@ -313,9 +335,14 @@ export function App() {
         (request: WorkspaceSurfaceActionRequest) => {
             void dispatchWorkspaceSurfaceAction(request).catch((error) => {
                 console.error("[workspace-host] action delivery failed", error);
+                reportWorkspaceSurfaceActionError(
+                    error instanceof Error
+                        ? error.message
+                        : "The workspace action could not be delivered.",
+                );
             });
         },
-        [dispatchWorkspaceSurfaceAction],
+        [dispatchWorkspaceSurfaceAction, reportWorkspaceSurfaceActionError],
     );
     const addProjects = useProjectsStore((state) => state.addProjects);
     const cloneRepository = useProjectsStore((state) => state.cloneRepository);
@@ -843,18 +870,55 @@ export function App() {
             return;
         }
         const unsubscribe = api.onWorkspaceSurfaceActionRequested(
-            (request: WorkspaceSurfaceActionRequest) => {
-                void executeWorkspaceSurfaceAction(request).catch((error) => {
-                    console.error(
-                        "[workspace-surface] action execution failed",
-                        error,
-                    );
-                });
+            (envelope: WorkspaceSurfaceActionEnvelope) => {
+                void (async () => {
+                    if (
+                        !(await api.claimWorkspaceSurfaceAction(
+                            envelope.actionId,
+                        ))
+                    ) {
+                        return;
+                    }
+                    try {
+                        await executeWorkspaceSurfaceAction(envelope.request);
+                        await api.completeWorkspaceSurfaceAction({
+                            actionId: envelope.actionId,
+                            status: "completed",
+                        });
+                    } catch (error) {
+                        console.error(
+                            "[workspace-surface] action execution failed",
+                            error,
+                        );
+                        await api.completeWorkspaceSurfaceAction({
+                            actionId: envelope.actionId,
+                            error:
+                                error instanceof Error && error.message
+                                    ? error.message.slice(0, 1_000)
+                                    : "The workspace action failed.",
+                            status: "failed",
+                        });
+                    }
+                })();
             },
         );
         void api.notifyWorkspaceSurfaceReady();
         return unsubscribe;
     }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceActionStatus((status) => {
+            if (status.status === "completed") {
+                return;
+            }
+            reportWorkspaceSurfaceActionError(
+                status.message ?? "The workspace action could not be completed.",
+            );
+        });
+    }, [reportWorkspaceSurfaceActionError]);
 
     useEffect(() => {
         if (!isWorkspaceSurfaceRenderer) {
@@ -1925,6 +1989,7 @@ export function App() {
         projectsError,
         workspaceError,
         activeGitError,
+        workspaceSurfaceActionError,
     ]
         .filter(Boolean)
         .join(" ");

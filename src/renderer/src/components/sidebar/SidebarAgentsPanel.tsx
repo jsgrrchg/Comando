@@ -1463,6 +1463,7 @@ export function SidebarAgentsPanel({
                 </button>
                 <button
                     className="sidebar-toolbar-action"
+                    disabled={Boolean(onRequestWorkspaceAction) && (!projectId || !workspaceContextKey)}
                     onClick={handleOpenHistoryTab}
                     title="Open full history"
                     type="button"

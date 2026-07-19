@@ -93,17 +93,42 @@ describe("WorkspaceSurfaceManager action routing", () => {
         expect(surfaceB).toBeDefined();
 
         const actionA = createFileAction("project-a::__primary__", "project-a");
-        expect(manager.dispatchActiveSurfaceAction("host-1", actionA)).toEqual({
+        const queuedActionA = manager.dispatchActiveSurfaceAction(
+            "host-1",
+            actionA,
+        );
+        expect(queuedActionA).toMatchObject({
             delivered: true,
+            state: "queued",
         });
+        if (!queuedActionA.delivered) {
+            throw new Error("Expected the action to queue.");
+        }
         expect(surfaceA.webContents.send).not.toHaveBeenCalled();
 
         manager.notifySurfaceReady(asWebContents(surfaceA.webContents));
         expect(surfaceA.webContents.send).toHaveBeenCalledWith(
             IPC_EVENTS.workspaceSurfaceActionRequested,
-            actionA,
+            {
+                actionId: queuedActionA.actionId,
+                request: actionA,
+            },
         );
         expect(surfaceB.webContents.send).not.toHaveBeenCalled();
+        expect(
+            manager.claimSurfaceAction(
+                asWebContents(surfaceA.webContents),
+                queuedActionA.actionId,
+            ),
+        ).toBe(true);
+        manager.completeSurfaceAction(asWebContents(surfaceA.webContents), {
+            actionId: queuedActionA.actionId,
+            status: "completed",
+        });
+        expect(host.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceActionStatus,
+            { actionId: queuedActionA.actionId, status: "completed" },
+        );
 
         manager.activate("host-1", "project-b::__primary__");
         expect(manager.dispatchActiveSurfaceAction("host-1", actionA)).toEqual({
@@ -115,12 +140,39 @@ describe("WorkspaceSurfaceManager action routing", () => {
 
         const actionB = createFileAction("project-b::__primary__", "project-b");
         manager.notifySurfaceReady(asWebContents(surfaceB.webContents));
-        expect(manager.dispatchActiveSurfaceAction("host-1", actionB)).toEqual({
+        const sentActionB = manager.dispatchActiveSurfaceAction("host-1", actionB);
+        expect(sentActionB).toMatchObject({
             delivered: true,
+            state: "sent",
         });
+        if (!sentActionB.delivered) {
+            throw new Error("Expected the action to send.");
+        }
         expect(surfaceB.webContents.send).toHaveBeenCalledWith(
             IPC_EVENTS.workspaceSurfaceActionRequested,
-            actionB,
+            {
+                actionId: sentActionB.actionId,
+                request: actionB,
+            },
+        );
+        expect(
+            manager.claimSurfaceAction(
+                asWebContents(surfaceB.webContents),
+                sentActionB.actionId,
+            ),
+        ).toBe(true);
+        manager.completeSurfaceAction(asWebContents(surfaceB.webContents), {
+            actionId: sentActionB.actionId,
+            error: "Could not open the tab.",
+            status: "failed",
+        });
+        expect(host.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceActionStatus,
+            {
+                actionId: sentActionB.actionId,
+                message: "Could not open the tab.",
+                status: "failed",
+            },
         );
 
         expect(
@@ -137,6 +189,39 @@ describe("WorkspaceSurfaceManager action routing", () => {
             reason: "missing-surface",
         });
         expect(surfaceB.webContents.send).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects a queued action when its context becomes inactive", () => {
+        const manager = new WorkspaceSurfaceManager();
+        const host = createHostWindow();
+        manager.syncHost(host.window, createHostContext(), createSnapshot());
+        const [surfaceA] = electronMocks.views;
+        const actionA = createFileAction("project-a::__primary__", "project-a");
+        const queuedActionA = manager.dispatchActiveSurfaceAction(
+            "host-1",
+            actionA,
+        );
+        if (!queuedActionA.delivered) {
+            throw new Error("Expected the action to queue.");
+        }
+
+        manager.activate("host-1", "project-b::__primary__");
+        manager.notifySurfaceReady(asWebContents(surfaceA.webContents));
+
+        expect(surfaceA.webContents.send).not.toHaveBeenCalled();
+        expect(
+            manager.claimSurfaceAction(
+                asWebContents(surfaceA.webContents),
+                queuedActionA.actionId,
+            ),
+        ).toBe(false);
+        expect(host.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceActionStatus,
+            expect.objectContaining({
+                actionId: queuedActionA.actionId,
+                status: "rejected",
+            }),
+        );
     });
 
     it("reveals a surface file only through its active host context", () => {

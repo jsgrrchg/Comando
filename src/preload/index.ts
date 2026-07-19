@@ -178,8 +178,10 @@ import {
     type WriteTerminalInput,
     type PersistedWorkspaceSnapshot,
     type WorkspaceNavigationSnapshot,
-    type WorkspaceSurfaceActionRequest,
+    type WorkspaceSurfaceActionCompletion,
+    type WorkspaceSurfaceActionEnvelope,
     type WorkspaceSurfaceFileRevealRequest,
+    type WorkspaceSurfaceActionStatus,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceContextRequest,
 } from "@shared/ipc";
@@ -921,12 +923,25 @@ const comandoApi: ComandoApi = {
     onWorkspaceSurfaceActionRequested: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
-            request: WorkspaceSurfaceActionRequest,
-        ) => listener(request);
+            envelope: WorkspaceSurfaceActionEnvelope,
+        ) => listener(envelope);
         ipcRenderer.on(IPC_EVENTS.workspaceSurfaceActionRequested, handleEvent);
         return () => {
             ipcRenderer.removeListener(
                 IPC_EVENTS.workspaceSurfaceActionRequested,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceActionStatus: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            status: WorkspaceSurfaceActionStatus,
+        ) => listener(status);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceActionStatus, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceActionStatus,
                 handleEvent,
             );
         };
@@ -1108,6 +1123,13 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(
             IPC_CHANNELS.dispatchWorkspaceSurfaceAction,
             request,
+        ),
+    claimWorkspaceSurfaceAction: (actionId) =>
+        ipcRenderer.invoke(IPC_CHANNELS.claimWorkspaceSurfaceAction, actionId),
+    completeWorkspaceSurfaceAction: (completion: WorkspaceSurfaceActionCompletion) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.completeWorkspaceSurfaceAction,
+            completion,
         ),
     notifyWorkspaceSurfaceReady: () =>
         ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceReady),

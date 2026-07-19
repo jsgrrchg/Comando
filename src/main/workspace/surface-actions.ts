@@ -4,6 +4,7 @@ import type {
     PersistedWorkspaceContext,
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceActionContext,
+    WorkspaceSurfaceActionCompletion,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 
@@ -100,6 +101,18 @@ export function isWorkspaceSurfaceFileRevealRequest(
         isRecord(input) &&
         hasValidContext(input) &&
         isNonEmptyString(input.relativePath, MAX_PATH_OR_URL_LENGTH)
+    );
+}
+
+export function isWorkspaceSurfaceActionCompletion(
+    input: unknown,
+): input is WorkspaceSurfaceActionCompletion {
+    return (
+        isRecord(input) &&
+        isNonEmptyString(input.actionId, MAX_SHORT_TEXT_LENGTH) &&
+        (input.status === "completed" || input.status === "failed") &&
+        (input.error === undefined ||
+            isNonEmptyString(input.error, MAX_SHORT_TEXT_LENGTH))
     );
 }
 

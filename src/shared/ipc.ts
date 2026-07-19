@@ -132,6 +132,8 @@ export const IPC_CHANNELS = {
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
     dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
     dispatchWorkspaceSurfaceAction: "workspace:dispatch-surface-action",
+    claimWorkspaceSurfaceAction: "workspace:claim-surface-action",
+    completeWorkspaceSurfaceAction: "workspace:complete-surface-action",
     notifyWorkspaceSurfaceReady: "workspace:notify-surface-ready",
     revealWorkspaceSurfaceFileInHostTree:
         "workspace:reveal-surface-file-in-host-tree",
@@ -209,6 +211,7 @@ export const IPC_EVENTS = {
     workspaceSurfaceContextRequested: "workspace:surface-context-requested",
     workspaceSurfaceDrag: "workspace:surface-drag",
     workspaceSurfaceActionRequested: "workspace:surface-action-requested",
+    workspaceSurfaceActionStatus: "workspace:surface-action-status",
     workspaceSurfaceFileRevealRequested:
         "workspace:surface-file-reveal-requested",
     workspaceSurfaceGitScopeMenuRequested:
@@ -2259,6 +2262,23 @@ export type WorkspaceSurfaceActionRequest = WorkspaceSurfaceActionContext &
           }
     );
 
+export interface WorkspaceSurfaceActionEnvelope {
+    readonly actionId: string;
+    readonly request: WorkspaceSurfaceActionRequest;
+}
+
+export interface WorkspaceSurfaceActionCompletion {
+    readonly actionId: string;
+    readonly error?: string;
+    readonly status: "completed" | "failed";
+}
+
+export interface WorkspaceSurfaceActionStatus {
+    readonly actionId: string;
+    readonly message?: string;
+    readonly status: "completed" | "failed" | "rejected";
+}
+
 export type WorkspaceSurfaceActionDeliveryFailureReason =
     | "inactive-context"
     | "invalid-context"
@@ -2270,6 +2290,14 @@ export type WorkspaceSurfaceActionDeliveryResult =
           readonly delivered: false;
           readonly reason: WorkspaceSurfaceActionDeliveryFailureReason;
       };
+
+export type WorkspaceSurfaceActionDispatchResult =
+    | {
+          readonly actionId: string;
+          readonly delivered: true;
+          readonly state: "queued" | "sent";
+      }
+    | Extract<WorkspaceSurfaceActionDeliveryResult, { readonly delivered: false }>;
 
 export interface WorkspaceContextMenuInput {
     readonly canCopyFullPath: boolean;
@@ -3400,7 +3428,11 @@ export interface ComandoApi {
     ) => Promise<void>;
     dispatchWorkspaceSurfaceAction: (
         request: WorkspaceSurfaceActionRequest,
-    ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
+    ) => Promise<WorkspaceSurfaceActionDispatchResult>;
+    claimWorkspaceSurfaceAction: (actionId: string) => Promise<boolean>;
+    completeWorkspaceSurfaceAction: (
+        completion: WorkspaceSurfaceActionCompletion,
+    ) => Promise<void>;
     notifyWorkspaceSurfaceReady: () => Promise<void>;
     revealWorkspaceSurfaceFileInHostTree: (
         request: WorkspaceSurfaceFileRevealRequest,
@@ -3548,7 +3580,10 @@ export interface ComandoApi {
         listener: (event: WorkspaceSurfaceDragEvent) => void,
     ) => () => void;
     onWorkspaceSurfaceActionRequested: (
-        listener: (request: WorkspaceSurfaceActionRequest) => void,
+        listener: (envelope: WorkspaceSurfaceActionEnvelope) => void,
+    ) => () => void;
+    onWorkspaceSurfaceActionStatus: (
+        listener: (status: WorkspaceSurfaceActionStatus) => void,
     ) => () => void;
     onWorkspaceSurfaceFileRevealRequested: (
         listener: (request: WorkspaceSurfaceFileRevealRequest) => void,

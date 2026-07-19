@@ -212,6 +212,30 @@ describe("SidebarAgentsPanel workspace surface actions", () => {
             worktreeId: "worktree-1",
         });
     });
+
+    it("requests history opening in the active surface", async () => {
+        const onRequestWorkspaceAction = vi.fn();
+        const container = await mountSidebarAgentsPanel([], {
+            onRequestWorkspaceAction,
+            workspaceContextKey: "project-1::worktree-1",
+        });
+        const historyButton = Array.from(
+            container.querySelectorAll<HTMLButtonElement>("button"),
+        ).find((button) => button.textContent === "History");
+
+        expect(historyButton).toBeDefined();
+        await act(async () => {
+            historyButton?.click();
+            await Promise.resolve();
+        });
+
+        expect(onRequestWorkspaceAction).toHaveBeenCalledWith({
+            contextKey: "project-1::worktree-1",
+            kind: "chat-history",
+            projectId: "project-1",
+            worktreeId: "worktree-1",
+        });
+    });
 });
 
 function persistFolderState(
