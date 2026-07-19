@@ -710,6 +710,8 @@ pub struct NativeAiCheckpointOpenTranscriptTailInput {
     pub terminal_status: Option<NativeAiTranscriptTerminalStatus>,
     pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
     pub payloads: Vec<NativeAiTranscriptPayloadWrite>,
+    #[serde(default)]
+    pub removed_entry_ids: Vec<String>,
     pub entry_order: Vec<NativeAiOpenTranscriptEntryRef>,
 }
 

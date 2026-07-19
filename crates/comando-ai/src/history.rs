@@ -567,6 +567,7 @@ impl AiHistoryStore {
         terminal_status: Option<NativeAiTranscriptTerminalStatus>,
         entries: Vec<NativeAiTranscriptEntryEnvelope>,
         payloads: Vec<AiTranscriptPayloadWrite>,
+        removed_entry_ids: Vec<String>,
         entry_order: Vec<NativeAiOpenTranscriptEntryRef>,
     ) -> AiResult<()> {
         self.ensure_session_dir(session_id)?;
@@ -576,6 +577,7 @@ impl AiHistoryStore {
             terminal_status,
             entries,
             payloads,
+            removed_entry_ids,
             entry_order,
         )
     }
@@ -4135,6 +4137,7 @@ mod tests {
                     payload_ref: "tail:message-1".to_string(),
                     value: json!({ "kind": "message", "content": "first draft" }),
                 }],
+                Vec::new(),
                 vec![NativeAiOpenTranscriptEntryRef {
                     entry_id: first.id.clone(),
                     entry_revision: 1,
@@ -4163,6 +4166,7 @@ mod tests {
                         value: json!({ "kind": "message", "content": "second" }),
                     },
                 ],
+                Vec::new(),
                 vec![
                     NativeAiOpenTranscriptEntryRef {
                         entry_id: first.id.clone(),

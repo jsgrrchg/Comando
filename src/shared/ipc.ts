@@ -2767,6 +2767,9 @@ export interface AiOpenTranscriptTailCheckpoint {
     readonly terminalStatus: AiTranscriptTerminalStatus | null;
     readonly entries: readonly AiTranscriptEntryEnvelope[];
     readonly payloads: readonly AiTranscriptPayloadWrite[];
+    /** Entries removed since the preceding durable checkpoint. */
+    readonly removedEntryIds: readonly string[];
+    /** Only entries whose persisted ordering or revision changed. */
     readonly entryOrder: readonly AiOpenTranscriptEntryRef[];
 }
 

@@ -107,6 +107,47 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         });
     });
 
+    it("checkpoints only the ordering delta after prior entries are durable", async () => {
+        const store = liveStore();
+        const checkpoints: CheckpointInput[] = [];
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                checkpoint: vi.fn((input: CheckpointInput) => {
+                    checkpoints.push(input);
+                    return Promise.resolve();
+                }),
+            }),
+        );
+
+        store.applyEvent(messageStarted("first"));
+        coordinator.scheduleCheckpoint(SESSION_ID);
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        store.applyEvent({
+            ...eventBase,
+            kind: "message-started",
+            message: message(
+                "assistant-2",
+                "second",
+                "2026-07-18T00:01:02.000Z",
+            ),
+            messageKind: "assistant",
+            updatedAt: "2026-07-18T00:01:02.000Z",
+        });
+        coordinator.scheduleCheckpoint(SESSION_ID);
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        expect(checkpoints).toHaveLength(2);
+        expect(checkpoints[1]?.entries.map((entry) => entry.id)).toEqual([
+            "message:assistant-2",
+        ]);
+        expect(checkpoints[1]?.entryOrder).toEqual([
+            { entryId: "message:assistant-2", entryRevision: 2, ordinal: 2 },
+        ]);
+        expect(checkpoints[1]?.removedEntryIds).toEqual([]);
+    });
+
     it("restores an open tail in its persisted order after restart", async () => {
         const store = new AiLiveTranscriptTailStore();
         const recovered = recoveredTail();

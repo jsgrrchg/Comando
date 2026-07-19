@@ -187,8 +187,15 @@ export class AiTranscriptPersistenceCoordinator {
     ): Promise<void> {
         try {
             const pending = this.store.takePendingEntries(sessionId);
+            const removedEntryIds = this.store.takePendingRemovedEntryIds(
+                sessionId,
+            );
             const tail = this.store.getSnapshot(sessionId);
-            if (!tail || tail.entries.length === 0 || !tail.turnId) {
+            if (
+                !tail ||
+                !tail.turnId ||
+                (tail.entries.length === 0 && removedEntryIds.length === 0)
+            ) {
                 queue.checkpointedRevision = Math.max(
                     queue.checkpointedRevision,
                     tail?.revision ?? 0,
@@ -199,6 +206,7 @@ export class AiTranscriptPersistenceCoordinator {
             }
             if (
                 pending.length > 0 ||
+                removedEntryIds.length > 0 ||
                 tail.revision > queue.checkpointedRevision
             ) {
                 this.#setStatus(sessionId, queue, "checkpointing", null);
@@ -206,6 +214,7 @@ export class AiTranscriptPersistenceCoordinator {
                     checkpointFromTail(
                         tail,
                         pending,
+                        removedEntryIds,
                         queue.sealStatus ?? tail.terminalTurnStatus,
                         tail.turnId,
                     ),
@@ -215,6 +224,10 @@ export class AiTranscriptPersistenceCoordinator {
                     tail.revision,
                 );
                 this.store.acknowledgePendingEntries(sessionId, pending);
+                this.store.acknowledgePendingRemovedEntryIds(
+                    sessionId,
+                    removedEntryIds,
+                );
             }
 
             if (queue.sealStatus) {
@@ -276,6 +289,7 @@ export class AiTranscriptPersistenceCoordinator {
     ): boolean {
         return (
             this.store.takePendingEntries(sessionId).length > 0 ||
+            this.store.takePendingRemovedEntryIds(sessionId).length > 0 ||
             (this.store.getSnapshot(sessionId)?.revision ?? 0) >
                 queue.checkpointedRevision ||
             queue.sealStatus !== null
@@ -337,16 +351,25 @@ export class AiTranscriptPersistenceCoordinator {
 function checkpointFromTail(
     tail: AiLiveTranscriptTailSnapshot,
     pending: readonly AiLiveTranscriptPendingEntry[],
+    removedEntryIds: readonly string[],
     terminalStatus: AiTranscriptTerminalStatus | null,
     turnId: string,
 ): AiOpenTranscriptTailCheckpoint {
+    const ordinalByEntryId = new Map(
+        tail.entries.map((entry, ordinal) => [entry.envelope.id, ordinal]),
+    );
     return {
         entries: pending.map((entry) => entry.envelope),
-        entryOrder: tail.entries.map((entry, ordinal) => ({
-            entryId: entry.envelope.id,
-            entryRevision: entry.entryRevision,
-            ordinal,
-        })),
+        entryOrder: pending.flatMap((entry) => {
+            const ordinal = ordinalByEntryId.get(entry.envelope.id);
+            return ordinal === undefined
+                ? []
+                : [{
+                      entryId: entry.envelope.id,
+                      entryRevision: entry.entryRevision,
+                      ordinal,
+                  }];
+        }),
         payloads: pending.flatMap((entry) =>
             entry.envelope.payloadRef
                 ? [
@@ -357,6 +380,7 @@ function checkpointFromTail(
                   ]
                 : [],
         ),
+        removedEntryIds,
         sessionId: tail.sessionId,
         terminalStatus,
         turnId,

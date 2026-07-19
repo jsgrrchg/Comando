@@ -415,6 +415,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             entries: input.entries,
             entryOrder: input.entryOrder,
             payloads: input.payloads,
+            removedEntryIds: input.removedEntryIds,
             sessionId: input.sessionId,
             terminalStatus: input.terminalStatus,
             turnId: input.turnId,

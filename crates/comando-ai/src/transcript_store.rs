@@ -235,6 +235,7 @@ impl TranscriptStore {
         terminal_status: Option<NativeAiTranscriptTerminalStatus>,
         entries: Vec<NativeAiTranscriptEntryEnvelope>,
         payloads: Vec<AiTranscriptPayloadWrite>,
+        removed_entry_ids: Vec<String>,
         entry_order: Vec<NativeAiOpenTranscriptEntryRef>,
     ) -> AiResult<()> {
         if turn_id.trim().is_empty() {
@@ -249,7 +250,7 @@ impl TranscriptStore {
         }
         validate_entry_ownership(session_id, &entries)?;
         validate_payload_writes(&payloads)?;
-        validate_open_tail_entry_order(&entry_order)?;
+        validate_open_tail_entry_updates(&entry_order, &removed_entry_ids)?;
         let mut connection = self.open(session_id, true)?;
         let prepared_payloads = self.prepare_payloads(payloads)?;
         let result = (|| {
@@ -266,6 +267,7 @@ impl TranscriptStore {
                 session_id,
                 turn_id,
                 terminal_status.as_ref(),
+                &removed_entry_ids,
                 &entry_order,
             )?;
             transaction.commit().map_err(|error| {
@@ -1462,7 +1464,10 @@ fn append_entries_in_transaction(
     Ok(())
 }
 
-fn validate_open_tail_entry_order(entry_order: &[NativeAiOpenTranscriptEntryRef]) -> AiResult<()> {
+fn validate_open_tail_entry_updates(
+    entry_order: &[NativeAiOpenTranscriptEntryRef],
+    removed_entry_ids: &[String],
+) -> AiResult<()> {
     let mut entry_ids = BTreeSet::new();
     let mut ordinals = BTreeSet::new();
     for entry in entry_order {
@@ -1473,14 +1478,16 @@ fn validate_open_tail_entry_order(entry_order: &[NativeAiOpenTranscriptEntryRef]
         }
         if !entry_ids.insert(entry.entry_id.as_str()) || !ordinals.insert(entry.ordinal) {
             return Err(AiError::InvalidInput(
-                "Open transcript entry order contains duplicates".to_string(),
+                "Open transcript entry updates contain duplicates".to_string(),
             ));
         }
     }
-    if ordinals.iter().copied().ne(0..entry_order.len()) {
-        return Err(AiError::InvalidInput(
-            "Open transcript entry ordinals must be contiguous".to_string(),
-        ));
+    for entry_id in removed_entry_ids {
+        if entry_id.trim().is_empty() || !entry_ids.insert(entry_id.as_str()) {
+            return Err(AiError::InvalidInput(
+                "Open transcript entry updates contain duplicate removals".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1490,6 +1497,7 @@ fn persist_open_tail(
     session_id: &SessionId,
     turn_id: &str,
     terminal_status: Option<&NativeAiTranscriptTerminalStatus>,
+    removed_entry_ids: &[String],
     entry_order: &[NativeAiOpenTranscriptEntryRef],
 ) -> AiResult<()> {
     for entry in entry_order {
@@ -1532,12 +1540,18 @@ fn persist_open_tail(
             ],
         )
         .map_err(|error| transcript_sql("persist open transcript tail state", error))?;
-    transaction
-        .execute(
-            "DELETE FROM transcript_open_tail_entries WHERE session_id = ?1",
-            params![session_id.0],
-        )
-        .map_err(|error| transcript_sql("replace open transcript entry order", error))?;
+
+    for entry_id in removed_entry_ids {
+        transaction
+            .execute(
+                "DELETE FROM transcript_open_tail_entries
+                 WHERE session_id = ?1 AND entry_id = ?2",
+                params![session_id.0, entry_id],
+            )
+            .map_err(|error| transcript_sql("remove open transcript entry", error))?;
+    }
+
+    reserve_open_tail_ordinals(transaction, session_id, entry_order)?;
     for entry in entry_order {
         transaction
             .execute(
@@ -1546,7 +1560,10 @@ fn persist_open_tail(
                     entry_id,
                     ordinal,
                     entry_revision
-                 ) VALUES (?1, ?2, ?3, ?4)",
+                 ) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (session_id, entry_id) DO UPDATE SET
+                    ordinal = excluded.ordinal,
+                    entry_revision = excluded.entry_revision",
                 params![
                     session_id.0,
                     entry.entry_id,
@@ -1555,6 +1572,42 @@ fn persist_open_tail(
                 ],
             )
             .map_err(|error| transcript_sql("persist open transcript entry order", error))?;
+    }
+    Ok(())
+}
+
+fn reserve_open_tail_ordinals(
+    transaction: &Transaction<'_>,
+    session_id: &SessionId,
+    entry_order: &[NativeAiOpenTranscriptEntryRef],
+) -> AiResult<()> {
+    if entry_order.is_empty() {
+        return Ok(());
+    }
+    let temporary_start: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(ordinal), -1) + ?2 + 1
+             FROM transcript_open_tail_entries
+             WHERE session_id = ?1",
+            params![session_id.0, usize_to_sql(entry_order.len())?],
+            |row| row.get(0),
+        )
+        .map_err(|error| transcript_sql("reserve temporary transcript ordinals", error))?;
+    for (index, entry) in entry_order.iter().enumerate() {
+        // Move only changed rows out of the unique ordinal range before their
+        // final UPSERT, so reordered entries never collide with each other.
+        transaction
+            .execute(
+                "UPDATE transcript_open_tail_entries
+                 SET ordinal = ?3
+                 WHERE session_id = ?1 AND entry_id = ?2",
+                params![
+                    session_id.0,
+                    entry.entry_id,
+                    temporary_start + usize_to_sql(index)?,
+                ],
+            )
+            .map_err(|error| transcript_sql("reserve open transcript entry ordinal", error))?;
     }
     Ok(())
 }
@@ -2444,6 +2497,141 @@ mod tests {
             "unexpected query plan: {plan}"
         );
         assert!(!plan.contains("transcript_entries"));
+    }
+
+    #[test]
+    fn checkpoint_updates_only_changed_open_tail_rows() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_id = SessionId("incremental-open-tail".to_string());
+        let store = TranscriptStore::new(temp.path());
+        let first = entry(&session_id, "entry-1");
+        let second = entry(&session_id, "entry-2");
+        store
+            .checkpoint_open_tail(
+                &session_id,
+                "turn-1",
+                None,
+                vec![first.clone(), second.clone()],
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: first.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 0,
+                    },
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: second.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 1,
+                    },
+                ],
+            )
+            .unwrap();
+
+        let connection = store.open(&session_id, false).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_existing_open_tail_delete
+                 BEFORE DELETE ON transcript_open_tail_entries
+                 WHEN OLD.entry_id = 'entry-1'
+                 BEGIN SELECT RAISE(ABORT, 'existing entry deleted'); END;
+                 CREATE TRIGGER reject_existing_open_tail_update
+                 BEFORE UPDATE ON transcript_open_tail_entries
+                 WHEN OLD.entry_id = 'entry-1'
+                 BEGIN SELECT RAISE(ABORT, 'existing entry updated'); END;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let third = entry(&session_id, "entry-3");
+        store
+            .checkpoint_open_tail(
+                &session_id,
+                "turn-1",
+                None,
+                vec![third.clone()],
+                Vec::new(),
+                Vec::new(),
+                vec![NativeAiOpenTranscriptEntryRef {
+                    entry_id: third.id.clone(),
+                    entry_revision: 1,
+                    ordinal: 2,
+                }],
+            )
+            .unwrap();
+
+        let tail = store.load_open_tail(&session_id).unwrap().unwrap();
+        assert_eq!(
+            tail.entries
+                .iter()
+                .map(|entry| &entry.id)
+                .collect::<Vec<_>>(),
+            vec![&first.id, &second.id, &third.id],
+        );
+    }
+
+    #[test]
+    fn checkpoint_reorders_only_the_changed_open_tail_rows() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_id = SessionId("reordered-open-tail".to_string());
+        let store = TranscriptStore::new(temp.path());
+        let first = entry(&session_id, "entry-1");
+        let second = entry(&session_id, "entry-2");
+        store
+            .checkpoint_open_tail(
+                &session_id,
+                "turn-1",
+                None,
+                vec![first.clone(), second.clone()],
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: first.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 0,
+                    },
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: second.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 1,
+                    },
+                ],
+            )
+            .unwrap();
+
+        store
+            .checkpoint_open_tail(
+                &session_id,
+                "turn-1",
+                None,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: second.id.clone(),
+                        entry_revision: 2,
+                        ordinal: 0,
+                    },
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: first.id.clone(),
+                        entry_revision: 2,
+                        ordinal: 1,
+                    },
+                ],
+            )
+            .unwrap();
+
+        let tail = store.load_open_tail(&session_id).unwrap().unwrap();
+        assert_eq!(
+            tail.entries
+                .iter()
+                .map(|entry| &entry.id)
+                .collect::<Vec<_>>(),
+            vec![&second.id, &first.id],
+        );
     }
 
     #[test]

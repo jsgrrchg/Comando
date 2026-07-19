@@ -59,6 +59,7 @@ interface MutableLiveTranscriptEntry
 interface SessionLiveTranscriptTail {
     readonly entriesById: Map<string, MutableLiveTranscriptEntry>;
     readonly orderedEntryIds: string[];
+    readonly pendingRemovedEntryIds: Set<string>;
     readonly pendingEntryRevisionById: Map<string, number>;
     revision: number;
     stableBlocks: readonly AiTranscriptBlockMetadata[];
@@ -137,6 +138,7 @@ export class AiLiveTranscriptTailStore {
         this.#sessions.set(tail.sessionId, {
             entriesById,
             orderedEntryIds: compactOrder,
+            pendingRemovedEntryIds: new Set(),
             pendingEntryRevisionById,
             revision: Math.max(previous?.revision ?? 0, tail.revision),
             stableBlocks: previous?.stableBlocks ?? [],
@@ -162,6 +164,9 @@ export class AiLiveTranscriptTailStore {
             if (entry) {
                 this.#upsertEntry(restored, entry);
             }
+        }
+        for (const entryId of previous.pendingRemovedEntryIds) {
+            this.#removeEntry(restored, entryId);
         }
         if (
             previous.terminalTurnStatus !== null &&
@@ -329,6 +334,12 @@ export class AiLiveTranscriptTailStore {
         });
     }
 
+    takePendingRemovedEntryIds(sessionId: string): readonly string[] {
+        return [...(
+            this.#sessions.get(sessionId)?.pendingRemovedEntryIds ?? new Set()
+        )];
+    }
+
     acknowledgePendingEntries(
         sessionId: string,
         entries: readonly Pick<
@@ -350,6 +361,21 @@ export class AiLiveTranscriptTailStore {
         }
     }
 
+    acknowledgePendingRemovedEntryIds(
+        sessionId: string,
+        entryIds: readonly string[],
+    ): void {
+        const session = this.#sessions.get(sessionId);
+        if (!session) {
+            return;
+        }
+        for (const entryId of entryIds) {
+            if (!session.entriesById.has(entryId)) {
+                session.pendingRemovedEntryIds.delete(entryId);
+            }
+        }
+    }
+
     acknowledgeSealedTurn(
         sessionId: string,
         turnId: string,
@@ -366,6 +392,7 @@ export class AiLiveTranscriptTailStore {
         }
         session.entriesById.clear();
         session.orderedEntryIds.length = 0;
+        session.pendingRemovedEntryIds.clear();
         session.pendingEntryRevisionById.clear();
         session.turnId = null;
         session.turnStartedAt = null;
@@ -433,6 +460,7 @@ export class AiLiveTranscriptTailStore {
         }
         session.entriesById.delete(entryId);
         session.pendingEntryRevisionById.delete(entryId);
+        session.pendingRemovedEntryIds.add(entryId);
         session.orderedEntryIds.splice(index, 1);
         this.#renumberEntries(session, index);
         session.revision += 1;
@@ -488,6 +516,7 @@ export class AiLiveTranscriptTailStore {
             session = {
                 entriesById: new Map(),
                 orderedEntryIds: [],
+                pendingRemovedEntryIds: new Set(),
                 pendingEntryRevisionById: new Map(),
                 revision: 0,
                 stableBlocks: [],
@@ -522,6 +551,7 @@ export class AiLiveTranscriptTailStore {
         session: SessionLiveTranscriptTail,
         incoming: AiLiveTranscriptEntry,
     ): void {
+        session.pendingRemovedEntryIds.delete(incoming.envelope.id);
         const existing = session.entriesById.get(incoming.envelope.id);
         const candidate = mergeLiveEntry(existing, incoming);
         const merged = existing

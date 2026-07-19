@@ -804,6 +804,7 @@ describe("NativeAiGateway", () => {
             entries: tail.entries,
             entryOrder: tail.entryRevisions,
             payloads: tail.payloads,
+            removedEntryIds: [],
             sessionId: tail.sessionId,
             terminalStatus: "cancelled" as const,
             turnId: tail.turnId,

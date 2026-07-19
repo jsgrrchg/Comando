@@ -2407,6 +2407,7 @@ impl NativeBackend {
                             input.terminal_status,
                             input.entries,
                             payloads,
+                            input.removed_entry_ids,
                             input.entry_order,
                         )
                         .map_err(|error| error.to_native_error())
