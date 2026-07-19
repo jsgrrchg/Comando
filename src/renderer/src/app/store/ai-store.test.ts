@@ -21,7 +21,11 @@ import {
 
 import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
 import { useAppStore } from "./app-store";
-import { resetAiStoreRuntimeBuffersForTests, useAiStore } from "./ai-store";
+import {
+    applyAiTranscriptMemoryPressure,
+    resetAiStoreRuntimeBuffersForTests,
+    useAiStore,
+} from "./ai-store";
 
 const TAB: WorkspaceChatTab = {
     createdAt: "2026-04-14T00:00:00.000Z",
@@ -378,6 +382,48 @@ describe("ai-store queue", () => {
                     "block-3",
                 ),
         ).toBe(false);
+    });
+
+    it("evicts transcript payloads from both the cache and UI state", async () => {
+        const payloadSize = 9 * 1024 * 1024;
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptPayload: vi.fn((input: { readonly payloadRef: string }) =>
+                        Promise.resolve({
+                            byteLength: payloadSize,
+                            capabilityVersion: 1,
+                            contentHash: input.payloadRef,
+                            payloadRef: input.payloadRef,
+                            sessionId: TAB.sessionId,
+                            transcriptRevision: 1,
+                            value: { content: input.payloadRef },
+                        }),
+                    ),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().registerSessionTab(TAB);
+
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(TAB.sessionId, "payload:first");
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(TAB.sessionId, "payload:second");
+
+        let payloads = useAiStore.getState().sessions[TAB.sessionId]
+            ?.transcriptWindow.payloadsByRef;
+        expect(payloads?.has("payload:first")).toBe(false);
+        expect(payloads?.has("payload:second")).toBe(true);
+
+        applyAiTranscriptMemoryPressure(0);
+
+        payloads = useAiStore.getState().sessions[TAB.sessionId]
+            ?.transcriptWindow.payloadsByRef;
+        expect(payloads?.size).toBe(0);
     });
 
     it("releases evicted blocks from other session windows", async () => {

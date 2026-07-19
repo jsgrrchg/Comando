@@ -29,7 +29,7 @@ describe("TranscriptPayloadCache", () => {
         expect(load).toHaveBeenCalledTimes(2);
     });
 
-    it("releases only unprotected payloads under memory pressure", async () => {
+    it("enforces memory pressure even when all payloads are protected", async () => {
         const cache = new TranscriptPayloadCache(
             { load: (payloadRef: string) => Promise.resolve(payloadRef.repeat(8)) },
             256,
@@ -41,6 +41,9 @@ describe("TranscriptPayloadCache", () => {
 
         cache.applyMemoryPressure(0);
 
-        expect(cache.residentBytes).toBe("protected".repeat(8).length);
+        expect(cache.residentBytes).toBe(0);
+        expect(cache.takeEvictedPayloadRefs()).toEqual(
+            expect.arrayContaining(["protected", "recoverable"]),
+        );
     });
 });

@@ -751,9 +751,25 @@ export function resetAiStoreRuntimeBuffersForTests(): void {
 }
 
 export function applyAiTranscriptMemoryPressure(factor = 0.5): void {
+    const evictedPayloadRefsBySession = new Map<string, readonly string[]>();
     for (const cache of transcriptPayloadCachesBySession.values()) {
         cache.applyMemoryPressure(factor);
     }
+    for (const [sessionId, cache] of transcriptPayloadCachesBySession) {
+        const payloadRefs = cache.takeEvictedPayloadRefs();
+        if (payloadRefs.length > 0) {
+            evictedPayloadRefsBySession.set(sessionId, payloadRefs);
+        }
+    }
+    if (evictedPayloadRefsBySession.size === 0) {
+        return;
+    }
+    useAiStore.setState((state) => ({
+        sessions: removeEvictedTranscriptPayloads(
+            state.sessions,
+            evictedPayloadRefsBySession,
+        ),
+    }));
 }
 
 function transcriptPayloadCacheFor(
@@ -801,6 +817,9 @@ function retainResidentTranscriptPayloads(
         } else {
             cache.release(payloadRef);
         }
+    }
+    for (const payloadRef of cache.takeEvictedPayloadRefs()) {
+        retained.delete(payloadRef);
     }
     return retained;
 }
@@ -1676,31 +1695,44 @@ export const useAiStore = create<AiStore>((set, get) => ({
     loadTranscriptPayload: async (sessionId, payloadRef) => {
         const cache = transcriptPayloadCacheFor(sessionId);
         try {
-            const payload = await cache.load(payloadRef);
-            cache.protect(payloadRef);
+            const payload = await cache.load(payloadRef, { protect: true });
+            const evictedPayloadRefs = cache.takeEvictedPayloadRefs();
+            const isResident = cache.has(payloadRef);
             set((state) => {
                 const current = state.sessions[sessionId]?.transcriptWindow;
                 if (!current) return state;
                 const payloadsByRef = new Map(current.payloadsByRef);
-                payloadsByRef.set(payloadRef, payload);
+                for (const evictedPayloadRef of evictedPayloadRefs) {
+                    payloadsByRef.delete(evictedPayloadRef);
+                }
+                if (isResident) {
+                    payloadsByRef.set(payloadRef, payload);
+                } else {
+                    payloadsByRef.delete(payloadRef);
+                }
                 return updateTranscriptWindowState(state, sessionId, {
                     ...current,
                     payloadsByRef,
                 });
             });
-            return payload;
+            return isResident ? payload : null;
         } catch {
             return null;
         }
     },
 
     releaseTranscriptPayload: (sessionId, payloadRef) => {
-        transcriptPayloadCacheFor(sessionId).release(payloadRef);
+        const cache = transcriptPayloadCacheFor(sessionId);
+        cache.release(payloadRef);
+        const evictedPayloadRefs = cache.takeEvictedPayloadRefs();
         set((state) => {
             const current = state.sessions[sessionId]?.transcriptWindow;
             if (!current) return state;
             const payloadsByRef = new Map(current.payloadsByRef);
             payloadsByRef.delete(payloadRef);
+            for (const evictedPayloadRef of evictedPayloadRefs) {
+                payloadsByRef.delete(evictedPayloadRef);
+            }
             return updateTranscriptWindowState(state, sessionId, {
                 ...current,
                 payloadsByRef,
@@ -2603,6 +2635,32 @@ function synchronizeEvictedTranscriptWindowSessions(
             [sessionId]: {
                 ...session,
                 transcriptWindow,
+            },
+        };
+    }
+    return nextSessions;
+}
+
+function removeEvictedTranscriptPayloads(
+    sessions: AiStore["sessions"],
+    evictedPayloadRefsBySession: ReadonlyMap<string, readonly string[]>,
+): AiStore["sessions"] {
+    let nextSessions = sessions;
+    for (const [sessionId, payloadRefs] of evictedPayloadRefsBySession) {
+        const session = nextSessions[sessionId];
+        if (!session) continue;
+        const payloadsByRef = new Map(session.transcriptWindow.payloadsByRef);
+        for (const payloadRef of payloadRefs) {
+            payloadsByRef.delete(payloadRef);
+        }
+        nextSessions = {
+            ...nextSessions,
+            [sessionId]: {
+                ...session,
+                transcriptWindow: {
+                    ...session.transcriptWindow,
+                    payloadsByRef,
+                },
             },
         };
     }
