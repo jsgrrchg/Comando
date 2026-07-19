@@ -2393,15 +2393,7 @@ impl NativeBackend {
                 };
                 match self.ai_history_store().and_then(|store| {
                     store
-                        .checkpoint_open_transcript_tail(
-                            &input.session_id,
-                            &input.turn_id,
-                            input.terminal_status,
-                            input.entries,
-                            input.payloads,
-                            input.removed_entry_ids,
-                            input.entry_order,
-                        )
+                        .checkpoint_open_transcript_tail(input)
                         .map_err(|error| error.to_native_error())
                 }) {
                     Ok(()) => response_only(request.id, json!({ "ok": true })),

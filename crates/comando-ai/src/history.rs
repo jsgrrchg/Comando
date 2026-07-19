@@ -6,16 +6,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use comando_types::ai::{
-    AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, NativeAiHistorySessionSummary,
-    NativeAiHistoryStorageHealth, NativeAiListSessionHistoryInput,
-    NativeAiLoadSessionTranscriptPageInput, NativeAiOpenTranscriptEntryRef,
-    NativeAiOpenTranscriptTail, NativeAiResolvedTranscriptEntry, NativeAiRuntimeSessionMapping,
-    NativeAiSessionSnapshot, NativeAiSessionStatus, NativeAiSessionTranscriptPage,
-    NativeAiTranscriptAroundInput, NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadata,
+    AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, NativeAiCheckpointOpenTranscriptTailInput,
+    NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth, NativeAiListSessionHistoryInput,
+    NativeAiLoadSessionTranscriptPageInput, NativeAiOpenTranscriptTail,
+    NativeAiResolvedTranscriptEntry, NativeAiRuntimeSessionMapping, NativeAiSessionSnapshot,
+    NativeAiSessionStatus, NativeAiSessionTranscriptPage, NativeAiTranscriptAroundInput,
+    NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadata,
     NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptCursorInput,
     NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind, NativeAiTranscriptEntrySummary,
     NativeAiTranscriptPayload, NativeAiTranscriptStorageMode, NativeAiTranscriptStorageState,
-    NativeAiTranscriptTerminalStatus, NativeAiTranscriptWindow,
+    NativeAiTranscriptWindow,
 };
 use comando_types::ids::{ProjectId, RuntimeId, RuntimeSessionId, SessionId, WorktreeId};
 use rusqlite::{Connection, OptionalExtension};
@@ -562,24 +562,11 @@ impl AiHistoryStore {
 
     pub fn checkpoint_open_transcript_tail(
         &self,
-        session_id: &SessionId,
-        turn_id: &str,
-        terminal_status: Option<NativeAiTranscriptTerminalStatus>,
-        entries: Vec<NativeAiTranscriptEntryEnvelope>,
-        payloads: Vec<AiTranscriptPayloadWrite>,
-        removed_entry_ids: Vec<String>,
-        entry_order: Vec<NativeAiOpenTranscriptEntryRef>,
+        input: NativeAiCheckpointOpenTranscriptTailInput,
     ) -> AiResult<()> {
-        self.ensure_session_dir(session_id)?;
-        self.transcript_store(session_id).checkpoint_open_tail(
-            session_id,
-            turn_id,
-            terminal_status,
-            entries,
-            payloads,
-            removed_entry_ids,
-            entry_order,
-        )
+        self.ensure_session_dir(&input.session_id)?;
+        self.transcript_store(&input.session_id)
+            .checkpoint_open_tail(input)
     }
 
     pub fn load_open_transcript_tail(
@@ -2676,6 +2663,7 @@ fn redact_history_error(error: &AiError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use comando_types::ai::{NativeAiOpenTranscriptEntryRef, NativeAiTranscriptTerminalStatus};
 
     #[test]
     fn legacy_codex_tool_aliases_are_normalized_and_reasoning_is_removed() {
@@ -4128,22 +4116,22 @@ mod tests {
         let mut first = transcript_entry(&session_id, "message-1", "first draft");
         first.payload_ref = Some("tail:message-1".to_string());
         store
-            .checkpoint_open_transcript_tail(
-                &session_id,
-                "turn-1",
-                None,
-                vec![first.clone()],
-                vec![AiTranscriptPayloadWrite {
+            .checkpoint_open_transcript_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-1".to_string(),
+                terminal_status: None,
+                entries: vec![first.clone()],
+                payloads: vec![AiTranscriptPayloadWrite {
                     payload_ref: "tail:message-1".to_string(),
                     value: json!({ "kind": "message", "content": "first draft" }),
                 }],
-                Vec::new(),
-                vec![NativeAiOpenTranscriptEntryRef {
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![NativeAiOpenTranscriptEntryRef {
                     entry_id: first.id.clone(),
                     entry_revision: 1,
                     ordinal: 0,
                 }],
-            )
+            })
             .unwrap();
 
         first.summary.preview = Some("final first".to_string());
@@ -4151,12 +4139,12 @@ mod tests {
         let mut second = transcript_entry(&session_id, "message-2", "second");
         second.payload_ref = Some("tail:message-2".to_string());
         store
-            .checkpoint_open_transcript_tail(
-                &session_id,
-                "turn-1",
-                Some(NativeAiTranscriptTerminalStatus::Cancelled),
-                vec![second.clone(), first.clone()],
-                vec![
+            .checkpoint_open_transcript_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-1".to_string(),
+                terminal_status: Some(NativeAiTranscriptTerminalStatus::Cancelled),
+                entries: vec![second.clone(), first.clone()],
+                payloads: vec![
                     AiTranscriptPayloadWrite {
                         payload_ref: "tail:message-1".to_string(),
                         value: json!({ "kind": "message", "content": "final first" }),
@@ -4166,8 +4154,8 @@ mod tests {
                         value: json!({ "kind": "message", "content": "second" }),
                     },
                 ],
-                Vec::new(),
-                vec![
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![
                     NativeAiOpenTranscriptEntryRef {
                         entry_id: first.id.clone(),
                         entry_revision: 2,
@@ -4179,7 +4167,7 @@ mod tests {
                         ordinal: 1,
                     },
                 ],
-            )
+            })
             .unwrap();
         assert!(
             store

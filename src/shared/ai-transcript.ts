@@ -41,8 +41,13 @@ export function mergeAiTranscriptToolActivity(existing: AiToolActivity, incoming
     };
 }
 
-export function appendAiTranscriptDelta(existing: string, delta: string): string {
-    if (delta.length >= existing.length) return delta;
+export function appendAiTranscriptDelta(
+    existing: string,
+    content: string,
+    delta: string,
+): string {
+    // Runtimes can emit either a complete snapshot or an incremental delta.
+    if (content.length >= existing.length) return content;
     return existing.endsWith(delta) ? existing : `${existing}${delta}`;
 }
 

@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use comando_types::ai::{
     AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, AI_TRANSCRIPT_CURSOR_LIMIT_MAX,
-    AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX, NativeAiOpenTranscriptEntryRef, NativeAiOpenTranscriptTail,
-    NativeAiResolvedTranscriptEntry, NativeAiTranscriptBlockMetadata,
-    NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind, NativeAiTranscriptEntrySummary,
-    NativeAiTranscriptPayloadWrite, NativeAiTranscriptTerminalStatus, NativeAiTranscriptWindow,
+    AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX, NativeAiCheckpointOpenTranscriptTailInput,
+    NativeAiOpenTranscriptEntryRef, NativeAiOpenTranscriptTail, NativeAiResolvedTranscriptEntry,
+    NativeAiTranscriptBlockMetadata, NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind,
+    NativeAiTranscriptEntrySummary, NativeAiTranscriptPayloadWrite,
+    NativeAiTranscriptTerminalStatus, NativeAiTranscriptWindow,
 };
 use comando_types::ids::SessionId;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -230,14 +231,17 @@ impl TranscriptStore {
 
     pub(crate) fn checkpoint_open_tail(
         &self,
-        session_id: &SessionId,
-        turn_id: &str,
-        terminal_status: Option<NativeAiTranscriptTerminalStatus>,
-        entries: Vec<NativeAiTranscriptEntryEnvelope>,
-        payloads: Vec<AiTranscriptPayloadWrite>,
-        removed_entry_ids: Vec<String>,
-        entry_order: Vec<NativeAiOpenTranscriptEntryRef>,
+        input: NativeAiCheckpointOpenTranscriptTailInput,
     ) -> AiResult<()> {
+        let NativeAiCheckpointOpenTranscriptTailInput {
+            session_id,
+            turn_id,
+            terminal_status,
+            entries,
+            payloads,
+            removed_entry_ids,
+            entry_order,
+        } = input;
         if turn_id.trim().is_empty() {
             return Err(AiError::InvalidInput(
                 "Open transcript turn ID must not be empty".to_string(),
@@ -248,10 +252,10 @@ impl TranscriptStore {
                 "Open transcript tail must contain at least one entry".to_string(),
             ));
         }
-        validate_entry_ownership(session_id, &entries)?;
+        validate_entry_ownership(&session_id, &entries)?;
         validate_payload_writes(&payloads)?;
         validate_open_tail_entry_updates(&entry_order, &removed_entry_ids)?;
-        let mut connection = self.open(session_id, true)?;
+        let mut connection = self.open(&session_id, true)?;
         let prepared_payloads = self.prepare_payloads(payloads)?;
         let result = (|| {
             let transaction = connection
@@ -260,12 +264,12 @@ impl TranscriptStore {
                     transcript_sql("start open transcript checkpoint transaction", error)
                 })?;
             let obsolete_payload_files =
-                persist_payloads(&transaction, session_id, &prepared_payloads)?;
-            append_entries_in_transaction(&transaction, session_id, entries)?;
+                persist_payloads(&transaction, &session_id, &prepared_payloads)?;
+            append_entries_in_transaction(&transaction, &session_id, entries)?;
             persist_open_tail(
                 &transaction,
-                session_id,
-                turn_id,
+                &session_id,
+                &turn_id,
                 terminal_status.as_ref(),
                 &removed_entry_ids,
                 &entry_order,
@@ -279,13 +283,13 @@ impl TranscriptStore {
             Ok(obsolete_payload_files) => {
                 self.remove_unreferenced_payload_files(
                     &connection,
-                    session_id,
+                    &session_id,
                     &obsolete_payload_files,
                 );
                 Ok(())
             }
             Err(error) => {
-                self.remove_orphaned_payload_files(&connection, session_id, &prepared_payloads);
+                self.remove_orphaned_payload_files(&connection, &session_id, &prepared_payloads);
                 Err(error)
             }
         }
@@ -2507,14 +2511,14 @@ mod tests {
         let first = entry(&session_id, "entry-1");
         let second = entry(&session_id, "entry-2");
         store
-            .checkpoint_open_tail(
-                &session_id,
-                "turn-1",
-                None,
-                vec![first.clone(), second.clone()],
-                Vec::new(),
-                Vec::new(),
-                vec![
+            .checkpoint_open_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-1".to_string(),
+                terminal_status: None,
+                entries: vec![first.clone(), second.clone()],
+                payloads: Vec::new(),
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![
                     NativeAiOpenTranscriptEntryRef {
                         entry_id: first.id.clone(),
                         entry_revision: 1,
@@ -2526,7 +2530,7 @@ mod tests {
                         ordinal: 1,
                     },
                 ],
-            )
+            })
             .unwrap();
 
         let connection = store.open(&session_id, false).unwrap();
@@ -2546,19 +2550,19 @@ mod tests {
 
         let third = entry(&session_id, "entry-3");
         store
-            .checkpoint_open_tail(
-                &session_id,
-                "turn-1",
-                None,
-                vec![third.clone()],
-                Vec::new(),
-                Vec::new(),
-                vec![NativeAiOpenTranscriptEntryRef {
+            .checkpoint_open_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-1".to_string(),
+                terminal_status: None,
+                entries: vec![third.clone()],
+                payloads: Vec::new(),
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![NativeAiOpenTranscriptEntryRef {
                     entry_id: third.id.clone(),
                     entry_revision: 1,
                     ordinal: 2,
                 }],
-            )
+            })
             .unwrap();
 
         let tail = store.load_open_tail(&session_id).unwrap().unwrap();
@@ -2579,14 +2583,14 @@ mod tests {
         let first = entry(&session_id, "entry-1");
         let second = entry(&session_id, "entry-2");
         store
-            .checkpoint_open_tail(
-                &session_id,
-                "turn-1",
-                None,
-                vec![first.clone(), second.clone()],
-                Vec::new(),
-                Vec::new(),
-                vec![
+            .checkpoint_open_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-1".to_string(),
+                terminal_status: None,
+                entries: vec![first.clone(), second.clone()],
+                payloads: Vec::new(),
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![
                     NativeAiOpenTranscriptEntryRef {
                         entry_id: first.id.clone(),
                         entry_revision: 1,
@@ -2598,18 +2602,18 @@ mod tests {
                         ordinal: 1,
                     },
                 ],
-            )
+            })
             .unwrap();
 
         store
-            .checkpoint_open_tail(
-                &session_id,
-                "turn-1",
-                None,
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                vec![
+            .checkpoint_open_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-1".to_string(),
+                terminal_status: None,
+                entries: Vec::new(),
+                payloads: Vec::new(),
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![
                     NativeAiOpenTranscriptEntryRef {
                         entry_id: second.id.clone(),
                         entry_revision: 2,
@@ -2621,7 +2625,7 @@ mod tests {
                         ordinal: 1,
                     },
                 ],
-            )
+            })
             .unwrap();
 
         let tail = store.load_open_tail(&session_id).unwrap().unwrap();

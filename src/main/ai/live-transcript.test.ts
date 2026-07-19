@@ -192,6 +192,24 @@ describe("AiLiveTranscriptTailStore", () => {
         );
     });
 
+    it("appends a delta when the runtime snapshot is stale", () => {
+        const store = new AiLiveTranscriptTailStore();
+        store.applyEvent(messageStarted("assistant-1", "", TURN_STARTED_AT));
+        store.applyEvent(messageDelta("assistant-1", "one", "one"));
+        store.applyEvent(
+            messageDelta(
+                "assistant-1",
+                "one",
+                " two",
+                "2026-07-18T00:01:03.000Z",
+            ),
+        );
+
+        expect(
+            store.getSnapshot(SESSION_ID)?.entries[0]?.envelope.summary.preview,
+        ).toBe("one two");
+    });
+
     it("keeps payload lookup scoped to the owning session", () => {
         const store = new AiLiveTranscriptTailStore();
         store.applyEvent(messageStarted("assistant-1", "answer", TURN_STARTED_AT));
