@@ -3,6 +3,11 @@ import type {
     RuntimeWorkspaceReviewTab,
 } from "../workspace/tree";
 import { normalizeAiDiffZoom } from "./sessionReviewContracts";
+import {
+    getProjectStorageScope,
+    getSessionStorage,
+    getWorktreeStorageScope,
+} from "./sessionStorage";
 
 const SESSION_REVIEW_PREFERENCES_VERSION = 1;
 const SESSION_REVIEW_PREFERENCES_PREFIX = "comando.ai.review.preferences";
@@ -18,23 +23,6 @@ interface PersistedSessionReviewPreferences extends SessionReviewPreferences {
     readonly version: number;
 }
 
-function getStorage(): Storage | null {
-    const candidate = globalThis.localStorage;
-    if (!candidate) {
-        return null;
-    }
-
-    return candidate;
-}
-
-function getProjectScope(projectId: string | null): string {
-    return projectId?.trim() || "global";
-}
-
-function getWorktreeScope(worktreeId: string | null | undefined): string {
-    return worktreeId?.trim() || "root";
-}
-
 export function getSessionReviewPreferencesStorageKey(
     projectId: string | null,
     worktreeId: string | null | undefined,
@@ -42,8 +30,8 @@ export function getSessionReviewPreferencesStorageKey(
 ): string {
     return [
         SESSION_REVIEW_PREFERENCES_PREFIX,
-        getProjectScope(projectId),
-        getWorktreeScope(worktreeId),
+        getProjectStorageScope(projectId),
+        getWorktreeStorageScope(worktreeId),
         sessionId.trim(),
     ].join(":");
 }
@@ -88,7 +76,7 @@ export function readSessionReviewPreferences(
     worktreeId: string | null | undefined,
     sessionId: string,
 ): SessionReviewPreferences | null {
-    const storage = getStorage();
+    const storage = getSessionStorage();
     if (!storage) {
         return null;
     }
@@ -122,7 +110,7 @@ export function persistSessionReviewPreferences(
     sessionId: string,
     preferences: SessionReviewPreferences,
 ): PersistedSessionReviewPreferences | null {
-    const storage = getStorage();
+    const storage = getSessionStorage();
     if (!storage) {
         return null;
     }

@@ -1,3 +1,9 @@
+import {
+    getProjectStorageScope,
+    getSessionStorage,
+    getWorktreeStorageScope,
+} from "@renderer/app/ai/sessionStorage";
+
 const CHAT_VIEW_STATE_VERSION = 2;
 const CHAT_VIEW_STATE_PREFIX = "comando.ai.chat.view";
 
@@ -11,23 +17,6 @@ export interface PersistedChatViewState {
     readonly scrollTop: number;
     readonly updatedAt: number;
     readonly version: number;
-}
-
-function getStorage(): Storage | null {
-    const candidate = globalThis.localStorage;
-    if (!candidate) {
-        return null;
-    }
-
-    return candidate;
-}
-
-function getProjectScope(projectId: string | null): string {
-    return projectId?.trim() || "global";
-}
-
-function getWorktreeScope(worktreeId: string | null | undefined): string {
-    return worktreeId?.trim() || "root";
 }
 
 function normalizePersistedState(raw: unknown): PersistedChatViewState | null {
@@ -102,7 +91,7 @@ export function getChatViewStorageKey(
     worktreeId: string | null | undefined,
     sessionId: string,
 ): string {
-    return `${CHAT_VIEW_STATE_PREFIX}:${getProjectScope(projectId)}:${getWorktreeScope(worktreeId)}:session:${sessionId}`;
+    return `${CHAT_VIEW_STATE_PREFIX}:${getProjectStorageScope(projectId)}:${getWorktreeStorageScope(worktreeId)}:session:${sessionId}`;
 }
 
 export function readPersistedChatViewState(
@@ -110,7 +99,7 @@ export function readPersistedChatViewState(
     worktreeId: string | null | undefined,
     sessionId: string,
 ): PersistedChatViewState | null {
-    const storage = getStorage();
+    const storage = getSessionStorage();
     if (!storage) {
         return null;
     }
@@ -139,7 +128,7 @@ export function persistChatViewState(
         readonly anchor?: PersistedChatViewState["anchor"];
     },
 ): PersistedChatViewState | null {
-    const storage = getStorage();
+    const storage = getSessionStorage();
     if (!storage) {
         return null;
     }
