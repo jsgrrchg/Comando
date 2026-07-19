@@ -7,6 +7,9 @@ import {
     buildTranscriptTimelineItems,
     buildTranscriptVirtualBlocks,
     captureTranscriptSemanticAnchor,
+    createTranscriptStreamingIndicatorItem,
+    isChatTimelineRowItem,
+    isTranscriptStreamingIndicatorItem,
     resolveAnchorBlockId,
     resolveTranscriptBlockIdsInRange,
     resolveUnloadedTranscriptBlockIdsInRange,
@@ -31,6 +34,18 @@ describe("transcriptBlockVirtualization", () => {
         const blocks = buildTranscriptVirtualBlocks([metadata], new Map());
         expect(blocks[0]?.kind).toBe("spacer");
         expect(blocks[0] && transcriptBlockEstimate(blocks[0])).toBe(72);
+    });
+
+    it("models the streaming indicator as a stable virtual timeline item", () => {
+        const indicator = createTranscriptStreamingIndicatorItem("12s");
+
+        expect(indicator).toEqual({
+            elapsed: "12s",
+            id: "streaming-indicator",
+            kind: "streaming-indicator",
+        });
+        expect(isTranscriptStreamingIndicatorItem(indicator)).toBe(true);
+        expect(isChatTimelineRowItem(indicator)).toBe(false);
     });
 
     it("keeps block positions stable while resident blocks are loaded and evicted", () => {

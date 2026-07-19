@@ -12,7 +12,10 @@ import {
     reconcileChatTimelineModel,
     type ChatTimelineRow,
 } from "./chatTimelineModel";
-import type { TranscriptTimelineItem } from "./transcriptBlockVirtualization";
+import {
+    createTranscriptStreamingIndicatorItem,
+    type TranscriptTimelineItem,
+} from "./transcriptBlockVirtualization";
 import { createChatPerformanceFixtureById } from "./chatPerformanceFixtures";
 import {
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
@@ -260,6 +263,7 @@ function renderHistoryRows(
                     {row.id}
                 </div>
             )}
+            renderStreamingIndicator={() => <div>Streaming</div>}
             scrollRef={{ current: null }}
         />,
     );
@@ -297,6 +301,7 @@ function mountHistoryRows(
                         {row.id}
                     </div>
                 )}
+                renderStreamingIndicator={() => <div>Streaming</div>}
                 scrollRef={scrollRef}
             />,
         );
@@ -394,6 +399,23 @@ describe("ChatTimelineHistoryRows", () => {
         );
     });
 
+    it("renders the streaming indicator through the virtual list", () => {
+        const [row] = createRows(1);
+        if (!row) {
+            throw new Error("expected a timeline row");
+        }
+
+        const markup = renderHistoryRows([
+            row,
+            createTranscriptStreamingIndicatorItem("12s"),
+        ]);
+
+        expect(measuredVirtualListMock).toHaveBeenLastCalledWith(
+            expect.objectContaining({ itemCount: 2 }),
+        );
+        expect(markup).toContain("Streaming");
+    });
+
     it("keeps visible history mounted when block-native hydration starts", () => {
         const [visibleRow] = createRows(1);
         if (!visibleRow) {
@@ -422,6 +444,7 @@ describe("ChatTimelineHistoryRows", () => {
                 <ChatTimelineHistoryRows
                     historyRows={historyRows}
                     renderRow={({ row }) => <InstrumentedRow row={row} />}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
                     scrollRef={{ current: scrollContainer }}
                 />,
             );
@@ -485,6 +508,7 @@ describe("ChatTimelineHistoryRows", () => {
                 <ChatTimelineHistoryRows
                     historyRows={historyRows}
                     renderRow={({ row }) => <InstrumentedRow row={row} />}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
                     scrollRef={{ current: scrollContainer }}
                 />,
             );
@@ -495,8 +519,8 @@ describe("ChatTimelineHistoryRows", () => {
             render(blockNativeHistory);
         });
 
-        // A new user prompt becomes history, while assistant streaming stays in
-        // the separate live tail and must not remount the virtualized history.
+        // Appending a prompt keeps previously virtualized rows mounted while
+        // the active turn remains part of the same item source.
         act(() => {
             render([...blockNativeHistory, userRow]);
             render([...blockNativeHistory, userRow]);

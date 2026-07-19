@@ -34,12 +34,29 @@ export interface TranscriptBlockSpacerItem {
     readonly metadata: AiTranscriptBlockMetadata;
 }
 
+export interface TranscriptStreamingIndicatorItem {
+    readonly elapsed: string;
+    readonly id: "streaming-indicator";
+    readonly kind: "streaming-indicator";
+}
+
 // This is the presentation boundary between paged transcript data and the
 // virtual list. Future timeline-only items can join it without materializing
 // unloaded transcript blocks.
 export type TranscriptTimelineItem =
     | ChatTimelineRow
-    | TranscriptBlockSpacerItem;
+    | TranscriptBlockSpacerItem
+    | TranscriptStreamingIndicatorItem;
+
+export function createTranscriptStreamingIndicatorItem(
+    elapsed: string,
+): TranscriptStreamingIndicatorItem {
+    return {
+        elapsed,
+        id: "streaming-indicator",
+        kind: "streaming-indicator",
+    };
+}
 
 export function buildTranscriptVirtualBlocks(
     metadata: readonly AiTranscriptBlockMetadata[],
@@ -114,6 +131,19 @@ export function isTranscriptBlockSpacerItem(
     item: TranscriptTimelineItem,
 ): item is TranscriptBlockSpacerItem {
     return item.kind === "transcript-block-spacer";
+}
+
+export function isTranscriptStreamingIndicatorItem(
+    item: TranscriptTimelineItem,
+): item is TranscriptStreamingIndicatorItem {
+    return item.kind === "streaming-indicator";
+}
+
+export function isChatTimelineRowItem(
+    item: TranscriptTimelineItem,
+): item is ChatTimelineRow {
+    return !isTranscriptBlockSpacerItem(item) &&
+        !isTranscriptStreamingIndicatorItem(item);
 }
 
 export function resolveTranscriptBlockIdsInRange(

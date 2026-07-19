@@ -111,7 +111,7 @@ function createSessionEvent(
 }
 
 describe("chatTimelineModel", () => {
-    it("patches an assistant live tail incrementally while preserving history", () => {
+    it("patches an assistant live tail incrementally while preserving earlier rows", () => {
         const trackedFiles: AiTrackedFile[] = [];
         const initialTranscript = buildAiSessionTranscriptModel({
             messages: [
@@ -166,7 +166,12 @@ describe("chatTimelineModel", () => {
             },
         );
 
-        expect(incrementalModel.historyRows).toBe(initialModel.historyRows);
+        expect(incrementalModel.historyRows[0]).toBe(
+            initialModel.historyRows[0],
+        );
+        expect(incrementalModel.historyRows.at(-1)?.id).toBe(
+            "message:assistant-1",
+        );
         expect(incrementalModel.liveTailRow).toEqual(fullModel.liveTailRow);
         expect(incrementalModel.orderedRowIds).toEqual(fullModel.orderedRowIds);
         expect(getChatTimelineReconciliationDiagnostics()).toEqual({
@@ -175,7 +180,7 @@ describe("chatTimelineModel", () => {
         });
     });
 
-    it("appends a chronological assistant row without rebuilding history", () => {
+    it("appends a chronological assistant row to the virtual timeline", () => {
         const trackedFiles: AiTrackedFile[] = [];
         const initialTranscript = buildAiSessionTranscriptModel({
             messages: [
@@ -218,7 +223,12 @@ describe("chatTimelineModel", () => {
                 },
             );
 
-        expect(incrementalModel.historyRows).toBe(initialModel.historyRows);
+        expect(incrementalModel.historyRows[0]).toBe(
+            initialModel.historyRows[0],
+        );
+        expect(incrementalModel.historyRows.at(-1)?.id).toBe(
+            "message:assistant-1",
+        );
         expect(incrementalModel.liveTailRow?.id).toBe("message:assistant-1");
         expect(getChatTimelineReconciliationDiagnostics()).toEqual({
             fallbackCount: 0,
@@ -299,7 +309,7 @@ describe("chatTimelineModel", () => {
         });
     });
 
-    it("keeps history by reference across one thousand live-tail deltas", () => {
+    it("keeps preceding rows stable across one thousand live-tail deltas", () => {
         const trackedFiles: AiTrackedFile[] = [];
         let transcript = buildAiSessionTranscriptModel({
             messages: [
@@ -349,7 +359,8 @@ describe("chatTimelineModel", () => {
             transcript = nextTranscript;
         }
 
-        expect(timeline.historyRows).toBe(initialHistoryRows);
+        expect(timeline.historyRows[0]).toBe(initialHistoryRows[0]);
+        expect(timeline.historyRows.at(-1)?.id).toBe("message:assistant-1");
         expect(timeline.liveTailRow?.id).toBe("message:assistant-1");
         expect(getChatTimelineReconciliationDiagnostics()).toEqual({
             fallbackCount: 0,
@@ -414,7 +425,7 @@ describe("chatTimelineModel", () => {
         });
     });
 
-    it("keeps history rows stable while the streaming tail mutates", () => {
+    it("keeps preceding rows stable while the streaming tail mutates", () => {
         const initialModel = reconcileChatTimelineModel(null, {
             messages: [
                 createMessage({
@@ -453,13 +464,15 @@ describe("chatTimelineModel", () => {
             trackedFiles: [],
         });
 
-        expect(nextModel.historyRows).toBe(initialModel.historyRows);
         expect(nextModel.historyRows[0]).toBe(initialModel.historyRows[0]);
+        expect(nextModel.historyRows.at(-1)).not.toBe(
+            initialModel.historyRows.at(-1),
+        );
         expect(nextModel.liveTailRow).not.toBe(initialModel.liveTailRow);
         expect(nextModel.liveTailRow?.id).toBe("message:message-2");
     });
 
-    it("moves the live tail back into history once streaming finishes", () => {
+    it("keeps the active tail in virtual history once streaming finishes", () => {
         const streamingModel = reconcileChatTimelineModel(null, {
             messages: [
                 createMessage({
@@ -579,7 +592,10 @@ describe("chatTimelineModel", () => {
             "tool:session-1:codex-acp:status:item:compact-1",
             "message:compact-message",
         ]);
-        expect(model.historyRowIds).toEqual(["message:compact-message"]);
+        expect(model.historyRowIds).toEqual([
+            "tool:session-1:codex-acp:status:item:compact-1",
+            "message:compact-message",
+        ]);
         expect(model.liveTailRowId).toBe(
             "tool:session-1:codex-acp:status:item:compact-1",
         );
@@ -1726,7 +1742,10 @@ describe("chatTimelineModel activity segments", () => {
         expect(model.liveTailRowId).toBe(
             "activity-segment:session-1:read-1",
         );
-        expect(model.historyRowIds).toEqual(["message:prompt-1"]);
+        expect(model.historyRowIds).toEqual([
+            "message:prompt-1",
+            "activity-segment:session-1:read-1",
+        ]);
     });
 
     it("reuses unaffected historical segments when the live segment changes", () => {

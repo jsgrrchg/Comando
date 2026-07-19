@@ -21,8 +21,11 @@ import {
 import type { ChatTimelineRow } from "./chatTimelineModel";
 import { ChatPresentationErrorBoundary } from "./ChatPresentationErrorBoundary";
 import {
+    isChatTimelineRowItem,
     isTranscriptBlockSpacerItem,
+    isTranscriptStreamingIndicatorItem,
     type TranscriptTimelineItem,
+    type TranscriptStreamingIndicatorItem,
 } from "./transcriptBlockVirtualization";
 import {
     CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
@@ -49,7 +52,14 @@ interface ChatTimelineHistoryRowsProps {
     readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
-    readonly renderRow: (params: { readonly row: ChatTimelineRow }) => ReactNode;
+    readonly liveTailRowId?: string | null;
+    readonly renderRow: (params: {
+        readonly isCurrentTurnTail: boolean;
+        readonly row: ChatTimelineRow;
+    }) => ReactNode;
+    readonly renderStreamingIndicator: (
+        item: TranscriptStreamingIndicatorItem,
+    ) => ReactNode;
     readonly scrollRef: RefObject<HTMLElement | null>;
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
@@ -80,7 +90,7 @@ function getTrailingUserRowId(
 ): string | null {
     for (let index = rows.length - 1; index >= 0; index -= 1) {
         const row = rows[index];
-        if (!row || isTranscriptBlockSpacerItem(row)) {
+        if (!row || !isChatTimelineRowItem(row)) {
             continue;
         }
 
@@ -103,7 +113,9 @@ export const ChatTimelineHistoryRows = memo(
         onVirtualResizeEnd,
         onVirtualResizeAutoFollow,
         onVirtualResizeStart,
+        liveTailRowId,
         renderRow,
+        renderStreamingIndicator,
         scrollRef,
         shouldDeferTrailingUserMeasurementAnchor,
         shouldPreserveVirtualMeasureAnchor,
@@ -405,6 +417,8 @@ export const ChatTimelineHistoryRows = memo(
             (row: TranscriptTimelineItem, index: number) =>
                 isTranscriptBlockSpacerItem(row)
                     ? row.estimatedHeight
+                    : isTranscriptStreamingIndicatorItem(row)
+                      ? 28
                     : estimateChatTimelineRowHeight(
                           row,
                           buildRowContext(row, index),
@@ -416,6 +430,8 @@ export const ChatTimelineHistoryRows = memo(
             (row: TranscriptTimelineItem, index: number) =>
                 isTranscriptBlockSpacerItem(row)
                     ? `${row.id}:${row.estimatedHeight}`
+                    : isTranscriptStreamingIndicatorItem(row)
+                      ? row.id
                     : getChatTimelineRowMeasurementKey(
                           row,
                           buildRowContext(row, index),
@@ -427,6 +443,8 @@ export const ChatTimelineHistoryRows = memo(
             (row: TranscriptTimelineItem, index: number) =>
                 isTranscriptBlockSpacerItem(row)
                     ? row.id
+                    : isTranscriptStreamingIndicatorItem(row)
+                      ? row.id
                     : getChatTimelineRowIdentityKey(
                           row,
                           buildRowContext(row, index),
@@ -454,6 +472,20 @@ export const ChatTimelineHistoryRows = memo(
                 }
                 const gapPx = resolveRowGapPx(index);
 
+                if (isTranscriptStreamingIndicatorItem(item)) {
+                    return (
+                        <div
+                            style={
+                                gapPx > 0
+                                    ? { paddingBottom: `${gapPx}px` }
+                                    : undefined
+                            }
+                        >
+                            {renderStreamingIndicator(item)}
+                        </div>
+                    );
+                }
+
                 return (
                     <div
                         style={
@@ -469,13 +501,19 @@ export const ChatTimelineHistoryRows = memo(
                                 buildRowContext(item, index),
                             )}
                         >
-                            {renderRow({ row: item })}
+                            {renderRow({
+                                isCurrentTurnTail:
+                                    item.id === liveTailRowId,
+                                row: item,
+                            })}
                         </ChatPresentationErrorBoundary>
                     </div>
                 );
             },
             [
                 renderRow,
+                renderStreamingIndicator,
+                liveTailRowId,
                 resolveRowGapPx,
                 buildRowContext,
             ],

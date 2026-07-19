@@ -121,7 +121,8 @@ import { ToolActivityItem } from "./chat/ToolActivityItem";
 import {
     buildTranscriptTimelineItems,
     captureTranscriptSemanticAnchor,
-    isTranscriptBlockSpacerItem,
+    createTranscriptStreamingIndicatorItem,
+    isChatTimelineRowItem,
     resolveTranscriptBlockIdsInRange,
     resolveUnloadedTranscriptBlockIdsInRange,
     type TranscriptTimelineItem,
@@ -1234,16 +1235,25 @@ export const ChatTabView = memo(function ChatTabView({
         tab.sessionId,
         transcript,
     ]);
-    const transcriptHistoryRows = useMemo(
-        () =>
-            transcriptWindow?.capabilityVersion
+    const transcriptTimelineItems = useMemo(
+        () => {
+            const timelineItems = transcriptWindow?.capabilityVersion
                 ? buildTranscriptTimelineItems(
                       transcriptWindow.metadata,
                       transcriptWindow.blocksById,
                       timelineModel.historyRows,
                   )
-                : timelineModel.historyRows,
+                : timelineModel.historyRows;
+            return isStreaming
+                ? [
+                      ...timelineItems,
+                      createTranscriptStreamingIndicatorItem(elapsed),
+                  ]
+                : timelineItems;
+        },
         [
+            elapsed,
+            isStreaming,
             timelineModel.historyRows,
             transcriptWindow?.blocksById,
             transcriptWindow?.capabilityVersion,
@@ -1409,9 +1419,9 @@ export const ChatTabView = memo(function ChatTabView({
     }, [scheduleBottomFollowSettle, scrollToBottom]);
 
     const handleTimelineVirtualRangeChange = useCallback((range: MeasuredVirtualRange) => {
-        const firstVisibleTimelineRow = transcriptHistoryRows
+        const firstVisibleTimelineRow = transcriptTimelineItems
             .slice(range.visibleStartIndex, range.visibleEndIndex + 1)
-            .find((row) => !isTranscriptBlockSpacerItem(row));
+            .find(isChatTimelineRowItem);
         const scrollElement = scrollRef.current;
         const listItemElement = firstVisibleTimelineRow
             ? [...(
@@ -1435,12 +1445,12 @@ export const ChatTabView = memo(function ChatTabView({
             offsetWithinEntry,
         });
         const visibleBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
-            transcriptHistoryRows,
+            transcriptTimelineItems,
             range.visibleStartIndex,
             range.visibleEndIndex,
         );
         const residentBlockIds = resolveTranscriptBlockIdsInRange(
-            transcriptHistoryRows,
+            transcriptTimelineItems,
             range.visibleStartIndex,
             range.visibleEndIndex,
         );
@@ -1466,7 +1476,7 @@ export const ChatTabView = memo(function ChatTabView({
         loadTranscriptWindowBlock,
         setTranscriptWindowAnchor,
         tab.sessionId,
-        transcriptHistoryRows,
+        transcriptTimelineItems,
     ]);
 
     const handleTimelineVirtualResizeAutoFollow = useCallback(() => {
@@ -2302,7 +2312,7 @@ export const ChatTabView = memo(function ChatTabView({
                 durationMs: actualDuration,
                 sessionId: tab.sessionId,
                 values: {
-                    historyRows: transcriptHistoryRows.length,
+                    historyRows: transcriptTimelineItems.length,
                     liveTailRows: timelineModel.liveTailRow ? 1 : 0,
                     toolRows: timelineModel.orderedAtomicRows.filter(
                         (row) => row.kind === "tool",
@@ -2312,7 +2322,7 @@ export const ChatTabView = memo(function ChatTabView({
         },
         [
             tab.sessionId,
-            transcriptHistoryRows.length,
+            transcriptTimelineItems.length,
             timelineModel.liveTailRow,
             timelineModel.orderedAtomicRows,
         ],
@@ -2435,11 +2445,9 @@ export const ChatTabView = memo(function ChatTabView({
                     canRenderFileReference={canRenderFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={aiChatSettings.chatFontSize}
-                    elapsed={elapsed}
                     covered={composerExpanded}
-                    historyRows={transcriptHistoryRows}
-                    isStreaming={isStreaming}
-                    liveTailRow={timelineModel.liveTailRow}
+                    historyRows={transcriptTimelineItems}
+                    liveTailRowId={timelineModel.liveTailRowId}
                     onAddFileReferenceToChat={
                         handleAddResolvedFileReferenceToChat
                     }
@@ -2933,11 +2941,9 @@ type ChatTimelineProps = {
     ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
-    readonly elapsed: string;
     readonly covered?: boolean;
     readonly historyRows: readonly TranscriptTimelineItem[];
-    readonly isStreaming: boolean;
-    readonly liveTailRow: ChatTimelineRow | null;
+    readonly liveTailRowId: string | null;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -3002,11 +3008,9 @@ const ChatTimeline = memo(function ChatTimeline({
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
-    elapsed,
     covered,
     historyRows,
-    isStreaming,
-    liveTailRow,
+    liveTailRowId,
     onAddFileReferenceToChat,
     onToolPayloadVisibilityChange,
     onOpenFile,
@@ -3035,8 +3039,7 @@ const ChatTimeline = memo(function ChatTimeline({
     useRenderProbe("ChatTimeline", {
         active,
         historyRows: historyRows.length,
-        isStreaming,
-        rows: historyRows.length + (liveTailRow ? 1 : 0),
+        rows: historyRows.length,
     });
 
     const timelineContainerClassName = covered
@@ -3071,6 +3074,7 @@ const ChatTimeline = memo(function ChatTimeline({
                             chatFontFamily={chatFontFamily}
                             chatFontSize={chatFontSize}
                             historyRows={historyRows}
+                            liveTailRowId={liveTailRowId}
                             onAddFileReferenceToChat={
                                 onAddFileReferenceToChat
                             }
@@ -3105,33 +3109,6 @@ const ChatTimeline = memo(function ChatTimeline({
                             }
                             worktreeId={worktreeId}
                         />
-                        <ChatTimelineLiveTail
-                            canRenderFileReference={
-                                canRenderFileReference
-                            }
-                            chatFontFamily={chatFontFamily}
-                            chatFontSize={chatFontSize}
-                            onAddFileReferenceToChat={
-                                onAddFileReferenceToChat
-                            }
-                            onToolPayloadVisibilityChange={
-                                onToolPayloadVisibilityChange
-                            }
-                            onOpenFile={onOpenFile}
-                            onOpenImage={onOpenImage}
-                            onOpenResolvedFileReference={
-                                onOpenResolvedFileReference
-                            }
-                            onOpenSession={onOpenSession}
-                            onRevealFileReference={onRevealFileReference}
-                            projectId={projectId}
-                            resolveFileReference={resolveFileReference}
-                            row={liveTailRow}
-                            worktreeId={worktreeId}
-                        />
-                        {isStreaming ? (
-                            <StreamingIndicator elapsed={elapsed} />
-                        ) : null}
                     </ChatContentColumn>
                 </div>
                 <ChatJumpToBottomButton
@@ -3198,6 +3175,7 @@ type ChatTimelineHistoryProps = {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly historyRows: readonly TranscriptTimelineItem[];
+    readonly liveTailRowId: string | null;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -3242,6 +3220,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     chatFontFamily,
     chatFontSize,
     historyRows,
+    liveTailRowId,
     onAddFileReferenceToChat,
     onToolPayloadVisibilityChange,
     onOpenFile,
@@ -3263,7 +3242,13 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     worktreeId,
 }: ChatTimelineHistoryProps) {
     const renderRow = useCallback(
-        ({ row }: { readonly row: ChatTimelineRow }) => (
+        ({
+            isCurrentTurnTail,
+            row,
+        }: {
+            readonly isCurrentTurnTail: boolean;
+            readonly row: ChatTimelineRow;
+        }) => (
             // The list `key` is owned by each call site (the virtual list keys
             // its row wrapper; the non-virtual path keys via Fragment), so this
             // renderer only describes a row's content.
@@ -3282,6 +3267,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
                 onRevealFileReference={onRevealFileReference}
                 projectId={projectId}
                 resolveFileReference={resolveFileReference}
+                isCurrentTurnTail={isCurrentTurnTail}
                 row={row}
                 worktreeId={worktreeId}
             />
@@ -3302,6 +3288,12 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             worktreeId,
         ],
     );
+    const renderStreamingIndicator = useCallback(
+        (item: { readonly elapsed: string }) => (
+            <StreamingIndicator elapsed={item.elapsed} />
+        ),
+        [],
+    );
 
     return (
         <ChatTimelineHistoryRows
@@ -3309,11 +3301,13 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             historyRows={historyRows}
+            liveTailRowId={liveTailRowId}
             onVirtualRangeChange={onVirtualRangeChange}
             onVirtualResizeEnd={onVirtualResizeEnd}
             onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
             onVirtualResizeStart={onVirtualResizeStart}
             renderRow={renderRow}
+            renderStreamingIndicator={renderStreamingIndicator}
             scrollRef={scrollRef}
             sessionId={sessionId}
             shouldDeferTrailingUserMeasurementAnchor={
@@ -3330,87 +3324,6 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
 });
 
 ChatTimelineHistory.displayName = "ChatTimelineHistory";
-
-type ChatTimelineLiveTailProps = {
-    readonly canRenderFileReference?: (
-        rawReference: string,
-        reference: ResolvedProjectFileReference,
-    ) => boolean;
-    readonly chatFontFamily?: string;
-    readonly chatFontSize?: number;
-    readonly onAddFileReferenceToChat?: (
-        reference: ResolvedProjectFileReference,
-    ) => void;
-    readonly onToolPayloadVisibilityChange?: (
-        activityId: string,
-        visible: boolean,
-    ) => void;
-    readonly onOpenFile: (
-        projectId: string,
-        relativePath: string,
-        worktreeId?: string | null,
-        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
-    ) => Promise<void>;
-    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
-    readonly onOpenResolvedFileReference: (
-        reference: ResolvedProjectFileReference,
-    ) => void;
-    readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
-    readonly onRevealFileReference?: (
-        reference: ResolvedProjectFileReference,
-    ) => void;
-    readonly projectId: string | null;
-    readonly resolveFileReference: (
-        reference: string,
-    ) => ResolvedProjectFileReference | null;
-    readonly row: ChatTimelineRow | null;
-    readonly worktreeId: string | null;
-};
-
-const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
-    canRenderFileReference,
-    chatFontFamily,
-    chatFontSize,
-    onAddFileReferenceToChat,
-    onToolPayloadVisibilityChange,
-    onOpenFile,
-    onOpenImage,
-    onOpenResolvedFileReference,
-    onOpenSession,
-    onRevealFileReference,
-    projectId,
-    resolveFileReference,
-    row,
-    worktreeId,
-}: ChatTimelineLiveTailProps) {
-    if (!row) {
-        return null;
-    }
-
-    return (
-        <ChatTimelineRowView
-            canRenderFileReference={canRenderFileReference}
-            chatFontFamily={chatFontFamily}
-            chatFontSize={chatFontSize}
-            key={row.id}
-            onAddFileReferenceToChat={onAddFileReferenceToChat}
-            onToolPayloadVisibilityChange={onToolPayloadVisibilityChange}
-            onOpenFile={onOpenFile}
-            onOpenImage={onOpenImage}
-            onOpenResolvedFileReference={onOpenResolvedFileReference}
-            onOpenSession={onOpenSession}
-            onRevealFileReference={onRevealFileReference}
-            projectId={projectId}
-            resolveFileReference={resolveFileReference}
-            isCurrentTurnTail={true}
-            row={row}
-            worktreeId={worktreeId}
-        />
-    );
-});
-
-ChatTimelineLiveTail.displayName = "ChatTimelineLiveTail";
 
 type ChatTimelineRowViewProps = {
     readonly canRenderFileReference?: (
