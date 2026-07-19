@@ -92,7 +92,6 @@ import {
 } from "@renderer/app/ai/transcriptWindowStore";
 import { TranscriptPayloadCache } from "@renderer/app/ai/transcriptPayloadCache";
 import { resolveTranscriptPrefetchBlockId } from "@renderer/app/ai/transcriptWindowNavigation";
-import { transcriptTimelineBlockCache } from "@renderer/app/ai/timelineBlockCache";
 import { matchesTrackedFilePath } from "@renderer/app/ai/trackedFilePath";
 import {
     getChatPerformanceTimestamp,
@@ -746,7 +745,6 @@ export function resetAiStoreRuntimeBuffersForTests(): void {
     transcriptWindowHydrations.clear();
     transcriptWindowStore.reset();
     transcriptPayloadCache = createTranscriptPayloadCache();
-    transcriptTimelineBlockCache.clear();
 }
 
 export function applyAiTranscriptMemoryPressure(factor = 0.5): void {
@@ -1581,13 +1579,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 .map((block) => block.blockId);
             transcriptWindowStore.protect(sessionId, new Set(visibleBlockIds));
             const evictedSessionIds = transcriptWindowStore.takeEvictedSessionIds();
-            const evictedBlocks = transcriptWindowStore.takeEvictedBlocks();
             if (evictedSessionIds.length > 0) {
                 set((state) => ({
                     sessions: synchronizeEvictedTranscriptWindowSessions(
                         state.sessions,
                         evictedSessionIds,
-                        evictedBlocks,
                     ),
                 }));
             }
@@ -1679,12 +1675,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
         if (!current) return block;
         const windowSnapshot = transcriptWindowStore.snapshot(sessionId);
         const evictedSessionIds = transcriptWindowStore.takeEvictedSessionIds();
-        const evictedBlocks = transcriptWindowStore.takeEvictedBlocks();
         set((state) => {
             const sessions = synchronizeEvictedTranscriptWindowSessions(
                 state.sessions,
                 evictedSessionIds,
-                evictedBlocks,
             );
             const latest = sessions[sessionId]?.transcriptWindow;
             if (!latest || !sessions[sessionId]) {
@@ -1833,12 +1827,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
         transcriptWindowStore.protect(sessionId, protectedBlockIds);
         const windowSnapshot = transcriptWindowStore.snapshot(sessionId);
         const evictedSessionIds = transcriptWindowStore.takeEvictedSessionIds();
-        const evictedBlocks = transcriptWindowStore.takeEvictedBlocks();
         set((state) => {
             const sessions = synchronizeEvictedTranscriptWindowSessions(
                 state.sessions,
                 evictedSessionIds,
-                evictedBlocks,
             );
             const current = sessions[sessionId]?.transcriptWindow;
             if (!current || !sessions[sessionId]) {
@@ -2658,11 +2650,7 @@ function transcriptWindowStateFromSnapshot(
 function synchronizeEvictedTranscriptWindowSessions(
     sessions: AiStore["sessions"],
     sessionIds: readonly string[],
-    evictedBlocks: readonly { readonly blockId: string }[] = [],
 ): AiStore["sessions"] {
-    for (const { blockId } of evictedBlocks) {
-        transcriptTimelineBlockCache.evict(blockId);
-    }
     if (sessionIds.length === 0) return sessions;
     let nextSessions = sessions;
     for (const sessionId of new Set(sessionIds)) {

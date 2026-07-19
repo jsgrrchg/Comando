@@ -19,11 +19,6 @@ interface SessionWindow {
     readonly touchedAt: Map<string, number>;
 }
 
-export interface EvictedTranscriptBlock {
-    readonly blockId: string;
-    readonly sessionId: string;
-}
-
 export interface TranscriptWindowSnapshot {
     readonly blocksById: ReadonlyMap<string, AiTranscriptBlock>;
     readonly generation: number;
@@ -33,7 +28,6 @@ export interface TranscriptWindowSnapshot {
 
 export class TranscriptWindowStore {
     private readonly sessions = new Map<string, SessionWindow>();
-    private readonly evictedBlocks: EvictedTranscriptBlock[] = [];
     private readonly evictedSessionIds = new Set<string>();
 
     constructor(
@@ -81,7 +75,6 @@ export class TranscriptWindowStore {
 
     reset(): void {
         this.sessions.clear();
-        this.evictedBlocks.length = 0;
         this.evictedSessionIds.clear();
     }
 
@@ -133,12 +126,6 @@ export class TranscriptWindowStore {
         return sessionIds;
     }
 
-    takeEvictedBlocks(): readonly EvictedTranscriptBlock[] {
-        const blocks = [...this.evictedBlocks];
-        this.evictedBlocks.length = 0;
-        return blocks;
-    }
-
     private evict(): void {
         while (this.residentEntryCount() > this.maxResidentEntries) {
             const candidate = this.findEvictionCandidate(false) ??
@@ -187,9 +174,8 @@ export class TranscriptWindowStore {
         return count;
     }
 
-    private recordEviction(sessionId: string, blockId: string): void {
+    private recordEviction(sessionId: string, _blockId: string): void {
         this.evictedSessionIds.add(sessionId);
-        this.evictedBlocks.push({ blockId, sessionId });
     }
 
     private sessionFor(sessionId: string): SessionWindow {

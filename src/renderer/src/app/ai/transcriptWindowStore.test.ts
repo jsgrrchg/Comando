@@ -56,11 +56,7 @@ describe("TranscriptWindowStore", () => {
             .reduce((total, count) => total + count, 0);
         expect(residentEntries).toBeLessThanOrEqual(512);
         expect(store.takeEvictedSessionIds()).toEqual(["session-1"]);
-        expect(store.takeEvictedBlocks()).toEqual([
-            { blockId: "block-1", sessionId: "session-1" },
-        ]);
         expect(store.takeEvictedSessionIds()).toEqual([]);
-        expect(store.takeEvictedBlocks()).toEqual([]);
     });
 
     it("invalidates a cached block when metadata advances its revision", async () => {

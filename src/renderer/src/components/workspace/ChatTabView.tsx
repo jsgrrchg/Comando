@@ -16,11 +16,6 @@ import type {
     AiAvailableCommand,
     AiFileContextAttachment,
     AiImageAttachment,
-    AiMessage,
-    AiToolActivity,
-    AiTranscriptBlock,
-    AiTranscriptBlockMetadata,
-    AiTranscriptPayload,
     AiUserInputRequest,
     AiSessionSnapshot,
     ProjectTreeNode,
@@ -42,11 +37,14 @@ import {
 } from "@renderer/app/ai/reviewMutationTarget";
 import {
     createEmptyAiSessionTranscriptModel,
-    buildAiSessionTranscriptModel,
     getAiSessionTranscriptMessages,
     getAiSessionTranscriptToolActivity,
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
+import {
+    buildBlockNativeTranscript,
+    buildTranscriptToolPayloadRefs,
+} from "@renderer/app/ai/transcriptWindowProjection";
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
@@ -120,7 +118,6 @@ import {
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
 import { ToolActivitySegment } from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
-import { transcriptTimelineBlockCache } from "@renderer/app/ai/timelineBlockCache";
 import {
     buildTranscriptTimelineHistoryRows,
     captureTranscriptSemanticAnchor,
@@ -663,20 +660,13 @@ export const ChatTabView = memo(function ChatTabView({
             transcriptWindow?.payloadsByRef,
         ],
     );
-    const toolPayloadRefByActivityId = useMemo(() => {
-        const payloadRefs = new Map<string, string>();
-        for (const block of transcriptWindow?.blocksById.values() ?? []) {
-            for (const entry of block.entries) {
-                if (entry.kind === "tool" && entry.payloadRef) {
-                    payloadRefs.set(
-                        toolActivityIdForTranscriptEntry(entry),
-                        entry.payloadRef,
-                    );
-                }
-            }
-        }
-        return payloadRefs;
-    }, [transcriptWindow?.blocksById]);
+    const toolPayloadRefByActivityId = useMemo(
+        () =>
+            buildTranscriptToolPayloadRefs(
+                transcriptWindow?.blocksById ?? new Map(),
+            ),
+        [transcriptWindow?.blocksById],
+    );
     const visibleToolPayloadRefCounts = useRef(new Map<string, number>());
     const handleToolPayloadVisibilityChange = useCallback(
         (activityId: string, visible: boolean) => {
@@ -3946,126 +3936,6 @@ function createEmptySnapshot(
         updatedAt: new Date().toISOString(),
         worktreeId: tab.worktreeId ?? null,
     };
-}
-
-function buildBlockNativeTranscript(
-    liveTranscript: AiSessionTranscriptModel,
-    blocksById: ReadonlyMap<string, AiTranscriptBlock>,
-    metadata: readonly AiTranscriptBlockMetadata[],
-    payloadsByRef: ReadonlyMap<string, AiTranscriptPayload>,
-    snapshot: AiSessionSnapshot,
-): AiSessionTranscriptModel {
-    const sealedEntryIds = new Set<string>();
-    const messages: AiMessage[] = [];
-    const toolActivity: AiToolActivity[] = [];
-    const activeTurnStartedAt = snapshot.activeTurnStartedAt ?? null;
-
-    for (const item of metadata) {
-        const block = blocksById.get(item.blockId);
-        if (!block) continue;
-        const timelineBlock = transcriptTimelineBlockCache.derive(block, {
-            activityVisible: true,
-            fontKey: "chat",
-        });
-        for (const { entry } of timelineBlock.rows) {
-            sealedEntryIds.add(entry.id);
-            const payload = entry.payloadRef
-                ? payloadsByRef.get(entry.payloadRef)?.value
-                : null;
-            if (isTranscriptMessagePayload(payload)) {
-                messages.push(payload.message);
-            } else if (isTranscriptToolPayload(payload)) {
-                toolActivity.push(payload.activity);
-            } else if (entry.kind === "tool") {
-                toolActivity.push(createTranscriptToolSummary(entry));
-            } else if (entry.kind !== "plan" && entry.kind !== "status") {
-                messages.push({
-                    attachments: [],
-                    content: entry.summary.preview ?? entry.summary.label ?? "",
-                    createdAt: entry.createdAt,
-                    id: `summary:${entry.id}`,
-                    kind: entry.kind === "thinking" ? "thinking" : "assistant",
-                    status: "completed",
-                });
-            }
-        }
-    }
-
-    return buildAiSessionTranscriptModel({
-        activeTurnStartedAt,
-        messages: [
-            ...messages,
-            ...liveTranscript.messages.filter(
-                (message) =>
-                    !sealedEntryIds.has(`message:${message.id}`),
-            ),
-        ],
-        status: snapshot.status,
-        toolActivity: [
-            ...toolActivity,
-            ...liveTranscript.toolActivity.filter(
-                (activity) =>
-                    !sealedEntryIds.has(
-                        `tool:${activity.sessionId}:${activity.id}`,
-                    ),
-            ),
-        ],
-        updatedAt: snapshot.updatedAt,
-    });
-}
-
-function createTranscriptToolSummary(
-    entry: AiTranscriptBlock["entries"][number],
-): AiToolActivity {
-    const status = entry.summary.status;
-    return {
-        createdAt: entry.createdAt,
-        diffs: [],
-        exitCode: null,
-        id: toolActivityIdForTranscriptEntry(entry),
-        kind: "tool",
-        locations: [],
-        rawInputJson: null,
-        rawOutputJson: null,
-        sessionId: entry.sessionId,
-        status:
-            status === "failed" || status === "in_progress" || status === "pending"
-                ? status
-                : "completed",
-        summary: entry.summary.preview,
-        terminalOutput: null,
-        title: entry.summary.label ?? "Tool activity",
-        updatedAt: entry.updatedAt,
-    };
-}
-
-function toolActivityIdForTranscriptEntry(
-    entry: AiTranscriptBlock["entries"][number],
-): string {
-    const prefix = `tool:${entry.sessionId}:`;
-    return entry.id.startsWith(prefix) ? entry.id.slice(prefix.length) : entry.id;
-}
-
-function isTranscriptMessagePayload(
-    value: unknown,
-): value is { readonly kind: "message"; readonly message: AiMessage } {
-    return (
-        typeof value === "object" &&
-        value !== null &&
-        (value as { kind?: unknown }).kind === "message" &&
-        "message" in value
-    );
-}
-
-function isTranscriptToolPayload(
-    value: unknown,
-): value is { readonly kind: "tool"; readonly activity: AiToolActivity } {
-    return (
-        typeof value === "object" &&
-        value !== null &&
-        (value as { kind?: unknown }).kind === "tool" &&
-        "activity" in value
-    );
 }
 
 function getActiveTurnStartedAt(
