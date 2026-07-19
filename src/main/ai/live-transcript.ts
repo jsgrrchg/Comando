@@ -176,7 +176,12 @@ export class AiLiveTranscriptTailStore {
         if (snapshot.plan) {
             this.#upsertEntry(
                 session,
-                createPlanEntry(snapshot.sessionId, snapshot.plan, snapshot.updatedAt),
+                createPlanEntry(
+                    snapshot.sessionId,
+                    snapshot.plan,
+                    snapshot.updatedAt,
+                    turnId,
+                ),
             );
         }
     }
@@ -230,12 +235,12 @@ export class AiLiveTranscriptTailStore {
         if (entry) {
             this.#upsertEntry(session, entry);
         } else if (event.kind === "plan" && event.plan === null) {
-            this.#removeEntry(session, PLAN_ENTRY_ID);
+            this.#removeEntryByPayloadKind(session, "plan");
         } else if (
             (event.kind === "status" && !event.activeTurnStartedAt) ||
             event.kind === "session-closed"
         ) {
-            this.#removeEntry(session, STATUS_ENTRY_ID);
+            this.#removeEntryByPayloadKind(session, "status");
         } else if (event.kind === "turn-status") {
             if (
                 session.turnStartedAt === null ||
@@ -397,6 +402,19 @@ export class AiLiveTranscriptTailStore {
         session.orderedEntryIds.splice(index, 1);
         this.#renumberEntries(session, index);
         session.revision += 1;
+    }
+
+    #removeEntryByPayloadKind(
+        session: SessionLiveTranscriptTail,
+        kind: "plan" | "status",
+    ): void {
+        const entryId = session.orderedEntryIds.find(
+            (candidateId) =>
+                session.entriesById.get(candidateId)?.payload.kind === kind,
+        );
+        if (entryId) {
+            this.#removeEntry(session, entryId);
+        }
     }
 
     #renumberEntries(
@@ -620,7 +638,12 @@ function createEntryFromEvent(
             return null;
         }
         ensureProvisionalTurn(session, event.plan.updatedAt);
-        return createPlanEntry(event.sessionId, event.plan, event.updatedAt);
+        return createPlanEntry(
+            event.sessionId,
+            event.plan,
+            event.updatedAt,
+            session.turnStartedAt ?? event.plan.updatedAt,
+        );
     }
     return null;
 }
@@ -702,12 +725,16 @@ function createStatusEntry(
         readonly updatedAt: string;
     },
 ): AiLiveTranscriptEntry {
+    const id = scopedTurnEntryId(
+        STATUS_ENTRY_ID,
+        status.activeTurnStartedAt,
+    );
     return {
         envelope: {
             createdAt: status.activeTurnStartedAt,
-            id: STATUS_ENTRY_ID,
+            id,
             kind: "status",
-            payloadRef: payloadRefFor(STATUS_ENTRY_ID),
+            payloadRef: payloadRefFor(id),
             sequence: 0,
             sessionId,
             summary: {
@@ -730,13 +757,15 @@ function createPlanEntry(
     sessionId: string,
     plan: AiPlan,
     updatedAt: string,
+    turnStartedAt: string,
 ): AiLiveTranscriptEntry {
+    const id = scopedTurnEntryId(PLAN_ENTRY_ID, turnStartedAt);
     return {
         envelope: {
             createdAt: plan.updatedAt,
-            id: PLAN_ENTRY_ID,
+            id,
             kind: "plan",
-            payloadRef: payloadRefFor(PLAN_ENTRY_ID),
+            payloadRef: payloadRefFor(id),
             sequence: 0,
             sessionId,
             summary: {
@@ -926,6 +955,10 @@ function messageEntryId(messageId: string): string {
 
 function payloadRefFor(entryId: string): string {
     return `tail:${entryId}`;
+}
+
+function scopedTurnEntryId(baseId: string, turnStartedAt: string): string {
+    return `${baseId}:${turnStartedAt}`;
 }
 
 function maximumTimestamp(left: string, right: string): string {

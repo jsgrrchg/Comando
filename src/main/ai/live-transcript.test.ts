@@ -230,6 +230,94 @@ describe("AiLiveTranscriptTailStore", () => {
             store.getSnapshot(SESSION_ID)?.stableBlocks.map((block) => block.blockId),
         ).toEqual([`${SESSION_ID}:0`, `${SESSION_ID}:1`]);
     });
+
+    it("scopes status and plan persistence identities to consecutive turns", () => {
+        const store = new AiLiveTranscriptTailStore();
+        store.applyEvent({
+            ...eventBase,
+            activeTurnStartedAt: TURN_STARTED_AT,
+            kind: "status",
+            lastError: null,
+            status: "streaming",
+        });
+        store.applyEvent({
+            ...eventBase,
+            kind: "plan",
+            plan: {
+                entries: [
+                    {
+                        content: "Complete the first turn",
+                        priority: "medium",
+                        status: "in_progress",
+                    },
+                ],
+                title: "First turn",
+                updatedAt: "2026-07-18T00:01:02.000Z",
+            },
+        });
+        const firstTurn = store.getSnapshot(SESSION_ID);
+        const firstStatus = firstTurn?.entries.find(
+            (entry) => entry.envelope.kind === "status",
+        );
+        const firstPlan = firstTurn?.entries.find(
+            (entry) => entry.envelope.kind === "plan",
+        );
+
+        expect(
+            store.acknowledgeSealedTurn(
+                SESSION_ID,
+                TURN_STARTED_AT,
+                createStableBlocks(2),
+                firstTurn?.revision ?? 0,
+            ),
+        ).toBe(true);
+
+        const secondTurnStartedAt = "2026-07-18T00:02:00.000Z";
+        store.applyEvent({
+            ...eventBase,
+            activeTurnStartedAt: secondTurnStartedAt,
+            kind: "status",
+            lastError: null,
+            status: "streaming",
+            updatedAt: "2026-07-18T00:02:01.000Z",
+        });
+        store.applyEvent({
+            ...eventBase,
+            kind: "plan",
+            plan: {
+                entries: [
+                    {
+                        content: "Complete the second turn",
+                        priority: "medium",
+                        status: "in_progress",
+                    },
+                ],
+                title: "Second turn",
+                updatedAt: "2026-07-18T00:02:02.000Z",
+            },
+            updatedAt: "2026-07-18T00:02:02.000Z",
+        });
+        const secondTurn = store.getSnapshot(SESSION_ID);
+        const secondStatus = secondTurn?.entries.find(
+            (entry) => entry.envelope.kind === "status",
+        );
+        const secondPlan = secondTurn?.entries.find(
+            (entry) => entry.envelope.kind === "plan",
+        );
+
+        expect(firstStatus).toBeDefined();
+        expect(firstPlan).toBeDefined();
+        expect(secondStatus).toBeDefined();
+        expect(secondPlan).toBeDefined();
+        expect(secondStatus?.envelope.id).not.toBe(firstStatus?.envelope.id);
+        expect(secondStatus?.envelope.payloadRef).not.toBe(
+            firstStatus?.envelope.payloadRef,
+        );
+        expect(secondPlan?.envelope.id).not.toBe(firstPlan?.envelope.id);
+        expect(secondPlan?.envelope.payloadRef).not.toBe(
+            firstPlan?.envelope.payloadRef,
+        );
+    });
 });
 
 function messageStarted(
