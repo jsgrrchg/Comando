@@ -650,7 +650,7 @@ export class AiService {
                 ? this.#liveTranscriptTails.projectLegacySnapshot(storedSnapshot)
                 : null;
             if (snapshot && isResyncEligibleAiSessionStatus(snapshot.status)) {
-                snapshots.push(snapshot);
+                snapshots.push(this.#toRendererSessionSnapshot(snapshot));
             }
         }
 
@@ -671,9 +671,7 @@ export class AiService {
         }
 
         const snapshot = this.#liveSnapshots.get(sessionId) ?? null;
-        return snapshot
-            ? this.#liveTranscriptTails.projectLegacySnapshot(snapshot)
-            : null;
+        return snapshot ? this.#toRendererSessionSnapshot(snapshot) : null;
     }
 
     getLiveTranscriptTail(
@@ -749,7 +747,7 @@ export class AiService {
         this.#promptQueue.handleSessionSnapshot(cachedSnapshot);
         this.#onSessionSnapshot(
             ownerWindowId,
-            buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
+            this.#buildRendererSessionUpdate(previousSnapshot, cachedSnapshot),
         );
     }
 
@@ -803,7 +801,7 @@ export class AiService {
             );
             this.#onSessionSnapshot(
                 ownerWindowId,
-                buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
+                this.#buildRendererSessionUpdate(previousSnapshot, cachedSnapshot),
             );
             if (this.#isNativeAiSession(event.sessionId)) {
                 if (event.kind === "status" && event.status === "streaming") {
@@ -1267,13 +1265,15 @@ export class AiService {
     ): Promise<AiSessionSnapshot | null> {
         const liveSnapshot = this.#liveSnapshots.get(sessionId);
         if (liveSnapshot) {
-            return liveSnapshot;
+            return this.#toRendererSessionSnapshot(liveSnapshot);
         }
 
         const persistedSnapshot =
             await this.#loadPersistedSessionSnapshot(sessionId);
         return persistedSnapshot
-            ? this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot)
+            ? this.#toRendererSessionSnapshot(
+                  this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot),
+              )
             : null;
     }
 
@@ -1454,7 +1454,7 @@ export class AiService {
                 );
             await this.#recoverTranscriptTail(acceptedSnapshot.sessionId);
             void this.#enforceSessionRetention();
-            return this.#liveTranscriptTails.projectLegacySnapshot(
+            return this.#toRendererSessionSnapshot(
                 reconciledSnapshot ?? acceptedSnapshot,
             );
         } catch (error) {
@@ -3363,7 +3363,7 @@ export class AiService {
         if (options.emitUpdate) {
             this.#onSessionSnapshot(
                 ownerWindowId,
-                buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
+                this.#buildRendererSessionUpdate(previousSnapshot, cachedSnapshot),
             );
         }
 
@@ -3672,7 +3672,7 @@ export class AiService {
         );
         this.#onSessionSnapshot(
             ownerWindowId,
-            buildAiSessionUpdate(snapshot, nextSnapshot),
+            this.#buildRendererSessionUpdate(snapshot, nextSnapshot),
         );
     }
 
@@ -4312,7 +4312,7 @@ export class AiService {
         }
         this.#onSessionSnapshot(
             result.ownerWindowId,
-            buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+            this.#buildRendererSessionUpdate(previousSnapshot, nextSnapshot),
         );
         void this.#enforceSessionRetention();
     }
@@ -5219,7 +5219,7 @@ export class AiService {
             }
             this.#onSessionSnapshot(
                 this.#liveSessionContexts.get(sessionId)?.ownerWindowId ?? "",
-                buildAiSessionUpdate(liveSnapshot, nextSnapshot),
+                this.#buildRendererSessionUpdate(liveSnapshot, nextSnapshot),
             );
             return nextSnapshot;
         }
@@ -5385,6 +5385,44 @@ export class AiService {
         }
 
         return mergePersistedCatalogIntoSessionSnapshot(snapshot, catalog);
+    }
+
+    #buildRendererSessionUpdate(
+        previousSnapshot: AiSessionSnapshot | null,
+        nextSnapshot: AiSessionSnapshot,
+    ): AiSessionUpdate {
+        return buildAiSessionUpdate(
+            previousSnapshot
+                ? this.#toRendererSessionSnapshot(previousSnapshot)
+                : null,
+            this.#toRendererSessionSnapshot(nextSnapshot),
+        );
+    }
+
+    #toRendererSessionSnapshot(
+        snapshot: AiSessionSnapshot,
+    ): AiSessionSnapshot {
+        if (!this.#nativeAi?.getTranscriptCapability?.().blockNativeVersion) {
+            return this.#liveTranscriptTails.projectLegacySnapshot(snapshot);
+        }
+
+        const tail = this.#liveTranscriptTails.getSnapshot(snapshot.sessionId);
+        if (!tail) {
+            return { ...snapshot, messages: [], toolActivity: [] };
+        }
+        let plan = snapshot.plan;
+        const messages: AiSessionSnapshot["messages"][number][] = [];
+        const toolActivity: AiSessionSnapshot["toolActivity"][number][] = [];
+        for (const entry of tail.entries) {
+            if (entry.payload.kind === "message") {
+                messages.push(entry.payload.message);
+            } else if (entry.payload.kind === "tool") {
+                toolActivity.push(entry.payload.activity);
+            } else if (entry.payload.kind === "plan") {
+                plan = entry.payload.plan;
+            }
+        }
+        return { ...snapshot, messages, plan, toolActivity };
     }
 
     #persistNativeCatalogPatch(
