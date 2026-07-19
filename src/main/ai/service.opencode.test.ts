@@ -2206,7 +2206,7 @@ describe("AiService OpenCode branch", () => {
         }
     });
 
-    it("keeps native transcript events in the main-owned live tail", async () => {
+    it("keeps native transcript events in the main-owned live tail while projecting legacy snapshots", async () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-opencode-native-events-"),
         );
@@ -2313,7 +2313,13 @@ describe("AiService OpenCode branch", () => {
             if (update?.kind !== "patch") {
                 throw new Error("Expected a patch update.");
             }
-            expect(update.patch.changes.messages).toBeUndefined();
+            expect(update.patch.changes.messages).toEqual([
+                expect.objectContaining({
+                    content: "Hello",
+                    id: "assistant-1",
+                    status: "streaming",
+                }),
+            ]);
             const liveTail =
                 service.getLiveTranscriptTail("session-opencode");
             expect(liveTail?.entries).toHaveLength(1);
