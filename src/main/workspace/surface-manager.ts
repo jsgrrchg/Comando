@@ -10,8 +10,15 @@ import { IPC_EVENTS } from "@shared/ipc";
 import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
+    WorkspaceSurfaceActionCompletion,
+    WorkspaceSurfaceActionDeliveryFailureReason,
+    WorkspaceSurfaceActionDeliveryResult,
+    WorkspaceSurfaceActionDispatchResult,
+    WorkspaceSurfaceActionEnvelope,
+    WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceActionStatus,
+    WorkspaceSurfaceFileRevealRequest,
     WorkspaceSurfaceDragEvent,
-    WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 
 import {
@@ -20,6 +27,9 @@ import {
     loadRendererContents,
 } from "@main/window";
 import { windowRegistry } from "@main/windows/registry";
+import {
+    doesWorkspaceSurfaceContextMatchContext,
+} from "./surface-actions";
 
 interface WorkspaceSurfaceRecord {
     bounds: WorkspaceSurfaceBounds | null;
@@ -28,6 +38,8 @@ interface WorkspaceSurfaceRecord {
     readonly hostWindowId: string;
     readonly id: string;
     isVisible: boolean;
+    isReady: boolean;
+    readonly pendingActions: WorkspaceSurfaceActionEnvelope[];
     snapshot: WorkspaceNavigationSnapshot;
     readonly view: WebContentsView;
     readonly webContents: WebContents;
@@ -52,6 +64,13 @@ interface WorkspaceSurfaceHostRecord {
     readonly surfaceIdsByContextKey: Map<string, string>;
 }
 
+interface DispatchedWorkspaceSurfaceAction {
+    claimed: boolean;
+    readonly envelope: WorkspaceSurfaceActionEnvelope;
+    readonly hostWindowId: string;
+    readonly surfaceId: string;
+}
+
 interface WorkspaceSurfaceLifecycleHandlers {
     readonly onSurfaceCreated?: (
         webContents: WebContents,
@@ -64,10 +83,14 @@ interface WorkspaceSurfaceLifecycleHandlers {
  * Keeps project workspaces alive in isolated WebContents while the host renderer
  * owns the visible title bar and project switcher.
  */
-class WorkspaceSurfaceManager {
+export class WorkspaceSurfaceManager {
     readonly #hostsByWindowId = new Map<string, WorkspaceSurfaceHostRecord>();
     readonly #surfaceIdsByWebContentsId = new Map<number, string>();
     readonly #surfacesById = new Map<string, WorkspaceSurfaceRecord>();
+    readonly #actionsById = new Map<
+        string,
+        DispatchedWorkspaceSurfaceAction
+    >();
     #lifecycleHandlers: WorkspaceSurfaceLifecycleHandlers = {};
 
     setLifecycleHandlers(handlers: WorkspaceSurfaceLifecycleHandlers): void {
@@ -127,6 +150,7 @@ class WorkspaceSurfaceManager {
             host.activeContextKey !== nextActiveContextKey;
         host.activeContextKey = nextActiveContextKey;
         host.snapshot = this.#mergeKnownSurfaceSnapshots(host, snapshot);
+        this.#rejectInactiveActions(host);
         this.#applyVisibility(host, { focusActive: activeContextChanged });
         return host.snapshot;
     }
@@ -146,6 +170,7 @@ class WorkspaceSurfaceManager {
             ...host.snapshot,
             activeContextKey: contextKey,
         };
+        this.#rejectInactiveActions(host);
         this.#applyVisibility(host, { focusActive: true });
         return true;
     }
@@ -184,19 +209,143 @@ class WorkspaceSurfaceManager {
         );
     }
 
-    requestActiveGitHubItemOpen(
+    dispatchActiveSurfaceAction(
         hostWindowId: string,
-        input: WorkspaceSurfaceGitHubItemOpenRequest,
-    ): void {
+        request: WorkspaceSurfaceActionRequest,
+    ): WorkspaceSurfaceActionDispatchResult {
+        const host = this.#hostsByWindowId.get(hostWindowId);
         const surface = this.#getActiveSurface(hostWindowId);
+        const failureReason = this.#getActionDeliveryFailure(
+            host,
+            surface,
+            request,
+        );
+        if (failureReason || !host || !surface) {
+            return {
+                delivered: false,
+                reason: failureReason ?? "missing-surface",
+            };
+        }
+        const envelope: WorkspaceSurfaceActionEnvelope = {
+            actionId: randomUUID(),
+            request,
+        };
+
+        if (!surface.isReady) {
+            surface.pendingActions.push(envelope);
+            return { actionId: envelope.actionId, delivered: true, state: "queued" };
+        }
+
+        this.#sendAction(host, surface, envelope);
+        return { actionId: envelope.actionId, delivered: true, state: "sent" };
+    }
+
+    notifySurfaceReady(webContents: WebContents): void {
+        const surface = this.#getSurfaceByWebContents(webContents);
         if (!surface || surface.webContents.isDestroyed()) {
             return;
         }
 
-        surface.webContents.send(
-            IPC_EVENTS.workspaceSurfaceGitHubItemOpenRequested,
-            input,
+        surface.isReady = true;
+        const host = this.#hostsByWindowId.get(surface.hostWindowId);
+        for (const envelope of surface.pendingActions.splice(0)) {
+            const failureReason = this.#getActionDeliveryFailure(
+                host,
+                surface,
+                envelope.request,
+            );
+            if (failureReason) {
+                this.#notifyActionStatus(host, {
+                    actionId: envelope.actionId,
+                    message: getActionFailureMessage(failureReason),
+                    status: "rejected",
+                });
+                continue;
+            }
+            this.#sendAction(host, surface, envelope);
+        }
+    }
+
+    claimSurfaceAction(webContents: WebContents, actionId: string): boolean {
+        const surface = this.#getSurfaceByWebContents(webContents);
+        const action = this.#actionsById.get(actionId);
+        if (!surface || !action || action.surfaceId !== surface.id || action.claimed) {
+            return false;
+        }
+        const host = this.#hostsByWindowId.get(action.hostWindowId);
+        const failureReason = this.#getActionDeliveryFailure(
+            host,
+            surface,
+            action.envelope.request,
         );
+        if (failureReason) {
+            this.#actionsById.delete(actionId);
+            this.#notifyActionStatus(host, {
+                actionId,
+                message: getActionFailureMessage(failureReason),
+                status: "rejected",
+            });
+            return false;
+        }
+        action.claimed = true;
+        return true;
+    }
+
+    completeSurfaceAction(
+        webContents: WebContents,
+        completion: WorkspaceSurfaceActionCompletion,
+    ): void {
+        const surface = this.#getSurfaceByWebContents(webContents);
+        const action = this.#actionsById.get(completion.actionId);
+        if (!surface || !action || action.surfaceId !== surface.id || !action.claimed) {
+            return;
+        }
+        this.#actionsById.delete(completion.actionId);
+        this.#notifyActionStatus(
+            this.#hostsByWindowId.get(action.hostWindowId),
+            completion.status === "completed"
+                ? { actionId: completion.actionId, status: "completed" }
+                : {
+                      actionId: completion.actionId,
+                      message: completion.error ?? "The workspace action failed.",
+                      status: "failed",
+                  },
+        );
+    }
+
+    revealSurfaceFileInHostTree(
+        webContents: WebContents,
+        request: WorkspaceSurfaceFileRevealRequest,
+    ): WorkspaceSurfaceActionDeliveryResult {
+        const surface = this.#getSurfaceByWebContents(webContents);
+        const host = surface
+            ? this.#hostsByWindowId.get(surface.hostWindowId)
+            : null;
+        if (!surface || !host || surface.webContents.isDestroyed()) {
+            return { delivered: false, reason: "missing-surface" };
+        }
+        if (host.activeContextKey !== request.contextKey) {
+            return { delivered: false, reason: "inactive-context" };
+        }
+        const activeContext = host.snapshot.contexts.find(
+            (context) => context.key === host.activeContextKey,
+        );
+        if (
+            surface.contextKey !== request.contextKey ||
+            !activeContext ||
+            !doesWorkspaceSurfaceContextMatchContext(request, activeContext)
+        ) {
+            return { delivered: false, reason: "invalid-context" };
+        }
+        if (host.hostWindow.webContents.isDestroyed()) {
+            return { delivered: false, reason: "missing-surface" };
+        }
+
+        host.hostWindow.webContents.send(
+            IPC_EVENTS.workspaceSurfaceFileRevealRequested,
+            request,
+        );
+        return { delivered: true };
     }
 
     dispatchActiveSurfaceDrag(
@@ -460,6 +609,8 @@ class WorkspaceSurfaceManager {
             hostWindowId: host.hostWindowId,
             id,
             isVisible: false,
+            isReady: false,
+            pendingActions: [],
             snapshot: toSurfaceSnapshot(hostSnapshot, contextKey),
             view,
             webContents,
@@ -469,6 +620,9 @@ class WorkspaceSurfaceManager {
         this.#surfaceIdsByWebContentsId.set(webContentsId, id);
         host.surfaceIdsByContextKey.set(contextKey, id);
         windowRegistry.registerEmbeddedRenderer(webContents, context);
+        webContents.on("did-start-loading", () => {
+            surface.isReady = false;
+        });
         webContents.on("before-input-event", (event, input) => {
             const direction = resolveWorkspaceSurfaceSwitchDirection(input);
             if (!direction) {
@@ -518,6 +672,25 @@ class WorkspaceSurfaceManager {
             return;
         }
 
+        for (const envelope of surface.pendingActions) {
+            this.#notifyActionStatus(host, {
+                actionId: envelope.actionId,
+                message: "The workspace surface closed before the action could run.",
+                status: "rejected",
+            });
+        }
+        for (const [actionId, action] of this.#actionsById) {
+            if (action.surfaceId !== surfaceId) {
+                continue;
+            }
+            this.#actionsById.delete(actionId);
+            this.#notifyActionStatus(host, {
+                actionId,
+                message: "The workspace surface closed before the action completed.",
+                status: action.claimed ? "failed" : "rejected",
+            });
+        }
+
         host.surfaceIdsByContextKey.delete(surface.contextKey);
         this.#surfacesById.delete(surface.id);
         this.#surfaceIdsByWebContentsId.delete(surface.webContentsId);
@@ -529,6 +702,115 @@ class WorkspaceSurfaceManager {
         if (!surface.webContents.isDestroyed()) {
             surface.webContents.close();
         }
+    }
+
+    #getActionDeliveryFailure(
+        host: WorkspaceSurfaceHostRecord | undefined,
+        surface: WorkspaceSurfaceRecord | null,
+        request: WorkspaceSurfaceActionRequest,
+    ): WorkspaceSurfaceActionDeliveryFailureReason | null {
+        if (!host || !surface || surface.webContents.isDestroyed()) {
+            return "missing-surface";
+        }
+        if (host.activeContextKey !== request.contextKey) {
+            return "inactive-context";
+        }
+        const activeContext = host.snapshot.contexts.find(
+            (context) => context.key === host.activeContextKey,
+        );
+        if (
+            surface.contextKey !== request.contextKey ||
+            !activeContext ||
+            !doesWorkspaceSurfaceContextMatchContext(request, activeContext)
+        ) {
+            return "invalid-context";
+        }
+        return null;
+    }
+
+    #sendAction(
+        host: WorkspaceSurfaceHostRecord | undefined,
+        surface: WorkspaceSurfaceRecord,
+        envelope: WorkspaceSurfaceActionEnvelope,
+    ): void {
+        if (!host || surface.webContents.isDestroyed()) {
+            return;
+        }
+        this.#actionsById.set(envelope.actionId, {
+            claimed: false,
+            envelope,
+            hostWindowId: host.hostWindowId,
+            surfaceId: surface.id,
+        });
+        surface.webContents.send(
+            IPC_EVENTS.workspaceSurfaceActionRequested,
+            envelope,
+        );
+    }
+
+    #rejectInactiveActions(host: WorkspaceSurfaceHostRecord): void {
+        for (const surfaceId of host.surfaceIdsByContextKey.values()) {
+            const surface = this.#surfacesById.get(surfaceId);
+            if (!surface) {
+                continue;
+            }
+            const activePendingActions = surface.pendingActions.filter(
+                (envelope) => {
+                    const failureReason = this.#getActionDeliveryFailure(
+                        host,
+                        surface,
+                        envelope.request,
+                    );
+                    if (!failureReason) {
+                        return true;
+                    }
+                    this.#notifyActionStatus(host, {
+                        actionId: envelope.actionId,
+                        message: getActionFailureMessage(failureReason),
+                        status: "rejected",
+                    });
+                    return false;
+                },
+            );
+            surface.pendingActions.splice(
+                0,
+                surface.pendingActions.length,
+                ...activePendingActions,
+            );
+        }
+        for (const [actionId, action] of this.#actionsById) {
+            if (action.hostWindowId !== host.hostWindowId || action.claimed) {
+                continue;
+            }
+            const surface = this.#surfacesById.get(action.surfaceId) ?? null;
+            const failureReason = this.#getActionDeliveryFailure(
+                host,
+                surface,
+                action.envelope.request,
+            );
+            if (!failureReason) {
+                continue;
+            }
+            this.#actionsById.delete(actionId);
+            this.#notifyActionStatus(host, {
+                actionId,
+                message: getActionFailureMessage(failureReason),
+                status: "rejected",
+            });
+        }
+    }
+
+    #notifyActionStatus(
+        host: WorkspaceSurfaceHostRecord | undefined,
+        status: WorkspaceSurfaceActionStatus,
+    ): void {
+        if (!host || host.hostWindow.webContents.isDestroyed()) {
+            return;
+        }
+        host.hostWindow.webContents.send(
+            IPC_EVENTS.workspaceSurfaceActionStatus,
+            status,
+        );
     }
 
     #applyVisibility(
@@ -636,6 +918,19 @@ function areWorkspaceSurfaceBoundsEqual(
         left.x === right.x &&
         left.y === right.y
     );
+}
+
+function getActionFailureMessage(
+    reason: WorkspaceSurfaceActionDeliveryFailureReason,
+): string {
+    switch (reason) {
+        case "inactive-context":
+            return "The active workspace changed before the action could run.";
+        case "invalid-context":
+            return "The workspace action no longer matches the active project.";
+        case "missing-surface":
+            return "The active workspace surface is no longer available.";
+    }
 }
 
 function resolveWorkspaceSurfaceSwitchDirection(

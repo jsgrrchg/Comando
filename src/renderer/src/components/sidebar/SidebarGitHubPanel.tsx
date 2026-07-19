@@ -18,7 +18,7 @@ import type {
     GitHubPullRequestSummary,
     GitHubRepositoryRef,
     GitRepositorySnapshot,
-    WorkspaceSurfaceGitHubItemOpenRequest,
+    WorkspaceSurfaceActionRequest,
 } from "@shared/ipc";
 
 import {
@@ -175,6 +175,37 @@ export type SidebarGitHubAddToChatRequest =
           readonly worktreeId: string | null;
       };
 
+export function createSidebarGitHubAddToChatSurfaceAction(input: {
+    readonly contextKey: string;
+    readonly forceNewChat: boolean;
+    readonly itemKind: "issue" | "pull_request";
+    readonly items: readonly Pick<
+        GitHubIssueSummary | GitHubPullRequestSummary,
+        "number" | "title" | "url"
+    >[];
+    readonly projectId: string;
+    readonly ref: GitHubRepositoryRef;
+    readonly worktreeId: string | null;
+}): Extract<
+    WorkspaceSurfaceActionRequest,
+    { readonly kind: "add-github-items-to-chat" }
+> {
+    return {
+        contextKey: input.contextKey,
+        forceNewChat: input.forceNewChat,
+        itemKind: input.itemKind,
+        items: input.items.map((item) => ({
+            number: item.number,
+            title: item.title,
+            url: item.url,
+        })),
+        kind: "add-github-items-to-chat",
+        projectId: input.projectId,
+        ref: input.ref,
+        worktreeId: input.worktreeId,
+    };
+}
+
 interface SidebarGitHubSelectionState {
     readonly anchorNumber: number | null;
     readonly selectedNumbers: readonly number[];
@@ -201,21 +232,23 @@ export function SidebarGitHubPanel({
     filter,
     kind,
     onAddToChat,
-    onOpenItem,
     onOpenSettings,
+    onRequestWorkspaceAction,
     projectId,
     selectionResetSignal = 0,
+    workspaceContextKey,
     worktreeId,
 }: {
     readonly filter?: string;
     readonly kind: SidebarGitHubPanelKind;
     readonly onAddToChat?: (request: SidebarGitHubAddToChatRequest) => void;
-    readonly onOpenItem?: (
-        request: WorkspaceSurfaceGitHubItemOpenRequest,
-    ) => void;
     readonly onOpenSettings: () => void;
+    readonly onRequestWorkspaceAction?: (
+        request: WorkspaceSurfaceActionRequest,
+    ) => void;
     readonly projectId: string | null;
     readonly selectionResetSignal?: number;
+    readonly workspaceContextKey?: string | null;
     readonly worktreeId: string | null;
 }) {
     const snapshot = useGitStore((state) =>
@@ -683,15 +716,19 @@ export function SidebarGitHubPanel({
                 return;
             }
 
-            const input = {
-                itemKind: "issue" as const,
-                itemNumber: issueNumber,
-                projectId,
-                ref: repoRef,
-                worktreeId,
-            };
-            if (onOpenItem) {
-                onOpenItem(input);
+            if (onRequestWorkspaceAction) {
+                if (!projectId || !workspaceContextKey) {
+                    return;
+                }
+                onRequestWorkspaceAction({
+                    contextKey: workspaceContextKey,
+                    itemKind: "issue",
+                    itemNumber: issueNumber,
+                    kind: "github-item",
+                    projectId,
+                    ref: repoRef,
+                    worktreeId,
+                });
                 return;
             }
             void openGitHubIssueTab({
@@ -701,22 +738,33 @@ export function SidebarGitHubPanel({
                 worktreeId,
             });
         },
-        [onOpenItem, openGitHubIssueTab, projectId, repoRef, worktreeId],
+        [
+            onRequestWorkspaceAction,
+            openGitHubIssueTab,
+            projectId,
+            repoRef,
+            workspaceContextKey,
+            worktreeId,
+        ],
     );
     const openPullRequestTab = useCallback(
         (pullRequestNumber: number) => {
             if (!repoRef) {
                 return;
             }
-            const input = {
-                itemKind: "pull_request" as const,
-                itemNumber: pullRequestNumber,
-                projectId,
-                ref: repoRef,
-                worktreeId,
-            };
-            if (onOpenItem) {
-                onOpenItem(input);
+            if (onRequestWorkspaceAction) {
+                if (!projectId || !workspaceContextKey) {
+                    return;
+                }
+                onRequestWorkspaceAction({
+                    contextKey: workspaceContextKey,
+                    itemKind: "pull_request",
+                    itemNumber: pullRequestNumber,
+                    kind: "github-item",
+                    projectId,
+                    ref: repoRef,
+                    worktreeId,
+                });
                 return;
             }
             void openGitHubPullRequestTab({
@@ -726,7 +774,14 @@ export function SidebarGitHubPanel({
                 worktreeId,
             });
         },
-        [onOpenItem, openGitHubPullRequestTab, projectId, repoRef, worktreeId],
+        [
+            onRequestWorkspaceAction,
+            openGitHubPullRequestTab,
+            projectId,
+            repoRef,
+            workspaceContextKey,
+            worktreeId,
+        ],
     );
     const openLabelPicker = useCallback(
         (
@@ -748,7 +803,32 @@ export function SidebarGitHubPanel({
     );
     const addGitHubItemsToChat = useCallback(
         (options: { readonly forceNewChat: boolean }) => {
-            if (!repoRef || !onAddToChat || contextItemCount === 0) {
+            if (!repoRef || contextItemCount === 0) {
+                return;
+            }
+
+            if (onRequestWorkspaceAction) {
+                if (!projectId || !workspaceContextKey) {
+                    return;
+                }
+                const sourceItems =
+                    kind === "issues" ? contextIssues : contextPullRequests;
+                onRequestWorkspaceAction(
+                    createSidebarGitHubAddToChatSurfaceAction({
+                        contextKey: workspaceContextKey,
+                        forceNewChat: options.forceNewChat,
+                        itemKind:
+                            kind === "issues" ? "issue" : "pull_request",
+                        items: sourceItems,
+                        projectId,
+                        ref: repoRef,
+                        worktreeId,
+                    }),
+                );
+                return;
+            }
+
+            if (!onAddToChat) {
                 return;
             }
 
@@ -787,8 +867,10 @@ export function SidebarGitHubPanel({
             contextPullRequests,
             kind,
             onAddToChat,
+            onRequestWorkspaceAction,
             projectId,
             repoRef,
+            workspaceContextKey,
             worktreeId,
         ],
     );
@@ -1021,6 +1103,21 @@ export function SidebarGitHubPanel({
             worktreeId,
         };
 
+        if (onRequestWorkspaceAction) {
+            if (!workspaceContextKey) {
+                return;
+            }
+            onRequestWorkspaceAction({
+                contextKey: workspaceContextKey,
+                kind: "github-list",
+                listKind: kind,
+                projectId,
+                ref: repoRef,
+                worktreeId,
+            });
+            return;
+        }
+
         if (kind === "issues") {
             void openGitHubIssuesTab(input);
             return;
@@ -1029,10 +1126,12 @@ export function SidebarGitHubPanel({
         void openGitHubPullRequestsTab(input);
     }, [
         kind,
+        onRequestWorkspaceAction,
         openGitHubIssuesTab,
         openGitHubPullRequestsTab,
         projectId,
         repoRef,
+        workspaceContextKey,
         worktreeId,
     ]);
 

@@ -162,9 +162,10 @@ import {
     type WorkspaceNavigationSnapshot,
     type WorkspaceContextMenuAction,
     type WorkspaceContextMenuInput,
+    type WorkspaceSurfaceActionRequest,
+    type WorkspaceSurfaceActionCompletion,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceDragEvent,
-    type WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
 import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
@@ -227,6 +228,11 @@ import {
 import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
+import {
+    isWorkspaceSurfaceActionRequest,
+    isWorkspaceSurfaceActionCompletion,
+    isWorkspaceSurfaceFileRevealRequest,
+} from "@main/workspace/surface-actions";
 
 interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
@@ -361,7 +367,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
-    ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitHubItem);
+    ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceAction);
+    ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceReady);
+    ipcMain.removeHandler(IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
     ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
@@ -1938,17 +1946,50 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         },
     );
     ipcMain.handle(
-        IPC_CHANNELS.openWorkspaceSurfaceGitHubItem,
-        (event, input: WorkspaceSurfaceGitHubItemOpenRequest) => {
+        IPC_CHANNELS.dispatchWorkspaceSurfaceAction,
+        (event, input: WorkspaceSurfaceActionRequest) => {
             const context = requireWindowContext(event.sender, "main");
-            if (workspaceSurfaceManager.isSurface(event.sender)) {
+            if (
+                workspaceSurfaceManager.isSurface(event.sender) ||
+                !isWorkspaceSurfaceActionRequest(input)
+            ) {
+                throw new Error("A valid workspace surface action is required.");
+            }
+            return workspaceSurfaceManager.dispatchActiveSurfaceAction(
+                context.windowId,
+                input,
+            );
+        },
+    );
+    ipcMain.handle(IPC_CHANNELS.notifyWorkspaceSurfaceReady, (event) => {
+        workspaceSurfaceManager.notifySurfaceReady(event.sender);
+    });
+    ipcMain.handle(
+        IPC_CHANNELS.claimWorkspaceSurfaceAction,
+        (event, actionId: string) =>
+            typeof actionId === "string" &&
+            workspaceSurfaceManager.claimSurfaceAction(event.sender, actionId),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.completeWorkspaceSurfaceAction,
+        (event, completion: WorkspaceSurfaceActionCompletion) => {
+            if (!isWorkspaceSurfaceActionCompletion(completion)) {
                 return;
             }
-            if (!isWorkspaceSurfaceGitHubItemOpenRequest(input)) {
-                throw new Error("A valid GitHub item is required.");
+            workspaceSurfaceManager.completeSurfaceAction(
+                event.sender,
+                completion,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree,
+        (event, input) => {
+            if (!isWorkspaceSurfaceFileRevealRequest(input)) {
+                throw new Error("A valid workspace surface file reveal is required.");
             }
-            workspaceSurfaceManager.requestActiveGitHubItemOpen(
-                context.windowId,
+            return workspaceSurfaceManager.revealSurfaceFileInHostTree(
+                event.sender,
                 input,
             );
         },
@@ -2458,32 +2499,6 @@ function showNativeContextMenu(
             y: Number.isFinite(input.y) ? Math.max(0, Math.round(input.y)) : 0,
         });
     });
-}
-
-function isWorkspaceSurfaceGitHubItemOpenRequest(
-    input: unknown,
-): input is WorkspaceSurfaceGitHubItemOpenRequest {
-    if (!input || typeof input !== "object") {
-        return false;
-    }
-    const candidate = input as Record<string, unknown>;
-    const ref = candidate.ref;
-    return (
-        (candidate.itemKind === "issue" ||
-            candidate.itemKind === "pull_request") &&
-        typeof candidate.itemNumber === "number" &&
-        Number.isSafeInteger(candidate.itemNumber) &&
-        candidate.itemNumber > 0 &&
-        (candidate.projectId === null ||
-            typeof candidate.projectId === "string") &&
-        (candidate.worktreeId === null ||
-            typeof candidate.worktreeId === "string") &&
-        Boolean(ref) &&
-        typeof ref === "object" &&
-        typeof (ref as Record<string, unknown>).host === "string" &&
-        typeof (ref as Record<string, unknown>).owner === "string" &&
-        typeof (ref as Record<string, unknown>).repo === "string"
-    );
 }
 
 function normalizeNativeContextMenuEntries(
