@@ -1,5 +1,6 @@
 import type {
     AiMessage,
+    AiTranscriptPayload,
     AiTranscriptEntryEnvelope,
 } from "@shared/ipc";
 
@@ -15,6 +16,26 @@ export interface TranscriptBackfillAdapter {
     ): Promise<{ readonly messages: readonly AiMessage[]; readonly total: number }>;
     loadCheckpoint(sessionId: string): Promise<number>;
     saveCheckpoint(sessionId: string, offset: number): Promise<void>;
+    appendPayloads?(
+        sessionId: string,
+        payloads: readonly AiTranscriptPayload[],
+    ): Promise<void>;
+    loadMigrationState?(sessionId: string): Promise<TranscriptBackfillState | null>;
+    saveMigrationState?(state: TranscriptBackfillState): Promise<void>;
+    verify?(input: {
+        readonly entries: readonly AiTranscriptEntryEnvelope[];
+        readonly sessionId: string;
+        readonly total: number;
+    }): Promise<boolean>;
+}
+
+export interface TranscriptBackfillState {
+    readonly checkpoint: number;
+    readonly lastError: string | null;
+    readonly sessionId: string;
+    readonly status: "block-native" | "legacy" | "migrating";
+    readonly verified: boolean;
+    readonly version: 1;
 }
 
 export interface TranscriptBackfillResult {
@@ -29,8 +50,17 @@ export async function backfillLegacyTranscript(
     signal: AbortSignal,
     pageSize = 256,
 ): Promise<TranscriptBackfillResult> {
-    let offset = await adapter.loadCheckpoint(sessionId);
+    const savedState = await adapter.loadMigrationState?.(sessionId);
+    let offset = savedState?.checkpoint ?? (await adapter.loadCheckpoint(sessionId));
     let migratedEntries = 0;
+    await adapter.saveMigrationState?.({
+        checkpoint: offset,
+        lastError: null,
+        sessionId,
+        status: "migrating",
+        verified: false,
+        version: 1,
+    });
     while (!signal.aborted) {
         const page = await adapter.loadLegacyPage(sessionId, offset, pageSize);
         if (page.messages.length === 0) {
@@ -39,16 +69,67 @@ export async function backfillLegacyTranscript(
         const entries = page.messages.map((message, index) =>
             legacyMessageEnvelope(sessionId, offset + index + 1, message),
         );
-        await adapter.append(sessionId, entries);
-        offset += page.messages.length;
-        migratedEntries += page.messages.length;
-        await adapter.saveCheckpoint(sessionId, offset);
+        try {
+            await adapter.append(sessionId, entries);
+            await adapter.appendPayloads?.(
+                sessionId,
+                page.messages.map((message) => legacyMessagePayload(sessionId, message)),
+            );
+            offset += page.messages.length;
+            migratedEntries += page.messages.length;
+            await adapter.saveCheckpoint(sessionId, offset);
+            await adapter.saveMigrationState?.({
+                checkpoint: offset,
+                lastError: null,
+                sessionId,
+                status: "migrating",
+                verified: false,
+                version: 1,
+            });
+        } catch (error) {
+            await adapter.saveMigrationState?.({
+                checkpoint: offset,
+                lastError: error instanceof Error ? error.message : "Migration failed",
+                sessionId,
+                status: "legacy",
+                verified: false,
+                version: 1,
+            });
+            throw error;
+        }
         if (offset >= page.total) {
-            return { completed: true, migratedEntries, nextOffset: offset };
+            const verified =
+                (await adapter.verify?.({ entries, sessionId, total: page.total })) ??
+                true;
+            await adapter.saveMigrationState?.({
+                checkpoint: offset,
+                lastError: verified ? null : "Transcript verification failed",
+                sessionId,
+                status: verified ? "block-native" : "legacy",
+                verified,
+                version: 1,
+            });
+            return { completed: verified, migratedEntries, nextOffset: offset };
         }
         await new Promise<void>((resolve) => setImmediate(resolve));
     }
     return { completed: false, migratedEntries, nextOffset: offset };
+}
+
+function legacyMessagePayload(
+    sessionId: string,
+    message: AiMessage,
+): AiTranscriptPayload {
+    const payloadRef = `legacy-message:${message.id}`;
+    return {
+        byteLength: new TextEncoder().encode(JSON.stringify(message)).byteLength,
+        capabilityVersion: 1,
+        contentHash: `legacy:${message.id}`,
+        payloadRef,
+        sessionId,
+        transcriptRevision: 0,
+        value: { kind: "message", message },
+    };
 }
 
 function legacyMessageEnvelope(

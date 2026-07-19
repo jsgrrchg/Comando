@@ -46,4 +46,33 @@ describe("backfillLegacyTranscript", () => {
         expect(checkpoint).toBe(3);
         expect(appended.size).toBe(3);
     });
+
+    it("keeps legacy fallback when verification fails", async () => {
+        const states: unknown[] = [];
+        const adapter = {
+            append: vi.fn().mockResolvedValue(undefined),
+            loadCheckpoint: vi.fn().mockResolvedValue(0),
+            loadLegacyPage: vi.fn().mockResolvedValue({
+                messages: [message("1")],
+                total: 1,
+            }),
+            saveCheckpoint: vi.fn().mockResolvedValue(undefined),
+            saveMigrationState: vi.fn((state: unknown) => {
+                states.push(state);
+                return Promise.resolve();
+            }),
+            verify: vi.fn().mockResolvedValue(false),
+        };
+
+        const result = await backfillLegacyTranscript(
+            adapter,
+            "session-1",
+            new AbortController().signal,
+        );
+
+        expect(result.completed).toBe(false);
+        expect(states).toContainEqual(
+            expect.objectContaining({ status: "legacy", verified: false }),
+        );
+    });
 });
