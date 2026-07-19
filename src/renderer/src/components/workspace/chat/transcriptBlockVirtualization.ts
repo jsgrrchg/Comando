@@ -60,3 +60,32 @@ export function transcriptBlockEstimate(block: TranscriptVirtualBlock): number {
         ? block.block.estimatedHeight
         : block.estimatedHeight;
 }
+
+export function resolveTranscriptPrefetchBlockId(
+    blocks: readonly TranscriptVirtualBlock[],
+    loadedBlockIds: ReadonlySet<string>,
+    direction: "backward" | "forward",
+): string | null {
+    const loadedIndexes = blocks
+        .map((block, index) => (loadedBlockIds.has(block.id) ? index : -1))
+        .filter((index) => index >= 0);
+    if (loadedIndexes.length === 0) return null;
+    const targetIndex =
+        direction === "backward"
+            ? Math.min(...loadedIndexes) - 1
+            : Math.max(...loadedIndexes) + 1;
+    return blocks[targetIndex]?.id ?? null;
+}
+
+export function captureTranscriptSemanticAnchor(input: {
+    readonly alignment?: TranscriptSemanticAnchor["alignment"];
+    readonly entryId: string | null;
+    readonly offsetWithinEntry?: number;
+}): TranscriptSemanticAnchor | null {
+    if (!input.entryId) return null;
+    return {
+        alignment: input.alignment ?? "start",
+        entryId: input.entryId,
+        offsetWithinEntry: Math.max(0, input.offsetWithinEntry ?? 0),
+    };
+}

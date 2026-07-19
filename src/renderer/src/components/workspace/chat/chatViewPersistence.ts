@@ -1,7 +1,12 @@
-const CHAT_VIEW_STATE_VERSION = 1;
+const CHAT_VIEW_STATE_VERSION = 2;
 const CHAT_VIEW_STATE_PREFIX = "comando.ai.chat.view";
 
 export interface PersistedChatViewState {
+    readonly anchor: {
+        readonly alignment: "center" | "end" | "start";
+        readonly entryId: string;
+        readonly offsetWithinEntry: number;
+    } | null;
     readonly isNearBottom: boolean;
     readonly scrollTop: number;
     readonly updatedAt: number;
@@ -34,6 +39,7 @@ function normalizePersistedState(raw: unknown): PersistedChatViewState | null {
     const isNearBottom = (raw as { isNearBottom?: unknown }).isNearBottom;
     const scrollTop = (raw as { scrollTop?: unknown }).scrollTop;
     const updatedAt = (raw as { updatedAt?: unknown }).updatedAt;
+    const anchor = (raw as { anchor?: unknown }).anchor;
 
     if (
         version !== CHAT_VIEW_STATE_VERSION ||
@@ -46,7 +52,30 @@ function normalizePersistedState(raw: unknown): PersistedChatViewState | null {
         return null;
     }
 
+    const normalizedAnchor =
+        anchor &&
+        typeof anchor === "object" &&
+        typeof (anchor as { entryId?: unknown }).entryId === "string" &&
+        typeof (anchor as { offsetWithinEntry?: unknown }).offsetWithinEntry ===
+            "number" &&
+        ["start", "center", "end"].includes(
+            (anchor as { alignment?: unknown }).alignment as string,
+        )
+            ? {
+                  alignment: (anchor as {
+                      alignment: "center" | "end" | "start";
+                  }).alignment,
+                  entryId: (anchor as { entryId: string }).entryId,
+                  offsetWithinEntry: Math.max(
+                      0,
+                      (anchor as { offsetWithinEntry: number })
+                          .offsetWithinEntry,
+                  ),
+              }
+            : null;
+
     return {
+        anchor: normalizedAnchor,
         isNearBottom,
         scrollTop: Math.max(0, scrollTop),
         updatedAt,
@@ -61,7 +90,10 @@ function statesEqual(
     return (
         left.version === right.version &&
         left.isNearBottom === right.isNearBottom &&
-        left.scrollTop === right.scrollTop
+        left.scrollTop === right.scrollTop &&
+        left.anchor?.entryId === right.anchor?.entryId &&
+        left.anchor?.offsetWithinEntry === right.anchor?.offsetWithinEntry &&
+        left.anchor?.alignment === right.anchor?.alignment
     );
 }
 
@@ -104,6 +136,7 @@ export function persistChatViewState(
     state: {
         readonly isNearBottom: boolean;
         readonly scrollTop: number;
+        readonly anchor?: PersistedChatViewState["anchor"];
     },
 ): PersistedChatViewState | null {
     const storage = getStorage();
@@ -112,6 +145,7 @@ export function persistChatViewState(
     }
 
     const nextState: PersistedChatViewState = {
+        anchor: state.anchor ?? null,
         isNearBottom: state.isNearBottom,
         scrollTop: Math.max(0, state.scrollTop),
         updatedAt: Date.now(),

@@ -4,7 +4,9 @@ import type { AiTranscriptBlock, AiTranscriptBlockMetadata } from "@shared/ipc";
 
 import {
     buildTranscriptVirtualBlocks,
+    captureTranscriptSemanticAnchor,
     resolveAnchorBlockId,
+    resolveTranscriptPrefetchBlockId,
     transcriptBlockEstimate,
 } from "./transcriptBlockVirtualization";
 
@@ -54,6 +56,34 @@ describe("transcriptBlockVirtualization", () => {
             resolveAnchorBlockId(
                 { alignment: "start", entryId: "entry-1", offsetWithinEntry: 8 },
                 blocks,
+            ),
+        ).toBe("block-1");
+    });
+
+    it("captures a recoverable anchor and prefetches toward history", () => {
+        const blocks = buildTranscriptVirtualBlocks(
+            [
+                { ...metadata, blockId: "block-0" },
+                metadata,
+                { ...metadata, blockId: "block-2" },
+            ],
+            new Map(),
+        );
+        expect(
+            captureTranscriptSemanticAnchor({
+                entryId: "entry-1",
+                offsetWithinEntry: -4,
+            }),
+        ).toEqual({
+            alignment: "start",
+            entryId: "entry-1",
+            offsetWithinEntry: 0,
+        });
+        expect(
+            resolveTranscriptPrefetchBlockId(
+                blocks,
+                new Set(["block-2"]),
+                "backward",
             ),
         ).toBe("block-1");
     });

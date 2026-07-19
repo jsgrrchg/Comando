@@ -365,6 +365,10 @@ interface AiStore {
         sessionId: string,
         blockId: string,
     ) => Promise<AiTranscriptBlock | null>;
+    prefetchTranscriptWindow: (
+        sessionId: string,
+        direction: "backward" | "forward",
+    ) => Promise<void>;
     setSessionMode: (
         input: AiSessionModeMutationInput,
         options?: AiSessionControlMutationOptions,
@@ -1517,6 +1521,24 @@ export const useAiStore = create<AiStore>((set, get) => ({
             });
         });
         return block;
+    },
+
+    prefetchTranscriptWindow: async (sessionId, direction) => {
+        const windowState = get().sessions[sessionId]?.transcriptWindow;
+        if (!windowState?.capabilityVersion) return;
+        const loadedIndexes = windowState.metadata
+            .map((block, index) =>
+                windowState.blocksById.has(block.blockId) ? index : -1,
+            )
+            .filter((index) => index >= 0);
+        if (loadedIndexes.length === 0) return;
+        const targetIndex =
+            direction === "backward"
+                ? Math.min(...loadedIndexes) - 1
+                : Math.max(...loadedIndexes) + 1;
+        const target = windowState.metadata[targetIndex] ?? null;
+        if (!target) return;
+        await get().loadTranscriptWindowBlock(sessionId, target.blockId);
     },
 
     setTranscriptWindowAnchor: (sessionId, anchorBlockId, followTail) => {

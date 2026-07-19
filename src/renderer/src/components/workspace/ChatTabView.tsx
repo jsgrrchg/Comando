@@ -120,6 +120,7 @@ import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
 import { ToolActivitySegment } from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
 import { TimelineBlockCache } from "./chat/timelineBlocks";
+import { captureTranscriptSemanticAnchor } from "./chat/transcriptBlockVirtualization";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
@@ -278,6 +279,9 @@ export const ChatTabView = memo(function ChatTabView({
     const cancelQueuedPromptEdit = useAiStore((s) => s.cancelQueuedPromptEdit);
     const clearQueuedPrompts = useAiStore((s) => s.clearQueuedPrompts);
     const ensureSession = useAiStore((s) => s.ensureSession);
+    const prefetchTranscriptWindow = useAiStore(
+        (s) => s.prefetchTranscriptWindow,
+    );
     const editQueuedPrompt = useAiStore((s) => s.editQueuedPrompt);
     const refreshRuntimeStatus = useAiStore((s) => s.refreshRuntimeStatus);
     const registerSessionTab = useAiStore((s) => s.registerSessionTab);
@@ -383,6 +387,12 @@ export const ChatTabView = memo(function ChatTabView({
         trackedFiles: null,
         transcript: null,
     });
+    const previousVirtualRangeRef = useRef<MeasuredVirtualRange | null>(null);
+    const semanticAnchorRef = useRef<{
+        readonly alignment: "center" | "end" | "start";
+        readonly entryId: string;
+        readonly offsetWithinEntry: number;
+    } | null>(null);
     const initialComposerParts = readInitialComposerPartsForTab(tab);
     const composerPartsRef = useRef<AIComposerPart[]>(initialComposerParts);
     const persistedDraftRef = useRef(tab.draft);
@@ -1279,6 +1289,9 @@ export const ChatTabView = memo(function ChatTabView({
     ]);
 
     const handleTimelineVirtualRangeChange = useCallback((range: MeasuredVirtualRange) => {
+        semanticAnchorRef.current = captureTranscriptSemanticAnchor({
+            entryId: timelineModel.historyRows[range.visibleStartIndex]?.id ?? null,
+        });
         recordChatPerformanceMetric("virtual_range", {
             sessionId: tab.sessionId,
             values: {
@@ -1291,8 +1304,21 @@ export const ChatTabView = memo(function ChatTabView({
         });
         if (shouldAutoFollowRef.current) {
             scheduleScrollToBottom();
+        } else if (
+            transcriptWindow?.capabilityVersion &&
+            range.visibleStartIndex === 0 &&
+            previousVirtualRangeRef.current?.visibleStartIndex !== 0
+        ) {
+            void prefetchTranscriptWindow(tab.sessionId, "backward");
         }
-    }, [scheduleScrollToBottom, tab.sessionId]);
+        previousVirtualRangeRef.current = range;
+    }, [
+        prefetchTranscriptWindow,
+        scheduleScrollToBottom,
+        tab.sessionId,
+        timelineModel.historyRows,
+        transcriptWindow?.capabilityVersion,
+    ]);
 
     const handleTimelineVirtualResizeAutoFollow = useCallback(() => {
         scheduleScrollToBottom();
@@ -1337,6 +1363,7 @@ export const ChatTabView = memo(function ChatTabView({
                 tab.worktreeId ?? null,
                 tab.sessionId,
                 {
+                    anchor: semanticAnchorRef.current,
                     isNearBottom: nextIsNearBottom,
                     scrollTop,
                 },
