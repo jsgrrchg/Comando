@@ -10,7 +10,7 @@ import {
     isAiSessionTranscriptMutationFrom,
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
-import { areTrackedFilePathReferencesEquivalent } from "@renderer/app/ai/trackedFilePath";
+import { TrackedFilePathReferenceSet } from "@renderer/app/ai/trackedFilePath";
 
 import {
     createToolActivityReviewIndex,
@@ -517,19 +517,11 @@ function buildOrderedRows(
     return [...rowById.values()].sort(compareRows);
 }
 
-function addPath(paths: string[], path: string | null | undefined): void {
-    const normalizedPath = path?.trim();
-    if (
-        normalizedPath &&
-        !paths.some((existingPath) =>
-            areTrackedFilePathReferencesEquivalent(
-                existingPath,
-                normalizedPath,
-            ),
-        )
-    ) {
-        paths.push(normalizedPath);
-    }
+function addPath(
+    paths: TrackedFilePathReferenceSet,
+    path: string | null | undefined,
+): void {
+    paths.add(path);
 }
 
 function buildToolActivitySegmentSummary(
@@ -563,8 +555,8 @@ function buildToolActivitySegmentSummary(
             ? latestItem.message.createdAt
             : latestItem.entry.reviewEntry.activity.updatedAt;
 
-    const fileTargets: string[] = [];
-    const changedFileTargets: string[] = [];
+    const fileTargets = new TrackedFilePathReferenceSet();
+    const changedFileTargets = new TrackedFilePathReferenceSet();
     let changeCount = 0;
     let commandCount = 0;
     let failureCount = 0;
@@ -618,10 +610,10 @@ function buildToolActivitySegmentSummary(
     return {
         actionCount: entries.length,
         changeCount,
-        changedFileCount: changedFileTargets.length,
+        changedFileCount: changedFileTargets.size,
         commandCount,
         failureCount,
-        fileCount: fileTargets.length,
+        fileCount: fileTargets.size,
         hiddenActivityCount: entries.length,
         isInProgress: items.some((item) =>
             item.kind === "thinking"

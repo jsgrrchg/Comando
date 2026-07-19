@@ -1492,6 +1492,54 @@ describe("chatTimelineModel activity segments", () => {
         }
     });
 
+    it("counts a rename and a later edit of its destination once", () => {
+        const createChangeActivity = (
+            id: string,
+            path: string,
+            second: number,
+            previousPath: string | null = null,
+        ) =>
+            createActivity({
+                createdAt: `2026-04-14T00:00:0${second}.000Z`,
+                diffs: [
+                    {
+                        hunks: [],
+                        isText: true,
+                        kind: previousPath ? "move" : "update",
+                        newText: "next",
+                        oldText: "previous",
+                        path,
+                        previousPath,
+                        reversible: true,
+                    },
+                ],
+                id,
+                title: `Edit ${path}`,
+                updatedAt: `2026-04-14T00:00:0${second}.000Z`,
+            });
+        const model = reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [
+                createChangeActivity(
+                    "rename-1",
+                    "src/new-name.ts",
+                    1,
+                    "src/old-name.ts",
+                ),
+                createChangeActivity("edit-2", "src/new-name.ts", 2),
+            ],
+            trackedFiles: [],
+        });
+        const segment = model.orderedRows[0];
+
+        expect(segment?.kind).toBe("activity-segment");
+        if (segment?.kind === "activity-segment") {
+            expect(segment.summary.changedFileCount).toBe(1);
+            expect(segment.summary.fileCount).toBe(2);
+        }
+    });
+
     it("keeps its id when the first member becomes a change", () => {
         const first = createReadActivity(
             "read-1",
