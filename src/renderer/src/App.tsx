@@ -21,6 +21,7 @@ import type {
     ProjectTreeNode,
     SettingsWindowCategory,
     SettingsSnapshot,
+    WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
@@ -62,6 +63,7 @@ import {
     resolveWorkspaceContextRefreshPlan,
     runDeduplicatedContextRefresh,
 } from "./app/workspace/context-activation-refresh";
+import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import {
     COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME,
@@ -806,6 +808,22 @@ export function App() {
         }
         return getComandoApi()?.onWorkspaceSurfaceSnapshotRequested(() =>
             useWorkspaceStore.getState().getNavigationSnapshot(),
+        );
+    }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceSurfaceRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceActionRequested(
+            (request: WorkspaceSurfaceActionRequest) => {
+                void executeWorkspaceSurfaceAction(request).catch((error) => {
+                    console.error(
+                        "[workspace-surface] action execution failed",
+                        error,
+                    );
+                });
+            },
         );
     }, []);
 
