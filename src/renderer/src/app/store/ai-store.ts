@@ -81,6 +81,7 @@ import {
     createEmptyAiSessionTranscriptModel,
     getSnapshotTranscriptMergeOptions,
     mergeAiSessionTranscriptSources,
+    removeAiSessionTranscriptEntries,
     shouldPreserveCurrentAiSessionTranscript,
     writeAiSessionTranscriptToSnapshot,
     type AiSessionTranscriptModel,
@@ -1534,21 +1535,45 @@ export const useAiStore = create<AiStore>((set, get) => ({
             );
             const windowSnapshot = transcriptWindowStore.snapshot(sessionId);
             set((state) => {
-                const current = state.sessions[sessionId]?.transcriptWindow;
+                const currentSession = state.sessions[sessionId];
+                if (!currentSession) return state;
+                const current = currentSession.transcriptWindow;
                 const next = transcriptWindowStateFromSnapshot(
-                        windowSnapshot,
-                        metadata.capabilityVersion,
-                        metadata.transcriptRevision,
-                        new Set(visibleBlockIds),
-                    );
-                return updateTranscriptWindowState(state, sessionId, {
+                    windowSnapshot,
+                    metadata.capabilityVersion,
+                    metadata.transcriptRevision,
+                    new Set(visibleBlockIds),
+                );
+                const transcriptWindow = {
                     ...next,
                     payloadsByRef: retainResidentTranscriptPayloads(
                         sessionId,
                         windowSnapshot.blocksById,
-                        current?.payloadsByRef ?? new Map(),
+                        current.payloadsByRef,
                     ),
-                });
+                };
+                const transcript = removeAiSessionTranscriptEntries(
+                    currentSession.transcript,
+                    collectSealedTranscriptEntryIds(
+                        windowSnapshot.blocksById,
+                    ),
+                );
+                return {
+                    sessions: {
+                        ...state.sessions,
+                        [sessionId]: {
+                            ...currentSession,
+                            snapshot: currentSession.snapshot
+                                ? writeAiSessionTranscriptToSnapshot(
+                                      currentSession.snapshot,
+                                      transcript,
+                                  )
+                                : null,
+                            transcript,
+                            transcriptWindow,
+                        },
+                    },
+                };
             });
         })().catch((error: unknown) => {
             set((state) => updateTranscriptWindowState(state, sessionId, {
@@ -2480,6 +2505,24 @@ function transcriptWindowStateFromSnapshot(
         residentEntries: snapshot.residentEntries,
         transcriptRevision,
     };
+}
+
+function collectSealedTranscriptEntryIds(
+    blocksById: ReadonlyMap<string, AiTranscriptBlock>,
+): ReadonlySet<string> {
+    const entryIds = new Set<string>();
+    for (const block of blocksById.values()) {
+        for (const entry of block.entries) {
+            if (
+                entry.kind === "message" ||
+                entry.kind === "thinking" ||
+                entry.kind === "tool"
+            ) {
+                entryIds.add(entry.id);
+            }
+        }
+    }
+    return entryIds;
 }
 
 function updateTranscriptWindowState(

@@ -371,6 +371,119 @@ describe("ai-store queue", () => {
         ).toBe(false);
     });
 
+    it("releases live transcript entries after their sealed block is hydrated", async () => {
+        const sealedMessage = createMessage({
+            id: "sealed-message",
+            status: "completed",
+        });
+        const liveMessage = createMessage({
+            content: "Still streaming",
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "live-message",
+        });
+        const sealedTool = createToolActivity({
+            id: "sealed-tool",
+            status: "completed",
+        });
+        const liveTool = createToolActivity({
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "live-tool",
+        });
+        const metadata = {
+            blockId: "block-sealed",
+            endSequence: 2,
+            entryCount: 2,
+            estimatedHeight: 144,
+            estimatedRowCount: 2,
+            firstCreatedAt: sealedMessage.createdAt,
+            lastCreatedAt: sealedTool.createdAt,
+            revision: 1,
+            sessionId: TAB.sessionId,
+            startSequence: 1,
+        };
+        const block = {
+            ...metadata,
+            capabilityVersion: 1,
+            entries: [
+                {
+                    createdAt: sealedMessage.createdAt,
+                    id: `message:${sealedMessage.id}`,
+                    kind: "message",
+                    payloadRef: null,
+                    sequence: 1,
+                    sessionId: TAB.sessionId,
+                    summary: {
+                        label: "Assistant message",
+                        preview: sealedMessage.content,
+                        status: "completed",
+                    },
+                    updatedAt: sealedMessage.createdAt,
+                },
+                {
+                    createdAt: sealedTool.createdAt,
+                    id: `tool:${TAB.sessionId}:${sealedTool.id}`,
+                    kind: "tool",
+                    payloadRef: null,
+                    sequence: 2,
+                    sessionId: TAB.sessionId,
+                    summary: {
+                        label: sealedTool.title,
+                        preview: sealedTool.summary,
+                        status: sealedTool.status,
+                    },
+                    updatedAt: sealedTool.updatedAt,
+                },
+            ],
+            transcriptRevision: 1,
+        } as AiTranscriptBlock;
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlock: vi.fn().mockResolvedValue(block),
+                    getAiTranscriptBlockMetadata: vi.fn().mockResolvedValue({
+                        blocks: [metadata],
+                        capabilityVersion: 1,
+                        sessionId: TAB.sessionId,
+                        transcriptRevision: 1,
+                    }),
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                    getAiTranscriptPayload: vi.fn(),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [sealedMessage, liveMessage],
+                status: "streaming",
+                toolActivity: [sealedTool, liveTool],
+            }),
+        );
+
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(
+            session?.transcript.messages.map((message) => message.id),
+        ).toEqual([liveMessage.id]);
+        expect(
+            session?.transcript.toolActivity.map((activity) => activity.id),
+        ).toEqual([liveTool.id]);
+        expect(
+            session?.snapshot?.messages.map((message) => message.id),
+        ).toEqual([liveMessage.id]);
+        expect(
+            session?.snapshot?.toolActivity.map((activity) => activity.id),
+        ).toEqual([liveTool.id]);
+        expect(session?.transcriptWindow.blocksById.has(block.blockId)).toBe(
+            true,
+        );
+    });
+
     it("keeps a command-only runtime catalog from status updates", () => {
         const availableCommands = [
             {

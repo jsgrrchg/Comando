@@ -558,6 +558,29 @@ function removeAiSessionTranscriptEntry(
     );
 }
 
+export function removeAiSessionTranscriptEntries(
+    transcript: AiSessionTranscriptModel,
+    entryIds: ReadonlySet<string>,
+): AiSessionTranscriptModel {
+    const removableEntryIds = new Set(
+        [...entryIds].filter((entryId) => transcript.entriesById[entryId]),
+    );
+    if (removableEntryIds.size === 0) {
+        return transcript;
+    }
+
+    const entriesById = { ...transcript.entriesById };
+    for (const entryId of removableEntryIds) {
+        delete entriesById[entryId];
+    }
+    return buildAiSessionTranscriptModelFromOrderedEntries(
+        transcript.orderedEntryIds.filter(
+            (entryId) => !removableEntryIds.has(entryId),
+        ),
+        entriesById,
+    );
+}
+
 function insertAiSessionTranscriptEntry(
     transcript: AiSessionTranscriptModel,
     entry: AiSessionTranscriptEntry,
