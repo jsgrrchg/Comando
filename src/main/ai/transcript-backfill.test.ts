@@ -75,4 +75,33 @@ describe("backfillLegacyTranscript", () => {
             expect.objectContaining({ status: "legacy", verified: false }),
         );
     });
+
+    it("resumes from the durable checkpoint after an interrupted page", async () => {
+        const messages = [message("1"), message("2"), message("3")];
+        let checkpoint = 0;
+        const controller = new AbortController();
+        const adapter = {
+            append: vi.fn(() => Promise.resolve()),
+            loadCheckpoint: vi.fn(() => Promise.resolve(checkpoint)),
+            loadLegacyPage: vi.fn((_sessionId: string, offset: number, limit: number) =>
+                Promise.resolve({ messages: messages.slice(offset, offset + limit), total: 3 }),
+            ),
+            saveCheckpoint: vi.fn((_sessionId: string, offset: number) => {
+                checkpoint = offset;
+                if (offset === 2) controller.abort();
+                return Promise.resolve();
+            }),
+        };
+        await backfillLegacyTranscript(adapter, "session-1", controller.signal, 2);
+        expect(checkpoint).toBe(2);
+
+        const resumed = await backfillLegacyTranscript(
+            adapter,
+            "session-1",
+            new AbortController().signal,
+            2,
+        );
+        expect(resumed.completed).toBe(true);
+        expect(checkpoint).toBe(3);
+    });
 });
