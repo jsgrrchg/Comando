@@ -10,8 +10,6 @@ import {
     isTurnStartedActivity,
 } from "./toolActivityKinds";
 
-export const CHAT_TIMELINE_VIRTUALIZATION_ENABLED = true;
-export const CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD = 200;
 export const CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN = 10;
 export const CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 720;
 export const CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX = 8;
@@ -22,11 +20,6 @@ export const CHAT_ACTIVITY_RAIL_CONTENT_TOP_PX = 4;
 export const CHAT_ACTIVITY_RAIL_ENTRY_GAP_PX = 6;
 export const CHAT_ACTIVITY_RAIL_ENTRY_PADDING_Y_PX = 4;
 export const CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX = 28;
-
-interface ShouldVirtualizeChatTimelineOptions {
-    readonly enabled?: boolean;
-    readonly threshold?: number;
-}
 
 export interface ChatTimelineRowEstimateContext {
     readonly chatFontSize?: number;
@@ -47,60 +40,6 @@ export interface ChatTimelineVirtualScrollMarginOptions {
 }
 
 type TimelineMeasuredRow = ChatTimelineRow | TranscriptTimelineVirtualRow;
-
-export function shouldVirtualizeChatTimeline(
-    virtualizationCost: number,
-    options: ShouldVirtualizeChatTimelineOptions = {},
-): boolean {
-    const enabled = options.enabled ?? CHAT_TIMELINE_VIRTUALIZATION_ENABLED;
-    const threshold =
-        options.threshold ?? CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD;
-
-    return enabled && virtualizationCost >= threshold;
-}
-
-export function calculateChatTimelineVirtualizationCost(
-    rows: readonly TimelineMeasuredRow[],
-): number {
-    const cached = virtualizationCostByRows.get(rows);
-    if (cached !== undefined) return cached;
-    const cost = rows.reduce((cost, row) => {
-        if (
-            row.kind === "activity-summary" ||
-            row.kind === "activity-range" ||
-            row.kind === "activity-entry"
-        ) {
-            return cost + 1;
-        }
-        if (row.kind !== "activity-segment") {
-            return cost + 1;
-        }
-
-        const expandedItemWeight = row.items.reduce(
-            (itemCost, item) => {
-                if (item.kind === "thinking") {
-                    return itemCost + 1;
-                }
-
-                const activity = item.entry.reviewEntry.activity;
-                const previewWeight =
-                    activity.diffs.length > 0 || activity.terminalOutput
-                        ? 2
-                        : 1;
-                return itemCost + previewWeight;
-            },
-            0,
-        );
-        return cost + 1 + expandedItemWeight;
-    }, 0);
-    virtualizationCostByRows.set(rows, cost);
-    return cost;
-}
-
-const virtualizationCostByRows = new WeakMap<
-    readonly TimelineMeasuredRow[],
-    number
->();
 
 export function getChatTimelineRowKey(row: TimelineMeasuredRow): string {
     return row.id;

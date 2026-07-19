@@ -20,9 +20,11 @@ import {
 import { createChatPerformanceFixtureById } from "./chatPerformanceFixtures";
 import {
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
-    CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
     getChatTimelineVirtualMeasurementWidth,
 } from "./chatTimelineVirtualization";
+
+const SMALL_HISTORY_ROW_COUNT = 3;
+const ACTIVITY_HEAVY_ENTRY_COUNT = 24;
 
 interface MeasuredVirtualListMockSnapshot {
     readonly firstEstimate: number | null;
@@ -384,19 +386,19 @@ describe("ChatTimelineHistoryRows", () => {
         document.body.innerHTML = "";
     });
 
-    it("virtualizes history below the threshold to preserve row identity", () => {
-        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1);
+    it("virtualizes a small history to preserve row identity", () => {
+        const rows = createRows(SMALL_HISTORY_ROW_COUNT);
         const markup = renderHistoryRows(rows);
 
         expect(measuredVirtualListMock).toHaveBeenCalledWith(
             expect.objectContaining({
                 firstKey: "message:message-0",
-                itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1,
+                itemCount: SMALL_HISTORY_ROW_COUNT,
             }),
         );
         expect(markup).toContain("message:message-0");
         expect(markup).toContain(
-            `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 2}`,
+            `message:message-${SMALL_HISTORY_ROW_COUNT - 1}`,
         );
     });
 
@@ -575,8 +577,8 @@ describe("ChatTimelineHistoryRows", () => {
         expect(markup).toContain('data-transcript-block-spacer="block-1"');
     });
 
-    it("passes all history rows to MeasuredVirtualList at the threshold", () => {
-        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+    it("passes all history rows to MeasuredVirtualList", () => {
+        const rows = createRows(SMALL_HISTORY_ROW_COUNT);
         const markup = renderHistoryRows(rows);
         const firstCall = measuredVirtualListMock.mock.calls[0]?.[0];
 
@@ -586,7 +588,7 @@ describe("ChatTimelineHistoryRows", () => {
                 firstKey: "message:message-0",
                 hasOnRangeChange: true,
                 hasOnReady: true,
-                itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+                itemCount: SMALL_HISTORY_ROW_COUNT,
                 observeMeasurements: true,
                 overscan: 10,
                 preserveScrollAnchorOnItemsChange: true,
@@ -599,7 +601,7 @@ describe("ChatTimelineHistoryRows", () => {
         expect(markup).toContain("mock-measured-virtual-list");
         expect(markup).toContain("message:message-0");
         expect(markup).toContain(
-            `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1}`,
+            `message:message-${SMALL_HISTORY_ROW_COUNT - 1}`,
         );
         expect(markup.match(/padding-bottom:8px/g)).toHaveLength(1);
     });
@@ -619,13 +621,13 @@ describe("ChatTimelineHistoryRows", () => {
     });
 
     it("keeps virtual layout but stops row measurements while retained and hidden", () => {
-        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+        const rows = createRows(SMALL_HISTORY_ROW_COUNT);
 
         const markup = renderHistoryRows(rows, false);
 
         expect(measuredVirtualListMock).toHaveBeenCalledWith(
             expect.objectContaining({
-                itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+                itemCount: SMALL_HISTORY_ROW_COUNT,
                 observeMeasurements: false,
             }),
         );
@@ -635,7 +637,7 @@ describe("ChatTimelineHistoryRows", () => {
     it("passes activity segments through the virtual list with their stable id", () => {
         const rows = [
             createSegmentRow(),
-            ...createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1),
+            ...createRows(SMALL_HISTORY_ROW_COUNT - 1),
         ];
         const markup = renderHistoryRows(rows);
         const firstCall = measuredVirtualListMock.mock.calls[0]?.[0];
@@ -643,7 +645,7 @@ describe("ChatTimelineHistoryRows", () => {
         expect(firstCall).toMatchObject({
             firstEstimate: 48,
             firstKey: "activity-segment:session-1:read-1",
-            itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+            itemCount: SMALL_HISTORY_ROW_COUNT,
         });
         expect(firstCall?.firstMeasurementKey).toContain(
             "activity-segment:session-1:read-1",
@@ -653,7 +655,7 @@ describe("ChatTimelineHistoryRows", () => {
 
     it("virtualizes the outer timeline for an activity-heavy segment", () => {
         const rows = [
-            createSegmentRow(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD),
+            createSegmentRow(ACTIVITY_HEAVY_ENTRY_COUNT),
         ];
         const markup = renderHistoryRows(rows);
 
@@ -668,7 +670,7 @@ describe("ChatTimelineHistoryRows", () => {
     });
 
     it("freezes content width during panel resize and re-syncs on release", () => {
-        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+        const rows = createRows(SMALL_HISTORY_ROW_COUNT);
         rectWidthFallback = CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX;
         const mounted = mountHistoryRows(rows);
 
@@ -743,7 +745,7 @@ describe("ChatTimelineHistoryRows", () => {
     });
 
     it("keeps resize release capped when the panel grows beyond the timeline max", () => {
-        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+        const rows = createRows(SMALL_HISTORY_ROW_COUNT);
         rectWidthFallback = 620;
         const mounted = mountHistoryRows(rows);
 

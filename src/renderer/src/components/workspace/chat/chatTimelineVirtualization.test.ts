@@ -10,9 +10,7 @@ import {
     CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX,
     CHAT_ACTIVITY_RAIL_HEADER_HEIGHT_PX,
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
-    CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
     CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX,
-    calculateChatTimelineVirtualizationCost,
     calculateChatTimelineVirtualScrollMarginTop,
     estimateChatTimelineRowHeight,
     getChatTimelineEffectiveContentWidth,
@@ -22,7 +20,6 @@ import {
     getChatTimelineVirtualMeasurementWidth,
     getChatTimelineVirtualRowGapPx,
     isWidthSensitiveChatTimelineRow,
-    shouldVirtualizeChatTimeline,
 } from "./chatTimelineVirtualization";
 
 function createMessage(
@@ -145,53 +142,6 @@ function createElementRect(top: number): HTMLElement {
 }
 
 describe("chatTimelineVirtualization", () => {
-    it("uses a high threshold and respects the escape hatch", () => {
-        expect(
-            shouldVirtualizeChatTimeline(
-                CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1,
-            ),
-        ).toBe(false);
-        expect(
-            shouldVirtualizeChatTimeline(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD),
-        ).toBe(true);
-        expect(
-            shouldVirtualizeChatTimeline(
-                CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
-                { enabled: false },
-            ),
-        ).toBe(false);
-        expect(
-            shouldVirtualizeChatTimeline(20, {
-                enabled: true,
-                threshold: 20,
-            }),
-        ).toBe(true);
-    });
-
-    it("counts expanded segment entries and preview weight", () => {
-        const segment = createActivitySegmentRow();
-        if (segment.kind !== "activity-segment") {
-            throw new Error("Expected an activity segment.");
-        }
-
-        const repeatedEntries = Array.from(
-            { length: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD },
-            () => segment.entries[0],
-        );
-
-        expect(
-            calculateChatTimelineVirtualizationCost([
-                {
-                    ...segment,
-                    entries: repeatedEntries,
-                    items: repeatedEntries.map((entry) => ({
-                        entry,
-                        kind: "tool" as const,
-                    })),
-                },
-            ]),
-        ).toBe(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD + 1);
-    });
 
     it("preserves row ids as virtual keys", () => {
         const row = createMessageRow({ id: "message-42" });
