@@ -2,6 +2,7 @@ import type { AiToolActivityDefaultExpansion } from "@shared/ipc";
 
 import { CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 import type { ChatTimelineRow } from "./chatTimelineModel";
+import type { TranscriptTimelineVirtualRow } from "./transcriptBlockVirtualization";
 import {
     isFileToolActivity,
     isStatusToolActivity,
@@ -45,6 +46,8 @@ export interface ChatTimelineVirtualScrollMarginOptions {
     readonly scrollContainer: HTMLElement | null;
 }
 
+type TimelineMeasuredRow = ChatTimelineRow | TranscriptTimelineVirtualRow;
+
 export function shouldVirtualizeChatTimeline(
     virtualizationCost: number,
     options: ShouldVirtualizeChatTimelineOptions = {},
@@ -57,11 +60,18 @@ export function shouldVirtualizeChatTimeline(
 }
 
 export function calculateChatTimelineVirtualizationCost(
-    rows: readonly ChatTimelineRow[],
+    rows: readonly TimelineMeasuredRow[],
 ): number {
     const cached = virtualizationCostByRows.get(rows);
     if (cached !== undefined) return cached;
     const cost = rows.reduce((cost, row) => {
+        if (
+            row.kind === "activity-summary" ||
+            row.kind === "activity-range" ||
+            row.kind === "activity-entry"
+        ) {
+            return cost + 1;
+        }
         if (row.kind !== "activity-segment") {
             return cost + 1;
         }
@@ -88,11 +98,11 @@ export function calculateChatTimelineVirtualizationCost(
 }
 
 const virtualizationCostByRows = new WeakMap<
-    readonly ChatTimelineRow[],
+    readonly TimelineMeasuredRow[],
     number
 >();
 
-export function getChatTimelineRowKey(row: ChatTimelineRow): string {
+export function getChatTimelineRowKey(row: TimelineMeasuredRow): string {
     return row.id;
 }
 
@@ -111,7 +121,15 @@ function getChatTimelineRowLayoutBase(
 
 // Message rows and activity rails containing expandable thinking can reflow
 // with the available width. Tool-only rails remain width-invariant.
-export function isWidthSensitiveChatTimelineRow(row: ChatTimelineRow): boolean {
+export function isWidthSensitiveChatTimelineRow(
+    row: TimelineMeasuredRow,
+): boolean {
+    if (row.kind === "activity-entry") {
+        return row.item.kind === "thinking";
+    }
+    if (row.kind === "activity-summary" || row.kind === "activity-range") {
+        return false;
+    }
     return (
         row.kind === "message" ||
         (row.kind === "activity-segment" &&
@@ -120,7 +138,7 @@ export function isWidthSensitiveChatTimelineRow(row: ChatTimelineRow): boolean {
 }
 
 export function getChatTimelineRowMeasurementKey(
-    row: ChatTimelineRow,
+    row: TimelineMeasuredRow,
     context: ChatTimelineRowMeasurementContext,
 ): string {
     const widthSegment = isWidthSensitiveChatTimelineRow(row)
@@ -138,7 +156,7 @@ export function getChatTimelineRowMeasurementKey(
 // to this row's last real measurement instead of the heuristic estimate, so the
 // total size never snaps to a rough value mid-resize.
 export function getChatTimelineRowIdentityKey(
-    row: ChatTimelineRow,
+    row: TimelineMeasuredRow,
     context: ChatTimelineRowMeasurementContext,
 ): string {
     return `${row.id}:${getChatTimelineRowLayoutBase(
@@ -163,17 +181,34 @@ export function getChatTimelineRowIdentityKey(
 // decided the row changed) gets a new one, invalidating the cached
 // measurement. The WeakMap keeps it bounded — dropped rows are collected.
 let nextRowMeasurementToken = 0;
-const rowMeasurementTokens = new WeakMap<ChatTimelineRow, number>();
+const rowMeasurementTokens = new WeakMap<object, number>();
 
-function getRowMeasurementToken(row: ChatTimelineRow): number {
-    const existing = rowMeasurementTokens.get(row);
+function getRowMeasurementToken(row: TimelineMeasuredRow): string {
+    if (row.kind === "activity-summary") {
+        return `activity-summary:${getObjectMeasurementToken(
+            row.segment,
+        )}:${row.expanded}`;
+    }
+    if (row.kind === "activity-range") {
+        return `activity-range:${getObjectMeasurementToken(
+            row.segment,
+        )}:${row.start}:${row.end}:${row.expanded}`;
+    }
+    if (row.kind === "activity-entry") {
+        return `activity-entry:${getObjectMeasurementToken(row.item)}`;
+    }
+    return String(getObjectMeasurementToken(row));
+}
+
+function getObjectMeasurementToken(value: object): number {
+    const existing = rowMeasurementTokens.get(value);
     if (existing !== undefined) {
         return existing;
     }
 
     const token = nextRowMeasurementToken;
     nextRowMeasurementToken += 1;
-    rowMeasurementTokens.set(row, token);
+    rowMeasurementTokens.set(value, token);
     return token;
 }
 
@@ -240,7 +275,7 @@ export function getChatTimelineVirtualRowGapPx({
 // here. The symptom of staleness is subtle — scroll jitter while flinging
 // through a long history — so it is worth updating in the same change.
 export function estimateChatTimelineRowHeight(
-    row: ChatTimelineRow,
+    row: TimelineMeasuredRow,
     context: ChatTimelineRowEstimateContext,
 ): number {
     const gapPx = Math.max(0, context.gapPx ?? 0);
@@ -248,6 +283,23 @@ export function estimateChatTimelineRowHeight(
     if (row.kind === "message") {
         return Math.ceil(
             estimateMessageRowHeight(row.message, context) + gapPx,
+        );
+    }
+
+    if (row.kind === "activity-summary") {
+        return Math.ceil(CHAT_ACTIVITY_RAIL_HEADER_HEIGHT_PX + gapPx);
+    }
+
+    if (row.kind === "activity-range") {
+        return Math.ceil(CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX + gapPx);
+    }
+
+    if (row.kind === "activity-entry") {
+        return Math.ceil(
+            (row.item.kind === "thinking"
+                ? 28 * getFontScale(context.chatFontSize)
+                : estimateToolActivityHeight(row.item.entry.reviewEntry, context)) +
+                gapPx,
         );
     }
 

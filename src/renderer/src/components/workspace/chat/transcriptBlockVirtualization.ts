@@ -3,7 +3,14 @@ import type {
     AiTranscriptBlockMetadata,
 } from "@shared/ipc";
 
-import type { ChatTimelineRow } from "./chatTimelineModel";
+import type {
+    ActivitySegmentItem,
+    ChatTimelineActivitySegmentRow,
+    ChatTimelineAtomicRow,
+    ChatTimelineRow,
+} from "./chatTimelineModel";
+
+export const ACTIVITY_GROUP_WINDOW_SIZE = 200;
 
 export interface TranscriptSemanticAnchor {
     readonly alignment: "start" | "center" | "end";
@@ -40,11 +47,64 @@ export interface TranscriptStreamingIndicatorItem {
     readonly kind: "streaming-indicator";
 }
 
+export interface TranscriptActivitySummaryItem {
+    readonly expanded: boolean;
+    readonly groupId: string;
+    readonly id: string;
+    readonly kind: "activity-summary";
+    readonly segment: ChatTimelineActivitySegmentRow;
+}
+
+export interface TranscriptActivityRangeItem {
+    readonly end: number;
+    readonly expanded: boolean;
+    readonly groupId: string;
+    readonly id: string;
+    readonly kind: "activity-range";
+    readonly segment: ChatTimelineActivitySegmentRow;
+    readonly start: number;
+}
+
+export interface TranscriptActivityEntryItem {
+    readonly groupId: string;
+    readonly id: string;
+    readonly item: ActivitySegmentItem;
+    readonly kind: "activity-entry";
+}
+
+export type TranscriptTimelineVirtualRow =
+    | ChatTimelineAtomicRow
+    | ChatTimelineActivitySegmentRow
+    | TranscriptActivitySummaryItem
+    | TranscriptActivityRangeItem
+    | TranscriptActivityEntryItem;
+
+export interface TranscriptActivityGroupExpansionState {
+    readonly collapsedRangeStarts?: readonly number[];
+    readonly expanded?: boolean;
+    readonly expandedRangeStarts?: readonly number[];
+}
+
+export type TranscriptActivityGroupExpansionById = Readonly<
+    Record<string, TranscriptActivityGroupExpansionState | undefined>
+>;
+
+export interface FlattenTranscriptTimelineItemsOptions {
+    readonly activeGroupId?: string | null;
+    readonly defaultExpanded: boolean;
+    readonly expansionByGroupId: TranscriptActivityGroupExpansionById;
+}
+
+export type TranscriptTimelineSourceItem =
+    | ChatTimelineRow
+    | TranscriptBlockSpacerItem
+    | TranscriptStreamingIndicatorItem;
+
 // This is the presentation boundary between paged transcript data and the
 // virtual list. Future timeline-only items can join it without materializing
 // unloaded transcript blocks.
 export type TranscriptTimelineItem =
-    | ChatTimelineRow
+    | TranscriptTimelineVirtualRow
     | TranscriptBlockSpacerItem
     | TranscriptStreamingIndicatorItem;
 
@@ -79,7 +139,7 @@ export function buildTranscriptTimelineItems(
     metadata: readonly AiTranscriptBlockMetadata[],
     loaded: ReadonlyMap<string, AiTranscriptBlock>,
     timelineRows: readonly ChatTimelineRow[],
-): readonly TranscriptTimelineItem[] {
+): readonly TranscriptTimelineSourceItem[] {
     if (metadata.length === 0) {
         return timelineRows;
     }
@@ -108,7 +168,7 @@ export function buildTranscriptTimelineItems(
         rowsByBlockId.set(blockId, rows);
     }
 
-    const timelineItems: TranscriptTimelineItem[] = [];
+    const timelineItems: TranscriptTimelineSourceItem[] = [];
     for (const item of metadata) {
         const isLoaded = loaded.has(item.blockId);
         timelineItems.push({
@@ -141,9 +201,160 @@ export function isTranscriptStreamingIndicatorItem(
 
 export function isChatTimelineRowItem(
     item: TranscriptTimelineItem,
-): item is ChatTimelineRow {
+): item is TranscriptTimelineVirtualRow {
     return !isTranscriptBlockSpacerItem(item) &&
         !isTranscriptStreamingIndicatorItem(item);
+}
+
+export function isTranscriptActivitySummaryItem(
+    item: TranscriptTimelineItem,
+): item is TranscriptActivitySummaryItem {
+    return item.kind === "activity-summary";
+}
+
+export function isTranscriptActivityRangeItem(
+    item: TranscriptTimelineItem,
+): item is TranscriptActivityRangeItem {
+    return item.kind === "activity-range";
+}
+
+export function isTranscriptActivityEntryItem(
+    item: TranscriptTimelineItem,
+): item is TranscriptActivityEntryItem {
+    return item.kind === "activity-entry";
+}
+
+export function flattenTranscriptTimelineItems(
+    sourceItems: readonly TranscriptTimelineSourceItem[],
+    options: FlattenTranscriptTimelineItemsOptions,
+): readonly TranscriptTimelineItem[] {
+    const timelineItems: TranscriptTimelineItem[] = [];
+
+    for (const sourceItem of sourceItems) {
+        if (
+            !isChatTimelineSourceRow(sourceItem) ||
+            sourceItem.kind !== "activity-segment"
+        ) {
+            timelineItems.push(sourceItem);
+            continue;
+        }
+
+        const groupId = sourceItem.id;
+        const expansion = options.expansionByGroupId[groupId];
+        const isActiveGroup = options.activeGroupId === groupId;
+        const expanded =
+            expansion?.expanded ??
+            (isActiveGroup || options.defaultExpanded);
+        timelineItems.push({
+            expanded,
+            groupId,
+            id: `activity-summary:${groupId}`,
+            kind: "activity-summary",
+            segment: sourceItem,
+        });
+
+        if (!expanded) {
+            continue;
+        }
+
+        if (sourceItem.items.length <= ACTIVITY_GROUP_WINDOW_SIZE) {
+            timelineItems.push(
+                ...sourceItem.items.map((item) =>
+                    createTranscriptActivityEntryItem(groupId, item),
+                ),
+            );
+            continue;
+        }
+
+        const expandedRangeStarts = new Set(expansion?.expandedRangeStarts);
+        const collapsedRangeStarts = new Set(expansion?.collapsedRangeStarts);
+        const activeRangeStart =
+            Math.floor(
+                (sourceItem.items.length - 1) / ACTIVITY_GROUP_WINDOW_SIZE,
+            ) * ACTIVITY_GROUP_WINDOW_SIZE;
+        if (isActiveGroup && !collapsedRangeStarts.has(activeRangeStart)) {
+            // Keep the newest active work materialized even after older ranges
+            // have been opened, unless the user explicitly collapsed this range.
+            expandedRangeStarts.add(activeRangeStart);
+        }
+
+        for (
+            let start = 0;
+            start < sourceItem.items.length;
+            start += ACTIVITY_GROUP_WINDOW_SIZE
+        ) {
+            const end = Math.min(
+                sourceItem.items.length,
+                start + ACTIVITY_GROUP_WINDOW_SIZE,
+            );
+            const rangeExpanded = expandedRangeStarts.has(start);
+            timelineItems.push({
+                end,
+                expanded: rangeExpanded,
+                groupId,
+                id: `activity-range:${groupId}:${start}-${end}`,
+                kind: "activity-range",
+                segment: sourceItem,
+                start,
+            });
+            if (rangeExpanded) {
+                timelineItems.push(
+                    ...sourceItem.items
+                        .slice(start, end)
+                        .map((item) =>
+                            createTranscriptActivityEntryItem(groupId, item),
+                        ),
+                );
+            }
+        }
+    }
+
+    return timelineItems;
+}
+
+export function getTranscriptTimelineItemAnchorEntryId(
+    item: TranscriptTimelineItem,
+): string | null {
+    if (!isChatTimelineRowItem(item)) {
+        return null;
+    }
+    if (item.kind === "activity-entry") {
+        return getActivitySegmentItemId(item.item);
+    }
+    if (item.kind === "activity-summary") {
+        const firstItem = item.segment.items[0];
+        return firstItem ? getActivitySegmentItemId(firstItem) : null;
+    }
+    if (item.kind === "activity-range") {
+        const firstItem = item.segment.items[item.start];
+        return firstItem ? getActivitySegmentItemId(firstItem) : null;
+    }
+    return item.id;
+}
+
+function isChatTimelineSourceRow(
+    item: TranscriptTimelineSourceItem,
+): item is ChatTimelineRow {
+    return item.kind !== "transcript-block-spacer" &&
+        item.kind !== "streaming-indicator";
+}
+
+function createTranscriptActivityEntryItem(
+    groupId: string,
+    item: ActivitySegmentItem,
+): TranscriptActivityEntryItem {
+    return {
+        groupId,
+        id: getActivitySegmentItemId(item),
+        item,
+        kind: "activity-entry",
+    };
+}
+
+function getActivitySegmentItemId(item: ActivitySegmentItem): string {
+    return item.kind === "thinking"
+        ? `message:${item.message.id}`
+        : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`;
 }
 
 export function resolveTranscriptBlockIdsInRange(

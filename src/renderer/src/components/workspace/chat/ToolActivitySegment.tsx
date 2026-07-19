@@ -30,8 +30,11 @@ type ToolActivitySegmentProps = Pick<
     | "worktreeId"
 > & {
     /** True only while this segment is the trailing activity of an active turn. */
+    readonly expanded?: boolean;
     readonly isCurrentTurnTail?: boolean;
+    readonly onExpandedChange?: (expanded: boolean) => void;
     readonly onToolPayloadVisibilityChange?: ToolPayloadVisibilityChangeHandler;
+    readonly renderDetails?: boolean;
     readonly segment: ChatTimelineActivitySegmentRow;
 } & Pick<
         ThinkingMessageProps,
@@ -159,10 +162,12 @@ function getActivitySegmentItemId(
         : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`;
 }
 
-function ActivitySegmentItemRow({
+export function ActivitySegmentItemRow({
+    flat = false,
     item,
     ...props
 }: ActivitySegmentItemRendererProps & {
+    readonly flat?: boolean;
     readonly item: ChatTimelineActivitySegmentRow["items"][number];
 }) {
     const openThinkingFileReference = props.onOpenFileReference ?? (() => undefined);
@@ -170,9 +175,13 @@ function ActivitySegmentItemRow({
 
     return (
         <div
-            className="activity-tree-branch min-w-0 pl-10"
-            data-activity-rail-decoration="branch"
-            data-activity-rail-indent="child"
+            className={
+                flat
+                    ? "min-w-0 pl-10"
+                    : "activity-tree-branch min-w-0 pl-10"
+            }
+            data-activity-rail-decoration={flat ? undefined : "branch"}
+            data-activity-rail-indent={flat ? undefined : "child"}
             data-thinking-message-id={
                 item.kind === "thinking" ? item.message.id : undefined
             }
@@ -186,7 +195,7 @@ function ActivitySegmentItemRow({
                     ? "expanded-only"
                     : "always"
             }
-            role="listitem"
+            role={flat ? undefined : "listitem"}
         >
             <div className="min-w-0 py-0.5">
                 {item.kind === "thinking" ? (
@@ -279,7 +288,10 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     onOpenFileReference,
     onOpenSession,
     onRevealFileReference,
+    expanded: controlledExpanded,
+    onExpandedChange,
     projectId,
+    renderDetails = true,
     resolveFileReference,
     isCurrentTurnTail = false,
     segment,
@@ -289,10 +301,17 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
         (state) => state.aiChat.toolActivityDefaultExpansion,
     );
     const defaultExpanded = defaultExpansion === "expanded";
-    const [expanded, setExpanded] = usePersistentToolExpansion(
+    const [storedExpanded, setStoredExpanded] = usePersistentToolExpansion(
         `${segment.id}:full-activity:${defaultExpansion}`,
         defaultExpanded,
     );
+    const expanded = controlledExpanded ?? storedExpanded;
+    const setExpanded = (next: boolean) => {
+        if (controlledExpanded === undefined) {
+            setStoredExpanded(next);
+        }
+        onExpandedChange?.(next);
+    };
     const canExpand = segment.items.length > 0;
     const contentId = `${segment.id}:activity`;
     const headline = getSegmentHeadline(segment, isCurrentTurnTail);
@@ -387,11 +406,11 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
         >
             {canExpand ? (
                 <button
-                    aria-controls={contentId}
+                    aria-controls={renderDetails ? contentId : undefined}
                     aria-expanded={expanded}
                     aria-label={accessibleLabel}
                     className="flex min-h-10 w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-bg-elevated focus-visible:bg-bg-elevated focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]"
-                    onClick={() => setExpanded((current) => !current)}
+                    onClick={() => setExpanded(!expanded)}
                     style={{
                         background: "none",
                         border: "none",
@@ -407,7 +426,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 </div>
             )}
 
-            {expanded ? (
+            {expanded && renderDetails ? (
                 <ExpandedActivitySegmentItems
                     canRenderFileReference={canRenderFileReference}
                     chatFontFamily={chatFontFamily}

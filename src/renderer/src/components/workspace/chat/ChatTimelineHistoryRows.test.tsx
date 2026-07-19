@@ -15,6 +15,7 @@ import {
 import {
     createTranscriptStreamingIndicatorItem,
     type TranscriptTimelineItem,
+    type TranscriptTimelineVirtualRow,
 } from "./transcriptBlockVirtualization";
 import { createChatPerformanceFixtureById } from "./chatPerformanceFixtures";
 import {
@@ -428,7 +429,11 @@ describe("ChatTimelineHistoryRows", () => {
         let mounts = 0;
         let unmounts = 0;
 
-        function InstrumentedRow({ row }: { readonly row: ChatTimelineRow }) {
+        function InstrumentedRow({
+            row,
+        }: {
+            readonly row: TranscriptTimelineVirtualRow;
+        }) {
             useEffect(() => {
                 mounts += 1;
                 return () => {
@@ -490,7 +495,11 @@ describe("ChatTimelineHistoryRows", () => {
         const unmountsByRowId = new Map<string, number>();
         virtualListMockOptions.renderSecondItem = true;
 
-        function InstrumentedRow({ row }: { readonly row: ChatTimelineRow }) {
+        function InstrumentedRow({
+            row,
+        }: {
+            readonly row: TranscriptTimelineVirtualRow;
+        }) {
             useEffect(() => {
                 return () => {
                     unmountsByRowId.set(

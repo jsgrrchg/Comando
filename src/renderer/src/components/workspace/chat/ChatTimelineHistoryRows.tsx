@@ -18,13 +18,14 @@ import {
     type MeasuredVirtualViewportAnchor,
 } from "@renderer/components/virtual/MeasuredVirtualList";
 
-import type { ChatTimelineRow } from "./chatTimelineModel";
 import { ChatPresentationErrorBoundary } from "./ChatPresentationErrorBoundary";
 import {
     isChatTimelineRowItem,
+    isTranscriptActivitySummaryItem,
     isTranscriptBlockSpacerItem,
     isTranscriptStreamingIndicatorItem,
     type TranscriptTimelineItem,
+    type TranscriptTimelineVirtualRow,
     type TranscriptStreamingIndicatorItem,
 } from "./transcriptBlockVirtualization";
 import {
@@ -55,7 +56,7 @@ interface ChatTimelineHistoryRowsProps {
     readonly liveTailRowId?: string | null;
     readonly renderRow: (params: {
         readonly isCurrentTurnTail: boolean;
-        readonly row: ChatTimelineRow;
+        readonly row: TranscriptTimelineVirtualRow;
     }) => ReactNode;
     readonly renderStreamingIndicator: (
         item: TranscriptStreamingIndicatorItem,
@@ -395,7 +396,7 @@ export const ChatTimelineHistoryRows = memo(
         // identity key simply ignores the width bucket it carries.
         const buildRowContext = useCallback(
             (
-                _row: ChatTimelineRow,
+                _row: TranscriptTimelineVirtualRow,
                 index: number,
             ): ChatTimelineRowMeasurementContext => ({
                 chatFontFamily,
@@ -503,7 +504,9 @@ export const ChatTimelineHistoryRows = memo(
                         >
                             {renderRow({
                                 isCurrentTurnTail:
-                                    item.id === liveTailRowId,
+                                    item.id === liveTailRowId ||
+                                    (isTranscriptActivitySummaryItem(item) &&
+                                        item.groupId === liveTailRowId),
                                 row: item,
                             })}
                         </ChatPresentationErrorBoundary>

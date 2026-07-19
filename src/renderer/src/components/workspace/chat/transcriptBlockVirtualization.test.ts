@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import type { AiTranscriptBlock, AiTranscriptBlockMetadata } from "@shared/ipc";
 import { resolveTranscriptPrefetchBlockId } from "@renderer/app/ai/transcriptWindowNavigation";
+import {
+    getChatTimelineRowIdentityKey,
+    getChatTimelineRowMeasurementKey,
+} from "./chatTimelineVirtualization";
 
 import {
     buildTranscriptTimelineItems,
     buildTranscriptVirtualBlocks,
     captureTranscriptSemanticAnchor,
     createTranscriptStreamingIndicatorItem,
+    flattenTranscriptTimelineItems,
     isChatTimelineRowItem,
     isTranscriptStreamingIndicatorItem,
     resolveAnchorBlockId,
@@ -15,6 +20,10 @@ import {
     resolveUnloadedTranscriptBlockIdsInRange,
     transcriptBlockEstimate,
 } from "./transcriptBlockVirtualization";
+import type {
+    ActivitySegmentItem,
+    ChatTimelineActivitySegmentRow,
+} from "./chatTimelineModel";
 
 const metadata: AiTranscriptBlockMetadata = {
     blockId: "block-1",
@@ -46,6 +55,106 @@ describe("transcriptBlockVirtualization", () => {
         });
         expect(isTranscriptStreamingIndicatorItem(indicator)).toBe(true);
         expect(isChatTimelineRowItem(indicator)).toBe(false);
+    });
+
+    it("flattens expanded activity into individually virtualizable entries", () => {
+        const segment = createActivitySegment(3);
+        const items = flattenTranscriptTimelineItems([segment], {
+            defaultExpanded: false,
+            expansionByGroupId: {
+                [segment.id]: { expanded: true },
+            },
+        });
+
+        expect(items.map((item) => item.kind)).toEqual([
+            "activity-summary",
+            "activity-entry",
+            "activity-entry",
+            "activity-entry",
+        ]);
+        expect(items.map((item) => item.id)).toEqual([
+            `activity-summary:${segment.id}`,
+            "message:thinking-0",
+            "message:thinking-1",
+            "message:thinking-2",
+        ]);
+    });
+
+    it("uses collapsed windows instead of materializing a huge activity group", () => {
+        const segment = createActivitySegment(401);
+        const collapsedWindows = flattenTranscriptTimelineItems([segment], {
+            defaultExpanded: false,
+            expansionByGroupId: {
+                [segment.id]: { expanded: true },
+            },
+        });
+
+        expect(collapsedWindows).toHaveLength(4);
+        expect(
+            collapsedWindows.filter((item) => item.kind === "activity-entry"),
+        ).toHaveLength(0);
+
+        const expandedFirstWindow = flattenTranscriptTimelineItems([segment], {
+            defaultExpanded: false,
+            expansionByGroupId: {
+                [segment.id]: {
+                    expanded: true,
+                    expandedRangeStarts: [0],
+                },
+            },
+        });
+
+        expect(
+            expandedFirstWindow.filter((item) => item.kind === "activity-entry"),
+        ).toHaveLength(200);
+        expect(expandedFirstWindow).toHaveLength(204);
+    });
+
+    it("keeps measurement keys stable when flat wrappers are rebuilt", () => {
+        const segment = createActivitySegment(3);
+        const options = {
+            defaultExpanded: false,
+            expansionByGroupId: {
+                [segment.id]: { expanded: true },
+            },
+        };
+        const first = flattenTranscriptTimelineItems([segment], options);
+        const second = flattenTranscriptTimelineItems([segment], options);
+        const firstEntry = first.find((item) => item.kind === "activity-entry");
+        const secondEntry = second.find(
+            (item) => item.kind === "activity-entry",
+        );
+
+        if (!firstEntry || !secondEntry) {
+            throw new Error("expected flattened activity entries");
+        }
+
+        const context = { width: 720 };
+        expect(
+            getChatTimelineRowMeasurementKey(firstEntry, context),
+        ).toBe(getChatTimelineRowMeasurementKey(secondEntry, context));
+        expect(getChatTimelineRowIdentityKey(firstEntry, context)).toBe(
+            getChatTimelineRowIdentityKey(secondEntry, context),
+        );
+    });
+
+    it("keeps the latest active range materialized after older ranges expand", () => {
+        const segment = createActivitySegment(601);
+        const items = flattenTranscriptTimelineItems([segment], {
+            activeGroupId: segment.id,
+            defaultExpanded: false,
+            expansionByGroupId: {
+                [segment.id]: {
+                    expanded: true,
+                    expandedRangeStarts: [0],
+                },
+            },
+        });
+
+        expect(
+            items.filter((item) => item.kind === "activity-entry"),
+        ).toHaveLength(201);
+        expect(items.at(-1)?.id).toBe("message:thinking-600");
     });
 
     it("keeps block positions stable while resident blocks are loaded and evicted", () => {
@@ -192,3 +301,48 @@ describe("transcriptBlockVirtualization", () => {
         ).toBe("block-1");
     });
 });
+
+function createActivitySegment(
+    count: number,
+): ChatTimelineActivitySegmentRow {
+    const items = Array.from({ length: count }, (_, index) =>
+        ({
+            kind: "thinking",
+            message: {
+                attachments: [],
+                content: `Thought ${index}`,
+                createdAt: metadata.firstCreatedAt,
+                id: `thinking-${index}`,
+                kind: "thinking",
+                status: "completed",
+            },
+        }) satisfies ActivitySegmentItem,
+    );
+
+    return {
+        changeStats: {
+            additions: 0,
+            approximate: false,
+            deletions: 0,
+        },
+        entries: [],
+        id: "activity-segment:thinking:thinking-0",
+        items,
+        kind: "activity-segment",
+        summary: {
+            actionCount: 0,
+            changeCount: 0,
+            changedFileCount: 0,
+            commandCount: 0,
+            failureCount: 0,
+            fileCount: 0,
+            hiddenActivityCount: count,
+            isInProgress: false,
+            latestActivityId: "thinking-0",
+            latestTitle: "Thought",
+            searchCount: 0,
+            startedAt: metadata.firstCreatedAt,
+            updatedAt: metadata.lastCreatedAt,
+        },
+    };
+}

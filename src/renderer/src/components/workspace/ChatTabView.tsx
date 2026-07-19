@@ -81,7 +81,6 @@ import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
     reconcileChatTimelineModelIncrementallyFromTranscript,
     type ChatTimelineModel,
-    type ChatTimelineRow,
 } from "./chat/chatTimelineModel";
 import {
     cacheChatTimeline,
@@ -124,16 +123,26 @@ import {
     serializePromptWithContexts,
 } from "./chat/promptContextReferences";
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
-import { ToolActivitySegment } from "./chat/ToolActivitySegment";
+import {
+    ActivitySegmentItemRow,
+    ToolActivitySegment,
+} from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
 import {
     buildTranscriptTimelineItems,
     captureTranscriptSemanticAnchor,
     createTranscriptStreamingIndicatorItem,
+    flattenTranscriptTimelineItems,
+    getTranscriptTimelineItemAnchorEntryId,
     isChatTimelineRowItem,
+    isTranscriptActivityEntryItem,
+    isTranscriptActivityRangeItem,
+    isTranscriptActivitySummaryItem,
     resolveTranscriptBlockIdsInRange,
     resolveUnloadedTranscriptBlockIdsInRange,
+    type TranscriptActivityGroupExpansionById,
     type TranscriptTimelineItem,
+    type TranscriptTimelineVirtualRow,
 } from "./chat/transcriptBlockVirtualization";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
@@ -1244,30 +1253,98 @@ export const ChatTabView = memo(function ChatTabView({
         tab.sessionId,
         transcript,
     ]);
+    const [activityExpansionBySessionId, setActivityExpansionBySessionId] =
+        useState<Record<string, TranscriptActivityGroupExpansionById>>({});
+    const activityExpansionByGroupId =
+        activityExpansionBySessionId[tab.sessionId] ?? {};
     const transcriptTimelineItems = useMemo(
         () => {
-            const timelineItems = transcriptWindow?.capabilityVersion
+            const sourceItems = transcriptWindow?.capabilityVersion
                 ? buildTranscriptTimelineItems(
                       transcriptWindow.metadata,
                       transcriptWindow.blocksById,
                       timelineModel.historyRows,
                   )
                 : timelineModel.historyRows;
-            return isStreaming
+            const itemsWithStreamingIndicator = isStreaming
                 ? [
-                      ...timelineItems,
+                      ...sourceItems,
                       createTranscriptStreamingIndicatorItem(elapsed),
                   ]
-                : timelineItems;
+                : sourceItems;
+            return flattenTranscriptTimelineItems(itemsWithStreamingIndicator, {
+                activeGroupId:
+                    timelineModel.liveTailRow?.kind === "activity-segment"
+                        ? timelineModel.liveTailRow.id
+                        : null,
+                defaultExpanded:
+                    aiChatSettings.toolActivityDefaultExpansion === "expanded",
+                expansionByGroupId: activityExpansionByGroupId,
+            });
         },
         [
+            activityExpansionByGroupId,
+            aiChatSettings.toolActivityDefaultExpansion,
             elapsed,
             isStreaming,
             timelineModel.historyRows,
+            timelineModel.liveTailRow,
             transcriptWindow?.blocksById,
             transcriptWindow?.capabilityVersion,
             transcriptWindow?.metadata,
         ],
+    );
+    const setActivityGroupExpanded = useCallback(
+        (groupId: string, expanded: boolean) => {
+            setActivityExpansionBySessionId((current) => ({
+                ...current,
+                [tab.sessionId]: {
+                    ...current[tab.sessionId],
+                    [groupId]: {
+                        ...current[tab.sessionId]?.[groupId],
+                        expanded,
+                    },
+                },
+            }));
+        },
+        [tab.sessionId],
+    );
+    const setActivityRangeExpanded = useCallback(
+        (groupId: string, start: number, expanded: boolean) => {
+            setActivityExpansionBySessionId((current) => {
+                const currentSession = current[tab.sessionId] ?? {};
+                const currentGroup = currentSession[groupId];
+                const expandedRangeStarts = new Set(
+                    currentGroup?.expandedRangeStarts,
+                );
+                const collapsedRangeStarts = new Set(
+                    currentGroup?.collapsedRangeStarts,
+                );
+                if (expanded) {
+                    expandedRangeStarts.add(start);
+                    collapsedRangeStarts.delete(start);
+                } else {
+                    expandedRangeStarts.delete(start);
+                    collapsedRangeStarts.add(start);
+                }
+                return {
+                    ...current,
+                    [tab.sessionId]: {
+                        ...currentSession,
+                        [groupId]: {
+                            ...currentGroup,
+                            collapsedRangeStarts: [
+                                ...collapsedRangeStarts,
+                            ].sort((left, right) => left - right),
+                            expandedRangeStarts: [...expandedRangeStarts].sort(
+                                (left, right) => left - right,
+                            ),
+                        },
+                    },
+                };
+            });
+        },
+        [tab.sessionId],
     );
     /* eslint-enable react-hooks/refs */
     // Commit the reconciled timeline to the ref after render so StrictMode's
@@ -1468,7 +1545,9 @@ export const ChatTabView = memo(function ChatTabView({
                   )
                 : 0;
         semanticAnchorRef.current = captureTranscriptSemanticAnchor({
-            entryId: firstVisibleTimelineRow?.id ?? null,
+            entryId: firstVisibleTimelineRow
+                ? getTranscriptTimelineItemAnchorEntryId(firstVisibleTimelineRow)
+                : null,
             offsetWithinEntry,
         });
         const visibleBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
@@ -2504,6 +2583,8 @@ export const ChatTabView = memo(function ChatTabView({
                     covered={composerExpanded}
                     historyRows={transcriptTimelineItems}
                     liveTailRowId={timelineModel.liveTailRowId}
+                    onSetActivityGroupExpanded={setActivityGroupExpanded}
+                    onSetActivityRangeExpanded={setActivityRangeExpanded}
                     onAddFileReferenceToChat={
                         handleAddResolvedFileReferenceToChat
                     }
@@ -3001,6 +3082,15 @@ type ChatTimelineProps = {
     readonly covered?: boolean;
     readonly historyRows: readonly TranscriptTimelineItem[];
     readonly liveTailRowId: string | null;
+    readonly onSetActivityGroupExpanded: (
+        groupId: string,
+        expanded: boolean,
+    ) => void;
+    readonly onSetActivityRangeExpanded: (
+        groupId: string,
+        start: number,
+        expanded: boolean,
+    ) => void;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -3069,6 +3159,8 @@ const ChatTimeline = memo(function ChatTimeline({
     covered,
     historyRows,
     liveTailRowId,
+    onSetActivityGroupExpanded,
+    onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
     onToolPayloadVisibilityChange,
     onOpenFile,
@@ -3135,6 +3227,12 @@ const ChatTimeline = memo(function ChatTimeline({
                             chatFontSize={chatFontSize}
                             historyRows={historyRows}
                             liveTailRowId={liveTailRowId}
+                            onSetActivityGroupExpanded={
+                                onSetActivityGroupExpanded
+                            }
+                            onSetActivityRangeExpanded={
+                                onSetActivityRangeExpanded
+                            }
                             onAddFileReferenceToChat={
                                 onAddFileReferenceToChat
                             }
@@ -3236,6 +3334,15 @@ type ChatTimelineHistoryProps = {
     readonly chatFontSize?: number;
     readonly historyRows: readonly TranscriptTimelineItem[];
     readonly liveTailRowId: string | null;
+    readonly onSetActivityGroupExpanded: (
+        groupId: string,
+        expanded: boolean,
+    ) => void;
+    readonly onSetActivityRangeExpanded: (
+        groupId: string,
+        start: number,
+        expanded: boolean,
+    ) => void;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -3281,6 +3388,8 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     chatFontSize,
     historyRows,
     liveTailRowId,
+    onSetActivityGroupExpanded,
+    onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
     onToolPayloadVisibilityChange,
     onOpenFile,
@@ -3307,7 +3416,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             row,
         }: {
             readonly isCurrentTurnTail: boolean;
-            readonly row: ChatTimelineRow;
+            readonly row: TranscriptTimelineVirtualRow;
         }) => (
             // The list `key` is owned by each call site (the virtual list keys
             // its row wrapper; the non-virtual path keys via Fragment), so this
@@ -3328,6 +3437,8 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
                 projectId={projectId}
                 resolveFileReference={resolveFileReference}
                 isCurrentTurnTail={isCurrentTurnTail}
+                onSetActivityGroupExpanded={onSetActivityGroupExpanded}
+                onSetActivityRangeExpanded={onSetActivityRangeExpanded}
                 row={row}
                 worktreeId={worktreeId}
             />
@@ -3342,6 +3453,8 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             onOpenImage,
             onOpenResolvedFileReference,
             onOpenSession,
+            onSetActivityGroupExpanded,
+            onSetActivityRangeExpanded,
             onRevealFileReference,
             projectId,
             resolveFileReference,
@@ -3393,6 +3506,15 @@ type ChatTimelineRowViewProps = {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly isCurrentTurnTail?: boolean;
+    readonly onSetActivityGroupExpanded: (
+        groupId: string,
+        expanded: boolean,
+    ) => void;
+    readonly onSetActivityRangeExpanded: (
+        groupId: string,
+        start: number,
+        expanded: boolean,
+    ) => void;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -3419,7 +3541,7 @@ type ChatTimelineRowViewProps = {
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
-    readonly row: ChatTimelineRow;
+    readonly row: TranscriptTimelineVirtualRow;
     readonly worktreeId: string | null;
 };
 
@@ -3428,6 +3550,8 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     chatFontFamily,
     chatFontSize,
     isCurrentTurnTail = false,
+    onSetActivityGroupExpanded,
+    onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
     onToolPayloadVisibilityChange,
     onOpenFile,
@@ -3458,14 +3582,18 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
         );
     }
 
-    if (row.kind === "activity-segment") {
+    if (isTranscriptActivitySummaryItem(row)) {
         return (
             <div className="min-w-0 w-full">
                 <ToolActivitySegment
                     canRenderFileReference={canRenderFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={chatFontSize}
+                    expanded={row.expanded}
                     isCurrentTurnTail={isCurrentTurnTail}
+                    onExpandedChange={(expanded) =>
+                        onSetActivityGroupExpanded(row.groupId, expanded)
+                    }
                     onAddFileReferenceToChat={onAddFileReferenceToChat}
                     onToolPayloadVisibilityChange={
                         onToolPayloadVisibilityChange
@@ -3476,10 +3604,66 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
                     onRevealFileReference={onRevealFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
-                    segment={row}
+                    renderDetails={false}
+                    segment={row.segment}
                     worktreeId={worktreeId}
                 />
             </div>
+        );
+    }
+
+    if (isTranscriptActivityRangeItem(row)) {
+        return (
+            <ActivityRangeToggle
+                end={row.end}
+                expanded={row.expanded}
+                onExpandedChange={(expanded) =>
+                    onSetActivityRangeExpanded(row.groupId, row.start, expanded)
+                }
+                start={row.start}
+            />
+        );
+    }
+
+    if (isTranscriptActivityEntryItem(row)) {
+        return (
+            <ActivitySegmentItemRow
+                canRenderFileReference={canRenderFileReference}
+                chatFontFamily={chatFontFamily}
+                chatFontSize={chatFontSize}
+                flat
+                item={row.item}
+                onAddFileReferenceToChat={onAddFileReferenceToChat}
+                onOpenFile={onOpenFile}
+                onOpenFileReference={onOpenResolvedFileReference}
+                onOpenSession={onOpenSession}
+                onRevealFileReference={onRevealFileReference}
+                onToolPayloadVisibilityChange={onToolPayloadVisibilityChange}
+                projectId={projectId}
+                resolveFileReference={resolveFileReference}
+                worktreeId={worktreeId}
+            />
+        );
+    }
+
+    if (row.kind === "activity-segment") {
+        return (
+            <ToolActivitySegment
+                canRenderFileReference={canRenderFileReference}
+                chatFontFamily={chatFontFamily}
+                chatFontSize={chatFontSize}
+                isCurrentTurnTail={isCurrentTurnTail}
+                onAddFileReferenceToChat={onAddFileReferenceToChat}
+                onOpenFile={onOpenFile}
+                onOpenFileReference={onOpenResolvedFileReference}
+                onOpenSession={onOpenSession}
+                onRevealFileReference={onRevealFileReference}
+                onToolPayloadVisibilityChange={onToolPayloadVisibilityChange}
+                projectId={projectId}
+                resolveFileReference={resolveFileReference}
+                segment={row}
+                worktreeId={worktreeId}
+            />
         );
     }
 
@@ -3504,6 +3688,31 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
 });
 
 ChatTimelineRowView.displayName = "ChatTimelineRowView";
+
+function ActivityRangeToggle({
+    end,
+    expanded,
+    onExpandedChange,
+    start,
+}: {
+    readonly end: number;
+    readonly expanded: boolean;
+    readonly onExpandedChange: (expanded: boolean) => void;
+    readonly start: number;
+}) {
+    const label = `${expanded ? "Hide" : "Show"} actions ${start + 1}–${end}`;
+
+    return (
+        <button
+            aria-expanded={expanded}
+            className="app-no-drag ml-10 rounded px-2 py-1 text-left text-[11px] text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+            onClick={() => onExpandedChange(!expanded)}
+            type="button"
+        >
+            {label}
+        </button>
+    );
+}
 
 function UserInputRequestCard({
     onRespond,

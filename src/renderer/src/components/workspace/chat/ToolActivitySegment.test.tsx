@@ -208,6 +208,23 @@ function renderInteractive(segment: ChatTimelineActivitySegmentRow) {
 }
 
 describe("ToolActivitySegment", () => {
+    it("acts as a summary-only row when details belong to the virtual timeline", () => {
+        const onExpandedChange = vi.fn();
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivitySegment, {
+                ...DEFAULT_PROPS,
+                expanded: true,
+                onExpandedChange,
+                renderDetails: false,
+                segment: createThinkingSegment(),
+            }),
+        );
+
+        expect(markup).toContain('aria-expanded="true"');
+        expect(markup).not.toContain("data-thinking-message-id");
+        expect(markup).not.toContain("aria-controls");
+    });
+
     it("renders thinking-only work as an expandable activity rail", () => {
         const container = renderInteractive(createThinkingSegment());
         expect(container.textContent).toContain("Thought");
