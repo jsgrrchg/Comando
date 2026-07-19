@@ -567,11 +567,10 @@ export function SidebarAgentsPanel({
     const handleOpenSession = useCallback(
         (session: SidebarAgentSessionSummary) => {
             if (isClaudeCodeSidebarSession(session)) {
-                if (
-                    onRequestWorkspaceAction &&
-                    projectId &&
-                    workspaceContextKey
-                ) {
+                if (onRequestWorkspaceAction) {
+                    if (!projectId || !workspaceContextKey) {
+                        return;
+                    }
                     onRequestWorkspaceAction({
                         contextKey: workspaceContextKey,
                         kind: "focus-terminal",
@@ -585,11 +584,10 @@ export function SidebarAgentsPanel({
                 return;
             }
 
-            if (
-                onRequestWorkspaceAction &&
-                projectId &&
-                workspaceContextKey
-            ) {
+            if (onRequestWorkspaceAction) {
+                if (!projectId || !workspaceContextKey) {
+                    return;
+                }
                 onRequestWorkspaceAction({
                     contextKey: workspaceContextKey,
                     kind: "chat-session",
@@ -623,7 +621,10 @@ export function SidebarAgentsPanel({
     );
 
     const handleOpenHistoryTab = useCallback(() => {
-        if (onRequestWorkspaceAction && projectId && workspaceContextKey) {
+        if (onRequestWorkspaceAction) {
+            if (!projectId || !workspaceContextKey) {
+                return;
+            }
             onRequestWorkspaceAction({
                 contextKey: workspaceContextKey,
                 kind: "chat-history",
@@ -657,7 +658,10 @@ export function SidebarAgentsPanel({
 
     const handleCreateNewAgentTab = useCallback(
         (runtimeId: ActiveAiRuntimeId) => {
-            if (onRequestWorkspaceAction && projectId && workspaceContextKey) {
+            if (onRequestWorkspaceAction) {
+                if (!projectId || !workspaceContextKey) {
+                    return;
+                }
                 onRequestWorkspaceAction({
                     contextKey: workspaceContextKey,
                     kind: "new-chat",
@@ -678,7 +682,10 @@ export function SidebarAgentsPanel({
         ],
     );
     const handleOpenClaudeCodeTerminal = useCallback(() => {
-        if (onRequestWorkspaceAction && projectId && workspaceContextKey) {
+        if (onRequestWorkspaceAction) {
+            if (!projectId || !workspaceContextKey) {
+                return;
+            }
             onRequestWorkspaceAction({
                 contextKey: workspaceContextKey,
                 kind: "new-claude-terminal",

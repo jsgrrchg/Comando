@@ -248,7 +248,10 @@ export function SidebarGitPanel({
     const handleNodeClick = useCallback(
         (node: GitTreeNode) => {
             if (node.kind === "file") {
-                if (onRequestWorkspaceAction && workspaceContextKey) {
+                if (onRequestWorkspaceAction) {
+                    if (!workspaceContextKey) {
+                        return;
+                    }
                     onRequestWorkspaceAction(createSidebarGitSurfaceAction({
                         contextKey: workspaceContextKey,
                         kind: "file",
@@ -293,7 +296,10 @@ export function SidebarGitPanel({
 
     const handleOpenHistory = useCallback(
         () => {
-            if (onRequestWorkspaceAction && workspaceContextKey) {
+            if (onRequestWorkspaceAction) {
+                if (!workspaceContextKey) {
+                    return;
+                }
                 onRequestWorkspaceAction(createSidebarGitSurfaceAction({
                     contextKey: workspaceContextKey,
                     kind: "git-history",
@@ -315,7 +321,10 @@ export function SidebarGitPanel({
 
     const handleReviewChanges = useCallback(
         () => {
-            if (onRequestWorkspaceAction && workspaceContextKey) {
+            if (onRequestWorkspaceAction) {
+                if (!workspaceContextKey) {
+                    return;
+                }
                 onRequestWorkspaceAction(createSidebarGitSurfaceAction({
                     contextKey: workspaceContextKey,
                     kind: "git-worktree-diff",

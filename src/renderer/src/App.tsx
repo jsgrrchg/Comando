@@ -22,7 +22,6 @@ import type {
     SettingsWindowCategory,
     SettingsSnapshot,
     WorkspaceSurfaceActionRequest,
-    WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
 import { isActiveAiRuntimeId } from "@shared/ai-runtimes";
@@ -845,32 +844,6 @@ export function App() {
                         "[workspace-surface] action execution failed",
                         error,
                     );
-                });
-            },
-        );
-    }, []);
-
-    useEffect(() => {
-        if (!isWorkspaceSurfaceRenderer) {
-            return;
-        }
-        return getComandoApi()?.onWorkspaceSurfaceGitHubItemOpenRequested(
-            (input) => {
-                const workspaceState = useWorkspaceStore.getState();
-                if (input.itemKind === "issue") {
-                    void workspaceState.openGitHubIssueTab({
-                        issueNumber: input.itemNumber,
-                        projectId: input.projectId,
-                        ref: input.ref,
-                        worktreeId: input.worktreeId,
-                    });
-                    return;
-                }
-                void workspaceState.openGitHubPullRequestTab({
-                    projectId: input.projectId,
-                    pullRequestNumber: input.itemNumber,
-                    ref: input.ref,
-                    worktreeId: input.worktreeId,
                 });
             },
         );
@@ -2101,10 +2074,12 @@ export function App() {
                             relativePath,
                             worktreeId,
                         ) => {
-                            if (
-                                isWorkspaceHostRenderer &&
-                                workspaceActiveContextKey
-                            ) {
+                            if (isWorkspaceHostRenderer) {
+                                if (!workspaceActiveContextKey) {
+                                    throw new Error(
+                                        "The active workspace surface is unavailable.",
+                                    );
+                                }
                                 await dispatchWorkspaceSurfaceAction({
                                     contextKey: workspaceActiveContextKey,
                                     kind: "file",
@@ -2738,7 +2713,10 @@ export function App() {
                 return;
             }
 
-            if (isWorkspaceHostRenderer && workspaceActiveContextKey) {
+            if (isWorkspaceHostRenderer) {
+                if (!workspaceActiveContextKey) {
+                    return;
+                }
                 requestWorkspaceSurfaceAction({
                     contextKey: workspaceActiveContextKey,
                     files: fileNodes.map((node) => ({
@@ -2909,13 +2887,6 @@ export function App() {
             }
         },
         [createChatTab, lastFocusedRuntimeId, setDraftComposerParts],
-    );
-
-    const handleOpenSidebarGitHubItem = useCallback(
-        (input: WorkspaceSurfaceGitHubItemOpenRequest) => {
-            void getComandoApi()?.openWorkspaceSurfaceGitHubItem(input);
-        },
-        [],
     );
 
     const sidebarFileNodes = useMemo(
@@ -3119,7 +3090,10 @@ export function App() {
             }
 
             clearFileTreeSelection();
-            if (isWorkspaceHostRenderer && workspaceActiveContextKey) {
+            if (isWorkspaceHostRenderer) {
+                if (!workspaceActiveContextKey) {
+                    return;
+                }
                 requestWorkspaceSurfaceAction({
                     contextKey: workspaceActiveContextKey,
                     kind: "file",
@@ -3435,16 +3409,17 @@ export function App() {
                     label: "Open",
                     action: () =>
                         activeProjectId
-                            ? isWorkspaceHostRenderer &&
-                              workspaceActiveContextKey
-                                ? requestWorkspaceSurfaceAction({
-                                      contextKey: workspaceActiveContextKey,
-                                      kind: "file",
-                                      origin: "tree",
-                                      projectId: activeProjectId,
-                                      relativePath: node.path,
-                                      worktreeId: activeWorktreeId ?? null,
-                                  })
+                            ? isWorkspaceHostRenderer
+                                ? workspaceActiveContextKey
+                                    ? requestWorkspaceSurfaceAction({
+                                          contextKey: workspaceActiveContextKey,
+                                          kind: "file",
+                                          origin: "tree",
+                                          projectId: activeProjectId,
+                                          relativePath: node.path,
+                                          worktreeId: activeWorktreeId ?? null,
+                                      })
+                                    : undefined
                                 : void openFileTab(
                                       activeProjectId,
                                       node.path,
@@ -4489,15 +4464,13 @@ export function App() {
                     <SidebarGitHubPanel
                         filter={issuesFilter}
                         kind="issues"
-                        onAddToChat={(request) =>
-                            void handleAddGitHubItemsToChat(request)
+                        onAddToChat={
+                            isWorkspaceHostRenderer
+                                ? undefined
+                                : (request) =>
+                                      void handleAddGitHubItemsToChat(request)
                         }
                         onOpenSettings={openSettingsWindow}
-                        onOpenItem={
-                            isWorkspaceHostRenderer
-                                ? handleOpenSidebarGitHubItem
-                                : undefined
-                        }
                         onRequestWorkspaceAction={
                             isWorkspaceHostRenderer
                                 ? requestWorkspaceSurfaceAction
@@ -4512,15 +4485,13 @@ export function App() {
                     <SidebarGitHubPanel
                         filter={pullRequestsFilter}
                         kind="pull_requests"
-                        onAddToChat={(request) =>
-                            void handleAddGitHubItemsToChat(request)
+                        onAddToChat={
+                            isWorkspaceHostRenderer
+                                ? undefined
+                                : (request) =>
+                                      void handleAddGitHubItemsToChat(request)
                         }
                         onOpenSettings={openSettingsWindow}
-                        onOpenItem={
-                            isWorkspaceHostRenderer
-                                ? handleOpenSidebarGitHubItem
-                                : undefined
-                        }
                         onRequestWorkspaceAction={
                             isWorkspaceHostRenderer
                                 ? requestWorkspaceSurfaceAction

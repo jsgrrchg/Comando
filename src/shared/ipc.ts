@@ -132,7 +132,6 @@ export const IPC_CHANNELS = {
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
     dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
     dispatchWorkspaceSurfaceAction: "workspace:dispatch-surface-action",
-    openWorkspaceSurfaceGitHubItem: "workspace:open-surface-github-item",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
     requestWorkspaceSurfaceContext: "workspace:request-surface-context",
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
@@ -207,8 +206,6 @@ export const IPC_EVENTS = {
     workspaceSurfaceContextRequested: "workspace:surface-context-requested",
     workspaceSurfaceDrag: "workspace:surface-drag",
     workspaceSurfaceActionRequested: "workspace:surface-action-requested",
-    workspaceSurfaceGitHubItemOpenRequested:
-        "workspace:surface-github-item-open-requested",
     workspaceSurfaceGitScopeMenuRequested:
         "workspace:surface-git-scope-menu-requested",
     workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
@@ -2263,14 +2260,6 @@ export type WorkspaceSurfaceActionDeliveryResult =
           readonly reason: WorkspaceSurfaceActionDeliveryFailureReason;
       };
 
-export interface WorkspaceSurfaceGitHubItemOpenRequest {
-    readonly itemKind: "issue" | "pull_request";
-    readonly itemNumber: number;
-    readonly projectId: string | null;
-    readonly ref: GitHubRepositoryRef;
-    readonly worktreeId: string | null;
-}
-
 export interface WorkspaceContextMenuInput {
     readonly canCopyFullPath: boolean;
     readonly x: number;
@@ -3401,9 +3390,6 @@ export interface ComandoApi {
     dispatchWorkspaceSurfaceAction: (
         request: WorkspaceSurfaceActionRequest,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
-    openWorkspaceSurfaceGitHubItem: (
-        input: WorkspaceSurfaceGitHubItemOpenRequest,
-    ) => Promise<void>;
     notifyWorkspaceSurfaceFocused: () => Promise<void>;
     onWorkspaceSurfaceSnapshotRequested: (
         listener: () => WorkspaceNavigationSnapshot,
@@ -3548,9 +3534,6 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceSurfaceActionRequested: (
         listener: (request: WorkspaceSurfaceActionRequest) => void,
-    ) => () => void;
-    onWorkspaceSurfaceGitHubItemOpenRequested: (
-        listener: (input: WorkspaceSurfaceGitHubItemOpenRequest) => void,
     ) => () => void;
     onWorkspaceSurfaceGitScopeMenuRequested: (
         listener: (anchor: { readonly width: number; readonly x: number }) => void,

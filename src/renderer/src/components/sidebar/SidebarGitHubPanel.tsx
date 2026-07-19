@@ -19,7 +19,6 @@ import type {
     GitHubRepositoryRef,
     GitRepositorySnapshot,
     WorkspaceSurfaceActionRequest,
-    WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 
 import {
@@ -233,7 +232,6 @@ export function SidebarGitHubPanel({
     filter,
     kind,
     onAddToChat,
-    onOpenItem,
     onOpenSettings,
     onRequestWorkspaceAction,
     projectId,
@@ -244,9 +242,6 @@ export function SidebarGitHubPanel({
     readonly filter?: string;
     readonly kind: SidebarGitHubPanelKind;
     readonly onAddToChat?: (request: SidebarGitHubAddToChatRequest) => void;
-    readonly onOpenItem?: (
-        request: WorkspaceSurfaceGitHubItemOpenRequest,
-    ) => void;
     readonly onOpenSettings: () => void;
     readonly onRequestWorkspaceAction?: (
         request: WorkspaceSurfaceActionRequest,
@@ -721,18 +716,10 @@ export function SidebarGitHubPanel({
                 return;
             }
 
-            const input = {
-                itemKind: "issue" as const,
-                itemNumber: issueNumber,
-                projectId,
-                ref: repoRef,
-                worktreeId,
-            };
-            if (
-                onRequestWorkspaceAction &&
-                projectId &&
-                workspaceContextKey
-            ) {
+            if (onRequestWorkspaceAction) {
+                if (!projectId || !workspaceContextKey) {
+                    return;
+                }
                 onRequestWorkspaceAction({
                     contextKey: workspaceContextKey,
                     itemKind: "issue",
@@ -744,10 +731,6 @@ export function SidebarGitHubPanel({
                 });
                 return;
             }
-            if (onOpenItem) {
-                onOpenItem(input);
-                return;
-            }
             void openGitHubIssueTab({
                 issueNumber,
                 projectId,
@@ -756,7 +739,6 @@ export function SidebarGitHubPanel({
             });
         },
         [
-            onOpenItem,
             onRequestWorkspaceAction,
             openGitHubIssueTab,
             projectId,
@@ -770,18 +752,10 @@ export function SidebarGitHubPanel({
             if (!repoRef) {
                 return;
             }
-            const input = {
-                itemKind: "pull_request" as const,
-                itemNumber: pullRequestNumber,
-                projectId,
-                ref: repoRef,
-                worktreeId,
-            };
-            if (
-                onRequestWorkspaceAction &&
-                projectId &&
-                workspaceContextKey
-            ) {
+            if (onRequestWorkspaceAction) {
+                if (!projectId || !workspaceContextKey) {
+                    return;
+                }
                 onRequestWorkspaceAction({
                     contextKey: workspaceContextKey,
                     itemKind: "pull_request",
@@ -793,10 +767,6 @@ export function SidebarGitHubPanel({
                 });
                 return;
             }
-            if (onOpenItem) {
-                onOpenItem(input);
-                return;
-            }
             void openGitHubPullRequestTab({
                 projectId,
                 pullRequestNumber,
@@ -805,7 +775,6 @@ export function SidebarGitHubPanel({
             });
         },
         [
-            onOpenItem,
             onRequestWorkspaceAction,
             openGitHubPullRequestTab,
             projectId,
@@ -838,11 +807,10 @@ export function SidebarGitHubPanel({
                 return;
             }
 
-            if (
-                onRequestWorkspaceAction &&
-                projectId &&
-                workspaceContextKey
-            ) {
+            if (onRequestWorkspaceAction) {
+                if (!projectId || !workspaceContextKey) {
+                    return;
+                }
                 const sourceItems =
                     kind === "issues" ? contextIssues : contextPullRequests;
                 onRequestWorkspaceAction(
@@ -1135,7 +1103,10 @@ export function SidebarGitHubPanel({
             worktreeId,
         };
 
-        if (onRequestWorkspaceAction && workspaceContextKey) {
+        if (onRequestWorkspaceAction) {
+            if (!workspaceContextKey) {
+                return;
+            }
             onRequestWorkspaceAction({
                 contextKey: workspaceContextKey,
                 kind: "github-list",

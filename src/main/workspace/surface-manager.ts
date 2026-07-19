@@ -13,7 +13,6 @@ import type {
     WorkspaceSurfaceActionDeliveryResult,
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceDragEvent,
-    WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
 
 import {
@@ -67,7 +66,7 @@ interface WorkspaceSurfaceLifecycleHandlers {
  * Keeps project workspaces alive in isolated WebContents while the host renderer
  * owns the visible title bar and project switcher.
  */
-class WorkspaceSurfaceManager {
+export class WorkspaceSurfaceManager {
     readonly #hostsByWindowId = new Map<string, WorkspaceSurfaceHostRecord>();
     readonly #surfaceIdsByWebContentsId = new Map<number, string>();
     readonly #surfacesById = new Map<string, WorkspaceSurfaceRecord>();
@@ -184,21 +183,6 @@ class WorkspaceSurfaceManager {
 
         surface.webContents.send(
             IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
-        );
-    }
-
-    requestActiveGitHubItemOpen(
-        hostWindowId: string,
-        input: WorkspaceSurfaceGitHubItemOpenRequest,
-    ): void {
-        const surface = this.#getActiveSurface(hostWindowId);
-        if (!surface || surface.webContents.isDestroyed()) {
-            return;
-        }
-
-        surface.webContents.send(
-            IPC_EVENTS.workspaceSurfaceGitHubItemOpenRequested,
-            input,
         );
     }
 
