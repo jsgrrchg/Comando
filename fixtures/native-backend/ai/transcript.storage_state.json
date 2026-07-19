@@ -1,0 +1,8 @@
+{
+  "capabilityVersion": 1,
+  "sessionId": "session_1",
+  "mode": "block-native",
+  "storageVersion": 3,
+  "legacyFallbackAvailable": true,
+  "migrationManifestExists": false
+}

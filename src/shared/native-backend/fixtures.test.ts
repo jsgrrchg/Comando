@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
     NATIVE_COMMANDS,
     NATIVE_EVENTS,
+    getNativeAiTranscriptBlockCapabilityVersion,
     nativeAiCatalogPatchToIpc,
     nativeAiEventToIpc,
     nativeAiRuntimeStatusToIpc,
@@ -24,7 +25,14 @@ import type {
     NativeAiRuntimeStatus,
     NativeAiSessionSnapshot,
     NativeAiSessionTranscriptPage,
+    NativeAiResolvedTranscriptEntry,
+    NativeAiTranscriptBlock,
+    NativeAiTranscriptBlockMetadataOutput,
+    NativeAiTranscriptPayload,
+    NativeAiTranscriptStorageState,
+    NativeAiTranscriptWindow,
 } from "./ai";
+import type { NativeBackendErrorPayload } from "./errors";
 import type {
     NativeGitBranchSummary,
     NativeGitChangeEntry,
@@ -141,6 +149,19 @@ describe("native backend fixtures", () => {
         expect(capabilities.capabilities.domains).toContain("secret");
         expect(capabilities.capabilities.commands).toContain("backend_handshake");
         expect(capabilities.capabilities.events).toContain("ai://message-delta");
+        expect(
+            getNativeAiTranscriptBlockCapabilityVersion(
+                capabilities.capabilities,
+            ),
+        ).toBe(1);
+        expect(
+            getNativeAiTranscriptBlockCapabilityVersion({ features: [] }),
+        ).toBeNull();
+        expect(
+            getNativeAiTranscriptBlockCapabilityVersion({
+                features: ["native-ai-transcript-block-v2"],
+            }),
+        ).toBeNull();
     });
 
     it("accepts AI fixtures and adapts small event payloads", () => {
@@ -501,6 +522,35 @@ describe("native backend fixtures", () => {
             healthy: true,
             nativeSessionCount: 2,
         });
+        expect(
+            fixture<NativeAiTranscriptBlockMetadataOutput>(
+                "ai/transcript.metadata.json",
+            ),
+        ).toMatchObject({ capabilityVersion: 1, transcriptRevision: 3 });
+        expect(
+            fixture<NativeAiTranscriptWindow>("ai/transcript.window.json"),
+        ).toMatchObject({ afterCursor: 1, hasMoreAfter: true });
+        expect(
+            fixture<NativeAiTranscriptBlock>("ai/transcript.block.json"),
+        ).toMatchObject({ blockId: "session_1:0", transcriptRevision: 3 });
+        expect(
+            fixture<NativeAiTranscriptPayload>("ai/transcript.payload.json"),
+        ).toMatchObject({ payloadRef: "payload:message-1" });
+        expect(
+            fixture<NativeAiResolvedTranscriptEntry>(
+                "ai/transcript.resolved.json",
+            ),
+        ).toMatchObject({ blockRevision: 3 });
+        expect(
+            fixture<NativeAiTranscriptStorageState>(
+                "ai/transcript.storage_state.json",
+            ),
+        ).toMatchObject({ mode: "block-native", storageVersion: 3 });
+        expect(
+            fixture<NativeBackendErrorPayload>(
+                "ai/transcript.error.retryable.json",
+            ),
+        ).toMatchObject({ code: "internal_error", retryable: true });
     });
 
     it("adapts native runtime status to current IPC status shape", () => {

@@ -136,7 +136,8 @@ fn reports_capabilities() {
             "native-git-mutations",
             "native-git-network",
             "native-terminal",
-            "native-ai"
+            "native-ai",
+            "native-ai-transcript-block-v1"
         ])
     );
     assert_eq!(

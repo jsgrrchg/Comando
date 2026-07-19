@@ -136,7 +136,11 @@
       "ai_load_transcript_block_metadata",
       "ai_load_transcript_before",
       "ai_load_transcript_after",
+      "ai_load_transcript_around",
       "ai_load_transcript_block",
+      "ai_load_transcript_payload",
+      "ai_resolve_transcript_entry",
+      "ai_get_transcript_storage_state",
       "ai_load_session_snapshot",
       "ai_list_session_runtime_mappings",
       "ai_set_session_pinned",
@@ -232,7 +236,8 @@
       "native-git-mutations",
       "native-git-network",
       "native-terminal",
-      "native-ai"
+      "native-ai",
+      "native-ai-transcript-block-v1"
     ]
   }
 }

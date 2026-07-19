@@ -7,6 +7,7 @@ import { TranscriptWindowStore } from "./transcriptWindowStore";
 function block(blockId: string, count: number): AiTranscriptBlock {
     return {
         blockId,
+        capabilityVersion: 1,
         endSequence: count,
         entries: [],
         entryCount: count,
@@ -17,6 +18,7 @@ function block(blockId: string, count: number): AiTranscriptBlock {
         revision: 1,
         sessionId: "session-1",
         startSequence: 1,
+        transcriptRevision: 1,
     };
 }
 

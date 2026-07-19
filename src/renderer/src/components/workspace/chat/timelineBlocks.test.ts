@@ -16,6 +16,7 @@ const entry: AiTranscriptEntryEnvelope = {
 };
 const block: AiTranscriptBlock = {
     blockId: "block-1",
+    capabilityVersion: 1,
     endSequence: 1,
     entries: [entry],
     entryCount: 1,
@@ -26,6 +27,7 @@ const block: AiTranscriptBlock = {
     revision: 1,
     sessionId: entry.sessionId,
     startSequence: 1,
+    transcriptRevision: 1,
 };
 
 describe("TimelineBlockCache", () => {

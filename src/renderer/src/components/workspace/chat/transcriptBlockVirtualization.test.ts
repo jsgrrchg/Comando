@@ -31,6 +31,7 @@ describe("transcriptBlockVirtualization", () => {
     it("resolves semantic anchors independently from scrollTop", () => {
         const block: AiTranscriptBlock = {
             ...metadata,
+            capabilityVersion: 1,
             entries: [
                 {
                     createdAt: metadata.firstCreatedAt,
@@ -43,6 +44,7 @@ describe("transcriptBlockVirtualization", () => {
                     updatedAt: metadata.lastCreatedAt,
                 },
             ],
+            transcriptRevision: 1,
         };
         const blocks = buildTranscriptVirtualBlocks(
             [metadata],

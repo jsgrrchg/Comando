@@ -30,6 +30,7 @@ import {
 } from "@shared/ipc";
 import {
     nativeProjectTreeInvalidationToIpc,
+    type NativeCapabilitySet,
     type NativeProjectTreeInvalidation,
 } from "@shared/native-backend";
 
@@ -119,6 +120,7 @@ let secretStore: SecretStoreGateway | null = null;
 let settingsService: SettingsGateway | null = null;
 let terminalService: TerminalGateway | null = null;
 let nativeBackendClient: NativeBackendClient | null = null;
+let nativeBackendCapabilities: NativeCapabilitySet | null = null;
 let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
 let isWorkspaceQuitReady = false;
@@ -283,6 +285,7 @@ if (!hasSingleInstanceLock) {
             }
             aiService = new AiService({
                 nativeAi: createNativeAiGateway({
+                    capabilities: nativeBackendCapabilities,
                     nativeClient,
                     onRuntimeStatus: broadcastAiRuntimeStatus,
                     onSessionCatalogPatch: (
@@ -527,6 +530,7 @@ async function shutdownApplication(): Promise<void> {
     gitService = null;
     githubService = null;
     nativeBackendClient = null;
+    nativeBackendCapabilities = null;
     persistenceService = null;
     projectService = null;
     secretStore = null;
@@ -552,6 +556,7 @@ async function shutdownApplication(): Promise<void> {
 }
 
 function createNativeAiGateway(input: {
+    readonly capabilities: NativeCapabilitySet | null;
     readonly nativeClient: NativeBackendClient;
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly onSessionCatalogPatch: (
@@ -567,6 +572,7 @@ function createNativeAiGateway(input: {
 }): NativeAiGateway {
     console.info("[native-backend] Native AI backend enabled.");
     return new NativeAiGateway({
+        capabilities: input.capabilities,
         client: input.nativeClient,
         onDiagnostic: (message) => {
             console.warn(`[native-ai] ${message}`);
@@ -627,11 +633,13 @@ async function startNativeBackendRequired(): Promise<void> {
         const capabilities = parseNativeBackendCapabilitiesOutput(
             await client.request("backend_capabilities"),
         );
+        nativeBackendCapabilities = capabilities.capabilities;
         console.info(
             `[native-backend] Started ${resolution.source} sidecar at ${resolution.binaryPath}. ${summarizeNativeBackendCapabilities(capabilities)}`,
         );
     } catch (error) {
         nativeBackendClient = null;
+        nativeBackendCapabilities = null;
         await client.dispose();
 
         throw new Error(

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::ai::AI_TRANSCRIPT_BLOCK_CAPABILITY_FEATURE;
 use crate::commands::{BACKEND_COMMANDS, all_commands};
 use crate::common::NativeProtocolVersion;
 use crate::events::{BACKEND_EVENTS, all_events};
@@ -99,6 +100,7 @@ pub fn backend_capabilities() -> NativeCapabilitySet {
             "native-git-network".to_string(),
             "native-terminal".to_string(),
             "native-ai".to_string(),
+            AI_TRANSCRIPT_BLOCK_CAPABILITY_FEATURE.to_string(),
         ],
     }
 }

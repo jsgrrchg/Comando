@@ -578,11 +578,99 @@ pub struct NativeAiTranscriptBlockMetadata {
 pub struct NativeAiTranscriptBlock {
     #[serde(flatten)]
     pub metadata: NativeAiTranscriptBlockMetadata,
+    pub capability_version: u32,
+    pub transcript_revision: u64,
     pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
 }
 
 pub const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION: u32 = 1;
+pub const AI_TRANSCRIPT_BLOCK_CAPABILITY_FEATURE: &str = "native-ai-transcript-block-v1";
 pub const AI_TRANSCRIPT_CURSOR_LIMIT_MAX: usize = 1_024;
+pub const AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX: usize = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptBlockMetadataOutput {
+    pub capability_version: u32,
+    pub session_id: SessionId,
+    pub transcript_revision: u64,
+    pub blocks: Vec<NativeAiTranscriptBlockMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptWindow {
+    pub capability_version: u32,
+    pub session_id: SessionId,
+    pub transcript_revision: u64,
+    pub before_cursor: Option<u64>,
+    pub after_cursor: Option<u64>,
+    pub has_more_before: bool,
+    pub has_more_after: bool,
+    pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiResolveTranscriptEntryInput {
+    pub session_id: SessionId,
+    pub entry_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiResolvedTranscriptEntry {
+    pub capability_version: u32,
+    pub session_id: SessionId,
+    pub transcript_revision: u64,
+    pub block_id: String,
+    pub block_revision: u64,
+    pub entry: NativeAiTranscriptEntryEnvelope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiLoadTranscriptPayloadInput {
+    pub session_id: SessionId,
+    pub payload_ref: String,
+    #[serde(default = "default_transcript_payload_limit")]
+    pub max_bytes: usize,
+}
+
+fn default_transcript_payload_limit() -> usize {
+    AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptPayload {
+    pub capability_version: u32,
+    pub session_id: SessionId,
+    pub transcript_revision: u64,
+    pub payload_ref: String,
+    pub content_hash: String,
+    pub byte_length: usize,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeAiTranscriptStorageMode {
+    Legacy,
+    Migrating,
+    BlockNative,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptStorageState {
+    pub capability_version: u32,
+    pub session_id: SessionId,
+    pub mode: NativeAiTranscriptStorageMode,
+    pub storage_version: u32,
+    pub legacy_fallback_available: bool,
+    pub migration_manifest_exists: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

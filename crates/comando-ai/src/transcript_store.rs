@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use comando_types::ai::{
-    AI_TRANSCRIPT_CURSOR_LIMIT_MAX, NativeAiOpenTranscriptEntryRef, NativeAiOpenTranscriptTail,
-    NativeAiTranscriptBlockMetadata, NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind,
-    NativeAiTranscriptEntrySummary, NativeAiTranscriptPayloadWrite,
-    NativeAiTranscriptTerminalStatus,
+    AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, AI_TRANSCRIPT_CURSOR_LIMIT_MAX,
+    AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX, NativeAiOpenTranscriptEntryRef, NativeAiOpenTranscriptTail,
+    NativeAiResolvedTranscriptEntry, NativeAiTranscriptBlockMetadata,
+    NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind, NativeAiTranscriptEntrySummary,
+    NativeAiTranscriptPayloadWrite, NativeAiTranscriptTerminalStatus, NativeAiTranscriptWindow,
 };
 use comando_types::ids::SessionId;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -25,7 +26,6 @@ const TRANSCRIPT_PAYLOADS_DIR: &str = "transcript-payloads";
 pub(crate) const TRANSCRIPT_SCHEMA_VERSION: u32 = 3;
 const TRANSCRIPT_BLOCK_SIZE: usize = 256;
 const INLINE_PAYLOAD_MAX_BYTES: usize = 64 * 1024;
-const TRANSCRIPT_PAYLOAD_MAX_BYTES: usize = 64 * 1024 * 1024;
 const TRANSCRIPT_PAYLOAD_REF_MAX_BYTES: usize = 512;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -297,7 +297,7 @@ impl TranscriptStore {
             .filter_map(|entry| entry.payload_ref.as_deref())
         {
             let payload =
-                self.load_payload(session_id, payload_ref, TRANSCRIPT_PAYLOAD_MAX_BYTES)?;
+                self.load_payload(session_id, payload_ref, AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX)?;
             payloads.push(AiTranscriptPayloadWrite {
                 payload_ref: payload.payload_ref,
                 value: payload.value,
@@ -325,13 +325,13 @@ impl TranscriptStore {
         max_bytes: usize,
     ) -> AiResult<AiTranscriptPayload> {
         validate_payload_ref(payload_ref)?;
-        if max_bytes == 0 || max_bytes > TRANSCRIPT_PAYLOAD_MAX_BYTES {
+        if max_bytes == 0 || max_bytes > AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX {
             return Err(AiError::InvalidInput(
                 "Transcript payload limit is outside the supported range".to_string(),
             ));
         }
         if !self.has_data_source() {
-            return Err(AiError::InvalidInput(
+            return Err(AiError::NotFound(
                 "Transcript payload was not found for this session".to_string(),
             ));
         }
@@ -354,15 +354,13 @@ impl TranscriptStore {
             .optional()
             .map_err(|error| transcript_sql("load transcript payload metadata", error))?
             .ok_or_else(|| {
-                AiError::InvalidInput(
-                    "Transcript payload was not found for this session".to_string(),
-                )
+                AiError::NotFound("Transcript payload was not found for this session".to_string())
             })?;
         let byte_length = usize::try_from(payload.byte_length).map_err(|_| {
             AiError::Internal("Transcript payload has an invalid byte length".to_string())
         })?;
         if byte_length > max_bytes {
-            return Err(AiError::InvalidInput(format!(
+            return Err(AiError::TooLarge(format!(
                 "Transcript payload exceeds the requested {max_bytes} byte limit"
             )));
         }
@@ -540,6 +538,99 @@ impl TranscriptStore {
         Ok(preceding)
     }
 
+    pub(crate) fn describe_window(
+        &self,
+        session_id: &SessionId,
+        entries: Vec<NativeAiTranscriptEntryEnvelope>,
+    ) -> AiResult<NativeAiTranscriptWindow> {
+        if !self.has_data_source() {
+            return Ok(empty_transcript_window(session_id));
+        }
+        let connection = self.open(session_id, false)?;
+        let before_cursor = entries.first().map(|entry| entry.sequence);
+        let after_cursor = entries.last().map(|entry| entry.sequence);
+        let has_more_before = match before_cursor {
+            Some(sequence) => {
+                transcript_sequence_exists(&connection, session_id, "sequence < ?2", sequence)?
+            }
+            None => false,
+        };
+        let has_more_after = match after_cursor {
+            Some(sequence) => {
+                transcript_sequence_exists(&connection, session_id, "sequence > ?2", sequence)?
+            }
+            None => false,
+        };
+        Ok(NativeAiTranscriptWindow {
+            capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
+            session_id: session_id.clone(),
+            transcript_revision: load_transcript_revision(&connection, session_id)?,
+            before_cursor,
+            after_cursor,
+            has_more_before,
+            has_more_after,
+            entries,
+        })
+    }
+
+    pub(crate) fn transcript_revision(&self, session_id: &SessionId) -> AiResult<u64> {
+        if !self.has_data_source() {
+            return Ok(0);
+        }
+        let connection = self.open(session_id, false)?;
+        load_transcript_revision(&connection, session_id)
+    }
+
+    pub(crate) fn resolve_entry(
+        &self,
+        session_id: &SessionId,
+        entry_id: &str,
+    ) -> AiResult<Option<NativeAiResolvedTranscriptEntry>> {
+        if entry_id.trim().is_empty() || entry_id.len() > TRANSCRIPT_PAYLOAD_REF_MAX_BYTES {
+            return Err(AiError::InvalidInput(
+                "Transcript entry ID is outside the supported range".to_string(),
+            ));
+        }
+        if !self.has_data_source() {
+            return Ok(None);
+        }
+        let connection = self.open(session_id, false)?;
+        let entry = query_entries(
+            &connection,
+            session_id,
+            "SELECT sequence, entry_id, kind, created_at, updated_at, summary_json, payload_ref
+             FROM transcript_entries
+             WHERE session_id = ?1 AND entry_id = ?2
+             LIMIT 1",
+            params![session_id.0, entry_id],
+        )?
+        .into_iter()
+        .next();
+        let Some(entry) = entry else {
+            return Ok(None);
+        };
+        let (block_id, block_revision) = connection
+            .query_row(
+                "SELECT entries.block_id, blocks.revision
+                 FROM transcript_entries AS entries
+                 JOIN transcript_blocks AS blocks
+                    ON blocks.session_id = entries.session_id
+                    AND blocks.block_id = entries.block_id
+                 WHERE entries.session_id = ?1 AND entries.entry_id = ?2",
+                params![session_id.0, entry_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .map_err(|error| transcript_sql("resolve transcript entry block", error))?;
+        Ok(Some(NativeAiResolvedTranscriptEntry {
+            capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
+            session_id: session_id.clone(),
+            transcript_revision: load_transcript_revision(&connection, session_id)?,
+            block_id,
+            block_revision: sql_to_u64(block_revision, "block revision")?,
+            entry,
+        }))
+    }
+
     pub(crate) fn load_block_metadata(
         &self,
         session_id: &SessionId,
@@ -590,9 +681,9 @@ impl TranscriptStore {
             .map(|payload| {
                 let bytes = serde_json::to_vec(&payload.value)
                     .map_err(|error| transcript_json("serialize transcript payload", error))?;
-                if bytes.len() > TRANSCRIPT_PAYLOAD_MAX_BYTES {
-                    return Err(AiError::InvalidInput(format!(
-                        "Transcript payload exceeds the {TRANSCRIPT_PAYLOAD_MAX_BYTES} byte limit"
+                if bytes.len() > AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX {
+                    return Err(AiError::TooLarge(format!(
+                        "Transcript payload exceeds the {AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX} byte limit"
                     )));
                 }
                 let content_hash = sha256_hex(&bytes);
@@ -1572,6 +1663,20 @@ fn persist_payloads(
                     ],
                 )
                 .map_err(|error| transcript_sql("update open transcript payload", error))?;
+            transaction
+                .execute(
+                    "UPDATE transcript_blocks
+                     SET revision = revision + 1
+                     WHERE session_id = ?1 AND block_id IN (
+                        SELECT block_id
+                        FROM transcript_entries
+                        WHERE session_id = ?1 AND payload_ref = ?2
+                     )",
+                    params![session_id.0, payload.payload_ref],
+                )
+                .map_err(|error| {
+                    transcript_sql("refresh open transcript payload revision", error)
+                })?;
             if let Some(file_name) = existing_file_name {
                 obsolete_file_names.insert(file_name);
             }
@@ -1734,6 +1839,54 @@ fn load_all_block_metadata(
             .into_metadata(session_id)
     })
     .collect()
+}
+
+fn empty_transcript_window(session_id: &SessionId) -> NativeAiTranscriptWindow {
+    NativeAiTranscriptWindow {
+        capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
+        session_id: session_id.clone(),
+        transcript_revision: 0,
+        before_cursor: None,
+        after_cursor: None,
+        has_more_before: false,
+        has_more_after: false,
+        entries: Vec::new(),
+    }
+}
+
+fn load_transcript_revision(connection: &Connection, session_id: &SessionId) -> AiResult<u64> {
+    let revision = connection
+        .query_row(
+            "SELECT COALESCE(SUM(revision), 0)
+             FROM transcript_blocks
+             WHERE session_id = ?1",
+            params![session_id.0],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| transcript_sql("load transcript revision", error))?;
+    sql_to_u64(revision, "revision")
+}
+
+fn transcript_sequence_exists(
+    connection: &Connection,
+    session_id: &SessionId,
+    predicate: &str,
+    sequence: u64,
+) -> AiResult<bool> {
+    let sql = format!(
+        "SELECT EXISTS (
+            SELECT 1 FROM transcript_entries
+            WHERE session_id = ?1 AND {predicate}
+         )"
+    );
+    connection
+        .query_row(
+            &sql,
+            params![session_id.0, sequence_to_sql(sequence)?],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|exists| exists == 1)
+        .map_err(|error| transcript_sql("inspect transcript cursor boundary", error))
 }
 
 fn load_block_metadata(
@@ -2032,15 +2185,15 @@ fn sql_to_usize(value: i64, label: &str) -> AiResult<usize> {
 }
 
 fn transcript_sql(action: &str, error: rusqlite::Error) -> AiError {
-    AiError::Internal(format!("{action} failed: {error}"))
+    AiError::Storage(format!("{action} failed: {error}"))
 }
 
 fn transcript_json(action: &str, error: serde_json::Error) -> AiError {
-    AiError::Internal(format!("{action} failed: {error}"))
+    AiError::Storage(format!("{action} failed: {error}"))
 }
 
 fn payload_io(action: &str, path: &Path, error: std::io::Error) -> AiError {
-    AiError::Internal(format!("{action} failed for {}: {error}", path.display()))
+    AiError::Storage(format!("{action} failed for {}: {error}", path.display()))
 }
 
 #[cfg(test)]

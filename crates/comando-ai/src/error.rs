@@ -38,6 +38,12 @@ pub enum AiError {
     RuntimeExited { message: String },
     #[error("Invalid AI input: {0}")]
     InvalidInput(String),
+    #[error("AI resource was not found: {0}")]
+    NotFound(String),
+    #[error("AI resource is too large: {0}")]
+    TooLarge(String),
+    #[error("AI storage is temporarily unavailable: {0}")]
+    Storage(String),
     #[error("AI operation is not supported yet: {0}")]
     Unsupported(String),
     #[error("Internal AI error: {0}")]
@@ -63,6 +69,9 @@ impl AiError {
             Self::UserInputNotFound { .. } => NativeErrorCode::AiUserInputNotFound,
             Self::RuntimeExited { .. } => NativeErrorCode::AiRuntimeExited,
             Self::InvalidInput(_) => NativeErrorCode::InvalidArgs,
+            Self::NotFound(_) => NativeErrorCode::NotFound,
+            Self::TooLarge(_) => NativeErrorCode::TooLarge,
+            Self::Storage(_) => NativeErrorCode::InternalError,
             Self::Unsupported(_) => NativeErrorCode::NotSupported,
             Self::Internal(_) => NativeErrorCode::InternalError,
         };
@@ -98,8 +107,13 @@ impl AiError {
             }
             Self::RuntimeExited { .. }
             | Self::InvalidInput(_)
+            | Self::NotFound(_)
+            | Self::TooLarge(_)
             | Self::Unsupported(_)
             | Self::Internal(_) => {}
+            Self::Storage(_) => {
+                native = native.retryable(true);
+            }
         }
 
         native
@@ -119,5 +133,13 @@ mod tests {
 
         assert_eq!(error.code, NativeErrorCode::AiSessionBusy);
         assert!(!error.retryable);
+    }
+
+    #[test]
+    fn marks_transcript_storage_failures_as_retryable() {
+        let error = AiError::Storage("database is busy".to_string()).to_native_error();
+
+        assert_eq!(error.code, NativeErrorCode::InternalError);
+        assert!(error.retryable);
     }
 }

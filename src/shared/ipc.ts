@@ -2638,7 +2638,107 @@ export interface AiTranscriptBlockMetadata {
 }
 
 export interface AiTranscriptBlock extends AiTranscriptBlockMetadata {
+    readonly capabilityVersion: number;
     readonly entries: readonly AiTranscriptEntryEnvelope[];
+    readonly transcriptRevision: number;
+}
+
+export interface AiTranscriptBlockMetadataOutput {
+    readonly blocks: readonly AiTranscriptBlockMetadata[];
+    readonly capabilityVersion: number;
+    readonly sessionId: string;
+    readonly transcriptRevision: number;
+}
+
+export interface AiTranscriptWindow {
+    readonly afterCursor: number | null;
+    readonly beforeCursor: number | null;
+    readonly capabilityVersion: number;
+    readonly entries: readonly AiTranscriptEntryEnvelope[];
+    readonly hasMoreAfter: boolean;
+    readonly hasMoreBefore: boolean;
+    readonly sessionId: string;
+    readonly transcriptRevision: number;
+}
+
+export interface AiResolveTranscriptEntryInput {
+    readonly entryId: string;
+    readonly sessionId: string;
+}
+
+export interface AiResolvedTranscriptEntry {
+    readonly blockId: string;
+    readonly blockRevision: number;
+    readonly capabilityVersion: number;
+    readonly entry: AiTranscriptEntryEnvelope;
+    readonly sessionId: string;
+    readonly transcriptRevision: number;
+}
+
+export interface AiLoadTranscriptPayloadInput {
+    readonly maxBytes?: number;
+    readonly payloadRef: string;
+    readonly sessionId: string;
+}
+
+export interface AiTranscriptPayload {
+    readonly byteLength: number;
+    readonly capabilityVersion: number;
+    readonly contentHash: string;
+    readonly payloadRef: string;
+    readonly sessionId: string;
+    readonly transcriptRevision: number;
+    readonly value: unknown;
+}
+
+export type AiTranscriptStorageMode =
+    | "block-native"
+    | "legacy"
+    | "migrating";
+
+export interface AiTranscriptStorageState {
+    readonly capabilityVersion: number;
+    readonly legacyFallbackAvailable: boolean;
+    readonly migrationManifestExists: boolean;
+    readonly mode: AiTranscriptStorageMode;
+    readonly sessionId: string;
+    readonly storageVersion: number;
+}
+
+export interface AiTranscriptCapability {
+    readonly blockNativeVersion: number | null;
+    readonly legacyFallbackAvailable: boolean;
+}
+
+export interface AiHistoryMigrationInput {
+    readonly limit?: number | null;
+    readonly mode?: string | null;
+    readonly sourceDatabasePath?: string | null;
+}
+
+export interface AiHistoryMigrationError {
+    readonly message: string;
+    readonly sessionId: string | null;
+}
+
+export interface AiHistoryMigrationResult {
+    readonly completedAt: string | null;
+    readonly errors: readonly AiHistoryMigrationError[];
+    readonly failedSessions: number;
+    readonly migratedSessions: number;
+    readonly skippedSessions: number;
+    readonly startedAt: string;
+    readonly updatedAt: string;
+}
+
+export interface AiHistoryStorageHealth {
+    readonly healthy: boolean;
+    readonly latestError: string | null;
+    readonly legacyFallbackAvailable: boolean;
+    readonly migrationManifestExists: boolean;
+    readonly nativeSessionCount: number;
+    readonly orphanedSessionDirs: number;
+    readonly storageVersion: number;
 }
 
 export type AiTranscriptTerminalStatus =
@@ -2699,6 +2799,7 @@ export interface AiTranscriptAroundInput {
 
 export const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION = 1;
 export const AI_TRANSCRIPT_CURSOR_LIMIT_MAX = 1_024;
+export const AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX = 64 * 1024 * 1024;
 
 export function normalizeAiTranscriptLimit(limit: number): number {
     if (!Number.isFinite(limit)) return 1;

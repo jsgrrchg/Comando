@@ -1,0 +1,21 @@
+{
+  "capabilityVersion": 1,
+  "sessionId": "session_1",
+  "transcriptRevision": 3,
+  "blockId": "session_1:0",
+  "blockRevision": 3,
+  "entry": {
+    "id": "message-1",
+    "sessionId": "session_1",
+    "sequence": 1,
+    "kind": "message",
+    "createdAt": "2026-07-18T00:00:00.000Z",
+    "updatedAt": "2026-07-18T00:00:00.000Z",
+    "summary": {
+      "label": "Assistant",
+      "preview": "Hello",
+      "status": "completed"
+    },
+    "payloadRef": "payload:message-1"
+  }
+}

@@ -1,6 +1,9 @@
 import type {
     AiPermissionResponseInput,
     AiHistorySessionSummary,
+    AiHistoryMigrationInput,
+    AiHistoryMigrationResult,
+    AiHistoryStorageHealth,
     AiOpenTranscriptTail,
     AiOpenTranscriptTailCheckpoint,
     AiPromptResult,
@@ -24,8 +27,17 @@ import type {
     AiSessionTranscriptPage,
     AiTranscriptBlock,
     AiTranscriptBlockMetadata,
+    AiTranscriptBlockMetadataOutput,
+    AiTranscriptCapability,
     AiTranscriptCursorInput,
     AiTranscriptEntryEnvelope,
+    AiTranscriptAroundInput,
+    AiTranscriptWindow,
+    AiLoadTranscriptPayloadInput,
+    AiTranscriptPayload,
+    AiResolveTranscriptEntryInput,
+    AiResolvedTranscriptEntry,
+    AiTranscriptStorageState,
     AiSealTranscriptTurnInput,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
@@ -162,9 +174,16 @@ export interface NativeAiGateway {
         input: GetAiSessionTranscriptPageInput,
     ): Promise<AiSessionTranscriptPage | null>;
     loadTranscriptBlock?(sessionId: string, blockId: string): Promise<AiTranscriptBlock | null>;
-    loadTranscriptBlockMetadata?(sessionId: string): Promise<readonly AiTranscriptBlockMetadata[]>;
-    loadTranscriptBefore?(input: AiTranscriptCursorInput): Promise<readonly AiTranscriptEntryEnvelope[]>;
-    loadTranscriptAfter?(input: AiTranscriptCursorInput): Promise<readonly AiTranscriptEntryEnvelope[]>;
+    getHistoryStorageHealth?(): Promise<AiHistoryStorageHealth>;
+    getTranscriptCapability?(): AiTranscriptCapability;
+    getTranscriptStorageState?(sessionId: string): Promise<AiTranscriptStorageState>;
+    loadTranscriptBlockMetadata?(sessionId: string): Promise<AiTranscriptBlockMetadataOutput>;
+    loadTranscriptBefore?(input: AiTranscriptCursorInput): Promise<AiTranscriptWindow>;
+    loadTranscriptAfter?(input: AiTranscriptCursorInput): Promise<AiTranscriptWindow>;
+    loadTranscriptAround?(input: AiTranscriptAroundInput): Promise<AiTranscriptWindow>;
+    loadTranscriptPayload?(input: AiLoadTranscriptPayloadInput): Promise<AiTranscriptPayload>;
+    migrateSessionHistory?(input: AiHistoryMigrationInput): Promise<AiHistoryMigrationResult>;
+    resolveTranscriptEntry?(input: AiResolveTranscriptEntryInput): Promise<AiResolvedTranscriptEntry | null>;
     getRuntimeStatus?(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus>;
     saveRuntimeSettings?(input: NativeAiRuntimeSettingsRpcInput): Promise<AiRuntimeStatus>;
     launchRuntimeAuth?(input: AiRuntimeAuthLaunchInput): Promise<void>;

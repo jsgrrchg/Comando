@@ -30,7 +30,12 @@ describe("extreme chat architecture", () => {
         const allMetadata = Array.from({ length: 391 }, (_, index) => metadata(index));
         const loadBlock = vi.fn((_sessionId: string, blockId: string) => {
             const item = allMetadata.find((candidate) => candidate.blockId === blockId)!;
-            return Promise.resolve({ ...item, entries: [] } satisfies AiTranscriptBlock);
+            return Promise.resolve({
+                ...item,
+                capabilityVersion: 1,
+                entries: [],
+                transcriptRevision: 1,
+            } satisfies AiTranscriptBlock);
         });
         const windowStore = new TranscriptWindowStore({ loadBlock }, BLOCK_SIZE * 3);
         windowStore.setMetadata("session-1", allMetadata);

@@ -2519,6 +2519,7 @@ export class AiService {
         const nativeAi = this.#nativeAi;
         if (
             !nativeAi?.loadTranscriptBlockMetadata ||
+            !nativeAi.getTranscriptCapability?.().blockNativeVersion ||
             this.#loadedTranscriptBlockMetadataSessionIds.has(sessionId) ||
             this.#loadingTranscriptBlockMetadataSessionIds.has(sessionId)
         ) {
@@ -2528,11 +2529,14 @@ export class AiService {
         this.#loadingTranscriptBlockMetadataSessionIds.add(sessionId);
         void nativeAi
             .loadTranscriptBlockMetadata(sessionId)
-            .then((blocks) => {
+            .then((output) => {
                 if (this.#deletedSessionIds.has(sessionId)) {
                     return;
                 }
-                this.#liveTranscriptTails.setStableBlocks(sessionId, blocks);
+                this.#liveTranscriptTails.setStableBlocks(
+                    sessionId,
+                    output.blocks,
+                );
                 this.#loadedTranscriptBlockMetadataSessionIds.add(sessionId);
             })
             .catch((error: unknown) => {
@@ -2552,7 +2556,8 @@ export class AiService {
         if (
             !nativeAi?.checkpointOpenTranscriptTail ||
             !nativeAi.loadOpenTranscriptTail ||
-            !nativeAi.sealTranscriptTurn
+            !nativeAi.sealTranscriptTurn ||
+            !nativeAi.getTranscriptCapability?.().blockNativeVersion
         ) {
             return null;
         }

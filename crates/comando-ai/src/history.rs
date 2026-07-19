@@ -5,13 +5,15 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use comando_types::ai::{
-    AI_TRANSCRIPT_CURSOR_LIMIT_MAX, NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth,
-    NativeAiListSessionHistoryInput, NativeAiLoadSessionTranscriptPageInput,
-    NativeAiOpenTranscriptEntryRef, NativeAiOpenTranscriptTail, NativeAiRuntimeSessionMapping,
+    AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, NativeAiHistorySessionSummary,
+    NativeAiHistoryStorageHealth, NativeAiListSessionHistoryInput,
+    NativeAiLoadSessionTranscriptPageInput, NativeAiOpenTranscriptEntryRef,
+    NativeAiOpenTranscriptTail, NativeAiResolvedTranscriptEntry, NativeAiRuntimeSessionMapping,
     NativeAiSessionSnapshot, NativeAiSessionStatus, NativeAiSessionTranscriptPage,
     NativeAiTranscriptAroundInput, NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadata,
-    NativeAiTranscriptCursorInput, NativeAiTranscriptEntryEnvelope,
-    NativeAiTranscriptTerminalStatus,
+    NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptCursorInput,
+    NativeAiTranscriptEntryEnvelope, NativeAiTranscriptPayload, NativeAiTranscriptStorageMode,
+    NativeAiTranscriptStorageState, NativeAiTranscriptTerminalStatus, NativeAiTranscriptWindow,
 };
 use comando_types::ids::{ProjectId, RuntimeId, RuntimeSessionId, SessionId, WorktreeId};
 use rusqlite::{Connection, OptionalExtension};
@@ -598,15 +600,27 @@ impl AiHistoryStore {
             .load_block_metadata(session_id)
     }
 
+    pub fn load_transcript_block_metadata_output(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<NativeAiTranscriptBlockMetadataOutput> {
+        let transcript_store = self.transcript_store(session_id);
+        Ok(NativeAiTranscriptBlockMetadataOutput {
+            capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
+            session_id: session_id.clone(),
+            transcript_revision: transcript_store.transcript_revision(session_id)?,
+            blocks: transcript_store.load_block_metadata(session_id)?,
+        })
+    }
+
     pub fn load_transcript_before(
         &self,
         input: NativeAiTranscriptCursorInput,
     ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        let limit = input.limit.clamp(1, AI_TRANSCRIPT_CURSOR_LIMIT_MAX);
         self.transcript_store(&input.session_id).load_before(
             &input.session_id,
             input.sequence,
-            limit,
+            input.limit,
         )
     }
 
@@ -614,11 +628,10 @@ impl AiHistoryStore {
         &self,
         input: NativeAiTranscriptCursorInput,
     ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        let limit = input.limit.clamp(1, AI_TRANSCRIPT_CURSOR_LIMIT_MAX);
         self.transcript_store(&input.session_id).load_after(
             &input.session_id,
             input.sequence,
-            limit,
+            input.limit,
         )
     }
 
@@ -626,20 +639,21 @@ impl AiHistoryStore {
         &self,
         input: NativeAiTranscriptAroundInput,
     ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        let before = input
-            .before
-            .min(AI_TRANSCRIPT_CURSOR_LIMIT_MAX.saturating_sub(1));
-        let after = input.after.min(
-            AI_TRANSCRIPT_CURSOR_LIMIT_MAX
-                .saturating_sub(1)
-                .saturating_sub(before),
-        );
         self.transcript_store(&input.session_id).load_around(
             &input.session_id,
             input.sequence,
-            before,
-            after,
+            input.before,
+            input.after,
         )
+    }
+
+    pub fn describe_transcript_window(
+        &self,
+        session_id: &SessionId,
+        entries: Vec<NativeAiTranscriptEntryEnvelope>,
+    ) -> AiResult<NativeAiTranscriptWindow> {
+        self.transcript_store(session_id)
+            .describe_window(session_id, entries)
     }
 
     pub fn load_transcript_block(
@@ -650,10 +664,71 @@ impl AiHistoryStore {
         if !block_id.starts_with(&format!("{}:", session_id.0)) {
             return Ok(None);
         }
-        Ok(self
+        let transcript_store = self.transcript_store(session_id);
+        let block = transcript_store.load_block(session_id, block_id)?;
+        let Some((metadata, entries)) = block else {
+            return Ok(None);
+        };
+        Ok(Some(NativeAiTranscriptBlock {
+            capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
+            transcript_revision: transcript_store.transcript_revision(session_id)?,
+            metadata,
+            entries,
+        }))
+    }
+
+    pub fn resolve_transcript_entry(
+        &self,
+        session_id: &SessionId,
+        entry_id: &str,
+    ) -> AiResult<Option<NativeAiResolvedTranscriptEntry>> {
+        self.transcript_store(session_id)
+            .resolve_entry(session_id, entry_id)
+    }
+
+    pub fn load_native_transcript_payload(
+        &self,
+        session_id: &SessionId,
+        payload_ref: &str,
+        max_bytes: usize,
+    ) -> AiResult<NativeAiTranscriptPayload> {
+        let payload = self.load_transcript_payload(session_id, payload_ref, max_bytes)?;
+        let transcript_revision = self
             .transcript_store(session_id)
-            .load_block(session_id, block_id)?
-            .map(|(metadata, entries)| NativeAiTranscriptBlock { metadata, entries }))
+            .transcript_revision(session_id)?;
+        Ok(NativeAiTranscriptPayload {
+            capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
+            session_id: session_id.clone(),
+            transcript_revision,
+            payload_ref: payload.payload_ref,
+            content_hash: payload.sha256,
+            byte_length: payload.byte_length,
+            value: payload.value,
+        })
+    }
+
+    pub fn transcript_storage_state(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<NativeAiTranscriptStorageState> {
+        let transcript_store = self.transcript_store(session_id);
+        let migration_manifest_exists = self.history_root().join("migrations").exists();
+        let legacy_fallback_available = self.transcript_path(session_id).exists();
+        let mode = if transcript_store.has_data_source() {
+            NativeAiTranscriptStorageMode::BlockNative
+        } else if migration_manifest_exists {
+            NativeAiTranscriptStorageMode::Migrating
+        } else {
+            NativeAiTranscriptStorageMode::Legacy
+        };
+        Ok(NativeAiTranscriptStorageState {
+            capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
+            session_id: session_id.clone(),
+            mode,
+            storage_version: TRANSCRIPT_SCHEMA_VERSION,
+            legacy_fallback_available,
+            migration_manifest_exists,
+        })
     }
 
     pub fn load_session_snapshot(
@@ -3603,6 +3678,136 @@ mod tests {
             .unwrap();
         assert_eq!(second_block.entries.len(), 44);
         assert_eq!(second_block.entries[0].sequence, 257);
+    }
+
+    #[test]
+    fn paged_transcript_capabilities_enforce_limits_and_ownership() {
+        let (_temp, store) = store();
+        let session_id = SessionId("paged_capabilities".to_string());
+        let mut entries = (0..20)
+            .map(|index| {
+                transcript_entry(
+                    &session_id,
+                    format!("message-{index}"),
+                    format!("fixture-{index}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        entries[0].payload_ref = Some("payload:message-0".to_string());
+        store
+            .seal_transcript_turn(
+                &session_id,
+                "turn-1",
+                entries,
+                vec![AiTranscriptPayloadWrite {
+                    payload_ref: "payload:message-0".to_string(),
+                    value: json!({ "content": "full payload" }),
+                }],
+            )
+            .unwrap();
+
+        let metadata_output = store
+            .load_transcript_block_metadata_output(&session_id)
+            .unwrap();
+        assert_eq!(metadata_output.capability_version, 1);
+        assert_eq!(metadata_output.blocks.len(), 1);
+        assert!(metadata_output.transcript_revision > 0);
+
+        let first_entries = store
+            .load_transcript_after(NativeAiTranscriptCursorInput {
+                session_id: session_id.clone(),
+                sequence: None,
+                limit: 5,
+            })
+            .unwrap();
+        let first_window = store
+            .describe_transcript_window(&session_id, first_entries)
+            .unwrap();
+        assert_eq!(first_window.entries.len(), 5);
+        assert_eq!(first_window.before_cursor, Some(1));
+        assert_eq!(first_window.after_cursor, Some(5));
+        assert!(!first_window.has_more_before);
+        assert!(first_window.has_more_after);
+        let retry_entries = store
+            .load_transcript_after(NativeAiTranscriptCursorInput {
+                session_id: session_id.clone(),
+                sequence: None,
+                limit: 5,
+            })
+            .unwrap();
+        let retry_window = store
+            .describe_transcript_window(&session_id, retry_entries)
+            .unwrap();
+        assert_eq!(retry_window, first_window);
+
+        let around_limit_error = store
+            .load_transcript_around(NativeAiTranscriptAroundInput {
+                session_id: session_id.clone(),
+                sequence: 10,
+                before: 512,
+                after: 512,
+            })
+            .unwrap_err();
+        assert!(
+            around_limit_error
+                .to_string()
+                .contains("exceeds the maximum")
+        );
+
+        let resolved = store
+            .resolve_transcript_entry(&session_id, "message-0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.entry.sequence, 1);
+        assert_eq!(resolved.block_id, metadata_output.blocks[0].block_id);
+        assert_eq!(resolved.block_revision, metadata_output.blocks[0].revision);
+
+        let payload = store
+            .load_native_transcript_payload(&session_id, "payload:message-0", 64 * 1024)
+            .unwrap();
+        assert_eq!(payload.session_id, session_id);
+        assert_eq!(payload.value, json!({ "content": "full payload" }));
+        let payload_limit_error = store
+            .load_native_transcript_payload(&session_id, "payload:message-0", 1)
+            .unwrap_err()
+            .to_native_error();
+        assert_eq!(
+            payload_limit_error.code,
+            comando_types::error::NativeErrorCode::TooLarge
+        );
+
+        let foreign_session = SessionId("foreign_session".to_string());
+        assert!(
+            store
+                .load_transcript_block(&session_id, "foreign_session:0")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .resolve_transcript_entry(&foreign_session, "message-0")
+                .unwrap()
+                .is_none()
+        );
+        let foreign_payload_error = store
+            .load_native_transcript_payload(&foreign_session, "payload:message-0", 64 * 1024)
+            .unwrap_err()
+            .to_native_error();
+        assert_eq!(
+            foreign_payload_error.code,
+            comando_types::error::NativeErrorCode::NotFound
+        );
+
+        let state = store.transcript_storage_state(&session_id).unwrap();
+        assert_eq!(state.mode, NativeAiTranscriptStorageMode::BlockNative);
+        assert_eq!(state.storage_version, TRANSCRIPT_SCHEMA_VERSION);
+
+        let legacy_session_id = SessionId("legacy_capability_fallback".to_string());
+        store
+            .create_session(metadata(&legacy_session_id.0))
+            .unwrap();
+        let legacy_state = store.transcript_storage_state(&legacy_session_id).unwrap();
+        assert_eq!(legacy_state.mode, NativeAiTranscriptStorageMode::Legacy);
     }
 
     #[test]
