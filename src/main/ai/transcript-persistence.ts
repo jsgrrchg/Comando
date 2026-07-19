@@ -16,6 +16,10 @@ const RETRY_BASE_DELAY_MS = 250;
 const RETRY_MAX_DELAY_MS = 4_000;
 
 export interface AiTranscriptPersistenceOptions {
+    readonly onSealed?: (
+        sessionId: string,
+        metadata: readonly AiTranscriptBlockMetadata[],
+    ) => void;
     readonly retryBaseDelayMs?: number;
     readonly retryMaxDelayMs?: number;
 }
@@ -244,6 +248,7 @@ export class AiTranscriptPersistenceCoordinator {
                     )
                 ) {
                     queue.sealStatus = null;
+                    this.options.onSealed?.(sessionId, metadata);
                 }
             }
             queue.attempt = 0;

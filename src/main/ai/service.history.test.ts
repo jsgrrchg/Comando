@@ -85,6 +85,49 @@ describe("AiService history", () => {
         ).rejects.toThrowError("The session could not be found.");
     });
 
+    it("keeps a legacy session on its complete snapshot when blocks are available globally", async () => {
+        const snapshot = createSnapshot({
+            messages: [
+                {
+                    attachments: [],
+                    content: "Restore this historical user message.",
+                    createdAt: "2026-04-16T12:00:00.000Z",
+                    id: "user-1",
+                    kind: "user",
+                    status: "completed",
+                },
+            ],
+        });
+        const loadTranscriptBlockMetadata = vi.fn();
+        const nativeAi = createNativeAiGateway({
+            getTranscriptCapability: vi.fn(() => ({
+                blockNativeVersion: 1,
+                legacyFallbackAvailable: true,
+            })),
+            getTranscriptStorageState: vi.fn(() =>
+                Promise.resolve({
+                    capabilityVersion: 1,
+                    legacyFallbackAvailable: true,
+                    migrationManifestExists: false,
+                    mode: "legacy" as const,
+                    sessionId: snapshot.sessionId,
+                    storageVersion: 3,
+                }),
+            ),
+            loadSessionSnapshot: vi.fn(() => Promise.resolve(snapshot)),
+            loadTranscriptBlockMetadata,
+        });
+        const service = createService({ nativeAi });
+
+        await expect(service.getSessionSnapshot(snapshot.sessionId)).resolves.toMatchObject({
+            messages: snapshot.messages,
+        });
+        await expect(
+            service.getTranscriptBlockMetadata(snapshot.sessionId),
+        ).resolves.toBeNull();
+        expect(loadTranscriptBlockMetadata).not.toHaveBeenCalled();
+    });
+
     it("deletes a persisted session when no live runtime session exists", async () => {
         const deleteSession = vi.fn();
         const service = createService({

@@ -1480,15 +1480,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 return;
             }
 
+            const metadata = await api.getAiTranscriptBlockMetadata(sessionId);
+            if (!metadata) return;
+
             set((state) => updateTranscriptWindowState(state, sessionId, {
                 ...state.sessions[sessionId]?.transcriptWindow,
                 capabilityVersion: capability.blockNativeVersion,
                 error: null,
                 isLoading: true,
             }));
-
-            const metadata = await api.getAiTranscriptBlockMetadata(sessionId);
-            if (!metadata) return;
 
             transcriptWindowStore.setMetadata(sessionId, metadata.blocks);
             const visibleBlockIds = metadata.blocks
@@ -1498,6 +1498,20 @@ export const useAiStore = create<AiStore>((set, get) => ({
             await Promise.all(
                 visibleBlockIds.map((blockId) =>
                     get().loadTranscriptWindowBlock(sessionId, blockId),
+                ),
+            );
+            const visibleMessagePayloadRefs = [
+                ...transcriptWindowStore.snapshot(sessionId).blocksById.values(),
+            ].flatMap((block) =>
+                block.entries.flatMap((entry) =>
+                    entry.kind === "message" && entry.payloadRef
+                        ? [entry.payloadRef]
+                        : [],
+                ),
+            );
+            await Promise.all(
+                visibleMessagePayloadRefs.map((payloadRef) =>
+                    get().loadTranscriptPayload(sessionId, payloadRef),
                 ),
             );
             const windowSnapshot = transcriptWindowStore.snapshot(sessionId);

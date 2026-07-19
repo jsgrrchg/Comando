@@ -506,6 +506,10 @@ export class AiService {
     readonly #resolvedReviewVersions = new Map<string, Map<string, number>>();
     readonly #reviewMutationChains = new Map<string, Promise<void>>();
     readonly #nativeSessionIds = new Set<string>();
+    readonly #transcriptStorageModes = new Map<
+        string,
+        "block-native" | "legacy" | "migrating"
+    >();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionEvent: (
         ownerWindowId: string,
@@ -1265,11 +1269,13 @@ export class AiService {
     ): Promise<AiSessionSnapshot | null> {
         const liveSnapshot = this.#liveSnapshots.get(sessionId);
         if (liveSnapshot) {
+            await this.#refreshTranscriptStorageMode(sessionId);
             return this.#toRendererSessionSnapshot(liveSnapshot);
         }
 
         const persistedSnapshot =
             await this.#loadPersistedSessionSnapshot(sessionId);
+        await this.#refreshTranscriptStorageMode(sessionId);
         return persistedSnapshot
             ? this.#toRendererSessionSnapshot(
                   this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot),
@@ -1337,6 +1343,9 @@ export class AiService {
         ) {
             return null;
         }
+        if (!(await this.#refreshTranscriptStorageMode(sessionId))) {
+            return null;
+        }
         return await nativeAi.loadTranscriptBlockMetadata(sessionId);
     }
 
@@ -1351,6 +1360,9 @@ export class AiService {
         ) {
             return null;
         }
+        if (!(await this.#refreshTranscriptStorageMode(sessionId))) {
+            return null;
+        }
         return await nativeAi.loadTranscriptBlock(sessionId, blockId);
     }
 
@@ -1362,6 +1374,9 @@ export class AiService {
             !nativeAi?.getTranscriptCapability?.().blockNativeVersion ||
             !nativeAi.loadTranscriptPayload
         ) {
+            return null;
+        }
+        if (!(await this.#refreshTranscriptStorageMode(input.sessionId))) {
             return null;
         }
         return await nativeAi.loadTranscriptPayload(input);
@@ -1453,6 +1468,7 @@ export class AiService {
                     ownerWindowId,
                 );
             await this.#recoverTranscriptTail(acceptedSnapshot.sessionId);
+            await this.#refreshTranscriptStorageMode(acceptedSnapshot.sessionId);
             void this.#enforceSessionRetention();
             return this.#toRendererSessionSnapshot(
                 reconciledSnapshot ?? acceptedSnapshot,
@@ -2579,12 +2595,18 @@ export class AiService {
         ) {
             return;
         }
+        const loadTranscriptBlockMetadata = (targetSessionId: string) =>
+            nativeAi.loadTranscriptBlockMetadata!(targetSessionId);
 
         this.#loadingTranscriptBlockMetadataSessionIds.add(sessionId);
-        void nativeAi
-            .loadTranscriptBlockMetadata(sessionId)
+        void this.#refreshTranscriptStorageMode(sessionId)
+            .then((isBlockNative) =>
+                isBlockNative
+                    ? loadTranscriptBlockMetadata(sessionId)
+                    : null,
+            )
             .then((output) => {
-                if (this.#deletedSessionIds.has(sessionId)) {
+                if (!output || this.#deletedSessionIds.has(sessionId)) {
                     return;
                 }
                 this.#liveTranscriptTails.setStableBlocks(
@@ -2621,6 +2643,14 @@ export class AiService {
         return new AiTranscriptPersistenceCoordinator(
             this.#liveTranscriptTails,
             { checkpoint, load, seal },
+            undefined,
+            {
+                onSealed: (sessionId) => {
+                    this.#transcriptStorageModes.set(sessionId, "block-native");
+                    this.#loadedTranscriptBlockMetadataSessionIds.delete(sessionId);
+                    this.#scheduleTranscriptBlockMetadataLoad(sessionId);
+                },
+            },
         );
     }
 
@@ -5402,7 +5432,7 @@ export class AiService {
     #toRendererSessionSnapshot(
         snapshot: AiSessionSnapshot,
     ): AiSessionSnapshot {
-        if (!this.#nativeAi?.getTranscriptCapability?.().blockNativeVersion) {
+        if (!this.#usesBlockNativeTranscript(snapshot.sessionId)) {
             return this.#liveTranscriptTails.projectLegacySnapshot(snapshot);
         }
 
@@ -5423,6 +5453,28 @@ export class AiService {
             }
         }
         return { ...snapshot, messages, plan, toolActivity };
+    }
+
+    #usesBlockNativeTranscript(sessionId: string): boolean {
+        return this.#transcriptStorageModes.get(sessionId) === "block-native";
+    }
+
+    async #refreshTranscriptStorageMode(sessionId: string): Promise<boolean> {
+        const nativeAi = this.#nativeAi;
+        if (!nativeAi?.getTranscriptStorageState) {
+            this.#transcriptStorageModes.set(sessionId, "legacy");
+            return false;
+        }
+        try {
+            const state = await nativeAi.getTranscriptStorageState(sessionId);
+            this.#transcriptStorageModes.set(sessionId, state.mode);
+            return state.mode === "block-native";
+        } catch (error) {
+            // A failed mode lookup must preserve the readable legacy snapshot.
+            debugBenignError("ai.service.transcriptStorageState", error);
+            this.#transcriptStorageModes.set(sessionId, "legacy");
+            return false;
+        }
     }
 
     #persistNativeCatalogPatch(
