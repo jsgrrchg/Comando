@@ -4,7 +4,7 @@ import type { AiTranscriptBlock, AiTranscriptBlockMetadata } from "@shared/ipc";
 import { resolveTranscriptPrefetchBlockId } from "@renderer/app/ai/transcriptWindowNavigation";
 
 import {
-    buildTranscriptTimelineHistoryRows,
+    buildTranscriptTimelineItems,
     buildTranscriptVirtualBlocks,
     captureTranscriptSemanticAnchor,
     resolveAnchorBlockId,
@@ -71,7 +71,7 @@ describe("transcriptBlockVirtualization", () => {
             kind: "assistant" as const,
             status: "completed" as const,
         };
-        const loadedRows = buildTranscriptTimelineHistoryRows(
+        const loadedRows = buildTranscriptTimelineItems(
             blockMetadata,
             new Map([["block-1", loadedBlock]]),
             [{ id: "message:message-1", kind: "message", message }],
@@ -101,7 +101,7 @@ describe("transcriptBlockVirtualization", () => {
             resolveUnloadedTranscriptBlockIdsInRange(loadedRows, 0, 3),
         ).toEqual(["block-0", "block-2"]);
 
-        const evictedRows = buildTranscriptTimelineHistoryRows(
+        const evictedRows = buildTranscriptTimelineItems(
             blockMetadata,
             new Map(),
             [],

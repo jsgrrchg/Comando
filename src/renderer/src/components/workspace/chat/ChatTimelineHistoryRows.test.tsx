@@ -12,7 +12,7 @@ import {
     reconcileChatTimelineModel,
     type ChatTimelineRow,
 } from "./chatTimelineModel";
-import type { TranscriptTimelineHistoryRow } from "./transcriptBlockVirtualization";
+import type { TranscriptTimelineItem } from "./transcriptBlockVirtualization";
 import { createChatPerformanceFixtureById } from "./chatPerformanceFixtures";
 import {
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
@@ -164,7 +164,7 @@ function createRows(count: number): ChatTimelineRow[] {
     });
 }
 
-function createLoadedBlockSpacer(): TranscriptTimelineHistoryRow {
+function createLoadedBlockSpacer(): TranscriptTimelineItem {
     return {
         blockId: "block-1",
         estimatedHeight: 1,
@@ -244,7 +244,7 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
 }
 
 function renderHistoryRows(
-    historyRows: readonly TranscriptTimelineHistoryRow[],
+    historyRows: readonly TranscriptTimelineItem[],
     active = true,
 ) {
     return renderToStaticMarkup(
@@ -417,7 +417,7 @@ describe("ChatTimelineHistoryRows", () => {
             return <div data-row-id={row.id}>{row.id}</div>;
         }
 
-        const render = (historyRows: readonly TranscriptTimelineHistoryRow[]) => {
+        const render = (historyRows: readonly TranscriptTimelineItem[]) => {
             root.render(
                 <ChatTimelineHistoryRows
                     historyRows={historyRows}
@@ -480,7 +480,7 @@ describe("ChatTimelineHistoryRows", () => {
             return <div data-row-id={row.id}>{row.id}</div>;
         }
 
-        const render = (historyRows: readonly TranscriptTimelineHistoryRow[]) => {
+        const render = (historyRows: readonly TranscriptTimelineItem[]) => {
             root.render(
                 <ChatTimelineHistoryRows
                     historyRows={historyRows}

@@ -119,12 +119,12 @@ import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
 import { ToolActivitySegment } from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
 import {
-    buildTranscriptTimelineHistoryRows,
+    buildTranscriptTimelineItems,
     captureTranscriptSemanticAnchor,
-    isTranscriptBlockSpacerRow,
+    isTranscriptBlockSpacerItem,
     resolveTranscriptBlockIdsInRange,
     resolveUnloadedTranscriptBlockIdsInRange,
-    type TranscriptTimelineHistoryRow,
+    type TranscriptTimelineItem,
 } from "./chat/transcriptBlockVirtualization";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
@@ -1237,7 +1237,7 @@ export const ChatTabView = memo(function ChatTabView({
     const transcriptHistoryRows = useMemo(
         () =>
             transcriptWindow?.capabilityVersion
-                ? buildTranscriptTimelineHistoryRows(
+                ? buildTranscriptTimelineItems(
                       transcriptWindow.metadata,
                       transcriptWindow.blocksById,
                       timelineModel.historyRows,
@@ -1411,7 +1411,7 @@ export const ChatTabView = memo(function ChatTabView({
     const handleTimelineVirtualRangeChange = useCallback((range: MeasuredVirtualRange) => {
         const firstVisibleTimelineRow = transcriptHistoryRows
             .slice(range.visibleStartIndex, range.visibleEndIndex + 1)
-            .find((row) => !isTranscriptBlockSpacerRow(row));
+            .find((row) => !isTranscriptBlockSpacerItem(row));
         const scrollElement = scrollRef.current;
         const listItemElement = firstVisibleTimelineRow
             ? [...(
@@ -2935,7 +2935,7 @@ type ChatTimelineProps = {
     readonly chatFontSize?: number;
     readonly elapsed: string;
     readonly covered?: boolean;
-    readonly historyRows: readonly TranscriptTimelineHistoryRow[];
+    readonly historyRows: readonly TranscriptTimelineItem[];
     readonly isStreaming: boolean;
     readonly liveTailRow: ChatTimelineRow | null;
     readonly onAddFileReferenceToChat?: (
@@ -3197,7 +3197,7 @@ type ChatTimelineHistoryProps = {
     ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
-    readonly historyRows: readonly TranscriptTimelineHistoryRow[];
+    readonly historyRows: readonly TranscriptTimelineItem[];
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;

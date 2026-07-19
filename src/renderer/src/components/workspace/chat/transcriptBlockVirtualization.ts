@@ -25,7 +25,7 @@ export type TranscriptVirtualBlock =
           readonly metadata: AiTranscriptBlockMetadata;
       };
 
-export interface TranscriptBlockSpacerRow {
+export interface TranscriptBlockSpacerItem {
     readonly blockId: string;
     readonly estimatedHeight: number;
     readonly id: string;
@@ -34,9 +34,12 @@ export interface TranscriptBlockSpacerRow {
     readonly metadata: AiTranscriptBlockMetadata;
 }
 
-export type TranscriptTimelineHistoryRow =
+// This is the presentation boundary between paged transcript data and the
+// virtual list. Future timeline-only items can join it without materializing
+// unloaded transcript blocks.
+export type TranscriptTimelineItem =
     | ChatTimelineRow
-    | TranscriptBlockSpacerRow;
+    | TranscriptBlockSpacerItem;
 
 export function buildTranscriptVirtualBlocks(
     metadata: readonly AiTranscriptBlockMetadata[],
@@ -55,11 +58,11 @@ export function buildTranscriptVirtualBlocks(
     });
 }
 
-export function buildTranscriptTimelineHistoryRows(
+export function buildTranscriptTimelineItems(
     metadata: readonly AiTranscriptBlockMetadata[],
     loaded: ReadonlyMap<string, AiTranscriptBlock>,
     timelineRows: readonly ChatTimelineRow[],
-): readonly TranscriptTimelineHistoryRow[] {
+): readonly TranscriptTimelineItem[] {
     if (metadata.length === 0) {
         return timelineRows;
     }
@@ -88,10 +91,10 @@ export function buildTranscriptTimelineHistoryRows(
         rowsByBlockId.set(blockId, rows);
     }
 
-    const historyRows: TranscriptTimelineHistoryRow[] = [];
+    const timelineItems: TranscriptTimelineItem[] = [];
     for (const item of metadata) {
         const isLoaded = loaded.has(item.blockId);
-        historyRows.push({
+        timelineItems.push({
             blockId: item.blockId,
             estimatedHeight: isLoaded ? 1 : Math.max(1, item.estimatedHeight),
             id: `transcript-block:${item.blockId}`,
@@ -100,44 +103,44 @@ export function buildTranscriptTimelineHistoryRows(
             metadata: item,
         });
         if (isLoaded) {
-            historyRows.push(...(rowsByBlockId.get(item.blockId) ?? []));
+            timelineItems.push(...(rowsByBlockId.get(item.blockId) ?? []));
         }
     }
-    historyRows.push(...unassignedRows);
-    return historyRows;
+    timelineItems.push(...unassignedRows);
+    return timelineItems;
 }
 
-export function isTranscriptBlockSpacerRow(
-    row: TranscriptTimelineHistoryRow,
-): row is TranscriptBlockSpacerRow {
-    return row.kind === "transcript-block-spacer";
+export function isTranscriptBlockSpacerItem(
+    item: TranscriptTimelineItem,
+): item is TranscriptBlockSpacerItem {
+    return item.kind === "transcript-block-spacer";
 }
 
 export function resolveTranscriptBlockIdsInRange(
-    rows: readonly TranscriptTimelineHistoryRow[],
+    items: readonly TranscriptTimelineItem[],
     startIndex: number,
     endIndex: number,
 ): readonly string[] {
-    if (rows.length === 0 || endIndex < startIndex) return [];
-    const normalizedStart = Math.max(0, Math.min(startIndex, rows.length - 1));
+    if (items.length === 0 || endIndex < startIndex) return [];
+    const normalizedStart = Math.max(0, Math.min(startIndex, items.length - 1));
     const normalizedEnd = Math.max(
         normalizedStart,
-        Math.min(endIndex, rows.length - 1),
+        Math.min(endIndex, items.length - 1),
     );
     let currentBlockId: string | null = null;
     for (let index = normalizedStart; index >= 0; index -= 1) {
-        const row = rows[index];
-        if (row && isTranscriptBlockSpacerRow(row)) {
-            currentBlockId = row.blockId;
+        const item = items[index];
+        if (item && isTranscriptBlockSpacerItem(item)) {
+            currentBlockId = item.blockId;
             break;
         }
     }
     const blockIds = new Set<string>();
     for (let index = normalizedStart; index <= normalizedEnd; index += 1) {
-        const row = rows[index];
-        if (!row) continue;
-        if (isTranscriptBlockSpacerRow(row)) {
-            currentBlockId = row.blockId;
+        const item = items[index];
+        if (!item) continue;
+        if (isTranscriptBlockSpacerItem(item)) {
+            currentBlockId = item.blockId;
         }
         if (currentBlockId) blockIds.add(currentBlockId);
     }
@@ -145,21 +148,21 @@ export function resolveTranscriptBlockIdsInRange(
 }
 
 export function resolveUnloadedTranscriptBlockIdsInRange(
-    rows: readonly TranscriptTimelineHistoryRow[],
+    items: readonly TranscriptTimelineItem[],
     startIndex: number,
     endIndex: number,
 ): readonly string[] {
-    if (rows.length === 0 || endIndex < startIndex) return [];
+    if (items.length === 0 || endIndex < startIndex) return [];
     return [
         ...new Set(
-            rows
+            items
                 .slice(
                     Math.max(0, startIndex),
-                    Math.min(rows.length, endIndex + 1),
+                    Math.min(items.length, endIndex + 1),
                 )
-                .filter(isTranscriptBlockSpacerRow)
-                .filter((row) => !row.isLoaded)
-                .map((row) => row.blockId),
+                .filter(isTranscriptBlockSpacerItem)
+                .filter((item) => !item.isLoaded)
+                .map((item) => item.blockId),
         ),
     ];
 }
