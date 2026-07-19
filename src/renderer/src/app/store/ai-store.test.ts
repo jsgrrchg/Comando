@@ -568,6 +568,102 @@ describe("ai-store queue", () => {
         );
     });
 
+    it("keeps sealed history visible while its replacement block is still loading", async () => {
+        const previousPrompt = createMessage({
+            content: "A long prompt that must remain visible during sealing.",
+            id: "previous-prompt",
+            kind: "user",
+            status: "completed",
+        });
+        const previousResponse = createMessage({
+            content: "Previous response",
+            createdAt: "2026-04-14T00:00:01.000Z",
+            id: "previous-response",
+            status: "completed",
+        });
+        const metadata: AiTranscriptBlockMetadata = {
+            blockId: "block-pending",
+            endSequence: 2,
+            entryCount: 2,
+            estimatedHeight: 288,
+            estimatedRowCount: 2,
+            firstCreatedAt: previousPrompt.createdAt,
+            lastCreatedAt: previousResponse.createdAt,
+            revision: 1,
+            sessionId: TAB.sessionId,
+            startSequence: 1,
+        };
+        const pendingBlock = createDeferred<AiTranscriptBlock>();
+        const block: AiTranscriptBlock = {
+            ...metadata,
+            capabilityVersion: 1,
+            entries: [previousPrompt, previousResponse].map((message, index) => ({
+                createdAt: message.createdAt,
+                id: `message:${message.id}`,
+                kind: "message",
+                payloadRef: null,
+                sequence: index + 1,
+                sessionId: TAB.sessionId,
+                summary: {
+                    label: message.kind === "user" ? "User message" : "Assistant message",
+                    preview: message.content,
+                    status: "completed",
+                },
+                updatedAt: message.createdAt,
+            })),
+            transcriptRevision: 1,
+        };
+        const getAiTranscriptBlock = vi.fn(() => pendingBlock.promise);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlock,
+                    getAiTranscriptBlockMetadata: vi.fn().mockResolvedValue({
+                        blocks: [metadata],
+                        capabilityVersion: 1,
+                        sessionId: TAB.sessionId,
+                        transcriptRevision: 1,
+                    }),
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                    getAiTranscriptPayload: vi.fn(),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [previousPrompt, previousResponse],
+                status: "streaming",
+            }),
+        );
+
+        const hydration = useAiStore
+            .getState()
+            .hydrateTranscriptWindow(TAB.sessionId);
+        await vi.waitFor(() => expect(getAiTranscriptBlock).toHaveBeenCalledOnce());
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({ messages: [], status: "idle" }),
+        );
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcript.messages.map((message) => message.id),
+        ).toEqual([previousPrompt.id, previousResponse.id]);
+
+        pendingBlock.resolve(block);
+        await hydration;
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(session?.transcript.messages).toEqual([]);
+        expect(session?.transcriptWindow.blocksById.has(block.blockId)).toBe(true);
+    });
+
     it("keeps a command-only runtime catalog from status updates", () => {
         const availableCommands = [
             {
