@@ -41,6 +41,9 @@ type MeasuredVirtualListMock = (
 const measuredVirtualListMock = vi.hoisted(() =>
     vi.fn<MeasuredVirtualListMock>(),
 );
+const virtualListMockOptions = vi.hoisted(() => ({
+    renderSecondItem: false,
+}));
 
 let rectWidthsByElement = new WeakMap<Element, number>();
 let rectWidthFallback = 0;
@@ -103,7 +106,11 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             });
 
             const indexes =
-                items.length > 1 ? [0, items.length - 1] : [0];
+                virtualListMockOptions.renderSecondItem && items.length > 2
+                    ? [0, 1, items.length - 1]
+                    : items.length > 1
+                      ? [0, items.length - 1]
+                      : [0];
 
             return createElement(
                 "div",
@@ -334,6 +341,7 @@ describe("ChatTimelineHistoryRows", () => {
         rectWidthsByElement = new WeakMap<Element, number>();
         rectWidthFallback = 0;
         measuredVirtualListMock.mockClear();
+        virtualListMockOptions.renderSecondItem = false;
         useShellStore.setState({ isResizingPanel: false });
         vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
             function getBoundingClientRect(this: Element): DOMRect {
@@ -432,6 +440,69 @@ describe("ChatTimelineHistoryRows", () => {
         // block-native. Replacing the direct list with MeasuredVirtualList
         // currently unmounts the visible row, producing the visual blink.
         expect(unmounts).toBe(0);
+
+        act(() => {
+            root.unmount();
+        });
+    });
+
+    it("keeps virtualized history mounted when a new turn starts and streams", () => {
+        const [historyRow] = createRows(1);
+        if (!historyRow) {
+            throw new Error("expected a historical row");
+        }
+        const userRow: ChatTimelineRow = {
+            id: "message:user-next-turn",
+            kind: "message",
+            message: createMessage({
+                content: "next prompt",
+                id: "user-next-turn",
+                kind: "user",
+            }),
+        };
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        const unmountsByRowId = new Map<string, number>();
+        virtualListMockOptions.renderSecondItem = true;
+
+        function InstrumentedRow({ row }: { readonly row: ChatTimelineRow }) {
+            useEffect(() => {
+                return () => {
+                    unmountsByRowId.set(
+                        row.id,
+                        (unmountsByRowId.get(row.id) ?? 0) + 1,
+                    );
+                };
+            }, [row.id]);
+
+            return <div data-row-id={row.id}>{row.id}</div>;
+        }
+
+        const render = (historyRows: readonly TranscriptTimelineHistoryRow[]) => {
+            root.render(
+                <ChatTimelineHistoryRows
+                    historyRows={historyRows}
+                    renderRow={({ row }) => <InstrumentedRow row={row} />}
+                    scrollRef={{ current: scrollContainer }}
+                />,
+            );
+        };
+        const blockNativeHistory = [createLoadedBlockSpacer(), historyRow];
+
+        act(() => {
+            render(blockNativeHistory);
+        });
+
+        // A new user prompt becomes history, while assistant streaming stays in
+        // the separate live tail and must not remount the virtualized history.
+        act(() => {
+            render([...blockNativeHistory, userRow]);
+            render([...blockNativeHistory, userRow]);
+        });
+
+        expect(unmountsByRowId.get(historyRow.id) ?? 0).toBe(0);
 
         act(() => {
             root.unmount();
