@@ -8,8 +8,9 @@ use comando_types::ai::{
     AI_TRANSCRIPT_CURSOR_LIMIT_MAX, NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth,
     NativeAiListSessionHistoryInput, NativeAiLoadSessionTranscriptPageInput,
     NativeAiRuntimeSessionMapping, NativeAiSessionSnapshot, NativeAiSessionStatus,
-    NativeAiSessionTranscriptPage, NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadata,
-    NativeAiTranscriptCursorInput, NativeAiTranscriptEntryEnvelope,
+    NativeAiSessionTranscriptPage, NativeAiTranscriptAroundInput, NativeAiTranscriptBlock,
+    NativeAiTranscriptBlockMetadata, NativeAiTranscriptCursorInput,
+    NativeAiTranscriptEntryEnvelope,
 };
 use comando_types::ids::{ProjectId, RuntimeId, RuntimeSessionId, SessionId, WorktreeId};
 use rusqlite::{Connection, OptionalExtension};
@@ -20,6 +21,7 @@ use uuid::Uuid;
 
 use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
+use crate::transcript_store::TranscriptStore;
 
 pub const HISTORY_FORMAT_VERSION: u32 = 1;
 const AI_DIR: &str = "ai";
@@ -27,7 +29,6 @@ const SESSIONS_DIR: &str = "sessions";
 const SESSION_META_FILE: &str = "session-meta.json";
 const SESSION_STATE_FILE: &str = "session-state.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
-const SESSION_TRANSCRIPT_ENTRIES_FILE: &str = "transcript-entries.json";
 const TRANSCRIPT_BLOCK_SIZE: usize = 256;
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_COMPACT_STATE_FILE: &str = "compact-state.json";
@@ -535,68 +536,60 @@ impl AiHistoryStore {
         entries: Vec<NativeAiTranscriptEntryEnvelope>,
     ) -> AiResult<()> {
         self.ensure_session_dir(session_id)?;
-        let mut stored = self.load_transcript_entries(session_id)?;
-        let mut index_by_id = stored
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| (entry.id.clone(), index))
-            .collect::<BTreeMap<_, _>>();
-        let mut next_sequence = stored.last().map_or(1, |entry| entry.sequence + 1);
-
-        for mut entry in entries {
-            if entry.session_id != *session_id {
-                return Err(AiError::InvalidInput(
-                    "Transcript entry belongs to a different session".to_string(),
-                ));
-            }
-            if let Some(index) = index_by_id.get(&entry.id).copied() {
-                entry.sequence = stored[index].sequence;
-                stored[index] = entry;
-                continue;
-            }
-            entry.sequence = next_sequence;
-            next_sequence += 1;
-            index_by_id.insert(entry.id.clone(), stored.len());
-            stored.push(entry);
-        }
-        atomic_write_json(&self.transcript_entries_path(session_id), &stored)?;
-        Ok(())
+        self.transcript_store(session_id)
+            .append(session_id, entries)
     }
 
     pub fn load_transcript_block_metadata(
         &self,
         session_id: &SessionId,
     ) -> AiResult<Vec<NativeAiTranscriptBlockMetadata>> {
-        let entries = self.load_transcript_entries(session_id)?;
-        Ok(entries
-            .chunks(TRANSCRIPT_BLOCK_SIZE)
-            .enumerate()
-            .filter_map(|(index, entries)| transcript_block_metadata(session_id, index, entries))
-            .collect())
+        self.transcript_store(session_id)
+            .load_block_metadata(session_id, TRANSCRIPT_BLOCK_SIZE)
     }
 
     pub fn load_transcript_before(
         &self,
         input: NativeAiTranscriptCursorInput,
     ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        let entries = self.load_transcript_entries(&input.session_id)?;
-        let end = input.sequence.map_or(entries.len(), |sequence| {
-            entries.partition_point(|entry| entry.sequence < sequence)
-        });
         let limit = input.limit.clamp(1, AI_TRANSCRIPT_CURSOR_LIMIT_MAX);
-        Ok(entries[end.saturating_sub(limit)..end].to_vec())
+        self.transcript_store(&input.session_id).load_before(
+            &input.session_id,
+            input.sequence,
+            limit,
+        )
     }
 
     pub fn load_transcript_after(
         &self,
         input: NativeAiTranscriptCursorInput,
     ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        let entries = self.load_transcript_entries(&input.session_id)?;
-        let start = input.sequence.map_or(0, |sequence| {
-            entries.partition_point(|entry| entry.sequence <= sequence)
-        });
         let limit = input.limit.clamp(1, AI_TRANSCRIPT_CURSOR_LIMIT_MAX);
-        Ok(entries[start..start.saturating_add(limit).min(entries.len())].to_vec())
+        self.transcript_store(&input.session_id).load_after(
+            &input.session_id,
+            input.sequence,
+            limit,
+        )
+    }
+
+    pub fn load_transcript_around(
+        &self,
+        input: NativeAiTranscriptAroundInput,
+    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
+        let before = input
+            .before
+            .min(AI_TRANSCRIPT_CURSOR_LIMIT_MAX.saturating_sub(1));
+        let after = input.after.min(
+            AI_TRANSCRIPT_CURSOR_LIMIT_MAX
+                .saturating_sub(1)
+                .saturating_sub(before),
+        );
+        self.transcript_store(&input.session_id).load_around(
+            &input.session_id,
+            input.sequence,
+            before,
+            after,
+        )
     }
 
     pub fn load_transcript_block(
@@ -604,44 +597,24 @@ impl AiHistoryStore {
         session_id: &SessionId,
         block_id: &str,
     ) -> AiResult<Option<NativeAiTranscriptBlock>> {
-        let entries = self.load_transcript_entries(session_id)?;
         let Some(index) = block_id
             .strip_prefix(&format!("{}:", session_id.0))
             .and_then(|value| value.parse::<usize>().ok())
         else {
             return Ok(None);
         };
-        let start = index.saturating_mul(TRANSCRIPT_BLOCK_SIZE);
-        if start >= entries.len() {
+        let entries = self.transcript_store(session_id).load_block(
+            session_id,
+            index,
+            TRANSCRIPT_BLOCK_SIZE,
+        )?;
+        if entries.is_empty() {
             return Ok(None);
         }
-        let block_entries =
-            entries[start..(start + TRANSCRIPT_BLOCK_SIZE).min(entries.len())].to_vec();
-        let Some(metadata) = transcript_block_metadata(session_id, index, &block_entries) else {
+        let Some(metadata) = transcript_block_metadata(session_id, index, &entries) else {
             return Ok(None);
         };
-        Ok(Some(NativeAiTranscriptBlock {
-            metadata,
-            entries: block_entries,
-        }))
-    }
-
-    fn load_transcript_entries(
-        &self,
-        session_id: &SessionId,
-    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        let path = self.transcript_entries_path(session_id);
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let bytes = fs::read(&path)
-            .map_err(|error| history_io("read AI transcript entries", &path, error))?;
-        serde_json::from_slice(&bytes).map_err(|error| {
-            AiError::Internal(format!(
-                "Invalid AI transcript entries {}: {error}",
-                path.display()
-            ))
-        })
+        Ok(Some(NativeAiTranscriptBlock { metadata, entries }))
     }
 
     pub fn load_session_snapshot(
@@ -1123,9 +1096,8 @@ impl AiHistoryStore {
         self.session_dir(session_id).join(SESSION_TRANSCRIPT_FILE)
     }
 
-    fn transcript_entries_path(&self, session_id: &SessionId) -> PathBuf {
-        self.session_dir(session_id)
-            .join(SESSION_TRANSCRIPT_ENTRIES_FILE)
+    fn transcript_store(&self, session_id: &SessionId) -> TranscriptStore {
+        TranscriptStore::new(&self.session_dir(session_id))
     }
 
     fn index_path(&self, session_id: &SessionId) -> PathBuf {
@@ -2500,6 +2472,27 @@ mod tests {
         })
     }
 
+    fn transcript_entry(
+        session_id: &SessionId,
+        id: impl Into<String>,
+        preview: impl Into<String>,
+    ) -> NativeAiTranscriptEntryEnvelope {
+        NativeAiTranscriptEntryEnvelope {
+            id: id.into(),
+            session_id: session_id.clone(),
+            sequence: 0,
+            kind: comando_types::ai::NativeAiTranscriptEntryKind::Message,
+            created_at: "2026-07-18T00:00:00.000Z".to_string(),
+            updated_at: "2026-07-18T00:00:00.000Z".to_string(),
+            summary: comando_types::ai::NativeAiTranscriptEntrySummary {
+                label: None,
+                preview: Some(preview.into()),
+                status: Some("completed".to_string()),
+            },
+            payload_ref: None,
+        }
+    }
+
     fn legacy_connection() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -3371,23 +3364,18 @@ mod tests {
     fn sequenced_entries_are_idempotent_and_cursor_bounded() {
         let (_temp, store) = store();
         let session_id = SessionId("blocks_1".to_string());
-        let entry = NativeAiTranscriptEntryEnvelope {
-            id: "message-1".to_string(),
-            session_id: session_id.clone(),
-            sequence: 0,
-            kind: comando_types::ai::NativeAiTranscriptEntryKind::Message,
-            created_at: "2026-07-18T00:00:00.000Z".to_string(),
-            updated_at: "2026-07-18T00:00:00.000Z".to_string(),
-            summary: comando_types::ai::NativeAiTranscriptEntrySummary {
-                label: None,
-                preview: Some("fixture".to_string()),
-                status: Some("completed".to_string()),
-            },
-            payload_ref: Some("payload-1".to_string()),
-        };
+        let entry = transcript_entry(&session_id, "message-1", "fixture");
+        let mut updated_entry = transcript_entry(&session_id, "message-1", "updated");
+        updated_entry.sequence = 999;
 
         store
-            .append_transcript_entries(&session_id, vec![entry.clone(), entry])
+            .append_transcript_entries(&session_id, vec![entry.clone(), updated_entry])
+            .unwrap();
+        store
+            .append_transcript_entries(
+                &session_id,
+                vec![transcript_entry(&session_id, "message-2", "second")],
+            )
             .unwrap();
         let loaded = store
             .load_transcript_after(NativeAiTranscriptCursorInput {
@@ -3397,9 +3385,176 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].sequence, 1);
+        assert_eq!(loaded[0].session_id, session_id);
+        assert_eq!(loaded[0].summary.preview.as_deref(), Some("updated"));
+        assert_eq!(loaded[1].sequence, 2);
+
+        let before = store
+            .load_transcript_before(NativeAiTranscriptCursorInput {
+                session_id: session_id.clone(),
+                sequence: Some(2),
+                limit: 10,
+            })
+            .unwrap();
+        assert_eq!(
+            before
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+
+        let around = store
+            .load_transcript_around(NativeAiTranscriptAroundInput {
+                session_id: session_id.clone(),
+                sequence: 2,
+                before: 1,
+                after: 0,
+            })
+            .unwrap();
+        assert_eq!(
+            around
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
-        assert_eq!(metadata[0].entry_count, 1);
+        assert_eq!(metadata[0].entry_count, 2);
+        assert!(
+            store
+                .session_dir(&session_id)
+                .join("transcript-v2.sqlite3")
+                .exists()
+        );
+        assert!(
+            !store
+                .session_dir(&session_id)
+                .join("transcript-entries.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn provisional_transcript_entries_are_imported_once_without_deletion() {
+        let (_temp, store) = store();
+        let session_id = SessionId("provisional_blocks".to_string());
+        store.ensure_session_dir(&session_id).unwrap();
+        let legacy_path = store
+            .session_dir(&session_id)
+            .join("transcript-entries.json");
+        atomic_write_json(
+            &legacy_path,
+            &vec![transcript_entry(&session_id, "legacy-message", "legacy")],
+        )
+        .unwrap();
+
+        let first_load = store
+            .load_transcript_after(NativeAiTranscriptCursorInput {
+                session_id: session_id.clone(),
+                sequence: None,
+                limit: 10,
+            })
+            .unwrap();
+        assert_eq!(first_load.len(), 1);
+        assert_eq!(first_load[0].sequence, 1);
+        assert!(legacy_path.exists());
+
+        store
+            .append_transcript_entries(
+                &session_id,
+                vec![transcript_entry(&session_id, "native-message", "native")],
+            )
+            .unwrap();
+        let second_load = store
+            .load_transcript_after(NativeAiTranscriptCursorInput {
+                session_id: session_id.clone(),
+                sequence: None,
+                limit: 10,
+            })
+            .unwrap();
+        assert_eq!(
+            second_load
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn concurrent_transcript_appends_assign_unique_sequences() {
+        let (_temp, store) = store();
+        let session_id = SessionId("concurrent_blocks".to_string());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles = (0..8)
+            .map(|worker| {
+                let store = store.clone();
+                let session_id = session_id.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for item in 0..20 {
+                        let id = format!("worker-{worker}-item-{item}");
+                        store
+                            .append_transcript_entries(
+                                &session_id,
+                                vec![transcript_entry(&session_id, id.clone(), id)],
+                            )
+                            .unwrap();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let loaded = store
+            .load_transcript_after(NativeAiTranscriptCursorInput {
+                session_id,
+                sequence: None,
+                limit: 1_024,
+            })
+            .unwrap();
+        assert_eq!(loaded.len(), 160);
+        assert_eq!(
+            loaded
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            (1..=160).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn transcript_blocks_use_bounded_sequence_ranges() {
+        let (_temp, store) = store();
+        let session_id = SessionId("bounded_blocks".to_string());
+        let entries = (0..300)
+            .map(|index| {
+                transcript_entry(
+                    &session_id,
+                    format!("message-{index}"),
+                    format!("fixture-{index}"),
+                )
+            })
+            .collect();
+        store
+            .append_transcript_entries(&session_id, entries)
+            .unwrap();
+
+        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(metadata[0].entry_count, 256);
+        assert_eq!(metadata[1].entry_count, 44);
+        let second_block = store
+            .load_transcript_block(&session_id, &metadata[1].block_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(second_block.entries.len(), 44);
+        assert_eq!(second_block.entries[0].sequence, 257);
     }
 }
