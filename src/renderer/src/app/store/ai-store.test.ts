@@ -670,7 +670,7 @@ describe("ai-store queue", () => {
         );
     });
 
-    it("keeps sealed history visible while its replacement block is still loading", async () => {
+    it("keeps restored history stable when a follow-up is queued during block hydration", async () => {
         const previousPrompt = createMessage({
             content: "A long prompt that must remain visible during sealing.",
             id: "previous-prompt",
@@ -716,10 +716,37 @@ describe("ai-store queue", () => {
             transcriptRevision: 1,
         };
         const getAiTranscriptBlock = vi.fn(() => pendingBlock.promise);
+        const enqueueAiPrompt = vi.fn().mockResolvedValue({
+            activeItem: {
+                attachments: [],
+                composerPartsSnapshot: [
+                    { text: "Continue from the restored chat.", type: "text" as const },
+                ],
+                createdAt: "2026-04-14T00:00:02.000Z",
+                error: null,
+                fileContextsSnapshot: [],
+                id: "follow-up-prompt",
+                messageId: "follow-up-prompt",
+                optimisticMessageId: "follow-up-prompt",
+                projectId: TAB.projectId,
+                prompt: "Continue from the restored chat.",
+                runtimeId: TAB.runtimeId,
+                sessionId: TAB.sessionId,
+                status: "sending" as const,
+                title: TAB.title,
+                worktreeId: TAB.worktreeId,
+            },
+            editingItem: null,
+            items: [],
+            paused: false,
+            revision: 1,
+            sessionId: TAB.sessionId,
+        });
         Object.defineProperty(globalThis, "window", {
             configurable: true,
             value: {
                 comando: {
+                    enqueueAiPrompt,
                     getAiTranscriptBlock,
                     getAiTranscriptBlockMetadata: vi.fn().mockResolvedValue({
                         blocks: [metadata],
@@ -748,22 +775,41 @@ describe("ai-store queue", () => {
             .hydrateTranscriptWindow(TAB.sessionId);
         await vi.waitFor(() => expect(getAiTranscriptBlock).toHaveBeenCalledOnce());
 
+        await useAiStore
+            .getState()
+            .sendPrompt(TAB, "Continue from the restored chat.");
+
         useAiStore.getState().applySessionSnapshot(
             createSnapshot({ messages: [], status: "idle" }),
         );
 
+        expect(enqueueAiPrompt).toHaveBeenCalledWith(
+            expect.objectContaining({
+                prompt: "Continue from the restored chat.",
+                sessionId: TAB.sessionId,
+            }),
+        );
         expect(
             useAiStore
                 .getState()
                 .sessions[TAB.sessionId]?.transcript.messages.map((message) => message.id),
-        ).toEqual([previousPrompt.id, previousResponse.id]);
+        ).toEqual([
+            previousPrompt.id,
+            previousResponse.id,
+            "follow-up-prompt",
+        ]);
 
         pendingBlock.resolve(block);
         await hydration;
 
         const session = useAiStore.getState().sessions[TAB.sessionId];
-        expect(session?.transcript.messages).toEqual([]);
+        expect(session?.transcript.messages.map((message) => message.id)).toEqual([
+            "follow-up-prompt",
+        ]);
         expect(session?.transcriptWindow.blocksById.has(block.blockId)).toBe(true);
+        expect(session?.activeQueuedPrompt?.queuedPrompt.id).toBe(
+            "follow-up-prompt",
+        );
     });
 
     it("retries sealed transcript hydration after native migration becomes available", async () => {
