@@ -55,6 +55,25 @@ export const CHAT_INTERACTION_BUDGETS = {
     transcriptBlockEntries: 256,
 } as const;
 
+export interface ChatPerformanceGateMetrics {
+    readonly fullRebuildsDuringStreaming: number;
+    readonly mountedRows: number;
+    readonly residentEntries: number;
+    readonly residentPayloadBytes: number;
+}
+
+export function passesChatPerformanceGate(
+    metrics: ChatPerformanceGateMetrics,
+): boolean {
+    return (
+        metrics.fullRebuildsDuringStreaming <=
+            CHAT_INTERACTION_BUDGETS.maxFullRebuildsDuringStreaming &&
+        metrics.mountedRows <= CHAT_INTERACTION_BUDGETS.maxMountedRows &&
+        metrics.residentEntries <= CHAT_INTERACTION_BUDGETS.transcriptBlockEntries * 3 &&
+        metrics.residentPayloadBytes <= 16 * 1024 * 1024
+    );
+}
+
 export type ChatPerformanceFixtureId =
     (typeof CHAT_PERFORMANCE_FIXTURES)[number]["id"];
 

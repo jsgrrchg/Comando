@@ -6,6 +6,7 @@ import {
     createChatPerformanceFixture,
     createChatPerformanceFixtureById,
     createChatPerformanceWorkspaceFixture,
+    passesChatPerformanceGate,
 } from "./chatPerformanceFixtures";
 
 describe("chatPerformanceFixtures", () => {
@@ -102,5 +103,24 @@ describe("chatPerformanceFixtures", () => {
             maxMountedRows: 80,
             transcriptBlockEntries: 256,
         });
+    });
+
+    it("closes the rollout gate only for bounded production metrics", () => {
+        expect(
+            passesChatPerformanceGate({
+                fullRebuildsDuringStreaming: 0,
+                mountedRows: 80,
+                residentEntries: 256 * 3,
+                residentPayloadBytes: 16 * 1024 * 1024,
+            }),
+        ).toBe(true);
+        expect(
+            passesChatPerformanceGate({
+                fullRebuildsDuringStreaming: 1,
+                mountedRows: 81,
+                residentEntries: 100_000,
+                residentPayloadBytes: 16 * 1024 * 1024 + 1,
+            }),
+        ).toBe(false);
     });
 });
