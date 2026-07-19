@@ -85,6 +85,15 @@ export class AiLiveTranscriptTailStore {
 
     restoreOpenTail(tail: AiOpenTranscriptTail): void {
         const previous = this.#sessions.get(tail.sessionId);
+        // A live turn can emit events while its persisted tail is loading.
+        // Never let an older recovered turn replace a newer in-memory one.
+        if (
+            previous?.turnId !== null &&
+            previous?.turnId !== undefined &&
+            previous.turnId !== tail.turnId
+        ) {
+            return;
+        }
         const payloadByRef = new Map(
             tail.payloads.map((payload) => [payload.payloadRef, payload.value]),
         );
@@ -136,6 +145,31 @@ export class AiLiveTranscriptTailStore {
             turnId: tail.turnId,
             turnStartedAt,
         });
+
+        if (!previous) {
+            return;
+        }
+
+        const restored = this.#sessions.get(tail.sessionId);
+        if (!restored) {
+            return;
+        }
+
+        // Replay entries received after recovery started. #upsertEntry merges
+        // duplicate IDs deterministically and keeps replayed entries pending.
+        for (const entryId of previous.orderedEntryIds) {
+            const entry = previous.entriesById.get(entryId);
+            if (entry) {
+                this.#upsertEntry(restored, entry);
+            }
+        }
+        if (
+            previous.terminalTurnStatus !== null &&
+            restored.terminalTurnStatus !== previous.terminalTurnStatus
+        ) {
+            restored.terminalTurnStatus = previous.terminalTurnStatus;
+            restored.revision += 1;
+        }
     }
 
     synchronizeSnapshot(snapshot: AiSessionSnapshot): void {

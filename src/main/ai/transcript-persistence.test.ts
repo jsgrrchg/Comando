@@ -138,6 +138,39 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         ]);
     });
 
+    it("preserves live entries received while an open tail is recovering", async () => {
+        const store = new AiLiveTranscriptTailStore();
+        const load = deferred<AiOpenTranscriptTail | null>();
+        const loadOpenTail = vi.fn(() => load.promise);
+        const adapter = adapterStub({
+            load: loadOpenTail,
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(store, adapter);
+
+        const recovery = coordinator.recover(SESSION_ID);
+        await vi.waitFor(() => expect(loadOpenTail).toHaveBeenCalledWith(SESSION_ID));
+
+        store.applyEvent(messageStarted("arrived while recovering"));
+        load.resolve(recoveredTail());
+        await recovery;
+
+        const entries = store.getSnapshot(SESSION_ID)?.entries ?? [];
+        expect(entries.map((entry) => entry.envelope.id)).toEqual(
+            expect.arrayContaining([
+                "message:assistant-1",
+                "message:first",
+                "message:second",
+            ]),
+        );
+        expect(
+            entries.find(
+                (entry) => entry.envelope.id === "message:assistant-1",
+            )?.payload,
+        ).toMatchObject({
+            message: { content: "arrived while recovering" },
+        });
+    });
+
     it("checkpoints terminal state before sealing and clears the live tail", async () => {
         const store = liveStore();
         const metadata = sealedMetadata();
