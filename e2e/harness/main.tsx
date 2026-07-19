@@ -1,6 +1,13 @@
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
 
 import type { AiSessionSnapshot } from "@shared/ipc";
 import { ChatTimelineHistoryRows } from "@renderer/components/workspace/chat/ChatTimelineHistoryRows";
@@ -9,8 +16,8 @@ import type { ChatTimelineRow } from "@renderer/components/workspace/chat/chatTi
 import "@renderer/styles.css";
 import "./transcript-harness.css";
 
-const INITIAL_HISTORY_SIZE = 256;
-const HISTORY_ROW_ID = "message:assistant-255";
+const INITIAL_HISTORY_SIZE = 2_000;
+const HISTORY_ROW_ID = "message:assistant-1999";
 
 interface TranscriptHarnessSnapshot {
     readonly historyRowMounts: number;
@@ -20,8 +27,48 @@ interface TranscriptHarnessSnapshot {
     readonly scrollTop: number;
 }
 
+interface TranscriptDiagnosticSample extends TranscriptHarnessSnapshot {
+    readonly frame: number;
+    readonly phase: string;
+}
+
+interface TranscriptVirtualRangeEvent {
+    readonly endIndex: number;
+    readonly frame: number;
+    readonly phase: string;
+    readonly startIndex: number;
+    readonly visibleEndIndex: number;
+    readonly visibleStartIndex: number;
+}
+
+interface TranscriptDiagnosticEvent {
+    readonly frame: number;
+    readonly phase: string;
+}
+
+interface TranscriptScrollWrite extends TranscriptDiagnosticEvent {
+    readonly value: number;
+}
+
+interface TranscriptStreamingDiagnostic {
+    readonly mutations: readonly TranscriptDiagnosticEvent[];
+    readonly resizeEvents: readonly TranscriptDiagnosticEvent[];
+    readonly samples: readonly TranscriptDiagnosticSample[];
+    readonly scrollWrites: readonly TranscriptScrollWrite[];
+    readonly virtualRanges: readonly TranscriptVirtualRangeEvent[];
+}
+
+interface MutableTranscriptStreamingDiagnostic {
+    mutations: TranscriptDiagnosticEvent[];
+    resizeEvents: TranscriptDiagnosticEvent[];
+    samples: TranscriptDiagnosticSample[];
+    scrollWrites: TranscriptScrollWrite[];
+    virtualRanges: TranscriptVirtualRangeEvent[];
+}
+
 interface ComandoTranscriptHarness {
     appendDelta(delta: string): Promise<void>;
+    runStreamingDiagnostic(): Promise<TranscriptStreamingDiagnostic>;
     snapshot(): TranscriptHarnessSnapshot;
     startTurn(): Promise<void>;
 }
@@ -36,6 +83,16 @@ function nextPaint(): Promise<void> {
     return new Promise((resolve) => {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     });
+}
+
+function createEmptyDiagnostic(): MutableTranscriptStreamingDiagnostic {
+    return {
+        mutations: [],
+        resizeEvents: [],
+        samples: [],
+        scrollWrites: [],
+        virtualRanges: [],
+    };
 }
 
 function createMessageRow(
@@ -66,6 +123,11 @@ function createInitialHistory(): readonly ChatTimelineRow[] {
 function TranscriptHarness() {
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const lifecycle = useRef(new Map<string, { mounts: number; unmounts: number }>());
+    const diagnostic = useRef<MutableTranscriptStreamingDiagnostic>(
+        createEmptyDiagnostic(),
+    );
+    const diagnosticFrame = useRef(0);
+    const diagnosticPhase = useRef("idle");
     const [historyRows, setHistoryRows] = useState(createInitialHistory);
     const [streamingText, setStreamingText] = useState("");
 
@@ -83,6 +145,89 @@ function TranscriptHarness() {
         scrollElement.dispatchEvent(new Event("scroll"));
     }, [historyRows.length, streamingText]);
 
+    const snapshot = useCallback((): TranscriptHarnessSnapshot => {
+        const scrollElement = scrollRef.current;
+        const rowLifecycle = lifecycle.current.get(HISTORY_ROW_ID);
+        return {
+            historyRowMounts: rowLifecycle?.mounts ?? 0,
+            historyRowUnmounts: rowLifecycle?.unmounts ?? 0,
+            mountedHistoryRowIds: [
+                ...document.querySelectorAll<HTMLElement>("[data-history-row-id]"),
+            ].map((element) => element.dataset.historyRowId ?? ""),
+            scrollHeight: scrollElement?.scrollHeight ?? 0,
+            scrollTop: scrollElement?.scrollTop ?? 0,
+        };
+    }, []);
+
+    const recordSample = useCallback(
+        (phase: string) => {
+            diagnosticFrame.current += 1;
+            diagnosticPhase.current = phase;
+            diagnostic.current.samples.push({
+                ...snapshot(),
+                frame: diagnosticFrame.current,
+                phase,
+            });
+        },
+        [snapshot],
+    );
+
+    const handleVirtualRangeChange = useCallback(
+        (range: {
+            readonly endIndex: number;
+            readonly startIndex: number;
+            readonly visibleEndIndex: number;
+            readonly visibleStartIndex: number;
+        }) => {
+            diagnostic.current.virtualRanges.push({
+                ...range,
+                frame: diagnosticFrame.current,
+                phase: diagnosticPhase.current,
+            });
+        },
+        [],
+    );
+
+    useEffect(() => {
+        const scrollElement = scrollRef.current;
+        if (!scrollElement) {
+            return;
+        }
+
+        const mutationObserver = new MutationObserver(() => {
+            diagnostic.current.mutations.push({
+                frame: diagnosticFrame.current,
+                phase: diagnosticPhase.current,
+            });
+        });
+        const resizeObserver = new ResizeObserver(() => {
+            diagnostic.current.resizeEvents.push({
+                frame: diagnosticFrame.current,
+                phase: diagnosticPhase.current,
+            });
+        });
+        mutationObserver.observe(scrollElement, { childList: true, subtree: true });
+        resizeObserver.observe(scrollElement);
+        const liveTail = scrollElement.querySelector<HTMLElement>(".live-tail");
+        if (liveTail) {
+            resizeObserver.observe(liveTail);
+        }
+        const handleScroll = () => {
+            diagnostic.current.scrollWrites.push({
+                frame: diagnosticFrame.current,
+                phase: diagnosticPhase.current,
+                value: scrollElement.scrollTop,
+            });
+        };
+        scrollElement.addEventListener("scroll", handleScroll);
+
+        return () => {
+            mutationObserver.disconnect();
+            resizeObserver.disconnect();
+            scrollElement.removeEventListener("scroll", handleScroll);
+        };
+    }, []);
+
     useEffect(() => {
         window.comandoTranscriptHarness = {
             appendDelta: async (delta) => {
@@ -91,18 +236,27 @@ function TranscriptHarness() {
                 });
                 await nextPaint();
             },
-            snapshot: () => {
-                const scrollElement = scrollRef.current;
-                const rowLifecycle = lifecycle.current.get(HISTORY_ROW_ID);
-                return {
-                    historyRowMounts: rowLifecycle?.mounts ?? 0,
-                    historyRowUnmounts: rowLifecycle?.unmounts ?? 0,
-                    mountedHistoryRowIds: [...document.querySelectorAll<HTMLElement>("[data-history-row-id]")]
-                        .map((element) => element.dataset.historyRowId ?? ""),
-                    scrollHeight: scrollElement?.scrollHeight ?? 0,
-                    scrollTop: scrollElement?.scrollTop ?? 0,
-                };
+            runStreamingDiagnostic: async () => {
+                diagnostic.current = createEmptyDiagnostic();
+                diagnosticFrame.current = 0;
+                recordSample("before-turn");
+                diagnosticPhase.current = "turn-started";
+                await window.comandoTranscriptHarness.startTurn();
+                recordSample("turn-started");
+
+                for (const [index, delta] of [
+                    "First streamed chunk. ",
+                    "Second streamed chunk changes the live tail height. ",
+                    "Third streamed chunk adds enough content to trigger another measurement.",
+                ].entries()) {
+                    diagnosticPhase.current = `stream-${index + 1}`;
+                    await window.comandoTranscriptHarness.appendDelta(delta);
+                    recordSample(`stream-${index + 1}`);
+                }
+
+                return diagnostic.current;
             },
+            snapshot,
             startTurn: async () => {
                 flushSync(() => {
                     setHistoryRows((current) => [
@@ -114,7 +268,7 @@ function TranscriptHarness() {
                 await nextPaint();
             },
         };
-    }, []);
+    }, [recordSample, snapshot]);
 
     if (!historyRow) {
         throw new Error("expected the tracked historical row");
@@ -125,6 +279,7 @@ function TranscriptHarness() {
             <div className="transcript-scroll" ref={scrollRef}>
                 <ChatTimelineHistoryRows
                     historyRows={historyRows}
+                    onVirtualRangeChange={handleVirtualRangeChange}
                     renderRow={({ row }) => <TranscriptRow lifecycle={lifecycle.current} row={row} />}
                     scrollRef={scrollRef}
                     sessionId="e2e-transcript"

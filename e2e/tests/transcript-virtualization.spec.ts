@@ -21,22 +21,30 @@ test.beforeEach(async ({ page }) => {
     );
 });
 
-test("virtualized history remains mounted while a new turn streams", async ({ page }) => {
+test("virtualized history remains mounted while a new turn streams", async ({ page }, testInfo) => {
     const before = await snapshotTranscript(page);
-    expect(before.mountedHistoryRowIds).toContain("message:assistant-255");
+    expect(before.mountedHistoryRowIds).toContain("message:assistant-1999");
 
-    await page.evaluate(async () => {
-        await window.comandoTranscriptHarness.startTurn();
-        await window.comandoTranscriptHarness.appendDelta("First streamed chunk. ");
-        await window.comandoTranscriptHarness.appendDelta(
-            "Second streamed chunk that changes the live tail height.",
-        );
+    const diagnostic = await page.evaluate(async () => {
+        return window.comandoTranscriptHarness.runStreamingDiagnostic();
+    });
+    await testInfo.attach("transcript-streaming-diagnostic", {
+        body: JSON.stringify(diagnostic, null, 2),
+        contentType: "application/json",
     });
 
     const after = await snapshotTranscript(page);
     expect(after.historyRowMounts).toBe(before.historyRowMounts);
     expect(after.historyRowUnmounts).toBe(before.historyRowUnmounts);
-    expect(after.mountedHistoryRowIds).toContain("message:assistant-255");
+    expect(after.mountedHistoryRowIds).toContain("message:assistant-1999");
     expect(after.scrollTop).toBeGreaterThanOrEqual(after.scrollHeight - 620);
-    await expect(page.getByTestId("live-tail")).toContainText("Second streamed chunk");
+    expect(diagnostic.samples.map((sample) => sample.phase)).toEqual([
+        "before-turn",
+        "turn-started",
+        "stream-1",
+        "stream-2",
+        "stream-3",
+    ]);
+    expect(diagnostic.virtualRanges.length).toBeGreaterThan(0);
+    await expect(page.getByTestId("live-tail")).toContainText("Third streamed chunk");
 });
