@@ -174,7 +174,7 @@ export class TranscriptWindowStore {
         return count;
     }
 
-    private recordEviction(sessionId: string, _blockId: string): void {
+    private recordEviction(sessionId: string): void {
         this.evictedSessionIds.add(sessionId);
     }
 

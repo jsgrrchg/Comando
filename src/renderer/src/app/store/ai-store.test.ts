@@ -411,7 +411,7 @@ describe("ai-store queue", () => {
             }),
         );
         useAiStore.setState((state) => {
-            const session = state.sessions[TAB.sessionId]!;
+            const session = state.sessions[TAB.sessionId];
             return {
                 sessions: {
                     ...state.sessions,
