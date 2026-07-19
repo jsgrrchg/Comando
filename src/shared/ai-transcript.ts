@@ -46,8 +46,8 @@ export function appendAiTranscriptDelta(
     content: string,
     delta: string,
 ): string {
-    // Runtimes can emit either a complete snapshot or an incremental delta.
-    if (content.length >= existing.length) return content;
+    // Equal-length snapshots can be stale while their accompanying delta is new.
+    if (content.length > existing.length) return content;
     return existing.endsWith(delta) ? existing : `${existing}${delta}`;
 }
 
