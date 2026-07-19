@@ -178,6 +178,7 @@ import {
     type WriteTerminalInput,
     type PersistedWorkspaceSnapshot,
     type WorkspaceNavigationSnapshot,
+    type WorkspaceSurfaceActionRequest,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceGitHubItemOpenRequest,
     type WorkspaceSurfaceContextRequest,
@@ -917,6 +918,19 @@ const comandoApi: ComandoApi = {
             ipcRenderer.removeListener(IPC_EVENTS.workspaceSurfaceDrag, handleEvent);
         };
     },
+    onWorkspaceSurfaceActionRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            request: WorkspaceSurfaceActionRequest,
+        ) => listener(request);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceActionRequested, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceActionRequested,
+                handleEvent,
+            );
+        };
+    },
     onWorkspaceSurfaceGitHubItemOpenRequested: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -1090,6 +1104,11 @@ const comandoApi: ComandoApi = {
         ),
     dispatchWorkspaceSurfaceDrag: (event) =>
         ipcRenderer.invoke(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag, event),
+    dispatchWorkspaceSurfaceAction: (request) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.dispatchWorkspaceSurfaceAction,
+            request,
+        ),
     openWorkspaceSurfaceGitHubItem: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceGitHubItem, input),
     notifyWorkspaceSurfaceFocused: () =>

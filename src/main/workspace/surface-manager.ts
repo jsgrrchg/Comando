@@ -10,6 +10,8 @@ import { IPC_EVENTS } from "@shared/ipc";
 import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
+    WorkspaceSurfaceActionDeliveryResult,
+    WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceDragEvent,
     WorkspaceSurfaceGitHubItemOpenRequest,
 } from "@shared/ipc";
@@ -20,6 +22,7 @@ import {
     loadRendererContents,
 } from "@main/window";
 import { windowRegistry } from "@main/windows/registry";
+import { doesWorkspaceSurfaceActionMatchContext } from "./surface-actions";
 
 interface WorkspaceSurfaceRecord {
     bounds: WorkspaceSurfaceBounds | null;
@@ -197,6 +200,37 @@ class WorkspaceSurfaceManager {
             IPC_EVENTS.workspaceSurfaceGitHubItemOpenRequested,
             input,
         );
+    }
+
+    dispatchActiveSurfaceAction(
+        hostWindowId: string,
+        request: WorkspaceSurfaceActionRequest,
+    ): WorkspaceSurfaceActionDeliveryResult {
+        const host = this.#hostsByWindowId.get(hostWindowId);
+        if (host?.activeContextKey !== request.contextKey) {
+            return { delivered: false, reason: "inactive-context" };
+        }
+
+        const activeContext = host.snapshot.contexts.find(
+            (context) => context.key === host.activeContextKey,
+        );
+        if (
+            !activeContext ||
+            !doesWorkspaceSurfaceActionMatchContext(request, activeContext)
+        ) {
+            return { delivered: false, reason: "invalid-context" };
+        }
+
+        const surface = this.#getActiveSurface(hostWindowId);
+        if (!surface || surface.webContents.isDestroyed()) {
+            return { delivered: false, reason: "missing-surface" };
+        }
+
+        surface.webContents.send(
+            IPC_EVENTS.workspaceSurfaceActionRequested,
+            request,
+        );
+        return { delivered: true };
     }
 
     dispatchActiveSurfaceDrag(

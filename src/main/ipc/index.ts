@@ -162,6 +162,7 @@ import {
     type WorkspaceNavigationSnapshot,
     type WorkspaceContextMenuAction,
     type WorkspaceContextMenuInput,
+    type WorkspaceSurfaceActionRequest,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceGitHubItemOpenRequest,
@@ -227,6 +228,7 @@ import {
 import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
+import { isWorkspaceSurfaceActionRequest } from "@main/workspace/surface-actions";
 
 interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
@@ -361,6 +363,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
+    ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceAction);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitHubItem);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
     ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
@@ -1934,6 +1937,22 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             workspaceSurfaceManager.dispatchActiveSurfaceDrag(
                 context.windowId,
                 payload as WorkspaceSurfaceDragEvent,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.dispatchWorkspaceSurfaceAction,
+        (event, input: WorkspaceSurfaceActionRequest) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (
+                workspaceSurfaceManager.isSurface(event.sender) ||
+                !isWorkspaceSurfaceActionRequest(input)
+            ) {
+                throw new Error("A valid workspace surface action is required.");
+            }
+            return workspaceSurfaceManager.dispatchActiveSurfaceAction(
+                context.windowId,
+                input,
             );
         },
     );

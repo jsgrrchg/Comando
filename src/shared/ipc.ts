@@ -131,6 +131,7 @@ export const IPC_CHANNELS = {
     activateWorkspaceSurface: "workspace:activate-surface",
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
     dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
+    dispatchWorkspaceSurfaceAction: "workspace:dispatch-surface-action",
     openWorkspaceSurfaceGitHubItem: "workspace:open-surface-github-item",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
     requestWorkspaceSurfaceContext: "workspace:request-surface-context",
@@ -205,6 +206,7 @@ export const IPC_EVENTS = {
     workspaceSurfaceFocused: "workspace:surface-focused",
     workspaceSurfaceContextRequested: "workspace:surface-context-requested",
     workspaceSurfaceDrag: "workspace:surface-drag",
+    workspaceSurfaceActionRequested: "workspace:surface-action-requested",
     workspaceSurfaceGitHubItemOpenRequested:
         "workspace:surface-github-item-open-requested",
     workspaceSurfaceGitScopeMenuRequested:
@@ -2177,6 +2179,90 @@ export interface WorkspaceSurfaceContextRequest {
     readonly worktreeId?: string | null;
 }
 
+interface WorkspaceSurfaceActionContext {
+    readonly contextKey: WorkspaceContextKey;
+    readonly projectId: string;
+    readonly worktreeId: string | null;
+}
+
+export interface WorkspaceSurfaceGitHubComposerItem {
+    readonly number: number;
+    readonly title: string;
+    readonly url: string;
+}
+
+export type WorkspaceSurfaceActionRequest = WorkspaceSurfaceActionContext &
+    (
+        | {
+              readonly kind: "file";
+              readonly origin: "git" | "quick-create" | "tree";
+              readonly relativePath: string;
+          }
+        | {
+              readonly kind: "git-history" | "git-worktree-diff";
+          }
+        | {
+              readonly kind: "chat-session";
+              readonly runtimeId: AiRuntimeId;
+              readonly sessionId: string;
+              readonly sessionProjectId: string | null;
+              readonly sessionWorktreeId: string | null;
+              readonly title: string;
+          }
+        | {
+              readonly kind: "chat-history";
+          }
+        | {
+              readonly kind: "new-chat";
+              readonly runtimeId: AiRuntimeId;
+          }
+        | {
+              readonly kind: "focus-terminal";
+              readonly terminalId: string;
+          }
+        | {
+              readonly kind: "new-claude-terminal";
+          }
+        | {
+              readonly kind: "github-list";
+              readonly listKind: "issues" | "pull_requests";
+              readonly ref: GitHubRepositoryRef;
+          }
+        | {
+              readonly itemKind: "issue" | "pull_request";
+              readonly itemNumber: number;
+              readonly kind: "github-item";
+              readonly ref: GitHubRepositoryRef;
+          }
+        | {
+              readonly files: readonly {
+                  readonly name: string;
+                  readonly relativePath: string;
+              }[];
+              readonly forceNewChat: boolean;
+              readonly kind: "add-files-to-chat";
+          }
+        | {
+              readonly forceNewChat: boolean;
+              readonly itemKind: "issue" | "pull_request";
+              readonly items: readonly WorkspaceSurfaceGitHubComposerItem[];
+              readonly kind: "add-github-items-to-chat";
+              readonly ref: GitHubRepositoryRef;
+          }
+    );
+
+export type WorkspaceSurfaceActionDeliveryFailureReason =
+    | "inactive-context"
+    | "invalid-context"
+    | "missing-surface";
+
+export type WorkspaceSurfaceActionDeliveryResult =
+    | { readonly delivered: true }
+    | {
+          readonly delivered: false;
+          readonly reason: WorkspaceSurfaceActionDeliveryFailureReason;
+      };
+
 export interface WorkspaceSurfaceGitHubItemOpenRequest {
     readonly itemKind: "issue" | "pull_request";
     readonly itemNumber: number;
@@ -3312,6 +3398,9 @@ export interface ComandoApi {
     dispatchWorkspaceSurfaceDrag: (
         event: WorkspaceSurfaceDragEvent,
     ) => Promise<void>;
+    dispatchWorkspaceSurfaceAction: (
+        request: WorkspaceSurfaceActionRequest,
+    ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
     openWorkspaceSurfaceGitHubItem: (
         input: WorkspaceSurfaceGitHubItemOpenRequest,
     ) => Promise<void>;
@@ -3456,6 +3545,9 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceSurfaceDrag: (
         listener: (event: WorkspaceSurfaceDragEvent) => void,
+    ) => () => void;
+    onWorkspaceSurfaceActionRequested: (
+        listener: (request: WorkspaceSurfaceActionRequest) => void,
     ) => () => void;
     onWorkspaceSurfaceGitHubItemOpenRequested: (
         listener: (input: WorkspaceSurfaceGitHubItemOpenRequest) => void,
