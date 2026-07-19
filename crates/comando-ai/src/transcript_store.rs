@@ -1134,7 +1134,7 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
             .map_err(|error| transcript_sql("add legacy transcript backfill state", error))?;
     }
 
-    if matches!(locked_version, 1 | 2 | 3) {
+    if matches!(locked_version, 1..=3) {
         transaction
             .execute_batch(
                 "ALTER TABLE transcript_sessions

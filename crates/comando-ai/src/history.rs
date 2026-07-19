@@ -733,9 +733,7 @@ impl AiHistoryStore {
             && transcript_store.legacy_transcript_backfill_complete(session_id)?
         {
             NativeAiTranscriptStorageMode::BlockNative
-        } else if legacy_transcript_pending {
-            NativeAiTranscriptStorageMode::Migrating
-        } else if migration_manifest_exists {
+        } else if legacy_transcript_pending || migration_manifest_exists {
             NativeAiTranscriptStorageMode::Migrating
         } else {
             NativeAiTranscriptStorageMode::Legacy
@@ -771,7 +769,7 @@ impl AiHistoryStore {
             return transcript_store.advance_legacy_transcript_backfill(session_id, offset, true);
         }
         let end = (offset + LEGACY_TRANSCRIPT_BACKFILL_PAGE_SIZE).min(index.len());
-        let messages = self.read_payloads_by_index(session_id, &index, offset, end)?;
+        let messages = self.read_payloads_by_index(session_id, index, offset, end)?;
         let entries_and_payloads = messages
             .into_iter()
             .map(|message| legacy_transcript_entry(session_id, message))
