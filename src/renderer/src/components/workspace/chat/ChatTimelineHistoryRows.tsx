@@ -42,6 +42,7 @@ import {
 } from "./chatTimelineVirtualization";
 
 const MIN_FREEZABLE_CHAT_TIMELINE_WIDTH_PX = 240;
+const NEW_TURN_ANCHOR_OFFSET_PX = 20;
 
 interface ChatTimelineHistoryRowsProps {
     readonly active?: boolean;
@@ -54,6 +55,7 @@ interface ChatTimelineHistoryRowsProps {
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
     readonly liveTailRowId?: string | null;
+    readonly newTurnAnchorRowId?: string | null;
     readonly renderRow: (params: {
         readonly isCurrentTurnTail: boolean;
         readonly row: TranscriptTimelineVirtualRow;
@@ -115,6 +117,7 @@ export const ChatTimelineHistoryRows = memo(
         onVirtualResizeAutoFollow,
         onVirtualResizeStart,
         liveTailRowId,
+        newTurnAnchorRowId,
         renderRow,
         renderStreamingIndicator,
         scrollRef,
@@ -258,6 +261,56 @@ export const ChatTimelineHistoryRows = memo(
             },
             [],
         );
+
+        useLayoutEffect(() => {
+            if (!active || !newTurnAnchorRowId) {
+                return;
+            }
+
+            const handle = virtualListHandleRef.current;
+            const scrollContainer = scrollRef.current;
+            const anchorIndex = historyRows.findIndex(
+                (row) => row.id === newTurnAnchorRowId,
+            );
+            if (!handle || !scrollContainer || anchorIndex < 0) {
+                return;
+            }
+
+            const anchor = handle.getItemGeometry?.(anchorIndex);
+            if (!anchor) {
+                return;
+            }
+
+            const tailIndex = liveTailRowId
+                ? historyRows.findIndex((row) => row.id === liveTailRowId)
+                : historyRows.length - 1;
+            const tail = handle.getItemGeometry?.(
+                tailIndex >= anchorIndex ? tailIndex : anchorIndex,
+            );
+            if (!tail) {
+                return;
+            }
+
+            // The composer already reduces the scroll viewport in this flex layout.
+            // Keep the prompt visible until the active turn needs more room below it.
+            const requiredEnd = Math.max(
+                0,
+                tail.start + tail.size -
+                    (anchor.start + scrollContainer.clientHeight),
+            );
+            scrollContainer.scrollTop = Math.max(
+                0,
+                anchor.start + scrollMarginTop - NEW_TURN_ANCHOR_OFFSET_PX +
+                    requiredEnd,
+            );
+        }, [
+            active,
+            historyRows,
+            liveTailRowId,
+            newTurnAnchorRowId,
+            scrollMarginTop,
+            scrollRef,
+        ]);
 
         useLayoutEffect(() => {
             if (!active) {

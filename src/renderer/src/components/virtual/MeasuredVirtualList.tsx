@@ -98,6 +98,10 @@ export interface MeasuredVirtualViewportAnchor {
 
 export interface MeasuredVirtualListHandle {
     readonly captureViewportAnchor?: () => MeasuredVirtualViewportAnchor | null;
+    readonly getItemGeometry?: (index: number) => {
+        readonly size: number;
+        readonly start: number;
+    } | null;
     readonly scrollToIndex: (
         index: number,
         options?: {
@@ -1338,6 +1342,20 @@ export function MeasuredVirtualList<T>({
         ],
     );
 
+    const getItemGeometry = useCallback(
+        (index: number) => {
+            if (index < 0 || index >= items.length) {
+                return null;
+            }
+
+            return {
+                size: getItemSize(index),
+                start: getItemStart(index),
+            };
+        },
+        [getItemSize, getItemStart, items.length],
+    );
+
     const captureViewportAnchor = useCallback(():
         | MeasuredVirtualViewportAnchor
         | null => {
@@ -1414,6 +1432,7 @@ export function MeasuredVirtualList<T>({
     useEffect(() => {
         onReady?.({
             captureViewportAnchor,
+            getItemGeometry,
             scrollToIndex,
             scrollToViewportAnchor,
         });
@@ -1423,6 +1442,7 @@ export function MeasuredVirtualList<T>({
         };
     }, [
         captureViewportAnchor,
+        getItemGeometry,
         onReady,
         scrollToIndex,
         scrollToViewportAnchor,

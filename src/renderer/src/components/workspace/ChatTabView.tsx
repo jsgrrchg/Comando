@@ -96,9 +96,11 @@ import {
     resolveChatScrollPersistenceState,
 } from "./chat/chatScroll";
 import {
+    anchorNewChatTurn,
     canApplyChatScrollOperation,
     createChatScrollIntent,
     followChatScrollEnd,
+    isAnchoringNewChatTurn,
     isFollowingChatScrollEnd,
     readChatScroll,
 } from "./chat/chatScrollIntent";
@@ -173,6 +175,24 @@ interface ChatTabViewProps {
     readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
     readonly onOpenReview: () => Promise<void>;
     readonly tab: RuntimeWorkspaceChatTab;
+}
+
+function getTrailingUserTimelineRowId(
+    rows: readonly TranscriptTimelineItem[],
+): string | null {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        if (
+            row &&
+            isChatTimelineRowItem(row) &&
+            row.kind === "message" &&
+            row.message.kind === "user"
+        ) {
+            return row.id;
+        }
+    }
+
+    return null;
 }
 
 function ChatPerformanceProfiler({
@@ -394,6 +414,9 @@ export const ChatTabView = memo(function ChatTabView({
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const timelineContentRef = useRef<HTMLDivElement | null>(null);
     const scrollIntentRef = useRef(createChatScrollIntent());
+    const pendingNewTurnAnchorRef = useRef<string | null | undefined>(
+        undefined,
+    );
     const shouldAutoFollowRef = useRef(true);
     const pendingScrollFrameRef = useRef<number | null>(null);
     const restoreScrollFrameRef = useRef<number | null>(null);
@@ -434,6 +457,9 @@ export const ChatTabView = memo(function ChatTabView({
     const lastSeenDraftComposerPartsSerializedRef = useRef("");
 
     const [isEditingTitle, setIsEditingTitle] = useState(false);
+    const [newTurnAnchorRowId, setNewTurnAnchorRowId] = useState<
+        string | null
+    >(null);
     const [titleDraft, setTitleDraft] = useState("");
     const titleInputRef = useRef<HTMLInputElement | null>(null);
     const skipTitleCommitRef = useRef(false);
@@ -1294,6 +1320,41 @@ export const ChatTabView = memo(function ChatTabView({
             transcriptWindow?.metadata,
         ],
     );
+
+    const beginNewTurnAnchor = useCallback(() => {
+        if (!shouldAutoFollowRef.current) {
+            return;
+        }
+
+        pendingNewTurnAnchorRef.current = getTrailingUserTimelineRowId(
+            transcriptTimelineItems,
+        );
+        setNewTurnAnchorRowId(null);
+        scrollIntentRef.current = anchorNewChatTurn(scrollIntentRef.current);
+    }, [transcriptTimelineItems]);
+
+    useLayoutEffect(() => {
+        if (
+            pendingNewTurnAnchorRef.current === undefined ||
+            !isAnchoringNewChatTurn(scrollIntentRef.current)
+        ) {
+            return;
+        }
+
+        const trailingUserRowId = getTrailingUserTimelineRowId(
+            transcriptTimelineItems,
+        );
+        if (
+            !trailingUserRowId ||
+            trailingUserRowId === pendingNewTurnAnchorRef.current
+        ) {
+            return;
+        }
+
+        pendingNewTurnAnchorRef.current = undefined;
+        setNewTurnAnchorRowId(trailingUserRowId);
+        setShowJumpToBottom(false);
+    }, [transcriptTimelineItems]);
     const setActivityGroupExpanded = useCallback(
         (groupId: string, expanded: boolean) => {
             setActivityExpansionBySessionId((current) => ({
@@ -1586,6 +1647,9 @@ export const ChatTabView = memo(function ChatTabView({
     ]);
 
     const handleTimelineVirtualResizeAutoFollow = useCallback(() => {
+        if (isAnchoringNewChatTurn(scrollIntentRef.current)) {
+            return;
+        }
         scheduleScrollToBottom();
         setShowJumpToBottom(false);
     }, [scheduleScrollToBottom]);
@@ -1599,7 +1663,11 @@ export const ChatTabView = memo(function ChatTabView({
     }, []);
 
     const shouldDeferTimelineTrailingUserMeasurementAnchor = useCallback(() => {
-        return shouldAutoFollowRef.current && !resizeBottomLockRef.current;
+        return (
+            shouldAutoFollowRef.current &&
+            isFollowingChatScrollEnd(scrollIntentRef.current) &&
+            !resizeBottomLockRef.current
+        );
     }, []);
 
     const persistCurrentViewState = useCallback(
@@ -1766,7 +1834,11 @@ export const ChatTabView = memo(function ChatTabView({
 
     const handleTimelineWheelCapture = useCallback(
         (event: WheelEvent<HTMLDivElement>) => {
-            if (event.deltaY >= 0 || !shouldAutoFollowRef.current) {
+            if (
+                !shouldAutoFollowRef.current ||
+                (event.deltaY >= 0 &&
+                    !isAnchoringNewChatTurn(scrollIntentRef.current))
+            ) {
                 return;
             }
 
@@ -1775,6 +1847,8 @@ export const ChatTabView = memo(function ChatTabView({
             cancelResizeBottomSettle();
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
+            pendingNewTurnAnchorRef.current = undefined;
+            setNewTurnAnchorRowId(null);
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
@@ -1797,6 +1871,8 @@ export const ChatTabView = memo(function ChatTabView({
             cancelResizeBottomSettle();
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
+            pendingNewTurnAnchorRef.current = undefined;
+            setNewTurnAnchorRowId(null);
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
@@ -1973,6 +2049,14 @@ export const ChatTabView = memo(function ChatTabView({
             return;
         }
 
+        if (isAnchoringNewChatTurn(scrollIntentRef.current)) {
+            // The anchor policy owns programmatic movement until the user
+            // explicitly navigates away or chooses to follow the latest tail.
+            setShowJumpToBottom(false);
+            scheduleScrollPersist(el.scrollTop, false);
+            return;
+        }
+
         if (
             shouldAutoFollowRef.current &&
             (bottomFollowSettleActiveRef.current || composerExpanded)
@@ -1987,6 +2071,10 @@ export const ChatTabView = memo(function ChatTabView({
         scrollIntentRef.current = nextIsNearBottom
             ? followChatScrollEnd(scrollIntentRef.current)
             : readChatScroll(scrollIntentRef.current);
+        if (!nextIsNearBottom) {
+            pendingNewTurnAnchorRef.current = undefined;
+            setNewTurnAnchorRowId(null);
+        }
         setShowJumpToBottom(!nextIsNearBottom);
         scheduleScrollPersist(el.scrollTop, nextIsNearBottom);
     }, [composerExpanded, isNearBottom, scheduleScrollPersist]);
@@ -1997,6 +2085,8 @@ export const ChatTabView = memo(function ChatTabView({
         cancelResizeBottomSettle();
         shouldAutoFollowRef.current = true;
         scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
+        pendingNewTurnAnchorRef.current = undefined;
+        setNewTurnAnchorRowId(null);
         resizeBottomLockRef.current = false;
         resizeStartedNearBottomRef.current = false;
         scrollToBottom();
@@ -2101,6 +2191,8 @@ export const ChatTabView = memo(function ChatTabView({
         clearDraftAttachments(tab.sessionId);
         clearDraftFileContexts(tab.sessionId);
         setComposerError(null);
+
+        beginNewTurnAnchor();
 
         try {
             await sendPrompt(tab, prompt, {
@@ -2583,6 +2675,7 @@ export const ChatTabView = memo(function ChatTabView({
                     covered={composerExpanded}
                     historyRows={transcriptTimelineItems}
                     liveTailRowId={timelineModel.liveTailRowId}
+                    newTurnAnchorRowId={newTurnAnchorRowId}
                     onSetActivityGroupExpanded={setActivityGroupExpanded}
                     onSetActivityRangeExpanded={setActivityRangeExpanded}
                     onAddFileReferenceToChat={
@@ -3082,6 +3175,7 @@ type ChatTimelineProps = {
     readonly covered?: boolean;
     readonly historyRows: readonly TranscriptTimelineItem[];
     readonly liveTailRowId: string | null;
+    readonly newTurnAnchorRowId: string | null;
     readonly onSetActivityGroupExpanded: (
         groupId: string,
         expanded: boolean,
@@ -3159,6 +3253,7 @@ const ChatTimeline = memo(function ChatTimeline({
     covered,
     historyRows,
     liveTailRowId,
+    newTurnAnchorRowId,
     onSetActivityGroupExpanded,
     onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
@@ -3227,6 +3322,7 @@ const ChatTimeline = memo(function ChatTimeline({
                             chatFontSize={chatFontSize}
                             historyRows={historyRows}
                             liveTailRowId={liveTailRowId}
+                            newTurnAnchorRowId={newTurnAnchorRowId}
                             onSetActivityGroupExpanded={
                                 onSetActivityGroupExpanded
                             }
@@ -3334,6 +3430,7 @@ type ChatTimelineHistoryProps = {
     readonly chatFontSize?: number;
     readonly historyRows: readonly TranscriptTimelineItem[];
     readonly liveTailRowId: string | null;
+    readonly newTurnAnchorRowId: string | null;
     readonly onSetActivityGroupExpanded: (
         groupId: string,
         expanded: boolean,
@@ -3388,6 +3485,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     chatFontSize,
     historyRows,
     liveTailRowId,
+    newTurnAnchorRowId,
     onSetActivityGroupExpanded,
     onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
@@ -3475,6 +3573,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontSize={chatFontSize}
             historyRows={historyRows}
             liveTailRowId={liveTailRowId}
+            newTurnAnchorRowId={newTurnAnchorRowId}
             onVirtualRangeChange={onVirtualRangeChange}
             onVirtualResizeEnd={onVirtualResizeEnd}
             onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}

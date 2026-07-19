@@ -1,5 +1,6 @@
 export type ChatScrollIntent =
     | { readonly mode: "reader"; readonly navigationGeneration: number }
+    | { readonly mode: "new-turn-anchor"; readonly navigationGeneration: number }
     | { readonly mode: "follow-end"; readonly navigationGeneration: number };
 
 export function createChatScrollIntent(): ChatScrollIntent {
@@ -8,6 +9,18 @@ export function createChatScrollIntent(): ChatScrollIntent {
 
 export function isFollowingChatScrollEnd(intent: ChatScrollIntent): boolean {
     return intent.mode === "follow-end";
+}
+
+export function isAnchoringNewChatTurn(intent: ChatScrollIntent): boolean {
+    return intent.mode === "new-turn-anchor";
+}
+
+export function anchorNewChatTurn(intent: ChatScrollIntent): ChatScrollIntent {
+    // A new turn must invalidate frames queued for the previous tail.
+    return {
+        mode: "new-turn-anchor",
+        navigationGeneration: intent.navigationGeneration + 1,
+    };
 }
 
 export function followChatScrollEnd(intent: ChatScrollIntent): ChatScrollIntent {

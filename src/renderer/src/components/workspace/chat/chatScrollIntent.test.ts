@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    anchorNewChatTurn,
     canApplyChatScrollOperation,
     createChatScrollIntent,
     followChatScrollEnd,
@@ -26,5 +27,21 @@ describe("chat scroll intent", () => {
 
         expect(following).toEqual({ mode: "follow-end", navigationGeneration: 2 });
         expect(canApplyChatScrollOperation(following, 2)).toBe(true);
+    });
+
+    it("invalidates a queued follow when a new turn is anchored", () => {
+        const following = createChatScrollIntent();
+        const anchored = anchorNewChatTurn(following);
+
+        expect(anchored).toEqual({
+            mode: "new-turn-anchor",
+            navigationGeneration: 1,
+        });
+        expect(
+            canApplyChatScrollOperation(
+                anchored,
+                following.navigationGeneration,
+            ),
+        ).toBe(false);
     });
 });
