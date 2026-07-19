@@ -29,6 +29,22 @@ describe("TranscriptPayloadCache", () => {
         expect(load).toHaveBeenCalledTimes(2);
     });
 
+    it("protects a cached payload when it becomes visible again", async () => {
+        const cache = new TranscriptPayloadCache(
+            { load: (payloadRef: string) => Promise.resolve(payloadRef) },
+            20,
+            (value) => value.length,
+        );
+        await cache.load("visible");
+        await cache.load("visible", { protect: true });
+        await cache.load("recoverable");
+
+        cache.applyMemoryPressure(0.5);
+
+        expect(cache.has("visible")).toBe(true);
+        expect(cache.has("recoverable")).toBe(false);
+    });
+
     it("enforces memory pressure even when all payloads are protected", async () => {
         const cache = new TranscriptPayloadCache(
             { load: (payloadRef: string) => Promise.resolve(payloadRef.repeat(8)) },

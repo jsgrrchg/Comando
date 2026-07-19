@@ -31,6 +31,7 @@ export class TranscriptPayloadCache<T> {
         const cached = this.payloads.get(payloadRef);
         if (cached) {
             cached.touchedAt = performance.now();
+            if (options.protect) cached.protected = true;
             return Promise.resolve(cached.payload);
         }
         const pending = this.pending.get(payloadRef);

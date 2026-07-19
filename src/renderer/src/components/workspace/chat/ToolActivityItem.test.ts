@@ -287,6 +287,7 @@ describe("ToolActivityItem", () => {
     });
 
     it("reveals dense rail row details only through its disclosure", () => {
+        const onPayloadVisibilityChange = vi.fn();
         const container = renderInteractiveToolActivityItem({
             activity: createActivity({
                 kind: "search",
@@ -297,6 +298,7 @@ describe("ToolActivityItem", () => {
                 title: "Search activity-segment",
             }),
             onOpenFile: async () => {},
+            onPayloadVisibilityChange,
             projectId: "project-1",
             surface: "rail-row",
             trackedFiles: [],
@@ -310,6 +312,16 @@ describe("ToolActivityItem", () => {
         act(() => disclosure?.click());
         expect(disclosure?.getAttribute("aria-expanded")).toBe("true");
         expect(container.textContent).toContain("3 matches");
+        expect(onPayloadVisibilityChange).toHaveBeenCalledWith(
+            "tool-1",
+            true,
+        );
+
+        act(() => disclosure?.click());
+        expect(onPayloadVisibilityChange).toHaveBeenLastCalledWith(
+            "tool-1",
+            false,
+        );
     });
 
     it("preserves file navigation from a dense rail row", () => {

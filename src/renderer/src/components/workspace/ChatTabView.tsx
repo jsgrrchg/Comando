@@ -296,6 +296,9 @@ export const ChatTabView = memo(function ChatTabView({
         (s) => s.loadTranscriptWindowBlock,
     );
     const loadTranscriptPayload = useAiStore((s) => s.loadTranscriptPayload);
+    const releaseTranscriptPayload = useAiStore(
+        (s) => s.releaseTranscriptPayload,
+    );
     const setTranscriptWindowAnchor = useAiStore(
         (s) => s.setTranscriptWindowAnchor,
     );
@@ -675,14 +678,56 @@ export const ChatTabView = memo(function ChatTabView({
         }
         return payloadRefs;
     }, [transcriptWindow?.blocksById]);
-    const handleLoadToolPayload = useCallback(
-        (activityId: string) => {
+    const visibleToolPayloadRefCounts = useRef(new Map<string, number>());
+    const handleToolPayloadVisibilityChange = useCallback(
+        (activityId: string, visible: boolean) => {
             const payloadRef = toolPayloadRefByActivityId.get(activityId);
-            if (payloadRef) {
-                void loadTranscriptPayload(tab.sessionId, payloadRef);
+            if (!payloadRef) return;
+            if (!visible) {
+                const nextCount = Math.max(
+                    0,
+                    (visibleToolPayloadRefCounts.current.get(payloadRef) ?? 1) -
+                        1,
+                );
+                if (nextCount > 0) {
+                    visibleToolPayloadRefCounts.current.set(
+                        payloadRef,
+                        nextCount,
+                    );
+                    return;
+                }
+                visibleToolPayloadRefCounts.current.delete(payloadRef);
+                releaseTranscriptPayload(tab.sessionId, payloadRef);
+                return;
             }
+            const currentCount =
+                visibleToolPayloadRefCounts.current.get(payloadRef) ?? 0;
+            visibleToolPayloadRefCounts.current.set(
+                payloadRef,
+                currentCount + 1,
+            );
+            if (currentCount > 0) return;
+            void loadTranscriptPayload(tab.sessionId, payloadRef).then(() => {
+                if (!visibleToolPayloadRefCounts.current.has(payloadRef)) {
+                    releaseTranscriptPayload(tab.sessionId, payloadRef);
+                }
+            });
         },
-        [loadTranscriptPayload, tab.sessionId, toolPayloadRefByActivityId],
+        [
+            loadTranscriptPayload,
+            releaseTranscriptPayload,
+            tab.sessionId,
+            toolPayloadRefByActivityId,
+        ],
+    );
+    useEffect(
+        () => () => {
+            for (const payloadRef of visibleToolPayloadRefCounts.current.keys()) {
+                releaseTranscriptPayload(tab.sessionId, payloadRef);
+            }
+            visibleToolPayloadRefCounts.current.clear();
+        },
+        [releaseTranscriptPayload, tab.sessionId],
     );
     const isStreaming = isChatStreamingStatus(snapshot.status);
     const activeTurnKey = isActiveChatTurnStatus(snapshot.status)
@@ -2409,7 +2454,9 @@ export const ChatTabView = memo(function ChatTabView({
                     onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={handleOpenResolvedFileReference}
                     onOpenSession={openAiSessionById}
-                    onLoadToolPayload={handleLoadToolPayload}
+                    onToolPayloadVisibilityChange={
+                        handleToolPayloadVisibilityChange
+                    }
                     onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
                     onWheelCapture={handleTimelineWheelCapture}
@@ -2899,7 +2946,10 @@ type ChatTimelineProps = {
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
-    readonly onLoadToolPayload?: (activityId: string) => void;
+    readonly onToolPayloadVisibilityChange?: (
+        activityId: string,
+        visible: boolean,
+    ) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -2962,7 +3012,7 @@ const ChatTimeline = memo(function ChatTimeline({
     isStreaming,
     liveTailRow,
     onAddFileReferenceToChat,
-    onLoadToolPayload,
+    onToolPayloadVisibilityChange,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -3027,7 +3077,9 @@ const ChatTimeline = memo(function ChatTimeline({
                             onAddFileReferenceToChat={
                                 onAddFileReferenceToChat
                             }
-                            onLoadToolPayload={onLoadToolPayload}
+                            onToolPayloadVisibilityChange={
+                                onToolPayloadVisibilityChange
+                            }
                             onOpenFile={onOpenFile}
                             onOpenImage={onOpenImage}
                             onOpenResolvedFileReference={
@@ -3062,7 +3114,9 @@ const ChatTimeline = memo(function ChatTimeline({
                             onAddFileReferenceToChat={
                                 onAddFileReferenceToChat
                             }
-                            onLoadToolPayload={onLoadToolPayload}
+                            onToolPayloadVisibilityChange={
+                                onToolPayloadVisibilityChange
+                            }
                             onOpenFile={onOpenFile}
                             onOpenImage={onOpenImage}
                             onOpenResolvedFileReference={
@@ -3147,7 +3201,10 @@ type ChatTimelineHistoryProps = {
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
-    readonly onLoadToolPayload?: (activityId: string) => void;
+    readonly onToolPayloadVisibilityChange?: (
+        activityId: string,
+        visible: boolean,
+    ) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -3185,7 +3242,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     chatFontSize,
     historyRows,
     onAddFileReferenceToChat,
-    onLoadToolPayload,
+    onToolPayloadVisibilityChange,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -3213,7 +3270,9 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 onAddFileReferenceToChat={onAddFileReferenceToChat}
-                onLoadToolPayload={onLoadToolPayload}
+                onToolPayloadVisibilityChange={
+                    onToolPayloadVisibilityChange
+                }
                 onOpenFile={onOpenFile}
                 onOpenImage={onOpenImage}
                 onOpenResolvedFileReference={onOpenResolvedFileReference}
@@ -3230,7 +3289,7 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontFamily,
             chatFontSize,
             onAddFileReferenceToChat,
-            onLoadToolPayload,
+            onToolPayloadVisibilityChange,
             onOpenFile,
             onOpenImage,
             onOpenResolvedFileReference,
@@ -3277,7 +3336,10 @@ type ChatTimelineLiveTailProps = {
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
-    readonly onLoadToolPayload?: (activityId: string) => void;
+    readonly onToolPayloadVisibilityChange?: (
+        activityId: string,
+        visible: boolean,
+    ) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -3306,7 +3368,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
     chatFontFamily,
     chatFontSize,
     onAddFileReferenceToChat,
-    onLoadToolPayload,
+    onToolPayloadVisibilityChange,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -3328,7 +3390,7 @@ const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
             chatFontSize={chatFontSize}
             key={row.id}
             onAddFileReferenceToChat={onAddFileReferenceToChat}
-            onLoadToolPayload={onLoadToolPayload}
+            onToolPayloadVisibilityChange={onToolPayloadVisibilityChange}
             onOpenFile={onOpenFile}
             onOpenImage={onOpenImage}
             onOpenResolvedFileReference={onOpenResolvedFileReference}
@@ -3356,7 +3418,10 @@ type ChatTimelineRowViewProps = {
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
     ) => void;
-    readonly onLoadToolPayload?: (activityId: string) => void;
+    readonly onToolPayloadVisibilityChange?: (
+        activityId: string,
+        visible: boolean,
+    ) => void;
     readonly onOpenFile: (
         projectId: string,
         relativePath: string,
@@ -3386,7 +3451,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     chatFontSize,
     isCurrentTurnTail = false,
     onAddFileReferenceToChat,
-    onLoadToolPayload,
+    onToolPayloadVisibilityChange,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -3424,7 +3489,9 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
                     chatFontSize={chatFontSize}
                     isCurrentTurnTail={isCurrentTurnTail}
                     onAddFileReferenceToChat={onAddFileReferenceToChat}
-                    onLoadToolPayload={onLoadToolPayload}
+                    onToolPayloadVisibilityChange={
+                        onToolPayloadVisibilityChange
+                    }
                     onOpenFile={onOpenFile}
                     onOpenFileReference={onOpenResolvedFileReference}
                     onOpenSession={onOpenSession}
@@ -3441,9 +3508,6 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     return (
         <div
             className="min-w-0 w-full"
-            onClickCapture={() =>
-                onLoadToolPayload?.(row.reviewEntry.activity.id)
-            }
         >
             <ToolActivityItem
                 activity={row.reviewEntry.activity}
@@ -3451,6 +3515,7 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
                 onOpenFile={onOpenFile}
                 onOpenFileReference={onOpenResolvedFileReference}
                 onOpenSession={onOpenSession}
+                onPayloadVisibilityChange={onToolPayloadVisibilityChange}
                 projectId={projectId}
                 resolveFileReference={resolveFileReference}
                 trackedFiles={row.reviewEntry.trackedFiles}

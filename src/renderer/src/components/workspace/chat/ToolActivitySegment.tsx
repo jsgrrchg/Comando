@@ -10,6 +10,7 @@ import { getToolActivityDescriptor } from "./toolActivityDescriptor";
 import {
     ToolActivityItem,
     type ToolActivityItemProps,
+    type ToolPayloadVisibilityChangeHandler,
 } from "./ToolActivityItem";
 import {
     ThinkingMessage,
@@ -30,7 +31,7 @@ type ToolActivitySegmentProps = Pick<
 > & {
     /** True only while this segment is the trailing activity of an active turn. */
     readonly isCurrentTurnTail?: boolean;
-    readonly onLoadToolPayload?: (activityId: string) => void;
+    readonly onToolPayloadVisibilityChange?: ToolPayloadVisibilityChangeHandler;
     readonly segment: ChatTimelineActivitySegmentRow;
 } & Pick<
         ThinkingMessageProps,
@@ -140,7 +141,7 @@ type ActivitySegmentItemRendererProps = Pick<
     | "chatFontSize"
     | "highlightQuery"
     | "onAddFileReferenceToChat"
-    | "onLoadToolPayload"
+    | "onToolPayloadVisibilityChange"
     | "onOpenFile"
     | "onOpenFileReference"
     | "onOpenSession"
@@ -202,13 +203,7 @@ function ActivitySegmentItemRow({
                         resolveFileReference={resolveThinkingFileReference}
                     />
                 ) : (
-                    <div
-                        onClickCapture={() =>
-                            props.onLoadToolPayload?.(
-                                item.entry.reviewEntry.activity.id,
-                            )
-                        }
-                    >
+                    <div>
                         <ToolActivityItem
                             activity={item.entry.reviewEntry.activity}
                             canRenderFileReference={props.canRenderFileReference}
@@ -216,6 +211,9 @@ function ActivitySegmentItemRow({
                             onOpenFile={props.onOpenFile}
                             onOpenFileReference={props.onOpenFileReference}
                             onOpenSession={props.onOpenSession}
+                            onPayloadVisibilityChange={
+                                props.onToolPayloadVisibilityChange
+                            }
                             projectId={props.projectId}
                             resolveFileReference={props.resolveFileReference}
                             surface={
@@ -276,7 +274,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     chatFontSize,
     highlightQuery,
     onAddFileReferenceToChat,
-    onLoadToolPayload,
+    onToolPayloadVisibilityChange,
     onOpenFile,
     onOpenFileReference,
     onOpenSession,
@@ -418,7 +416,9 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                     highlightQuery={highlightQuery}
                     items={segment.items}
                     onAddFileReferenceToChat={onAddFileReferenceToChat}
-                    onLoadToolPayload={onLoadToolPayload}
+                    onToolPayloadVisibilityChange={
+                        onToolPayloadVisibilityChange
+                    }
                     onOpenFile={onOpenFile}
                     onOpenFileReference={onOpenFileReference}
                     onOpenSession={onOpenSession}
