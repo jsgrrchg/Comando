@@ -46,8 +46,9 @@ export function appendAiTranscriptDelta(
     content: string,
     delta: string,
 ): string {
-    // Equal-length snapshots can be stale while their accompanying delta is new.
+    // A full non-prefix snapshot replaces local content; only suffix deltas append.
     if (content.length > existing.length) return content;
+    if (delta === content && !content.startsWith(existing)) return content;
     return existing.endsWith(delta) ? existing : `${existing}${delta}`;
 }
 

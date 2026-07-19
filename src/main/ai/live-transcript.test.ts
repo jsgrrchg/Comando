@@ -210,6 +210,23 @@ describe("AiLiveTranscriptTailStore", () => {
         ).toBe("one two");
     });
 
+    it("replaces content when a snapshot revises an equal-length prefix", () => {
+        const store = new AiLiveTranscriptTailStore();
+        store.applyEvent(messageStarted("assistant-1", "abc", TURN_STARTED_AT));
+        store.applyEvent(
+            messageDelta(
+                "assistant-1",
+                "abd",
+                "abd",
+                "2026-07-18T00:01:03.000Z",
+            ),
+        );
+
+        expect(
+            store.getSnapshot(SESSION_ID)?.entries[0]?.envelope.summary.preview,
+        ).toBe("abd");
+    });
+
     it("keeps payload lookup scoped to the owning session", () => {
         const store = new AiLiveTranscriptTailStore();
         store.applyEvent(messageStarted("assistant-1", "answer", TURN_STARTED_AT));
