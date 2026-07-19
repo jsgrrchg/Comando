@@ -8,6 +8,7 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
     AiToolActivity,
+    AiTranscriptBlock,
     AiTrackedFile,
     AppBootstrapSnapshot,
     WorkspaceChatTab,
@@ -235,6 +236,60 @@ describe("ai-store queue", () => {
         });
         vi.restoreAllMocks();
         vi.useRealTimers();
+    });
+
+    it("hydrates bounded block-native transcript windows in the production store", async () => {
+        const metadata = [1, 2, 3].map((index) => ({
+            blockId: `block-${index}`,
+            endSequence: index * 10,
+            entryCount: 10,
+            estimatedHeight: 720,
+            estimatedRowCount: 10,
+            firstCreatedAt: "2026-04-14T00:00:00.000Z",
+            lastCreatedAt: "2026-04-14T00:00:00.000Z",
+            revision: 1,
+            sessionId: TAB.sessionId,
+            startSequence: (index - 1) * 10 + 1,
+        }));
+        const getAiTranscriptBlock = vi.fn((_sessionId: string, blockId: string) => Promise.resolve({
+            ...metadata.find((item) => item.blockId === blockId)!,
+            capabilityVersion: 1,
+            entries: [],
+            transcriptRevision: 3,
+        } satisfies AiTranscriptBlock));
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlock,
+                    getAiTranscriptPayload: vi.fn().mockResolvedValue(null),
+                    getAiTranscriptBlockMetadata: vi.fn().mockResolvedValue({
+                        blocks: metadata,
+                        capabilityVersion: 1,
+                        sessionId: TAB.sessionId,
+                        transcriptRevision: 3,
+                    }),
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        const windowState = useAiStore.getState().sessions[TAB.sessionId]
+            ?.transcriptWindow;
+        expect(windowState?.metadata).toHaveLength(3);
+        expect([...windowState?.blocksById.keys() ?? []]).toEqual([
+            "block-2",
+            "block-3",
+        ]);
+        expect(windowState?.residentEntries).toBe(20);
+        expect(getAiTranscriptBlock).toHaveBeenCalledTimes(2);
     });
 
     it("keeps a command-only runtime catalog from status updates", () => {

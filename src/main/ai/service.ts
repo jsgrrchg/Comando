@@ -25,6 +25,11 @@ import type {
     AiSessionSnapshot,
     AiToolActivity,
     AiSessionTranscriptPage,
+    AiTranscriptBlock,
+    AiTranscriptBlockMetadataOutput,
+    AiTranscriptCapability,
+    AiLoadTranscriptPayloadInput,
+    AiTranscriptPayload,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiTrackedFile,
@@ -1311,6 +1316,55 @@ export class AiService {
         }
 
         return page;
+    }
+
+    getTranscriptCapability(): AiTranscriptCapability {
+        return (
+            this.#nativeAi?.getTranscriptCapability?.() ?? {
+                blockNativeVersion: null,
+                legacyFallbackAvailable: true,
+            }
+        );
+    }
+
+    async getTranscriptBlockMetadata(
+        sessionId: string,
+    ): Promise<AiTranscriptBlockMetadataOutput | null> {
+        const nativeAi = this.#nativeAi;
+        if (
+            !nativeAi?.getTranscriptCapability?.().blockNativeVersion ||
+            !nativeAi.loadTranscriptBlockMetadata
+        ) {
+            return null;
+        }
+        return await nativeAi.loadTranscriptBlockMetadata(sessionId);
+    }
+
+    async getTranscriptBlock(
+        sessionId: string,
+        blockId: string,
+    ): Promise<AiTranscriptBlock | null> {
+        const nativeAi = this.#nativeAi;
+        if (
+            !nativeAi?.getTranscriptCapability?.().blockNativeVersion ||
+            !nativeAi.loadTranscriptBlock
+        ) {
+            return null;
+        }
+        return await nativeAi.loadTranscriptBlock(sessionId, blockId);
+    }
+
+    async getTranscriptPayload(
+        input: AiLoadTranscriptPayloadInput,
+    ): Promise<AiTranscriptPayload | null> {
+        const nativeAi = this.#nativeAi;
+        if (
+            !nativeAi?.getTranscriptCapability?.().blockNativeVersion ||
+            !nativeAi.loadTranscriptPayload
+        ) {
+            return null;
+        }
+        return await nativeAi.loadTranscriptPayload(input);
     }
 
     async prepareSession(

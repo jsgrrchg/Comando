@@ -40,4 +40,20 @@ describe("TranscriptWindowStore", () => {
         expect(store.snapshot("session-1").blocksById.has("block-1")).toBe(true);
         expect(store.snapshot("session-1").residentEntries).toBeLessThanOrEqual(512);
     });
+
+    it("shares the resident-entry budget across cold sessions", async () => {
+        const loadBlock = vi.fn((_sessionId: string, blockId: string) =>
+            Promise.resolve(block(blockId, 256)),
+        );
+        const store = new TranscriptWindowStore({ loadBlock }, 512);
+
+        await store.load("session-1", "block-1");
+        await store.load("session-2", "block-2");
+        await store.load("session-3", "block-3");
+
+        const residentEntries = ["session-1", "session-2", "session-3"]
+            .map((sessionId) => store.snapshot(sessionId).residentEntries)
+            .reduce((total, count) => total + count, 0);
+        expect(residentEntries).toBeLessThanOrEqual(512);
+    });
 });

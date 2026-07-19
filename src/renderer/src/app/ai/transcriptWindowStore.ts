@@ -46,7 +46,15 @@ export class TranscriptWindowStore {
         const session = this.sessionFor(sessionId);
         session.protectedBlockIds.clear();
         for (const blockId of blockIds) session.protectedBlockIds.add(blockId);
-        this.evict(session);
+        this.evict();
+    }
+
+    clear(sessionId: string): void {
+        this.sessions.delete(sessionId);
+    }
+
+    reset(): void {
+        this.sessions.clear();
     }
 
     async load(sessionId: string, blockId: string): Promise<AiTranscriptBlock | null> {
@@ -67,7 +75,7 @@ export class TranscriptWindowStore {
                 session.blocks.set(blockId, block);
                 session.touchedAt.set(blockId, performance.now());
                 incrementChatPerformanceCounter("transcript_blocks_loaded");
-                this.evict(session);
+                this.evict();
                 return block;
             })
             .finally(() => session.pending.delete(blockId));
@@ -85,20 +93,33 @@ export class TranscriptWindowStore {
         };
     }
 
-    private evict(session: SessionWindow): void {
-        while (residentEntryCount(session) > this.maxResidentEntries) {
-            const candidate = [...session.blocks.keys()]
-                .filter((blockId) => !session.protectedBlockIds.has(blockId))
-                .sort(
-                    (left, right) =>
-                        (session.touchedAt.get(left) ?? 0) -
-                        (session.touchedAt.get(right) ?? 0),
-                )[0];
+    private evict(): void {
+        while (this.residentEntryCount() > this.maxResidentEntries) {
+            const candidate = [...this.sessions.entries()]
+                .flatMap(([sessionId, session]) =>
+                    [...session.blocks.keys()]
+                        .filter((blockId) => !session.protectedBlockIds.has(blockId))
+                        .map((blockId) => ({
+                            blockId,
+                            session,
+                            sessionId,
+                            touchedAt: session.touchedAt.get(blockId) ?? 0,
+                        })),
+                )
+                .sort((left, right) => left.touchedAt - right.touchedAt)[0];
             if (!candidate) return;
-            session.blocks.delete(candidate);
-            session.touchedAt.delete(candidate);
+            candidate.session.blocks.delete(candidate.blockId);
+            candidate.session.touchedAt.delete(candidate.blockId);
             incrementChatPerformanceCounter("transcript_blocks_evicted");
         }
+    }
+
+    private residentEntryCount(): number {
+        let count = 0;
+        for (const session of this.sessions.values()) {
+            count += residentEntryCount(session);
+        }
+        return count;
     }
 
     private sessionFor(sessionId: string): SessionWindow {

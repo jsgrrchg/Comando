@@ -29,6 +29,11 @@ import {
     type AiSessionPinnedMutationInput,
     type AiSessionRenameMutationInput,
     type AiSessionTranscriptPage,
+    type AiTranscriptBlock,
+    type AiTranscriptBlockMetadataOutput,
+    type AiTranscriptCapability,
+    type AiLoadTranscriptPayloadInput,
+    type AiTranscriptPayload,
     type AiTrackedFileHunkMutationInput,
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
@@ -1530,6 +1535,33 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.getAiSessionTranscriptPage,
             input,
         ) as Promise<AiSessionTranscriptPage>,
+    getAiTranscriptCapability: async () =>
+        assertIpcObject<AiTranscriptCapability>(
+            IPC_CHANNELS.getAiTranscriptCapability,
+            await ipcRenderer.invoke(IPC_CHANNELS.getAiTranscriptCapability),
+        ),
+    getAiTranscriptBlockMetadata: async (sessionId: string) =>
+        assertIpcObjectOrNull<AiTranscriptBlockMetadataOutput>(
+            IPC_CHANNELS.getAiTranscriptBlockMetadata,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.getAiTranscriptBlockMetadata,
+                sessionId,
+            ),
+        ),
+    getAiTranscriptBlock: async (sessionId: string, blockId: string) =>
+        assertIpcObjectOrNull<AiTranscriptBlock>(
+            IPC_CHANNELS.getAiTranscriptBlock,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.getAiTranscriptBlock,
+                sessionId,
+                blockId,
+            ),
+        ),
+    getAiTranscriptPayload: async (input: AiLoadTranscriptPayloadInput) =>
+        assertIpcObjectOrNull<AiTranscriptPayload>(
+            IPC_CHANNELS.getAiTranscriptPayload,
+            await ipcRenderer.invoke(IPC_CHANNELS.getAiTranscriptPayload, input),
+        ),
     getAiPromptQueue: (sessionId: string) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.getAiPromptQueue,

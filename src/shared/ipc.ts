@@ -154,6 +154,10 @@ export const IPC_CHANNELS = {
     getAiSessionSnapshot: "ai:get-session-snapshot",
     resyncAiSession: "ai:resync-session",
     getAiSessionTranscriptPage: "ai:get-session-transcript-page",
+    getAiTranscriptCapability: "ai:get-transcript-capability",
+    getAiTranscriptBlockMetadata: "ai:get-transcript-block-metadata",
+    getAiTranscriptBlock: "ai:get-transcript-block",
+    getAiTranscriptPayload: "ai:get-transcript-payload",
     getAiPromptQueue: "ai:get-prompt-queue",
     enqueueAiPrompt: "ai:enqueue-prompt",
     removeAiQueuedPrompt: "ai:remove-queued-prompt",
@@ -3548,6 +3552,17 @@ export interface ComandoApi {
     getAiSessionTranscriptPage: (
         input: GetAiSessionTranscriptPageInput,
     ) => Promise<AiSessionTranscriptPage>;
+    getAiTranscriptCapability: () => Promise<AiTranscriptCapability>;
+    getAiTranscriptBlockMetadata: (
+        sessionId: string,
+    ) => Promise<AiTranscriptBlockMetadataOutput | null>;
+    getAiTranscriptBlock: (
+        sessionId: string,
+        blockId: string,
+    ) => Promise<AiTranscriptBlock | null>;
+    getAiTranscriptPayload: (
+        input: AiLoadTranscriptPayloadInput,
+    ) => Promise<AiTranscriptPayload | null>;
     getAiPromptQueue: (sessionId: string) => Promise<AiPromptQueueSnapshot>;
     enqueueAiPrompt: (
         input: EnqueueAiPromptInput,

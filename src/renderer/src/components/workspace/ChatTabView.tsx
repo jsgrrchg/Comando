@@ -16,6 +16,11 @@ import type {
     AiAvailableCommand,
     AiFileContextAttachment,
     AiImageAttachment,
+    AiMessage,
+    AiToolActivity,
+    AiTranscriptBlock,
+    AiTranscriptBlockMetadata,
+    AiTranscriptPayload,
     AiUserInputRequest,
     AiSessionSnapshot,
     ProjectTreeNode,
@@ -37,6 +42,7 @@ import {
 } from "@renderer/app/ai/reviewMutationTarget";
 import {
     createEmptyAiSessionTranscriptModel,
+    buildAiSessionTranscriptModel,
     getAiSessionTranscriptMessages,
     getAiSessionTranscriptToolActivity,
     type AiSessionTranscriptModel,
@@ -113,6 +119,7 @@ import {
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
 import { ToolActivitySegment } from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
+import { TimelineBlockCache } from "./chat/timelineBlocks";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
@@ -176,6 +183,7 @@ type ChatSessionViewState = Pick<
     | "queue"
     | "snapshot"
     | "transcript"
+    | "transcriptWindow"
 >;
 
 function selectChatSessionViewState(
@@ -197,6 +205,7 @@ function selectChatSessionViewState(
         queue: session.queue,
         snapshot: session.snapshot,
         transcript: session.transcript,
+        transcriptWindow: session.transcriptWindow,
     };
 }
 
@@ -224,6 +233,7 @@ const EMPTY_TRANSCRIPT_MODEL = createEmptyAiSessionTranscriptModel();
 const CLOSED_SUBAGENT_MESSAGE =
     "This subagent was closed by its parent thread and can’t receive new messages.";
 const PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
+const transcriptTimelineBlockCache = new TimelineBlockCache();
 
 type AiRuntimeCatalog = Pick<
     AiSessionSnapshot,
@@ -577,7 +587,29 @@ export const ChatTabView = memo(function ChatTabView({
 
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
-    const transcript = sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;
+    const storedTranscript =
+        sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;
+    const transcriptWindow = sessionState?.transcriptWindow ?? null;
+    const transcript = useMemo(
+        () =>
+            transcriptWindow?.capabilityVersion
+                ? buildBlockNativeTranscript(
+                      storedTranscript,
+                      transcriptWindow.blocksById,
+                      transcriptWindow.metadata,
+                      transcriptWindow.payloadsByRef,
+                      snapshot,
+                  )
+                : storedTranscript,
+        [
+            snapshot,
+            storedTranscript,
+            transcriptWindow?.blocksById,
+            transcriptWindow?.capabilityVersion,
+            transcriptWindow?.metadata,
+            transcriptWindow?.payloadsByRef,
+        ],
+    );
     const isStreaming = isChatStreamingStatus(snapshot.status);
     const activeTurnKey = isActiveChatTurnStatus(snapshot.status)
         ? tab.sessionId
@@ -3689,6 +3721,87 @@ function createEmptySnapshot(
         updatedAt: new Date().toISOString(),
         worktreeId: tab.worktreeId ?? null,
     };
+}
+
+function buildBlockNativeTranscript(
+    liveTranscript: AiSessionTranscriptModel,
+    blocksById: ReadonlyMap<string, AiTranscriptBlock>,
+    metadata: readonly AiTranscriptBlockMetadata[],
+    payloadsByRef: ReadonlyMap<string, AiTranscriptPayload>,
+    snapshot: AiSessionSnapshot,
+): AiSessionTranscriptModel {
+    const sealedEntryIds = new Set<string>();
+    const messages: AiMessage[] = [];
+    const toolActivity: AiToolActivity[] = [];
+    const activeTurnStartedAt = snapshot.activeTurnStartedAt ?? null;
+
+    for (const item of metadata) {
+        const block = blocksById.get(item.blockId);
+        if (!block) continue;
+        const timelineBlock = transcriptTimelineBlockCache.derive(block, {
+            activityVisible: true,
+            fontKey: "chat",
+        });
+        for (const { entry } of timelineBlock.rows) {
+            sealedEntryIds.add(entry.id);
+            const payload = entry.payloadRef
+                ? payloadsByRef.get(entry.payloadRef)?.value
+                : null;
+            if (isTranscriptMessagePayload(payload)) {
+                messages.push(payload.message);
+            } else if (isTranscriptToolPayload(payload)) {
+                toolActivity.push(payload.activity);
+            }
+        }
+    }
+
+    return buildAiSessionTranscriptModel({
+        activeTurnStartedAt,
+        messages: [
+            ...messages,
+            ...liveTranscript.messages.filter(
+                (message) =>
+                    activeTurnStartedAt !== null &&
+                    message.createdAt >= activeTurnStartedAt &&
+                    !sealedEntryIds.has(`message:${message.id}`),
+            ),
+        ],
+        status: snapshot.status,
+        toolActivity: [
+            ...toolActivity,
+            ...liveTranscript.toolActivity.filter(
+                (activity) =>
+                    activeTurnStartedAt !== null &&
+                    activity.createdAt >= activeTurnStartedAt &&
+                    !sealedEntryIds.has(
+                        `tool:${activity.sessionId}:${activity.id}`,
+                    ),
+            ),
+        ],
+        updatedAt: snapshot.updatedAt,
+    });
+}
+
+function isTranscriptMessagePayload(
+    value: unknown,
+): value is { readonly kind: "message"; readonly message: AiMessage } {
+    return (
+        typeof value === "object" &&
+        value !== null &&
+        (value as { kind?: unknown }).kind === "message" &&
+        "message" in value
+    );
+}
+
+function isTranscriptToolPayload(
+    value: unknown,
+): value is { readonly kind: "tool"; readonly activity: AiToolActivity } {
+    return (
+        typeof value === "object" &&
+        value !== null &&
+        (value as { kind?: unknown }).kind === "tool" &&
+        "activity" in value
+    );
 }
 
 function getActiveTurnStartedAt(
