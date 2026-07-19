@@ -1513,15 +1513,24 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 return;
             }
 
-            const metadata = await api.getAiTranscriptBlockMetadata(sessionId);
-            if (!metadata) return;
-
+            // Keep the capability after a transient unavailable metadata read.
+            // A later sealed snapshot will then retry hydration once native
+            // storage finishes its migration.
             set((state) => updateTranscriptWindowState(state, sessionId, {
                 ...state.sessions[sessionId]?.transcriptWindow,
                 capabilityVersion: capability.blockNativeVersion,
                 error: null,
                 isLoading: true,
             }));
+
+            const metadata = await api.getAiTranscriptBlockMetadata(sessionId);
+            if (!metadata) {
+                set((state) => updateTranscriptWindowState(state, sessionId, {
+                    ...state.sessions[sessionId]?.transcriptWindow,
+                    isLoading: false,
+                }));
+                return;
+            }
 
             transcriptWindowStore.setMetadata(sessionId, metadata.blocks);
             const visibleBlockIds = metadata.blocks

@@ -672,6 +672,49 @@ describe("ai-store queue", () => {
         expect(session?.transcriptWindow.blocksById.has(block.blockId)).toBe(true);
     });
 
+    it("retries sealed transcript hydration after native migration becomes available", async () => {
+        const getAiTranscriptBlockMetadata = vi
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({
+                blocks: [],
+                capabilityVersion: 1,
+                sessionId: TAB.sessionId,
+                transcriptRevision: 1,
+            });
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlockMetadata,
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().registerSessionTab(TAB);
+
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.transcriptWindow,
+        ).toMatchObject({
+            capabilityVersion: 1,
+            isLoading: false,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({ messages: [], status: "idle" }),
+        );
+
+        await vi.waitFor(() => {
+            expect(getAiTranscriptBlockMetadata).toHaveBeenCalledTimes(2);
+        });
+    });
+
     it("keeps a command-only runtime catalog from status updates", () => {
         const availableCommands = [
             {

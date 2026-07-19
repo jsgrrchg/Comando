@@ -5541,6 +5541,11 @@ export class AiService {
                             sessionId,
                         );
                         this.#scheduleTranscriptBlockMetadataLoad(sessionId);
+                        // The renderer may have observed an empty block-native
+                        // snapshot while this migration was still pending.
+                        // Notify it once blocks are available so it can hydrate
+                        // without requiring the tab to be reopened.
+                        this.#emitSealedTranscriptSnapshot(sessionId);
                     }
                 })
                 .catch((error: unknown) => {

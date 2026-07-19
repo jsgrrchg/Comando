@@ -172,6 +172,63 @@ describe("AiService history", () => {
         }
     });
 
+    it("notifies the renderer when a live transcript migration becomes block-native", async () => {
+        vi.useFakeTimers();
+        const snapshot = createSnapshot();
+        const onSessionSnapshot = vi.fn();
+        const getTranscriptStorageState = vi
+            .fn()
+            .mockResolvedValueOnce({
+                capabilityVersion: 1,
+                legacyFallbackAvailable: true,
+                migrationManifestExists: true,
+                mode: "migrating" as const,
+                sessionId: snapshot.sessionId,
+                storageVersion: 5,
+            })
+            .mockResolvedValue({
+                capabilityVersion: 1,
+                legacyFallbackAvailable: true,
+                migrationManifestExists: false,
+                mode: "block-native" as const,
+                sessionId: snapshot.sessionId,
+                storageVersion: 5,
+            });
+        const service = createService({
+            nativeAi: createNativeAiGateway({
+                getTranscriptCapability: vi.fn(() => ({
+                    blockNativeVersion: 1,
+                    legacyFallbackAvailable: true,
+                })),
+                getTranscriptStorageState,
+                loadTranscriptBlockMetadata: vi.fn(() => Promise.resolve({
+                    blocks: [],
+                    capabilityVersion: 1,
+                    sessionId: snapshot.sessionId,
+                    transcriptRevision: 1,
+                })),
+            }),
+            onSessionSnapshot,
+        });
+
+        try {
+            service.handleNativeSessionSnapshot("window-1", {
+                kind: "snapshot",
+                snapshot,
+            });
+            await vi.advanceTimersByTimeAsync(25);
+
+            expect(onSessionSnapshot).toHaveBeenCalledTimes(2);
+            expect(onSessionSnapshot).toHaveBeenLastCalledWith(
+                "",
+                expect.objectContaining({ kind: "snapshot" }),
+            );
+        } finally {
+            service.close();
+            vi.useRealTimers();
+        }
+    });
+
     it("deletes a persisted session when no live runtime session exists", async () => {
         const deleteSession = vi.fn();
         const service = createService({
