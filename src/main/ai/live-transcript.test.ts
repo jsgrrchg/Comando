@@ -203,6 +203,33 @@ describe("AiLiveTranscriptTailStore", () => {
         });
         expect(store.getPayload("session-2", payloadRef ?? "")).toBeNull();
     });
+
+    it("adds newly sealed blocks without dropping older stable metadata", () => {
+        const store = new AiLiveTranscriptTailStore();
+        const previousBlocks = createStableBlocks(256);
+        store.setStableBlocks(SESSION_ID, previousBlocks);
+        store.applyEvent(messageStarted("assistant-1", "answer", TURN_STARTED_AT));
+        const tail = store.getSnapshot(SESSION_ID);
+        const nextBlock = {
+            ...previousBlocks[0],
+            blockId: `${SESSION_ID}:1`,
+            endSequence: 257,
+            entryCount: 1,
+            startSequence: 257,
+        };
+
+        expect(
+            store.acknowledgeSealedTurn(
+                SESSION_ID,
+                TURN_STARTED_AT,
+                [nextBlock],
+                tail?.revision ?? 0,
+            ),
+        ).toBe(true);
+        expect(
+            store.getSnapshot(SESSION_ID)?.stableBlocks.map((block) => block.blockId),
+        ).toEqual([`${SESSION_ID}:0`, `${SESSION_ID}:1`]);
+    });
 });
 
 function messageStarted(

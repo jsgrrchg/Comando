@@ -591,6 +591,62 @@ pub struct NativeAiAppendTranscriptEntriesInput {
     pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptPayloadWrite {
+    pub payload_ref: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeAiTranscriptTerminalStatus {
+    Cancelled,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiOpenTranscriptEntryRef {
+    pub entry_id: String,
+    pub entry_revision: u64,
+    pub ordinal: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiCheckpointOpenTranscriptTailInput {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub terminal_status: Option<NativeAiTranscriptTerminalStatus>,
+    pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
+    pub payloads: Vec<NativeAiTranscriptPayloadWrite>,
+    pub entry_order: Vec<NativeAiOpenTranscriptEntryRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiOpenTranscriptTail {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub terminal_status: Option<NativeAiTranscriptTerminalStatus>,
+    pub updated_at: String,
+    pub revision: u64,
+    pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
+    pub payloads: Vec<NativeAiTranscriptPayloadWrite>,
+    pub entry_revisions: Vec<NativeAiOpenTranscriptEntryRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiSealTranscriptTurnInput {
+    pub session_id: SessionId,
+    pub turn_id: String,
+    pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
+    pub payloads: Vec<NativeAiTranscriptPayloadWrite>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiTranscriptCursorInput {

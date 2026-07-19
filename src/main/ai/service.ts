@@ -139,6 +139,10 @@ import {
     type AiLiveTranscriptTailSnapshot,
 } from "./live-transcript";
 import {
+    AiTranscriptPersistenceCoordinator,
+    type AiTranscriptPersistenceStatus,
+} from "./transcript-persistence";
+import {
     applyCodexAuthEnv,
     buildCodexSecretPatches,
     getCodexRuntimeStatus,
@@ -467,6 +471,8 @@ export class AiService {
     readonly #liveTranscriptTails = new AiLiveTranscriptTailStore();
     readonly #loadedTranscriptBlockMetadataSessionIds = new Set<string>();
     readonly #loadingTranscriptBlockMetadataSessionIds = new Set<string>();
+    readonly #recoveredTranscriptTailSessionIds = new Set<string>();
+    readonly #transcriptRecoveryPromises = new Map<string, Promise<void>>();
     readonly #liveSessionTouches = new Map<
         string,
         {
@@ -480,6 +486,7 @@ export class AiService {
     >();
     readonly #selectionMutationChains = new Map<string, Promise<void>>();
     #nativeAi: NativeAiGateway | null;
+    #transcriptPersistence: AiTranscriptPersistenceCoordinator | null = null;
     readonly #nativeAuthMigratedRuntimeIds = new Set<AiRuntimeId>();
     readonly #nativeChildParentSessionIds = new Map<string, string>();
     readonly #pendingNativeCatalogPatches = new Map<
@@ -516,6 +523,9 @@ export class AiService {
 
     constructor(options: AiServiceOptions) {
         this.#nativeAi = options.nativeAi ?? null;
+        this.#transcriptPersistence = this.#createTranscriptPersistence(
+            this.#nativeAi,
+        );
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent ?? (() => undefined);
         this.#onSessionSnapshot = options.onSessionSnapshot;
@@ -553,13 +563,17 @@ export class AiService {
 
     setNativeAiGateway(nativeAi: NativeAiGateway | null): void {
         this.#nativeAi = nativeAi;
+        this.#transcriptPersistence = this.#createTranscriptPersistence(nativeAi);
     }
 
     close(): void {
         this.#clearSessionRetentionTimer();
-        void Promise.resolve(this.#nativeAi?.close()).catch((error: unknown) => {
-            debugBenignError("ai.service.close.native", error);
-        });
+        const nativeAi = this.#nativeAi;
+        void (this.#transcriptPersistence?.shutdown(750) ?? Promise.resolve(true))
+            .then(() => nativeAi?.close())
+            .catch((error: unknown) => {
+                debugBenignError("ai.service.close.native", error);
+            });
         this.#nativeReviewBaselines.clear();
         this.#recentNativeReviewContexts.clear();
         this.#resolvedReviewVersions.clear();
@@ -571,6 +585,8 @@ export class AiService {
         this.#liveTranscriptTails.clear();
         this.#loadedTranscriptBlockMetadataSessionIds.clear();
         this.#loadingTranscriptBlockMetadataSessionIds.clear();
+        this.#recoveredTranscriptTailSessionIds.clear();
+        this.#transcriptRecoveryPromises.clear();
         this.#liveSessionTouches.clear();
         for (const sessionId of this.#retentionCloseRuntimeSessionIds.keys()) {
             this.#forgetRetentionCloseRuntimeSessions(sessionId);
@@ -661,6 +677,12 @@ export class AiService {
         return this.#liveTranscriptTails.getSnapshot(sessionId);
     }
 
+    getTranscriptPersistenceStatus(
+        sessionId: string,
+    ): AiTranscriptPersistenceStatus | null {
+        return this.#transcriptPersistence?.getStatus(sessionId) ?? null;
+    }
+
     handleNativeRuntimeStatus(status: AiRuntimeStatus): void {
         this.#onRuntimeStatus(this.#withPersistedRuntimeCatalog(status));
     }
@@ -669,7 +691,16 @@ export class AiService {
         readonly ownerWindowId: string;
         readonly sessionId: string;
     }): void {
-        this.#clearLiveSession(payload.sessionId);
+        this.#transcriptPersistence?.requestSeal(
+            payload.sessionId,
+            "cancelled",
+        );
+        void (this.#transcriptPersistence?.flushSession(
+            payload.sessionId,
+            750,
+        ) ?? Promise.resolve(true)).finally(() => {
+            this.#clearLiveSession(payload.sessionId);
+        });
     }
 
     handleNativeSessionSnapshot(
@@ -700,6 +731,7 @@ export class AiService {
             ownerWindowId,
         );
         this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
+        this.#scheduleTranscriptRecovery(nextSnapshot.sessionId);
         this.#scheduleTranscriptBlockMetadataLoad(nextSnapshot.sessionId);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
             preserveCanonicalTranscriptArrays(
@@ -739,6 +771,20 @@ export class AiService {
         }
 
         this.#liveTranscriptTails.applyEvent(event);
+        this.#transcriptPersistence?.scheduleCheckpoint(event.sessionId);
+        if (event.kind === "turn-status") {
+            this.#transcriptPersistence?.requestSeal(
+                event.sessionId,
+                event.status,
+            );
+        } else if (event.kind === "status" && event.status === "error") {
+            this.#transcriptPersistence?.requestSeal(event.sessionId, "failed");
+        } else if (event.kind === "session-closed") {
+            this.#transcriptPersistence?.requestSeal(
+                event.sessionId,
+                "cancelled",
+            );
+        }
 
         const previousSnapshot = this.#liveSnapshots.get(event.sessionId);
         if (previousSnapshot) {
@@ -1328,6 +1374,9 @@ export class AiService {
                                 parentSnapshot,
                                 ownerWindowId,
                             );
+                            await this.#recoverTranscriptTail(
+                                parentSnapshot.sessionId,
+                            );
                         }
                         this.#adoptNativeSubagentSnapshot(
                             launch.persistedSnapshot,
@@ -1349,8 +1398,11 @@ export class AiService {
                     acceptedSnapshot.sessionId,
                     ownerWindowId,
                 );
+            await this.#recoverTranscriptTail(acceptedSnapshot.sessionId);
             void this.#enforceSessionRetention();
-            return reconciledSnapshot ?? acceptedSnapshot;
+            return this.#liveTranscriptTails.projectLegacySnapshot(
+                reconciledSnapshot ?? acceptedSnapshot,
+            );
         } catch (error) {
             this.#nativeSessionIds.delete(input.sessionId);
             this.#discardPreparedSessionContextOnFailure(
@@ -1522,6 +1574,7 @@ export class AiService {
                             snapshot.sessionId,
                             ownerWindowId,
                         );
+                        await this.#recoverTranscriptTail(snapshot.sessionId);
                     }
                     this.#adoptNativeSubagentSnapshot(
                         launch.persistedSnapshot,
@@ -1905,6 +1958,8 @@ export class AiService {
     async cancelSession(sessionId: string): Promise<void> {
         this.#promptQueue.pause(sessionId);
         await this.#cancelNativeSession(sessionId);
+        this.#transcriptPersistence?.requestSeal(sessionId, "cancelled");
+        await this.#transcriptPersistence?.flushSession(sessionId, 750);
     }
 
     async #cancelNativeSession(sessionId: string): Promise<void> {
@@ -1921,6 +1976,8 @@ export class AiService {
         }
 
         await this.#requireNativeAiGateway().closeSession(sessionId);
+        this.#transcriptPersistence?.requestSeal(sessionId, "cancelled");
+        await this.#transcriptPersistence?.flushSession(sessionId, 750);
         if (this.#nativeChildParentSessionIds.has(sessionId)) {
             this.#detachLiveSession(sessionId);
             return;
@@ -1985,15 +2042,28 @@ export class AiService {
             )
             .map(([sessionId]) => sessionId);
 
-        Promise.resolve(this.#nativeAi?.closeOwnedByWindow(ownerWindowId)).catch(
-            (error: unknown) => {
-                debugBenignError("ai.service.closeOwnedByWindow.native", error);
-            },
-        );
         for (const sessionId of sessionIds) {
             this.#recordRetentionClose(sessionId, "window_close");
-            this.#clearLiveSession(sessionId);
+            this.#detachLiveSession(sessionId);
         }
+        void Promise.resolve(this.#nativeAi?.closeOwnedByWindow(ownerWindowId))
+            .catch((error: unknown) => {
+                debugBenignError("ai.service.closeOwnedByWindow.native", error);
+            })
+            .finally(() => {
+                for (const sessionId of sessionIds) {
+                    this.#transcriptPersistence?.requestSeal(
+                        sessionId,
+                        "cancelled",
+                    );
+                    void (this.#transcriptPersistence?.flushSession(
+                        sessionId,
+                        750,
+                    ) ?? Promise.resolve(true)).finally(() => {
+                        this.#clearLiveSession(sessionId);
+                    });
+                }
+            });
     }
 
     async launchRuntimeAuth(input: AiRuntimeAuthLaunchInput): Promise<void> {
@@ -2476,6 +2546,55 @@ export class AiService {
             });
     }
 
+    #createTranscriptPersistence(
+        nativeAi: NativeAiGateway | null,
+    ): AiTranscriptPersistenceCoordinator | null {
+        if (
+            !nativeAi?.checkpointOpenTranscriptTail ||
+            !nativeAi.loadOpenTranscriptTail ||
+            !nativeAi.sealTranscriptTurn
+        ) {
+            return null;
+        }
+        const checkpoint = nativeAi.checkpointOpenTranscriptTail.bind(nativeAi);
+        const load = nativeAi.loadOpenTranscriptTail.bind(nativeAi);
+        const seal = nativeAi.sealTranscriptTurn.bind(nativeAi);
+        return new AiTranscriptPersistenceCoordinator(
+            this.#liveTranscriptTails,
+            { checkpoint, load, seal },
+        );
+    }
+
+    #scheduleTranscriptRecovery(sessionId: string): void {
+        void this.#recoverTranscriptTail(sessionId).catch((error: unknown) => {
+            debugBenignError("ai.service.recoverTranscriptTail", error);
+        });
+    }
+
+    async #recoverTranscriptTail(sessionId: string): Promise<void> {
+        if (
+            !this.#transcriptPersistence ||
+            this.#recoveredTranscriptTailSessionIds.has(sessionId)
+        ) {
+            return;
+        }
+        const existing = this.#transcriptRecoveryPromises.get(sessionId);
+        if (existing) {
+            await existing;
+            return;
+        }
+        const recovery = this.#transcriptPersistence
+            .recover(sessionId)
+            .then(() => {
+                this.#recoveredTranscriptTailSessionIds.add(sessionId);
+            })
+            .finally(() => {
+                this.#transcriptRecoveryPromises.delete(sessionId);
+            });
+        this.#transcriptRecoveryPromises.set(sessionId, recovery);
+        await recovery;
+    }
+
     #requireNativeAiGatewayForRuntime(runtimeId: AiRuntimeId): NativeAiGateway {
         const nativeAi = this.#selectNativeAiGateway(runtimeId);
         if (!nativeAi) {
@@ -2595,6 +2714,9 @@ export class AiService {
             this.#nativeChildParentSessionIds.delete(currentSessionId);
             this.#liveSnapshots.delete(currentSessionId);
             this.#liveTranscriptTails.clearSession(currentSessionId);
+            this.#transcriptPersistence?.clearSession(currentSessionId);
+            this.#recoveredTranscriptTailSessionIds.delete(currentSessionId);
+            this.#transcriptRecoveryPromises.delete(currentSessionId);
             this.#loadedTranscriptBlockMetadataSessionIds.delete(
                 currentSessionId,
             );
@@ -3027,6 +3149,7 @@ export class AiService {
             ownerWindowId,
         );
         this.#scheduleTranscriptBlockMetadataLoad(cachedSnapshot.sessionId);
+        this.#scheduleTranscriptRecovery(cachedSnapshot.sessionId);
         if (!this.#isNativeAiSession(cachedSnapshot.sessionId)) {
             this.#persistence.saveSessionSnapshot(cachedSnapshot);
         }

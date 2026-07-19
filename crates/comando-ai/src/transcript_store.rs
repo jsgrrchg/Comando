@@ -5,8 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use comando_types::ai::{
-    AI_TRANSCRIPT_CURSOR_LIMIT_MAX, NativeAiTranscriptBlockMetadata,
-    NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind, NativeAiTranscriptEntrySummary,
+    AI_TRANSCRIPT_CURSOR_LIMIT_MAX, NativeAiOpenTranscriptEntryRef, NativeAiOpenTranscriptTail,
+    NativeAiTranscriptBlockMetadata, NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind,
+    NativeAiTranscriptEntrySummary, NativeAiTranscriptPayloadWrite,
+    NativeAiTranscriptTerminalStatus,
 };
 use comando_types::ids::SessionId;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -20,18 +22,14 @@ use crate::events::now_iso8601;
 const TRANSCRIPT_DATABASE_FILE: &str = "transcript-v2.sqlite3";
 const LEGACY_TRANSCRIPT_ENTRIES_FILE: &str = "transcript-entries.json";
 const TRANSCRIPT_PAYLOADS_DIR: &str = "transcript-payloads";
-pub(crate) const TRANSCRIPT_SCHEMA_VERSION: u32 = 2;
+pub(crate) const TRANSCRIPT_SCHEMA_VERSION: u32 = 3;
 const TRANSCRIPT_BLOCK_SIZE: usize = 256;
 const INLINE_PAYLOAD_MAX_BYTES: usize = 64 * 1024;
 const TRANSCRIPT_PAYLOAD_MAX_BYTES: usize = 64 * 1024 * 1024;
 const TRANSCRIPT_PAYLOAD_REF_MAX_BYTES: usize = 512;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct AiTranscriptPayloadWrite {
-    pub payload_ref: String,
-    pub value: Value,
-}
+pub type AiTranscriptPayloadWrite = NativeAiTranscriptPayloadWrite;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AiTranscriptPayload {
@@ -111,7 +109,8 @@ impl TranscriptStore {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| transcript_sql("start transcript seal transaction", error))?;
-            persist_payloads(&transaction, session_id, &prepared_payloads)?;
+            let obsolete_payload_files =
+                persist_payloads(&transaction, session_id, &prepared_payloads)?;
             append_entries_in_transaction(&transaction, session_id, entries)?;
             let block_ids = block_ids_for_entries(&transaction, session_id, &entry_ids)?;
             if block_ids.is_empty() {
@@ -123,14 +122,200 @@ impl TranscriptStore {
             seal_blocks(&transaction, session_id, turn_id, &block_ids)?;
             let metadata = load_block_metadata_by_ids(&transaction, session_id, &block_ids)?;
             transaction
+                .execute(
+                    "DELETE FROM transcript_open_tails
+                     WHERE session_id = ?1 AND turn_id = ?2",
+                    params![session_id.0, turn_id],
+                )
+                .map_err(|error| transcript_sql("clear sealed open transcript tail", error))?;
+            transaction
                 .commit()
                 .map_err(|error| transcript_sql("commit transcript seal transaction", error))?;
-            Ok(metadata)
+            Ok((metadata, obsolete_payload_files))
         })();
-        if result.is_err() {
-            self.remove_orphaned_payload_files(&connection, session_id, &prepared_payloads);
+        match result {
+            Ok((metadata, obsolete_payload_files)) => {
+                self.remove_unreferenced_payload_files(
+                    &connection,
+                    session_id,
+                    &obsolete_payload_files,
+                );
+                Ok(metadata)
+            }
+            Err(error) => {
+                self.remove_orphaned_payload_files(&connection, session_id, &prepared_payloads);
+                Err(error)
+            }
         }
-        result
+    }
+
+    pub(crate) fn checkpoint_open_tail(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+        terminal_status: Option<NativeAiTranscriptTerminalStatus>,
+        entries: Vec<NativeAiTranscriptEntryEnvelope>,
+        payloads: Vec<AiTranscriptPayloadWrite>,
+        entry_order: Vec<NativeAiOpenTranscriptEntryRef>,
+    ) -> AiResult<()> {
+        if turn_id.trim().is_empty() {
+            return Err(AiError::InvalidInput(
+                "Open transcript turn ID must not be empty".to_string(),
+            ));
+        }
+        if entry_order.is_empty() {
+            return Err(AiError::InvalidInput(
+                "Open transcript tail must contain at least one entry".to_string(),
+            ));
+        }
+        validate_entry_ownership(session_id, &entries)?;
+        validate_payload_writes(&payloads)?;
+        validate_open_tail_entry_order(&entry_order)?;
+        let mut connection = self.open(session_id, true)?;
+        let prepared_payloads = self.prepare_payloads(payloads)?;
+        let result = (|| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| {
+                    transcript_sql("start open transcript checkpoint transaction", error)
+                })?;
+            let obsolete_payload_files =
+                persist_payloads(&transaction, session_id, &prepared_payloads)?;
+            append_entries_in_transaction(&transaction, session_id, entries)?;
+            persist_open_tail(
+                &transaction,
+                session_id,
+                turn_id,
+                terminal_status.as_ref(),
+                &entry_order,
+            )?;
+            transaction.commit().map_err(|error| {
+                transcript_sql("commit open transcript checkpoint transaction", error)
+            })?;
+            Ok(obsolete_payload_files)
+        })();
+        match result {
+            Ok(obsolete_payload_files) => {
+                self.remove_unreferenced_payload_files(
+                    &connection,
+                    session_id,
+                    &obsolete_payload_files,
+                );
+                Ok(())
+            }
+            Err(error) => {
+                self.remove_orphaned_payload_files(&connection, session_id, &prepared_payloads);
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn load_open_tail(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<Option<NativeAiOpenTranscriptTail>> {
+        if !self.has_data_source() {
+            return Ok(None);
+        }
+        let connection = self.open(session_id, false)?;
+        let state = connection
+            .query_row(
+                "SELECT turn_id, terminal_status, updated_at, revision
+                 FROM transcript_open_tails
+                 WHERE session_id = ?1",
+                params![session_id.0],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| transcript_sql("load open transcript tail state", error))?;
+        let Some((turn_id, terminal_status, updated_at, revision)) = state else {
+            return Ok(None);
+        };
+        let mut statement = connection
+            .prepare(
+                "SELECT
+                    entries.sequence,
+                    entries.entry_id,
+                    entries.kind,
+                    entries.created_at,
+                    entries.updated_at,
+                    entries.summary_json,
+                    entries.payload_ref,
+                    open_entries.entry_revision,
+                    open_entries.ordinal
+                 FROM transcript_open_tail_entries AS open_entries
+                 JOIN transcript_entries AS entries
+                    ON entries.session_id = open_entries.session_id
+                    AND entries.entry_id = open_entries.entry_id
+                 WHERE open_entries.session_id = ?1
+                 ORDER BY open_entries.ordinal ASC",
+            )
+            .map_err(|error| transcript_sql("prepare open transcript tail entries", error))?;
+        let rows = statement
+            .query_map(params![session_id.0], |row| {
+                Ok((
+                    StoredTranscriptEntry {
+                        sequence: row.get(0)?,
+                        entry_id: row.get(1)?,
+                        kind: row.get(2)?,
+                        created_at: row.get(3)?,
+                        updated_at: row.get(4)?,
+                        summary_json: row.get(5)?,
+                        payload_ref: row.get(6)?,
+                    },
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })
+            .map_err(|error| transcript_sql("query open transcript tail entries", error))?;
+        let mut entries = Vec::new();
+        let mut entry_revisions = Vec::new();
+        for row in rows {
+            let (stored, entry_revision, ordinal) =
+                row.map_err(|error| transcript_sql("read open transcript tail entry", error))?;
+            let entry = stored.into_envelope(session_id)?;
+            entry_revisions.push(NativeAiOpenTranscriptEntryRef {
+                entry_id: entry.id.clone(),
+                entry_revision: sql_to_u64(entry_revision, "open tail entry revision")?,
+                ordinal: sql_to_usize(ordinal, "open tail entry ordinal")?,
+            });
+            entries.push(entry);
+        }
+        drop(statement);
+        drop(connection);
+
+        let mut payloads = Vec::new();
+        for payload_ref in entries
+            .iter()
+            .filter_map(|entry| entry.payload_ref.as_deref())
+        {
+            let payload =
+                self.load_payload(session_id, payload_ref, TRANSCRIPT_PAYLOAD_MAX_BYTES)?;
+            payloads.push(AiTranscriptPayloadWrite {
+                payload_ref: payload.payload_ref,
+                value: payload.value,
+            });
+        }
+        Ok(Some(NativeAiOpenTranscriptTail {
+            session_id: session_id.clone(),
+            turn_id,
+            terminal_status: terminal_status
+                .as_deref()
+                .map(parse_terminal_status)
+                .transpose()?,
+            updated_at,
+            revision: sql_to_u64(revision, "open tail revision")?,
+            entries,
+            payloads,
+            entry_revisions,
+        }))
     }
 
     pub(crate) fn load_payload(
@@ -483,6 +668,32 @@ impl TranscriptStore {
         }
     }
 
+    fn remove_unreferenced_payload_files(
+        &self,
+        connection: &Connection,
+        session_id: &SessionId,
+        file_names: &[String],
+    ) {
+        for file_name in file_names {
+            let referenced = connection
+                .query_row(
+                    "SELECT 1
+                     FROM transcript_payloads
+                     WHERE session_id = ?1 AND file_name = ?2
+                     LIMIT 1",
+                    params![session_id.0, file_name],
+                    |_| Ok(()),
+                )
+                .optional()
+                .ok()
+                .flatten()
+                .is_some();
+            if !referenced {
+                let _ = fs::remove_file(self.payloads_dir.join(file_name));
+            }
+        }
+    }
+
     fn read_payload_file(&self, content_hash: &str, file_name: &str) -> AiResult<Vec<u8>> {
         let expected_file_name = format!("{content_hash}.json");
         if file_name != expected_file_name {
@@ -621,6 +832,19 @@ impl TranscriptStore {
         if imported == 0 {
             if let Some(entries) = legacy_entries {
                 append_entries_in_transaction(&transaction, session_id, entries)?;
+                transaction
+                    .execute(
+                        "UPDATE transcript_blocks
+                         SET
+                            is_sealed = 1,
+                            turn_id = COALESCE(turn_id, 'legacy:' || block_id),
+                            sealed_at = COALESCE(sealed_at, ?2)
+                         WHERE session_id = ?1 AND is_sealed = 0",
+                        params![session_id.0, now_iso8601()],
+                    )
+                    .map_err(|error| {
+                        transcript_sql("seal imported legacy transcript blocks", error)
+                    })?;
             }
             transaction
                 .execute(
@@ -702,6 +926,8 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
         transaction
             .execute_batch("ALTER TABLE transcript_entries ADD COLUMN block_id TEXT;")
             .map_err(|error| transcript_sql("add transcript entry block ownership", error))?;
+    } else if locked_version == 2 {
+        // Version 2 already contains entries, blocks, and immutable payloads.
     } else {
         return Err(AiError::Internal(format!(
             "Transcript database schema version {locked_version} cannot be migrated"
@@ -755,9 +981,44 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
              ) STRICT;
 
              CREATE INDEX IF NOT EXISTS transcript_payloads_session_hash_idx
-                ON transcript_payloads (session_id, content_hash);",
+                ON transcript_payloads (session_id, content_hash);
+
+             CREATE TABLE IF NOT EXISTS transcript_open_tails (
+                session_id TEXT PRIMARY KEY NOT NULL,
+                turn_id TEXT NOT NULL,
+                terminal_status TEXT CHECK (
+                    terminal_status IS NULL
+                    OR terminal_status IN ('cancelled', 'completed', 'failed')
+                ),
+                updated_at TEXT NOT NULL,
+                revision INTEGER NOT NULL CHECK (revision >= 1),
+                FOREIGN KEY (session_id) REFERENCES transcript_sessions(session_id)
+                    ON DELETE CASCADE
+             ) STRICT;
+
+             CREATE TABLE IF NOT EXISTS transcript_open_tail_entries (
+                session_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+                entry_revision INTEGER NOT NULL CHECK (entry_revision >= 1),
+                PRIMARY KEY (session_id, entry_id),
+                UNIQUE (session_id, ordinal),
+                FOREIGN KEY (session_id) REFERENCES transcript_open_tails(session_id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY (session_id, entry_id)
+                    REFERENCES transcript_entries(session_id, entry_id)
+                    ON DELETE CASCADE
+             ) STRICT;
+
+             CREATE INDEX IF NOT EXISTS transcript_open_tail_entries_order_idx
+                ON transcript_open_tail_entries (session_id, ordinal);",
         )
-        .map_err(|error| transcript_sql("create transcript blocks and payload schema", error))?;
+        .map_err(|error| {
+            transcript_sql(
+                "create transcript blocks, payload, and open tail schema",
+                error,
+            )
+        })?;
 
     if locked_version == 1 {
         transaction
@@ -815,6 +1076,19 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                  SET block_id = session_id || ':' || CAST((sequence - 1) / 256 AS INTEGER);",
             )
             .map_err(|error| transcript_sql("backfill transcript block metadata", error))?;
+    }
+    if matches!(locked_version, 1 | 2) {
+        transaction
+            .execute(
+                "UPDATE transcript_blocks
+                 SET
+                    is_sealed = 1,
+                    turn_id = COALESCE(turn_id, 'legacy:' || block_id),
+                    sealed_at = COALESCE(sealed_at, ?1)
+                 WHERE is_sealed = 0",
+                params![now_iso8601()],
+            )
+            .map_err(|error| transcript_sql("seal migrated transcript blocks", error))?;
     }
     transaction
         .pragma_update(None, "user_version", i64::from(TRANSCRIPT_SCHEMA_VERSION))
@@ -978,6 +1252,122 @@ fn append_entries_in_transaction(
     Ok(())
 }
 
+fn validate_open_tail_entry_order(entry_order: &[NativeAiOpenTranscriptEntryRef]) -> AiResult<()> {
+    let mut entry_ids = BTreeSet::new();
+    let mut ordinals = BTreeSet::new();
+    for entry in entry_order {
+        if entry.entry_id.trim().is_empty() || entry.entry_revision == 0 {
+            return Err(AiError::InvalidInput(
+                "Open transcript entry state is invalid".to_string(),
+            ));
+        }
+        if !entry_ids.insert(entry.entry_id.as_str()) || !ordinals.insert(entry.ordinal) {
+            return Err(AiError::InvalidInput(
+                "Open transcript entry order contains duplicates".to_string(),
+            ));
+        }
+    }
+    if ordinals.iter().copied().ne(0..entry_order.len()) {
+        return Err(AiError::InvalidInput(
+            "Open transcript entry ordinals must be contiguous".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn persist_open_tail(
+    transaction: &Transaction<'_>,
+    session_id: &SessionId,
+    turn_id: &str,
+    terminal_status: Option<&NativeAiTranscriptTerminalStatus>,
+    entry_order: &[NativeAiOpenTranscriptEntryRef],
+) -> AiResult<()> {
+    for entry in entry_order {
+        let exists = transaction
+            .query_row(
+                "SELECT 1
+                 FROM transcript_entries
+                 WHERE session_id = ?1 AND entry_id = ?2",
+                params![session_id.0, entry.entry_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| transcript_sql("validate open transcript entry", error))?
+            .is_some();
+        if !exists {
+            return Err(AiError::InvalidInput(
+                "Open transcript tail references an entry that was not persisted".to_string(),
+            ));
+        }
+    }
+    transaction
+        .execute(
+            "INSERT INTO transcript_open_tails (
+                session_id,
+                turn_id,
+                terminal_status,
+                updated_at,
+                revision
+             ) VALUES (?1, ?2, ?3, ?4, 1)
+             ON CONFLICT (session_id) DO UPDATE SET
+                turn_id = excluded.turn_id,
+                terminal_status = excluded.terminal_status,
+                updated_at = excluded.updated_at,
+                revision = transcript_open_tails.revision + 1",
+            params![
+                session_id.0,
+                turn_id,
+                terminal_status.map(terminal_status_to_sql),
+                now_iso8601(),
+            ],
+        )
+        .map_err(|error| transcript_sql("persist open transcript tail state", error))?;
+    transaction
+        .execute(
+            "DELETE FROM transcript_open_tail_entries WHERE session_id = ?1",
+            params![session_id.0],
+        )
+        .map_err(|error| transcript_sql("replace open transcript entry order", error))?;
+    for entry in entry_order {
+        transaction
+            .execute(
+                "INSERT INTO transcript_open_tail_entries (
+                    session_id,
+                    entry_id,
+                    ordinal,
+                    entry_revision
+                 ) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    session_id.0,
+                    entry.entry_id,
+                    usize_to_sql(entry.ordinal)?,
+                    u64_to_sql(entry.entry_revision, "open tail entry revision")?,
+                ],
+            )
+            .map_err(|error| transcript_sql("persist open transcript entry order", error))?;
+    }
+    Ok(())
+}
+
+fn terminal_status_to_sql(status: &NativeAiTranscriptTerminalStatus) -> &'static str {
+    match status {
+        NativeAiTranscriptTerminalStatus::Cancelled => "cancelled",
+        NativeAiTranscriptTerminalStatus::Completed => "completed",
+        NativeAiTranscriptTerminalStatus::Failed => "failed",
+    }
+}
+
+fn parse_terminal_status(value: &str) -> AiResult<NativeAiTranscriptTerminalStatus> {
+    match value {
+        "cancelled" => Ok(NativeAiTranscriptTerminalStatus::Cancelled),
+        "completed" => Ok(NativeAiTranscriptTerminalStatus::Completed),
+        "failed" => Ok(NativeAiTranscriptTerminalStatus::Failed),
+        _ => Err(AiError::Internal(
+            "Open transcript terminal status is invalid".to_string(),
+        )),
+    }
+}
+
 #[derive(Debug)]
 struct ExistingTranscriptEntry {
     block_id: Option<String>,
@@ -1117,23 +1507,73 @@ fn persist_payloads(
     transaction: &Transaction<'_>,
     session_id: &SessionId,
     payloads: &[PreparedPayload],
-) -> AiResult<()> {
+) -> AiResult<Vec<String>> {
+    let mut obsolete_file_names = BTreeSet::new();
     for payload in payloads {
-        let existing_hash = transaction
+        let existing = transaction
             .query_row(
-                "SELECT content_hash
-                 FROM transcript_payloads
-                 WHERE session_id = ?1 AND payload_ref = ?2",
+                "SELECT
+                    payloads.content_hash,
+                    payloads.file_name,
+                    EXISTS (
+                        SELECT 1
+                        FROM transcript_entries AS entries
+                        JOIN transcript_blocks AS blocks
+                            ON blocks.session_id = entries.session_id
+                            AND blocks.block_id = entries.block_id
+                        WHERE entries.session_id = payloads.session_id
+                            AND entries.payload_ref = payloads.payload_ref
+                            AND blocks.is_sealed = 1
+                    )
+                 FROM transcript_payloads AS payloads
+                 WHERE payloads.session_id = ?1 AND payloads.payload_ref = ?2",
                 params![session_id.0, payload.payload_ref],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(|error| transcript_sql("find transcript payload", error))?;
-        if let Some(existing_hash) = existing_hash {
-            if existing_hash != payload.content_hash {
+        if let Some((existing_hash, existing_file_name, sealed_reference)) = existing {
+            if existing_hash == payload.content_hash {
+                continue;
+            }
+            if sealed_reference == 1 {
                 return Err(AiError::InvalidInput(
-                    "Transcript payload reference is immutable".to_string(),
+                    "Sealed transcript payload references are immutable".to_string(),
                 ));
+            }
+            let inline_data = payload
+                .file_name
+                .is_none()
+                .then_some(payload.bytes.as_slice());
+            transaction
+                .execute(
+                    "UPDATE transcript_payloads
+                     SET
+                        content_hash = ?3,
+                        byte_length = ?4,
+                        inline_data = ?5,
+                        file_name = ?6,
+                        created_at = ?7
+                     WHERE session_id = ?1 AND payload_ref = ?2",
+                    params![
+                        session_id.0,
+                        payload.payload_ref,
+                        payload.content_hash,
+                        usize_to_sql(payload.bytes.len())?,
+                        inline_data,
+                        payload.file_name,
+                        now_iso8601(),
+                    ],
+                )
+                .map_err(|error| transcript_sql("update open transcript payload", error))?;
+            if let Some(file_name) = existing_file_name {
+                obsolete_file_names.insert(file_name);
             }
             continue;
         }
@@ -1164,7 +1604,7 @@ fn persist_payloads(
             )
             .map_err(|error| transcript_sql("persist transcript payload", error))?;
     }
-    Ok(())
+    Ok(obsolete_file_names.into_iter().collect())
 }
 
 fn block_ids_for_entries(
@@ -1282,7 +1722,7 @@ fn load_all_block_metadata(
                 last_created_at,
                 revision
              FROM transcript_blocks
-             WHERE session_id = ?1
+             WHERE session_id = ?1 AND is_sealed = 1
              ORDER BY ordinal ASC",
         )
         .map_err(|error| transcript_sql("prepare transcript block metadata query", error))?;
@@ -1578,6 +2018,19 @@ fn usize_to_sql(value: usize) -> AiResult<i64> {
         .map_err(|_| AiError::InvalidInput("Transcript query limit is too large".to_string()))
 }
 
+fn u64_to_sql(value: u64, label: &str) -> AiResult<i64> {
+    i64::try_from(value)
+        .map_err(|_| AiError::InvalidInput(format!("Transcript {label} is too large")))
+}
+
+fn sql_to_u64(value: i64, label: &str) -> AiResult<u64> {
+    u64::try_from(value).map_err(|_| AiError::Internal(format!("Transcript {label} is invalid")))
+}
+
+fn sql_to_usize(value: i64, label: &str) -> AiResult<usize> {
+    usize::try_from(value).map_err(|_| AiError::Internal(format!("Transcript {label} is invalid")))
+}
+
 fn transcript_sql(action: &str, error: rusqlite::Error) -> AiError {
     AiError::Internal(format!("{action} failed: {error}"))
 }
@@ -1652,7 +2105,13 @@ mod tests {
         let legacy_bytes = serde_json::to_vec(&vec![entry(&session_id, "entry-1")]).unwrap();
         fs::write(&store.legacy_entries_path, &legacy_bytes).unwrap();
         let connection = Connection::open(&store.database_path).unwrap();
-        connection.pragma_update(None, "user_version", 3).unwrap();
+        connection
+            .pragma_update(
+                None,
+                "user_version",
+                i64::from(TRANSCRIPT_SCHEMA_VERSION) + 1,
+            )
+            .unwrap();
         drop(connection);
 
         let error = store.load_after(&session_id, None, 10).unwrap_err();

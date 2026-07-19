@@ -1,5 +1,6 @@
 import type {
     AiMessage,
+    AiOpenTranscriptTail,
     AiPlan,
     AiSessionDomainEvent,
     AiSessionSnapshot,
@@ -35,7 +36,7 @@ export interface AiLiveTranscriptEntry {
 }
 
 export interface AiLiveTranscriptTailSnapshot {
-    readonly entries: readonly AiLiveTranscriptEntry[];
+    readonly entries: readonly AiLiveTranscriptVersionedEntry[];
     readonly revision: number;
     readonly sessionId: string;
     readonly stableBlocks: readonly AiTranscriptBlockMetadata[];
@@ -43,9 +44,11 @@ export interface AiLiveTranscriptTailSnapshot {
     readonly turnId: string | null;
 }
 
-export interface AiLiveTranscriptPendingEntry extends AiLiveTranscriptEntry {
+export interface AiLiveTranscriptVersionedEntry extends AiLiveTranscriptEntry {
     readonly entryRevision: number;
 }
+
+export type AiLiveTranscriptPendingEntry = AiLiveTranscriptVersionedEntry;
 
 interface MutableLiveTranscriptEntry
     extends Omit<AiLiveTranscriptEntry, "envelope"> {
@@ -78,6 +81,61 @@ export class AiLiveTranscriptTailStore {
 
     clearSession(sessionId: string): void {
         this.#sessions.delete(sessionId);
+    }
+
+    restoreOpenTail(tail: AiOpenTranscriptTail): void {
+        const previous = this.#sessions.get(tail.sessionId);
+        const payloadByRef = new Map(
+            tail.payloads.map((payload) => [payload.payloadRef, payload.value]),
+        );
+        const revisionByEntryId = new Map(
+            tail.entryRevisions.map((entry) => [entry.entryId, entry]),
+        );
+        const entriesById = new Map<string, MutableLiveTranscriptEntry>();
+        const orderedEntryIds: string[] = [];
+        const pendingEntryRevisionById = new Map<string, number>();
+        for (const envelope of tail.entries) {
+            const payloadRef = envelope.payloadRef;
+            const payload = payloadRef ? payloadByRef.get(payloadRef) : null;
+            const entryState = revisionByEntryId.get(envelope.id);
+            if (!isLiveTranscriptPayload(payload) || !entryState) {
+                continue;
+            }
+            entriesById.set(envelope.id, {
+                entryRevision: entryState.entryRevision,
+                envelope,
+                payload,
+            });
+            orderedEntryIds[entryState.ordinal] = envelope.id;
+            pendingEntryRevisionById.set(
+                envelope.id,
+                entryState.entryRevision,
+            );
+        }
+        const compactOrder = orderedEntryIds.filter(Boolean);
+        const turnStartedAt = compactOrder.reduce<string | null>(
+            (minimum, entryId) => {
+                const createdAt = entriesById.get(entryId)?.envelope.createdAt;
+                if (!createdAt) {
+                    return minimum;
+                }
+                return minimum === null || createdAt < minimum
+                    ? createdAt
+                    : minimum;
+            },
+            null,
+        );
+        this.#sessions.set(tail.sessionId, {
+            entriesById,
+            orderedEntryIds: compactOrder,
+            pendingEntryRevisionById,
+            revision: Math.max(previous?.revision ?? 0, tail.revision),
+            stableBlocks: previous?.stableBlocks ?? [],
+            stableEndSequence: previous?.stableEndSequence ?? 0,
+            terminalTurnStatus: tail.terminalStatus,
+            turnId: tail.turnId,
+            turnStartedAt,
+        });
     }
 
     synchronizeSnapshot(snapshot: AiSessionSnapshot): void {
@@ -257,9 +315,14 @@ export class AiLiveTranscriptTailStore {
         sessionId: string,
         turnId: string,
         stableBlocks: readonly AiTranscriptBlockMetadata[],
+        expectedRevision: number,
     ): boolean {
         const session = this.#sessions.get(sessionId);
-        if (!session || session.turnId !== turnId) {
+        if (
+            !session ||
+            session.turnId !== turnId ||
+            session.revision !== expectedRevision
+        ) {
             return false;
         }
         session.entriesById.clear();
@@ -268,7 +331,10 @@ export class AiLiveTranscriptTailStore {
         session.turnId = null;
         session.turnStartedAt = null;
         session.terminalTurnStatus = null;
-        this.setStableBlocks(sessionId, stableBlocks);
+        this.setStableBlocks(sessionId, [
+            ...session.stableBlocks,
+            ...stableBlocks,
+        ]);
         session.revision += 1;
         return true;
     }
@@ -881,6 +947,21 @@ function sameStableBlocks(
     right: readonly AiTranscriptBlockMetadata[],
 ): boolean {
     return stableJson(left) === stableJson(right);
+}
+
+function isLiveTranscriptPayload(
+    value: unknown,
+): value is AiLiveTranscriptPayload {
+    if (!value || typeof value !== "object" || !("kind" in value)) {
+        return false;
+    }
+    const kind = (value as { readonly kind?: unknown }).kind;
+    return (
+        kind === "message" ||
+        kind === "tool" ||
+        kind === "status" ||
+        kind === "plan"
+    );
 }
 
 function stableJson(value: unknown): string {

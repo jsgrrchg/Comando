@@ -10,7 +10,7 @@ use comando_ai::events::{
 };
 use comando_ai::history::{
     AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
-    LegacyAiHistoryReader,
+    AiTranscriptPayloadWrite, LegacyAiHistoryReader,
 };
 use comando_ai::runtime_setup::invalidate_runtime_auth_on_error;
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
@@ -224,6 +224,9 @@ impl NativeBackend {
             | "ai_list_session_history"
             | "ai_load_session_transcript_page"
             | "ai_append_transcript_entries"
+            | "ai_checkpoint_open_transcript_tail"
+            | "ai_load_open_transcript_tail"
+            | "ai_seal_transcript_turn"
             | "ai_load_transcript_block_metadata"
             | "ai_load_transcript_before"
             | "ai_load_transcript_after"
@@ -354,6 +357,9 @@ impl NativeBackend {
             | "ai_list_session_history"
             | "ai_load_session_transcript_page"
             | "ai_append_transcript_entries"
+            | "ai_checkpoint_open_transcript_tail"
+            | "ai_load_open_transcript_tail"
+            | "ai_seal_transcript_turn"
             | "ai_load_transcript_block_metadata"
             | "ai_load_transcript_before"
             | "ai_load_transcript_after"
@@ -2365,6 +2371,87 @@ impl NativeBackend {
                         .map_err(|error| error.to_native_error())
                 }) {
                     Ok(()) => response_only(request.id, json!({ "ok": true })),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_checkpoint_open_transcript_tail" => {
+                let input = match parse_args::<native_ai::NativeAiCheckpointOpenTranscriptTailInput>(
+                    &request,
+                ) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                let payloads = input
+                    .payloads
+                    .into_iter()
+                    .map(|payload| AiTranscriptPayloadWrite {
+                        payload_ref: payload.payload_ref,
+                        value: payload.value,
+                    })
+                    .collect();
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .checkpoint_open_transcript_tail(
+                            &input.session_id,
+                            &input.turn_id,
+                            input.terminal_status,
+                            input.entries,
+                            payloads,
+                            input.entry_order,
+                        )
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(()) => response_only(request.id, json!({ "ok": true })),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_open_transcript_tail" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadSessionSnapshotInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .load_open_transcript_tail(&input.session_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(tail) => response_only(
+                        request.id,
+                        serde_json::to_value(tail).expect("AI open transcript tail serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_seal_transcript_turn" => {
+                let input = match parse_args::<native_ai::NativeAiSealTranscriptTurnInput>(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                let payloads = input
+                    .payloads
+                    .into_iter()
+                    .map(|payload| AiTranscriptPayloadWrite {
+                        payload_ref: payload.payload_ref,
+                        value: payload.value,
+                    })
+                    .collect();
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .seal_transcript_turn(
+                            &input.session_id,
+                            &input.turn_id,
+                            input.entries,
+                            payloads,
+                        )
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(metadata) => response_only(
+                        request.id,
+                        serde_json::to_value(metadata)
+                            .expect("AI sealed transcript metadata serializes"),
+                    ),
                     Err(error) => error_only(request.id, error),
                 }
             }

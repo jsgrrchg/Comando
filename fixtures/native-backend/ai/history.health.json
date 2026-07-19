@@ -1,6 +1,6 @@
 {
   "healthy": true,
-  "storageVersion": 2,
+  "storageVersion": 3,
   "nativeSessionCount": 2,
   "legacyFallbackAvailable": true,
   "migrationManifestExists": false,

@@ -1,6 +1,8 @@
 import type {
     AiHistorySessionSummary,
     AiMessage,
+    AiOpenTranscriptTail,
+    AiOpenTranscriptTailCheckpoint,
     AiPermissionResponseInput,
     AiPromptResult,
     AiRuntimeAuthDisconnectInput,
@@ -21,6 +23,7 @@ import type {
     AiTranscriptBlockMetadata,
     AiTranscriptCursorInput,
     AiTranscriptEntryEnvelope,
+    AiSealTranscriptTurnInput,
     AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
@@ -370,6 +373,46 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             entries,
             sessionId,
         });
+    }
+
+    async checkpointOpenTranscriptTail(
+        input: AiOpenTranscriptTailCheckpoint,
+    ): Promise<void> {
+        await this.#client.request("ai_checkpoint_open_transcript_tail", {
+            entries: input.entries,
+            entryOrder: input.entryOrder,
+            payloads: input.payloads,
+            sessionId: input.sessionId,
+            terminalStatus: input.terminalStatus,
+            turnId: input.turnId,
+        });
+    }
+
+    async loadOpenTranscriptTail(
+        sessionId: string,
+    ): Promise<AiOpenTranscriptTail | null> {
+        return await this.#client.request<AiOpenTranscriptTail | null>(
+            "ai_load_open_transcript_tail",
+            { sessionId },
+        );
+    }
+
+    async sealTranscriptTurn(
+        input: AiSealTranscriptTurnInput,
+    ): Promise<readonly AiTranscriptBlockMetadata[]> {
+        const output = await this.#client.request<unknown>(
+            "ai_seal_transcript_turn",
+            {
+                entries: input.entries,
+                payloads: input.payloads,
+                sessionId: input.sessionId,
+                turnId: input.turnId,
+            },
+        );
+        if (!Array.isArray(output)) {
+            throw new Error("Native sealed transcript metadata must be an array.");
+        }
+        return output as NativeAiTranscriptBlockMetadata[];
     }
 
     async loadTranscriptBlockMetadata(

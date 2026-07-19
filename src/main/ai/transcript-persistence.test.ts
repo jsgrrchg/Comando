@@ -1,0 +1,301 @@
+import { describe, expect, it, vi } from "vitest";
+
+import type {
+    AiMessage,
+    AiOpenTranscriptTail,
+    AiSessionDomainEventBase,
+    AiTranscriptBlockMetadata,
+} from "@shared/ipc";
+
+import { AiLiveTranscriptTailStore } from "./live-transcript";
+import {
+    AiTranscriptPersistenceCoordinator,
+    type AiTranscriptPersistenceAdapter,
+} from "./transcript-persistence";
+
+type CheckpointInput = Parameters<
+    AiTranscriptPersistenceAdapter["checkpoint"]
+>[0];
+type SealInput = Parameters<AiTranscriptPersistenceAdapter["seal"]>[0];
+
+const SESSION_ID = "session-1";
+const TURN_ID = "2026-07-18T00:01:00.000Z";
+const eventBase: Omit<AiSessionDomainEventBase, "kind"> = {
+    origin: "live",
+    parentSessionId: null,
+    runtimeId: "codex",
+    runtimeSessionId: "runtime-1",
+    sessionId: SESSION_ID,
+    updatedAt: "2026-07-18T00:01:01.000Z",
+};
+
+describe("AiTranscriptPersistenceCoordinator", () => {
+    it("keeps streaming visible while an ordered checkpoint is in flight", async () => {
+        const store = liveStore();
+        const firstWrite = deferred<void>();
+        const checkpoints: CheckpointInput[] = [];
+        const checkpoint = vi.fn(async (input: CheckpointInput) => {
+            checkpoints.push(input);
+            if (checkpoints.length === 1) {
+                await firstWrite.promise;
+            }
+        });
+        const adapter = adapterStub({
+            checkpoint,
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(store, adapter);
+
+        store.applyEvent(messageStarted(""));
+        coordinator.scheduleCheckpoint(SESSION_ID);
+        await vi.waitFor(() => expect(checkpoints).toHaveLength(1));
+
+        store.applyEvent(messageDelta("complete", "complete"));
+        coordinator.scheduleCheckpoint(SESSION_ID);
+        expect(store.getSnapshot(SESSION_ID)?.entries[0]?.payload).toMatchObject({
+            message: { content: "complete" },
+        });
+
+        firstWrite.resolve();
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        expect(checkpoints).toHaveLength(2);
+        expect(checkpoints[0]?.entries[0]?.sequence).toBe(1);
+        expect(checkpoints[1]?.entries[0]?.sequence).toBe(1);
+        expect(checkpoints[1]?.entries.map((entry) => entry.id)).toEqual([
+            "message:assistant-1",
+        ]);
+        expect(checkpoints[1]?.payloads[0]?.value).toMatchObject({
+            message: { content: "complete" },
+        });
+    });
+
+    it("retries a transient failure without changing sequences or losing payloads", async () => {
+        const store = liveStore();
+        const checkpoints: CheckpointInput[] = [];
+        const checkpoint = vi.fn((input: CheckpointInput): Promise<void> => {
+            checkpoints.push(input);
+            return checkpoints.length === 1
+                ? Promise.reject(new Error("disk temporarily unavailable"))
+                : Promise.resolve();
+        });
+        const adapter = adapterStub({
+            checkpoint,
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapter,
+            () => undefined,
+            { retryBaseDelayMs: 1, retryMaxDelayMs: 2 },
+        );
+
+        store.applyEvent(messageStarted("answer"));
+        coordinator.scheduleCheckpoint(SESSION_ID);
+
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+        expect(checkpoints).toHaveLength(2);
+        expect(checkpoints[0]?.entries[0]?.id).toBe("message:assistant-1");
+        expect(checkpoints[1]?.entries[0]?.id).toBe("message:assistant-1");
+        expect(checkpoints[1]?.entries[0]?.sequence).toBe(
+            checkpoints[0]?.entries[0]?.sequence,
+        );
+        expect(checkpoints[1]?.payloads).toEqual(checkpoints[0]?.payloads);
+        expect(coordinator.getStatus(SESSION_ID)).toMatchObject({
+            attempt: 0,
+            lastError: null,
+            phase: "idle",
+            recoverable: true,
+        });
+    });
+
+    it("restores an open tail in its persisted order after restart", async () => {
+        const store = new AiLiveTranscriptTailStore();
+        const recovered = recoveredTail();
+        const checkpoint = vi.fn((input: CheckpointInput) => {
+            void input;
+            return Promise.resolve();
+        });
+        const adapter = adapterStub({
+            checkpoint,
+            load: vi.fn(() => Promise.resolve(recovered)),
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(store, adapter);
+
+        await coordinator.recover(SESSION_ID);
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        const snapshot = store.getSnapshot(SESSION_ID);
+        expect(snapshot?.entries.map((entry) => entry.envelope.id)).toEqual([
+            "message:first",
+            "message:second",
+        ]);
+        expect(snapshot?.entries.map((entry) => entry.envelope.sequence)).toEqual([
+            1, 2,
+        ]);
+        expect(checkpoint).toHaveBeenCalledOnce();
+        expect(checkpoint.mock.calls[0]?.[0].entryOrder).toEqual([
+            { entryId: "message:first", entryRevision: 2, ordinal: 0 },
+            { entryId: "message:second", entryRevision: 4, ordinal: 1 },
+        ]);
+    });
+
+    it("checkpoints terminal state before sealing and clears the live tail", async () => {
+        const store = liveStore();
+        const metadata = sealedMetadata();
+        const checkpoint = vi.fn((input: CheckpointInput) => {
+            void input;
+            return Promise.resolve();
+        });
+        const seal = vi.fn((input: SealInput) => {
+            void input;
+            return Promise.resolve([metadata]);
+        });
+        const adapter = adapterStub({ checkpoint, seal });
+        const coordinator = new AiTranscriptPersistenceCoordinator(store, adapter);
+        store.applyEvent(messageStarted("final answer"));
+
+        coordinator.requestSeal(SESSION_ID, "cancelled");
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        expect(checkpoint).toHaveBeenCalledOnce();
+        expect(checkpoint.mock.calls[0]?.[0].terminalStatus).toBe(
+            "cancelled",
+        );
+        expect(seal).toHaveBeenCalledOnce();
+        expect(seal.mock.calls[0]?.[0]).toMatchObject({
+            sessionId: SESSION_ID,
+            turnId: TURN_ID,
+        });
+        expect(store.getSnapshot(SESSION_ID)).toMatchObject({
+            entries: [],
+            stableBlocks: [metadata],
+            turnId: null,
+        });
+    });
+
+    it("bounds shutdown flush when durable storage does not respond", async () => {
+        const store = liveStore();
+        const blocked = deferred<void>();
+        const adapter = adapterStub({
+            checkpoint: vi.fn(async () => await blocked.promise),
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(store, adapter);
+        store.applyEvent(messageStarted("answer"));
+        coordinator.scheduleCheckpoint(SESSION_ID);
+
+        await expect(coordinator.flushSession(SESSION_ID, 10)).resolves.toBe(false);
+        blocked.resolve();
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+    });
+});
+
+function adapterStub(
+    overrides: Partial<AiTranscriptPersistenceAdapter> = {},
+): AiTranscriptPersistenceAdapter {
+    return {
+        checkpoint: vi.fn(() => Promise.resolve()),
+        load: vi.fn(() => Promise.resolve(null)),
+        seal: vi.fn(() => Promise.resolve([])),
+        ...overrides,
+    };
+}
+
+function liveStore(): AiLiveTranscriptTailStore {
+    const store = new AiLiveTranscriptTailStore();
+    store.applyEvent({
+        ...eventBase,
+        activeTurnStartedAt: TURN_ID,
+        kind: "status",
+        lastError: null,
+        status: "streaming",
+    });
+    return store;
+}
+
+function messageStarted(content: string) {
+    return {
+        ...eventBase,
+        kind: "message-started" as const,
+        message: message("assistant-1", content, TURN_ID),
+        messageKind: "assistant" as const,
+    };
+}
+
+function messageDelta(content: string, delta: string) {
+    return {
+        ...eventBase,
+        content,
+        delta,
+        kind: "message-delta" as const,
+        messageId: "assistant-1",
+        messageKind: "assistant" as const,
+        updatedAt: "2026-07-18T00:01:02.000Z",
+    };
+}
+
+function message(id: string, content: string, createdAt: string): AiMessage {
+    return {
+        attachments: [],
+        content,
+        createdAt,
+        id,
+        kind: "assistant",
+        status: "streaming",
+    };
+}
+
+function recoveredTail(): AiOpenTranscriptTail {
+    const values = [
+        ["message:first", "first", 1],
+        ["message:second", "second", 2],
+    ] as const;
+    return {
+        entries: values.map(([id, content, sequence]) => ({
+            createdAt: TURN_ID,
+            id,
+            kind: "message",
+            payloadRef: `tail:${id}`,
+            sequence,
+            sessionId: SESSION_ID,
+            summary: { label: "Assistant", preview: content, status: "streaming" },
+            updatedAt: eventBase.updatedAt,
+        })),
+        entryRevisions: [
+            { entryId: "message:first", entryRevision: 2, ordinal: 0 },
+            { entryId: "message:second", entryRevision: 4, ordinal: 1 },
+        ],
+        payloads: values.map(([id, content]) => ({
+            payloadRef: `tail:${id}`,
+            value: { kind: "message", message: message(id.slice(8), content, TURN_ID) },
+        })),
+        revision: 7,
+        sessionId: SESSION_ID,
+        terminalStatus: null,
+        turnId: TURN_ID,
+        updatedAt: eventBase.updatedAt,
+    };
+}
+
+function sealedMetadata(): AiTranscriptBlockMetadata {
+    return {
+        blockId: `${SESSION_ID}:0`,
+        endSequence: 2,
+        entryCount: 2,
+        estimatedHeight: 144,
+        estimatedRowCount: 2,
+        firstCreatedAt: TURN_ID,
+        lastCreatedAt: eventBase.updatedAt,
+        revision: 2,
+        sessionId: SESSION_ID,
+        startSequence: 1,
+    };
+}
+
+function deferred<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+        resolve = resolvePromise;
+        reject = rejectPromise;
+    });
+    return { promise, reject, resolve };
+}

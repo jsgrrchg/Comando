@@ -1,6 +1,8 @@
 import type {
     AiPermissionResponseInput,
     AiHistorySessionSummary,
+    AiOpenTranscriptTail,
+    AiOpenTranscriptTailCheckpoint,
     AiPromptResult,
     AiPromptQueueSnapshot,
     AiSessionConfigOption,
@@ -24,6 +26,7 @@ import type {
     AiTranscriptBlockMetadata,
     AiTranscriptCursorInput,
     AiTranscriptEntryEnvelope,
+    AiSealTranscriptTurnInput,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
     GetAiSessionTranscriptPageInput,
@@ -136,6 +139,9 @@ export interface NativeAiGateway {
         sessionId: string,
         entries: readonly AiTranscriptEntryEnvelope[],
     ): Promise<void>;
+    checkpointOpenTranscriptTail?(
+        input: AiOpenTranscriptTailCheckpoint,
+    ): Promise<void>;
     cancelSession(sessionId: string): Promise<void>;
     captureReviewBaseline?(sessionId: string): Promise<boolean>;
     close(): Promise<void> | void;
@@ -149,6 +155,9 @@ export interface NativeAiGateway {
         parentSessionId: string,
     ): Promise<readonly AiRuntimeSessionMapping[]>;
     loadSessionSnapshot(sessionId: string): Promise<AiSessionSnapshot | null>;
+    loadOpenTranscriptTail?(
+        sessionId: string,
+    ): Promise<AiOpenTranscriptTail | null>;
     loadSessionTranscriptPage(
         input: GetAiSessionTranscriptPageInput,
     ): Promise<AiSessionTranscriptPage | null>;
@@ -173,6 +182,9 @@ export interface NativeAiGateway {
     prepareSession(input: NativeAiPrepareSessionRpcInput): Promise<AiSessionSnapshot>;
     respondPermission(input: AiPermissionResponseInput): Promise<void>;
     respondUserInput(input: AiUserInputResponseInput): Promise<void>;
+    sealTranscriptTurn?(
+        input: AiSealTranscriptTurnInput,
+    ): Promise<readonly AiTranscriptBlockMetadata[]>;
     sendPrompt(input: NativeAiSendPromptRpcInput): Promise<AiPromptResult>;
     setSessionPinned(input: AiSessionPinnedMutationInput): Promise<void>;
     setSessionConfigOption(

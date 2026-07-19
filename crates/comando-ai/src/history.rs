@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 use comando_types::ai::{
     AI_TRANSCRIPT_CURSOR_LIMIT_MAX, NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth,
     NativeAiListSessionHistoryInput, NativeAiLoadSessionTranscriptPageInput,
-    NativeAiRuntimeSessionMapping, NativeAiSessionSnapshot, NativeAiSessionStatus,
-    NativeAiSessionTranscriptPage, NativeAiTranscriptAroundInput, NativeAiTranscriptBlock,
-    NativeAiTranscriptBlockMetadata, NativeAiTranscriptCursorInput,
-    NativeAiTranscriptEntryEnvelope,
+    NativeAiOpenTranscriptEntryRef, NativeAiOpenTranscriptTail, NativeAiRuntimeSessionMapping,
+    NativeAiSessionSnapshot, NativeAiSessionStatus, NativeAiSessionTranscriptPage,
+    NativeAiTranscriptAroundInput, NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadata,
+    NativeAiTranscriptCursorInput, NativeAiTranscriptEntryEnvelope,
+    NativeAiTranscriptTerminalStatus,
 };
 use comando_types::ids::{ProjectId, RuntimeId, RuntimeSessionId, SessionId, WorktreeId};
 use rusqlite::{Connection, OptionalExtension};
@@ -550,6 +551,33 @@ impl AiHistoryStore {
         self.ensure_session_dir(session_id)?;
         self.transcript_store(session_id)
             .seal_turn(session_id, turn_id, entries, payloads)
+    }
+
+    pub fn checkpoint_open_transcript_tail(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+        terminal_status: Option<NativeAiTranscriptTerminalStatus>,
+        entries: Vec<NativeAiTranscriptEntryEnvelope>,
+        payloads: Vec<AiTranscriptPayloadWrite>,
+        entry_order: Vec<NativeAiOpenTranscriptEntryRef>,
+    ) -> AiResult<()> {
+        self.ensure_session_dir(session_id)?;
+        self.transcript_store(session_id).checkpoint_open_tail(
+            session_id,
+            turn_id,
+            terminal_status,
+            entries,
+            payloads,
+            entry_order,
+        )
+    }
+
+    pub fn load_open_transcript_tail(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<Option<NativeAiOpenTranscriptTail>> {
+        self.transcript_store(session_id).load_open_tail(session_id)
     }
 
     pub fn load_transcript_payload(
@@ -3431,6 +3459,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2]
         );
+        assert!(
+            store
+                .load_transcript_block_metadata(&session_id)
+                .unwrap()
+                .is_empty()
+        );
+        store
+            .seal_transcript_turn(&session_id, "turn-1", loaded, vec![])
+            .unwrap();
         let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
         assert_eq!(metadata[0].entry_count, 2);
         assert!(
@@ -3553,7 +3590,7 @@ mod tests {
             })
             .collect();
         store
-            .append_transcript_entries(&session_id, entries)
+            .seal_transcript_turn(&session_id, "turn-1", entries, vec![])
             .unwrap();
 
         let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
@@ -3566,6 +3603,123 @@ mod tests {
             .unwrap();
         assert_eq!(second_block.entries.len(), 44);
         assert_eq!(second_block.entries[0].sequence, 257);
+    }
+
+    #[test]
+    fn open_transcript_tail_recovers_order_and_seals_idempotently() {
+        let (temp, store) = store();
+        let session_id = SessionId("recover_open_tail".to_string());
+        let mut first = transcript_entry(&session_id, "message-1", "first draft");
+        first.payload_ref = Some("tail:message-1".to_string());
+        store
+            .checkpoint_open_transcript_tail(
+                &session_id,
+                "turn-1",
+                None,
+                vec![first.clone()],
+                vec![AiTranscriptPayloadWrite {
+                    payload_ref: "tail:message-1".to_string(),
+                    value: json!({ "kind": "message", "content": "first draft" }),
+                }],
+                vec![NativeAiOpenTranscriptEntryRef {
+                    entry_id: first.id.clone(),
+                    entry_revision: 1,
+                    ordinal: 0,
+                }],
+            )
+            .unwrap();
+
+        first.summary.preview = Some("final first".to_string());
+        first.updated_at = "2026-07-18T00:00:01.000Z".to_string();
+        let mut second = transcript_entry(&session_id, "message-2", "second");
+        second.payload_ref = Some("tail:message-2".to_string());
+        store
+            .checkpoint_open_transcript_tail(
+                &session_id,
+                "turn-1",
+                Some(NativeAiTranscriptTerminalStatus::Cancelled),
+                vec![second.clone(), first.clone()],
+                vec![
+                    AiTranscriptPayloadWrite {
+                        payload_ref: "tail:message-1".to_string(),
+                        value: json!({ "kind": "message", "content": "final first" }),
+                    },
+                    AiTranscriptPayloadWrite {
+                        payload_ref: "tail:message-2".to_string(),
+                        value: json!({ "kind": "message", "content": "second" }),
+                    },
+                ],
+                vec![
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: first.id.clone(),
+                        entry_revision: 2,
+                        ordinal: 0,
+                    },
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: second.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 1,
+                    },
+                ],
+            )
+            .unwrap();
+        assert!(
+            store
+                .load_transcript_block_metadata(&session_id)
+                .unwrap()
+                .is_empty()
+        );
+        drop(store);
+
+        let reopened = AiHistoryStore::new(temp.path()).unwrap();
+        let recovered = reopened
+            .load_open_transcript_tail(&session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.turn_id, "turn-1");
+        assert_eq!(
+            recovered.terminal_status,
+            Some(NativeAiTranscriptTerminalStatus::Cancelled)
+        );
+        assert_eq!(
+            recovered
+                .entries
+                .iter()
+                .map(|entry| (entry.id.as_str(), entry.sequence))
+                .collect::<Vec<_>>(),
+            vec![("message-1", 1), ("message-2", 2)]
+        );
+        assert_eq!(recovered.payloads[0].payload_ref, "tail:message-1");
+        assert_eq!(
+            recovered.payloads[0].value,
+            json!({ "kind": "message", "content": "final first" })
+        );
+        assert_eq!(recovered.payloads[1].payload_ref, "tail:message-2");
+        assert_eq!(
+            recovered.payloads[1].value,
+            json!({ "kind": "message", "content": "second" })
+        );
+
+        let sealed = reopened
+            .seal_transcript_turn(
+                &session_id,
+                "turn-1",
+                recovered.entries.clone(),
+                recovered.payloads.clone(),
+            )
+            .unwrap();
+        let resealed = reopened
+            .seal_transcript_turn(&session_id, "turn-1", recovered.entries, recovered.payloads)
+            .unwrap();
+
+        assert_eq!(sealed, resealed);
+        assert_eq!(sealed.len(), 1);
+        assert!(
+            reopened
+                .load_open_transcript_tail(&session_id)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

@@ -2641,6 +2641,49 @@ export interface AiTranscriptBlock extends AiTranscriptBlockMetadata {
     readonly entries: readonly AiTranscriptEntryEnvelope[];
 }
 
+export type AiTranscriptTerminalStatus =
+    | "cancelled"
+    | "completed"
+    | "failed";
+
+export interface AiTranscriptPayloadWrite {
+    readonly payloadRef: string;
+    readonly value: unknown;
+}
+
+export interface AiOpenTranscriptEntryRef {
+    readonly entryId: string;
+    readonly entryRevision: number;
+    readonly ordinal: number;
+}
+
+export interface AiOpenTranscriptTailCheckpoint {
+    readonly sessionId: string;
+    readonly turnId: string;
+    readonly terminalStatus: AiTranscriptTerminalStatus | null;
+    readonly entries: readonly AiTranscriptEntryEnvelope[];
+    readonly payloads: readonly AiTranscriptPayloadWrite[];
+    readonly entryOrder: readonly AiOpenTranscriptEntryRef[];
+}
+
+export interface AiOpenTranscriptTail {
+    readonly sessionId: string;
+    readonly turnId: string;
+    readonly terminalStatus: AiTranscriptTerminalStatus | null;
+    readonly updatedAt: string;
+    readonly revision: number;
+    readonly entries: readonly AiTranscriptEntryEnvelope[];
+    readonly payloads: readonly AiTranscriptPayloadWrite[];
+    readonly entryRevisions: readonly AiOpenTranscriptEntryRef[];
+}
+
+export interface AiSealTranscriptTurnInput {
+    readonly sessionId: string;
+    readonly turnId: string;
+    readonly entries: readonly AiTranscriptEntryEnvelope[];
+    readonly payloads: readonly AiTranscriptPayloadWrite[];
+}
+
 export interface AiTranscriptCursorInput {
     readonly limit: number;
     readonly sequence: number | null;

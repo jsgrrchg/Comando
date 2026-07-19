@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+    AiOpenTranscriptTail,
     AiSessionSnapshot,
     AiTrackedFile,
     AiRuntimeStatus,
@@ -21,6 +22,8 @@ import {
     type NativeAiGatewayOptions,
 } from "./ai";
 import { NativeBackendError } from "./client";
+
+const TURN_STARTED_AT = "2026-07-18T00:01:00.000Z";
 
 describe("NativeAiGateway", () => {
     it("prepares native sessions with launch context and returns a live snapshot", async () => {
@@ -769,6 +772,66 @@ describe("NativeAiGateway", () => {
         });
     });
 
+    it("routes open-tail checkpoints, recovery and sealing through native storage", async () => {
+        const client = createClient();
+        const tail = openTranscriptTail();
+        client.request.mockImplementation(
+            <T = unknown>(command: string): Promise<T> => {
+                if (command === "ai_load_open_transcript_tail") {
+                    return Promise.resolve(tail as T);
+                }
+                if (command === "ai_seal_transcript_turn") {
+                    return Promise.resolve([
+                        {
+                            blockId: "session-1:0",
+                            endSequence: 1,
+                            entryCount: 1,
+                            estimatedHeight: 72,
+                            estimatedRowCount: 1,
+                            firstCreatedAt: TURN_STARTED_AT,
+                            lastCreatedAt: TURN_STARTED_AT,
+                            revision: 2,
+                            sessionId: "session-1",
+                            startSequence: 1,
+                        },
+                    ] as T);
+                }
+                return Promise.resolve({ ok: true } as T);
+            },
+        );
+        const gateway = createGateway(client);
+        const checkpoint = {
+            entries: tail.entries,
+            entryOrder: tail.entryRevisions,
+            payloads: tail.payloads,
+            sessionId: tail.sessionId,
+            terminalStatus: "cancelled" as const,
+            turnId: tail.turnId,
+        };
+
+        await gateway.checkpointOpenTranscriptTail(checkpoint);
+        await expect(gateway.loadOpenTranscriptTail("session-1")).resolves.toEqual(
+            tail,
+        );
+        await expect(
+            gateway.sealTranscriptTurn({
+                entries: tail.entries,
+                payloads: tail.payloads,
+                sessionId: tail.sessionId,
+                turnId: tail.turnId,
+            }),
+        ).resolves.toMatchObject([{ blockId: "session-1:0" }]);
+
+        expect(client.request).toHaveBeenCalledWith(
+            "ai_checkpoint_open_transcript_tail",
+            checkpoint,
+        );
+        expect(client.request).toHaveBeenCalledWith(
+            "ai_load_open_transcript_tail",
+            { sessionId: "session-1" },
+        );
+    });
+
     it("does not hydrate review state when loading historical snapshots", async () => {
         const client = createClient();
         const legacyFile = createNativeTrackedFile({
@@ -1207,6 +1270,55 @@ function createPromptInput(): SendAiPromptInput {
         sessionId: "session-1",
         title: "Native session",
         worktreeId: "worktree-1",
+    };
+}
+
+function openTranscriptTail(): AiOpenTranscriptTail {
+    return {
+        entries: [
+            {
+                createdAt: TURN_STARTED_AT,
+                id: "message:assistant-1",
+                kind: "message",
+                payloadRef: "tail:message:assistant-1",
+                sequence: 1,
+                sessionId: "session-1",
+                summary: {
+                    label: "Assistant",
+                    preview: "Answer",
+                    status: "streaming",
+                },
+                updatedAt: TURN_STARTED_AT,
+            },
+        ],
+        entryRevisions: [
+            {
+                entryId: "message:assistant-1",
+                entryRevision: 1,
+                ordinal: 0,
+            },
+        ],
+        payloads: [
+            {
+                payloadRef: "tail:message:assistant-1",
+                value: {
+                    kind: "message",
+                    message: {
+                        attachments: [],
+                        content: "Answer",
+                        createdAt: TURN_STARTED_AT,
+                        id: "assistant-1",
+                        kind: "assistant",
+                        status: "streaming",
+                    },
+                },
+            },
+        ],
+        revision: 1,
+        sessionId: "session-1",
+        terminalStatus: null,
+        turnId: TURN_STARTED_AT,
+        updatedAt: TURN_STARTED_AT,
     };
 }
 
