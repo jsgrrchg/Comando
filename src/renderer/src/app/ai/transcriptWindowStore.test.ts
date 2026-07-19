@@ -55,5 +55,7 @@ describe("TranscriptWindowStore", () => {
             .map((sessionId) => store.snapshot(sessionId).residentEntries)
             .reduce((total, count) => total + count, 0);
         expect(residentEntries).toBeLessThanOrEqual(512);
+        expect(store.takeEvictedSessionIds()).toEqual(["session-1"]);
+        expect(store.takeEvictedSessionIds()).toEqual([]);
     });
 });

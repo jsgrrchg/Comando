@@ -23,7 +23,7 @@ use crate::events::now_iso8601;
 const TRANSCRIPT_DATABASE_FILE: &str = "transcript-v2.sqlite3";
 const LEGACY_TRANSCRIPT_ENTRIES_FILE: &str = "transcript-entries.json";
 const TRANSCRIPT_PAYLOADS_DIR: &str = "transcript-payloads";
-pub(crate) const TRANSCRIPT_SCHEMA_VERSION: u32 = 3;
+pub(crate) const TRANSCRIPT_SCHEMA_VERSION: u32 = 4;
 const TRANSCRIPT_BLOCK_SIZE: usize = 256;
 const INLINE_PAYLOAD_MAX_BYTES: usize = 64 * 1024;
 const TRANSCRIPT_PAYLOAD_REF_MAX_BYTES: usize = 512;
@@ -62,6 +62,61 @@ impl TranscriptStore {
 
     pub(crate) fn has_data_source(&self) -> bool {
         self.database_path.exists() || self.legacy_entries_path.exists()
+    }
+
+    pub(crate) fn legacy_transcript_backfill_complete(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<bool> {
+        if !self.database_path.exists() {
+            return Ok(false);
+        }
+        let connection = self.open(session_id, false)?;
+        let state = connection
+            .query_row(
+                "SELECT legacy_transcript_backfill_complete
+                 FROM transcript_sessions
+                 WHERE session_id = ?1",
+                params![session_id.0],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| transcript_sql("load legacy transcript backfill state", error))?;
+        Ok(state.unwrap_or(1) == 1)
+    }
+
+    pub(crate) fn begin_legacy_transcript_backfill(&self, session_id: &SessionId) -> AiResult<()> {
+        let connection = self.open(session_id, true)?;
+        connection
+            .execute(
+                "INSERT INTO transcript_sessions (
+                    session_id,
+                    next_sequence,
+                    legacy_entries_imported,
+                    legacy_transcript_backfill_complete
+                 ) VALUES (?1, 1, 1, 0)
+                 ON CONFLICT (session_id) DO UPDATE SET
+                    legacy_transcript_backfill_complete = 0",
+                params![session_id.0],
+            )
+            .map_err(|error| transcript_sql("start legacy transcript backfill", error))?;
+        Ok(())
+    }
+
+    pub(crate) fn complete_legacy_transcript_backfill(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<()> {
+        let connection = self.open(session_id, true)?;
+        connection
+            .execute(
+                "UPDATE transcript_sessions
+                 SET legacy_transcript_backfill_complete = 1
+                 WHERE session_id = ?1",
+                params![session_id.0],
+            )
+            .map_err(|error| transcript_sql("complete legacy transcript backfill", error))?;
+        Ok(())
     }
 
     pub(crate) fn append(
@@ -990,7 +1045,9 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                 session_id TEXT PRIMARY KEY NOT NULL,
                 next_sequence INTEGER NOT NULL CHECK (next_sequence >= 1),
                 legacy_entries_imported INTEGER NOT NULL DEFAULT 0
-                    CHECK (legacy_entries_imported IN (0, 1))
+                    CHECK (legacy_entries_imported IN (0, 1)),
+                legacy_transcript_backfill_complete INTEGER NOT NULL DEFAULT 1
+                    CHECK (legacy_transcript_backfill_complete IN (0, 1))
              ) STRICT;
 
              CREATE TABLE IF NOT EXISTS transcript_entries (
@@ -1019,10 +1076,28 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
             .map_err(|error| transcript_sql("add transcript entry block ownership", error))?;
     } else if locked_version == 2 {
         // Version 2 already contains entries, blocks, and immutable payloads.
+    } else if locked_version == 3 {
+        transaction
+            .execute_batch(
+                "ALTER TABLE transcript_sessions
+                 ADD COLUMN legacy_transcript_backfill_complete INTEGER NOT NULL DEFAULT 1
+                 CHECK (legacy_transcript_backfill_complete IN (0, 1));",
+            )
+            .map_err(|error| transcript_sql("add legacy transcript backfill state", error))?;
     } else {
         return Err(AiError::Internal(format!(
             "Transcript database schema version {locked_version} cannot be migrated"
         )));
+    }
+
+    if matches!(locked_version, 1 | 2) {
+        transaction
+            .execute_batch(
+                "ALTER TABLE transcript_sessions
+                 ADD COLUMN legacy_transcript_backfill_complete INTEGER NOT NULL DEFAULT 1
+                 CHECK (legacy_transcript_backfill_complete IN (0, 1));",
+            )
+            .map_err(|error| transcript_sql("add legacy transcript backfill state", error))?;
     }
 
     transaction

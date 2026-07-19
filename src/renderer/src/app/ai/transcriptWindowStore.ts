@@ -27,6 +27,7 @@ export interface TranscriptWindowSnapshot {
 
 export class TranscriptWindowStore {
     private readonly sessions = new Map<string, SessionWindow>();
+    private readonly evictedSessionIds = new Set<string>();
 
     constructor(
         private readonly loader: TranscriptBlockLoader,
@@ -51,10 +52,12 @@ export class TranscriptWindowStore {
 
     clear(sessionId: string): void {
         this.sessions.delete(sessionId);
+        this.evictedSessionIds.delete(sessionId);
     }
 
     reset(): void {
         this.sessions.clear();
+        this.evictedSessionIds.clear();
     }
 
     async load(sessionId: string, blockId: string): Promise<AiTranscriptBlock | null> {
@@ -93,6 +96,12 @@ export class TranscriptWindowStore {
         };
     }
 
+    takeEvictedSessionIds(): readonly string[] {
+        const sessionIds = [...this.evictedSessionIds];
+        this.evictedSessionIds.clear();
+        return sessionIds;
+    }
+
     private evict(): void {
         while (this.residentEntryCount() > this.maxResidentEntries) {
             const candidate = [...this.sessions.entries()]
@@ -110,6 +119,7 @@ export class TranscriptWindowStore {
             if (!candidate) return;
             candidate.session.blocks.delete(candidate.blockId);
             candidate.session.touchedAt.delete(candidate.blockId);
+            this.evictedSessionIds.add(candidate.sessionId);
             incrementChatPerformanceCounter("transcript_blocks_evicted");
         }
     }

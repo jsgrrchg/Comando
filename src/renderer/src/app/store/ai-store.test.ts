@@ -9,6 +9,7 @@ import type {
     AiSessionUpdate,
     AiToolActivity,
     AiTranscriptBlock,
+    AiTranscriptBlockMetadata,
     AiTrackedFile,
     AppBootstrapSnapshot,
     WorkspaceChatTab,
@@ -367,6 +368,89 @@ describe("ai-store queue", () => {
                 .getState()
                 .sessions[TAB.sessionId]?.transcriptWindow.protectedBlockIds.has(
                     "block-1",
+                ),
+        ).toBe(false);
+    });
+
+    it("releases evicted blocks from other session windows", async () => {
+        const sessionIds = ["session-eviction-a", "session-eviction-b"] as const;
+        const metadataBySession = new Map<
+            string,
+            readonly AiTranscriptBlockMetadata[]
+        >(
+            sessionIds.map((sessionId) => [
+                sessionId,
+                [1, 2, 3, 4].map((index) => ({
+                    blockId: `${sessionId}:block-${index}`,
+                    endSequence: index * 512,
+                    entryCount: 512,
+                    estimatedHeight: 512 * 72,
+                    estimatedRowCount: 512,
+                    firstCreatedAt: "2026-04-14T00:00:00.000Z",
+                    lastCreatedAt: "2026-04-14T00:00:00.000Z",
+                    revision: 1,
+                    sessionId,
+                    startSequence: (index - 1) * 512 + 1,
+                })),
+            ]),
+        );
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlock: vi.fn(
+                        (sessionId: string, blockId: string) =>
+                            Promise.resolve({
+                                ...metadataBySession
+                                    .get(sessionId)!
+                                    .find((block) => block.blockId === blockId)!,
+                                capabilityVersion: 1,
+                                entries: [],
+                                transcriptRevision: 1,
+                            } satisfies AiTranscriptBlock),
+                    ),
+                    getAiTranscriptBlockMetadata: vi.fn((sessionId: string) =>
+                        Promise.resolve({
+                            blocks: metadataBySession.get(sessionId)!,
+                            capabilityVersion: 1,
+                            sessionId,
+                            transcriptRevision: 1,
+                        }),
+                    ),
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                    getAiTranscriptPayload: vi.fn(),
+                },
+            },
+            writable: true,
+        });
+
+        for (const sessionId of sessionIds) {
+            useAiStore.getState().applySessionSnapshot(
+                createSnapshot({ sessionId }),
+            );
+        }
+        await useAiStore.getState().hydrateTranscriptWindow(sessionIds[0]);
+        await useAiStore
+            .getState()
+            .loadTranscriptWindowBlock(sessionIds[0], `${sessionIds[0]}:block-1`);
+        expect(
+            useAiStore
+                .getState()
+                .sessions[sessionIds[0]]?.transcriptWindow.blocksById.has(
+                    `${sessionIds[0]}:block-1`,
+                ),
+        ).toBe(true);
+
+        await useAiStore.getState().hydrateTranscriptWindow(sessionIds[1]);
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[sessionIds[0]]?.transcriptWindow.blocksById.has(
+                    `${sessionIds[0]}:block-1`,
                 ),
         ).toBe(false);
     });

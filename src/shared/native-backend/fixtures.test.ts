@@ -545,7 +545,7 @@ describe("native backend fixtures", () => {
             fixture<NativeAiTranscriptStorageState>(
                 "ai/transcript.storage_state.json",
             ),
-        ).toMatchObject({ mode: "block-native", storageVersion: 3 });
+        ).toMatchObject({ mode: "block-native", storageVersion: 4 });
         expect(
             fixture<NativeBackendErrorPayload>(
                 "ai/transcript.error.retryable.json",

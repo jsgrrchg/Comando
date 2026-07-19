@@ -2,7 +2,7 @@
   "capabilityVersion": 1,
   "sessionId": "session_1",
   "mode": "block-native",
-  "storageVersion": 3,
+  "storageVersion": 4,
   "legacyFallbackAvailable": true,
   "migrationManifestExists": false
 }
