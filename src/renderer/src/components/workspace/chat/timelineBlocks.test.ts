@@ -41,4 +41,14 @@ describe("TimelineBlockCache", () => {
             cache.derive(block, preferences),
         );
     });
+
+    it("drops derived rows when the source block is evicted", () => {
+        const cache = new TimelineBlockCache();
+        const preferences = { activityVisible: true, fontKey: "default" };
+        const derived = cache.derive(block, preferences);
+
+        cache.evict(block.blockId);
+
+        expect(cache.derive(block, preferences)).not.toBe(derived);
+    });
 });

@@ -120,7 +120,7 @@ import {
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
 import { ToolActivitySegment } from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
-import { TimelineBlockCache } from "./chat/timelineBlocks";
+import { transcriptTimelineBlockCache } from "@renderer/app/ai/timelineBlockCache";
 import {
     buildTranscriptTimelineHistoryRows,
     captureTranscriptSemanticAnchor,
@@ -242,7 +242,6 @@ const EMPTY_TRANSCRIPT_MODEL = createEmptyAiSessionTranscriptModel();
 const CLOSED_SUBAGENT_MESSAGE =
     "This subagent was closed by its parent thread and can’t receive new messages.";
 const PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
-const transcriptTimelineBlockCache = new TimelineBlockCache();
 
 type AiRuntimeCatalog = Pick<
     AiSessionSnapshot,
