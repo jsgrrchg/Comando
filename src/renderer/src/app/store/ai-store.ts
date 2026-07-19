@@ -3720,13 +3720,15 @@ function resolveIncomingSessionSnapshotBase(
         effectiveIncomingSnapshot,
         currentSnapshot,
     );
-    const incomingTranscript =
-        buildAiSessionTranscriptModelFromSnapshot(anchoredIncomingSnapshot);
     if (
         !session ||
         !currentSnapshot ||
         currentSnapshot.sessionId !== anchoredIncomingSnapshot.sessionId
     ) {
+        const incomingTranscript =
+            buildAiSessionTranscriptModelFromSnapshot(
+                anchoredIncomingSnapshot,
+            );
         return {
             snapshot: writeAiSessionTranscriptToSnapshot(
                 anchoredIncomingSnapshot,
@@ -3736,10 +3738,15 @@ function resolveIncomingSessionSnapshotBase(
         };
     }
 
-    const currentTranscript = getSessionTranscript(
+    const currentTranscript = getSessionTranscript(session, currentSnapshot);
+    const boundedIncomingSnapshot = keepBlockNativeLiveTranscriptWindow(
+        anchoredIncomingSnapshot,
         session,
         currentSnapshot,
+        currentTranscript,
     );
+    const incomingTranscript =
+        buildAiSessionTranscriptModelFromSnapshot(boundedIncomingSnapshot);
     const changedKeys = options.changedKeys ?? null;
     const hasAcceptedIncomingSnapshot =
         session.lastIncomingSnapshotUpdatedAt !== null;
@@ -3758,7 +3765,7 @@ function resolveIncomingSessionSnapshotBase(
             snapshot: writeAiSessionTranscriptToSnapshot(
                 mergeHydrationMetadataIntoCurrent(
                     currentSnapshot,
-                    anchoredIncomingSnapshot,
+                    boundedIncomingSnapshot,
                 ),
                 currentTranscript,
             ),
@@ -3773,7 +3780,7 @@ function resolveIncomingSessionSnapshotBase(
     if (!shouldPreserveCurrent) {
         return {
             snapshot: writeAiSessionTranscriptToSnapshot(
-                anchoredIncomingSnapshot,
+                boundedIncomingSnapshot,
                 incomingTranscript,
             ),
             transcript: incomingTranscript,
@@ -3788,7 +3795,7 @@ function resolveIncomingSessionSnapshotBase(
         );
         return {
             snapshot: writeAiSessionTranscriptToSnapshot(
-                anchoredIncomingSnapshot,
+                boundedIncomingSnapshot,
                 nextTranscript,
             ),
             transcript: nextTranscript,
@@ -3799,12 +3806,54 @@ function resolveIncomingSessionSnapshotBase(
         snapshot: writeAiSessionTranscriptToSnapshot(
             mergeHydrationMetadataIntoCurrent(
                 currentSnapshot,
-                anchoredIncomingSnapshot,
+                boundedIncomingSnapshot,
             ),
             currentTranscript,
         ),
         transcript: currentTranscript,
     };
+}
+
+function keepBlockNativeLiveTranscriptWindow(
+    snapshot: AiSessionSnapshot,
+    session: AiSessionClientState,
+    currentSnapshot: AiSessionSnapshot,
+    currentTranscript: AiSessionTranscriptModel,
+): AiSessionSnapshot {
+    if (session.transcriptWindow.capabilityVersion === null) {
+        return snapshot;
+    }
+
+    const activeTurnStartedAt =
+        snapshot.activeTurnStartedAt ?? currentSnapshot.activeTurnStartedAt;
+    if (!activeTurnStartedAt) {
+        return snapshot;
+    }
+
+    const visibleMessageIds = new Set(
+        currentTranscript.messages.map((message) => message.id),
+    );
+    const visibleToolActivityIds = new Set(
+        currentTranscript.toolActivity.map((activity) => activity.id),
+    );
+    // Sealed history is owned by the transcript window. A live snapshot may
+    // refresh visible entries and append the active turn, but cannot hydrate
+    // older blocks behind the window's back.
+    const messages = snapshot.messages.filter(
+        (message) =>
+            visibleMessageIds.has(message.id) ||
+            isTimestampAtOrAfter(message.createdAt, activeTurnStartedAt),
+    );
+    const toolActivity = snapshot.toolActivity.filter(
+        (activity) =>
+            visibleToolActivityIds.has(activity.id) ||
+            isTimestampAtOrAfter(activity.createdAt, activeTurnStartedAt),
+    );
+
+    return messages.length === snapshot.messages.length &&
+        toolActivity.length === snapshot.toolActivity.length
+        ? snapshot
+        : { ...snapshot, messages, toolActivity };
 }
 
 function preserveCurrentToolActivityAnchors(
