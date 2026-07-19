@@ -1355,7 +1355,17 @@ export const ChatTabView = memo(function ChatTabView({
     }, []);
 
     const scheduleScrollToBottom = useCallback(() => {
-        cancelPendingScrollToBottom();
+        // A pending frame reads the latest layout, and the settling frames keep
+        // following subsequent measurements. Restarting either for every
+        // snapshot, resize, and virtual-range notification makes a new turn
+        // visibly jump as its previous tail moves into history.
+        if (
+            pendingScrollFrameRef.current !== null ||
+            bottomFollowSettleActiveRef.current
+        ) {
+            return;
+        }
+
         bottomFollowSettleActiveRef.current = true;
 
         pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
@@ -1363,11 +1373,7 @@ export const ChatTabView = memo(function ChatTabView({
             scrollToBottom();
             scheduleBottomFollowSettle();
         });
-    }, [
-        cancelPendingScrollToBottom,
-        scheduleBottomFollowSettle,
-        scrollToBottom,
-    ]);
+    }, [scheduleBottomFollowSettle, scrollToBottom]);
 
     const handleTimelineVirtualRangeChange = useCallback((range: MeasuredVirtualRange) => {
         const firstVisibleTimelineRow = transcriptHistoryRows
@@ -1423,12 +1429,8 @@ export const ChatTabView = memo(function ChatTabView({
                 ),
             },
         });
-        if (shouldAutoFollowRef.current) {
-            scheduleScrollToBottom();
-        }
     }, [
         loadTranscriptWindowBlock,
-        scheduleScrollToBottom,
         setTranscriptWindowAnchor,
         tab.sessionId,
         transcriptHistoryRows,
