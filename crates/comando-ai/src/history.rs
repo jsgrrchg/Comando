@@ -3976,6 +3976,67 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_turns_seal_scoped_status_and_plan_entries() {
+        let (_temp, store) = store();
+        let session_id = SessionId("scoped_turn_markers".to_string());
+
+        let mut first_status = transcript_entry(
+            &session_id,
+            "status:active-turn:turn-1",
+            "First turn is streaming",
+        );
+        first_status.kind = comando_types::ai::NativeAiTranscriptEntryKind::Status;
+        let mut first_plan = transcript_entry(
+            &session_id,
+            "plan:active:turn-1",
+            "First turn plan",
+        );
+        first_plan.kind = comando_types::ai::NativeAiTranscriptEntryKind::Plan;
+
+        let first_blocks = store
+            .seal_transcript_turn(
+                &session_id,
+                "turn-1",
+                vec![first_status, first_plan],
+                vec![],
+            )
+            .unwrap();
+
+        let mut second_status = transcript_entry(
+            &session_id,
+            "status:active-turn:turn-2",
+            "Second turn is streaming",
+        );
+        second_status.kind = comando_types::ai::NativeAiTranscriptEntryKind::Status;
+        let mut second_plan = transcript_entry(
+            &session_id,
+            "plan:active:turn-2",
+            "Second turn plan",
+        );
+        second_plan.kind = comando_types::ai::NativeAiTranscriptEntryKind::Plan;
+
+        let second_blocks = store
+            .seal_transcript_turn(
+                &session_id,
+                "turn-2",
+                vec![second_status, second_plan],
+                vec![],
+            )
+            .unwrap();
+
+        assert_eq!(first_blocks.len(), 1);
+        assert_eq!(second_blocks.len(), 1);
+        assert_ne!(first_blocks[0].block_id, second_blocks[0].block_id);
+        assert_eq!(
+            store
+                .load_transcript_block_metadata(&session_id)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn failed_turn_seal_rolls_back_entries_blocks_and_orphaned_payload_file() {
         let (_temp, store) = store();
         let session_id = SessionId("failed_seal".to_string());
