@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect } from "react";
 
 import { useSettingsStore } from "@renderer/app/store/settings-store";
 
@@ -17,9 +17,6 @@ import {
 } from "./ChatMessageRow";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
 import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
-
-const ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT = 20;
-const ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT = 20;
 
 type ToolActivitySegmentProps = Pick<
     ToolActivityItemProps,
@@ -244,17 +241,12 @@ function ExpandedActivitySegmentItems({
     readonly contentId: string;
     readonly items: readonly ChatTimelineActivitySegmentRow["items"][number][];
 }) {
-    const [fallbackRenderLimit, setFallbackRenderLimit] = useState(
-        ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT,
-    );
-    const visibleItems = items.slice(0, fallbackRenderLimit);
-    const hasMoreFallbackItems = visibleItems.length < items.length;
     useEffect(() => {
         incrementChatPerformanceCounter(
             "activity_items_mounted",
-            visibleItems.length,
+            items.length,
         );
-    }, [visibleItems.length]);
+    }, [items.length]);
 
     return (
         <div
@@ -265,7 +257,7 @@ function ExpandedActivitySegmentItems({
         >
             <div className="activity-tree min-w-0" role="list">
                 <div className="flex min-w-0 flex-col gap-1.5">
-                    {visibleItems.map((item) => (
+                    {items.map((item) => (
                         <ActivitySegmentItemRow
                             {...itemRendererProps}
                             item={item}
@@ -274,22 +266,6 @@ function ExpandedActivitySegmentItems({
                     ))}
                 </div>
             </div>
-            {hasMoreFallbackItems ? (
-                <button
-                    aria-controls={contentId}
-                    className="ml-10 mt-1 text-xs text-text-secondary underline-offset-2 hover:text-text-primary hover:underline focus-visible:outline-none focus-visible:underline"
-                    onClick={() =>
-                        setFallbackRenderLimit(
-                            (current) =>
-                                current +
-                                ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT,
-                        )
-                    }
-                    type="button"
-                >
-                    Load 20 more
-                </button>
-            ) : null}
         </div>
     );
 }
