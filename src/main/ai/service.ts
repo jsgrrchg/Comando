@@ -5515,9 +5515,14 @@ export class AiService {
         } catch (error) {
             // A failed mode lookup must preserve the readable legacy snapshot.
             debugBenignError("ai.service.transcriptStorageState", error);
+            const shouldRetryBackfill =
+                this.#transcriptStorageModes.get(sessionId) === "migrating";
             this.#transcriptStorageModes.set(sessionId, "legacy");
             if (options.preserveLegacyFallback) {
                 this.#legacyTranscriptSessionIds.add(sessionId);
+            }
+            if (shouldRetryBackfill) {
+                this.#scheduleTranscriptBackfill(sessionId);
             }
             return false;
         }
@@ -5542,6 +5547,7 @@ export class AiService {
                     debugBenignError("ai.service.transcriptBackfill", error);
                 });
         }, TRANSCRIPT_BACKFILL_RETRY_DELAY_MS);
+        unrefTimer(timer);
         this.#transcriptMigrationTimers.set(sessionId, timer);
     }
 

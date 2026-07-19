@@ -1,8 +1,9 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use comando_types::ai::{
     AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, NativeAiHistorySessionSummary,
@@ -50,6 +51,7 @@ const CODEX_IMAGE_PREFIX: &str = "codex-acp:image:";
 pub struct AiHistoryStore {
     app_data_dir: PathBuf,
     compaction_policy: HistoryCompactionPolicy,
+    legacy_transcript_backfill_indexes: Arc<Mutex<HashMap<String, AiTranscriptIndex>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,6 +346,7 @@ impl AiHistoryStore {
         Ok(Self {
             app_data_dir,
             compaction_policy: HistoryCompactionPolicy::default(),
+            legacy_transcript_backfill_indexes: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -716,16 +719,16 @@ impl AiHistoryStore {
         let transcript_store = self.transcript_store(session_id);
         let migration_manifest_exists = self.history_root().join("migrations").exists();
         let legacy_fallback_available = self.transcript_path(session_id).exists();
-        let legacy_transcript_message_count = if legacy_fallback_available {
-            self.legacy_transcript_message_count(session_id)?
-        } else {
-            0
-        };
-        let legacy_transcript_pending = legacy_transcript_message_count > 0
-            && !transcript_store.legacy_transcript_backfill_complete(session_id)?;
-        if legacy_transcript_pending {
-            self.backfill_legacy_transcript_page(session_id)?;
-        }
+        let legacy_transcript_pending = legacy_fallback_available
+            && !transcript_store.legacy_transcript_backfill_complete(session_id)?
+            && self.with_legacy_transcript_backfill_index(session_id, |index| {
+                if index.len() > 0 {
+                    self.backfill_legacy_transcript_page(session_id, index)?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })?;
         let mode = if transcript_store.has_data_source()
             && transcript_store.legacy_transcript_backfill_complete(session_id)?
         {
@@ -737,6 +740,9 @@ impl AiHistoryStore {
         } else {
             NativeAiTranscriptStorageMode::Legacy
         };
+        if mode == NativeAiTranscriptStorageMode::BlockNative {
+            self.clear_legacy_transcript_backfill_index(session_id)?;
+        }
         Ok(NativeAiTranscriptStorageState {
             capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
             session_id: session_id.clone(),
@@ -747,20 +753,16 @@ impl AiHistoryStore {
         })
     }
 
-    fn legacy_transcript_message_count(&self, session_id: &SessionId) -> AiResult<usize> {
-        if !self.transcript_path(session_id).exists() {
-            return Ok(0);
-        }
-        Ok(self.load_or_repair_index(session_id)?.len())
-    }
-
-    fn backfill_legacy_transcript_page(&self, session_id: &SessionId) -> AiResult<()> {
+    fn backfill_legacy_transcript_page(
+        &self,
+        session_id: &SessionId,
+        index: &AiTranscriptIndex,
+    ) -> AiResult<()> {
         let transcript_store = self.transcript_store(session_id);
         if transcript_store.legacy_transcript_backfill_complete(session_id)? {
             return Ok(());
         }
 
-        let index = self.load_or_repair_index(session_id)?;
         transcript_store.begin_legacy_transcript_backfill(session_id)?;
         let offset = transcript_store
             .legacy_transcript_backfill_next_offset(session_id)?
@@ -1096,6 +1098,58 @@ impl AiHistoryStore {
         }
     }
 
+    fn with_legacy_transcript_backfill_index<T>(
+        &self,
+        session_id: &SessionId,
+        operation: impl FnOnce(&AiTranscriptIndex) -> AiResult<T>,
+    ) -> AiResult<T> {
+        let is_cached = self
+            .legacy_transcript_backfill_indexes
+            .lock()
+            .map_err(|error| {
+                AiError::Internal(format!(
+                    "lock legacy transcript backfill indexes failed: {error}"
+                ))
+            })?
+            .contains_key(&session_id.0);
+        if !is_cached {
+            let index = self.load_or_repair_index(session_id)?;
+            self.legacy_transcript_backfill_indexes
+                .lock()
+                .map_err(|error| {
+                    AiError::Internal(format!(
+                        "lock legacy transcript backfill indexes failed: {error}"
+                    ))
+                })?
+                .entry(session_id.0.clone())
+                .or_insert(index);
+        }
+        let indexes = self
+            .legacy_transcript_backfill_indexes
+            .lock()
+            .map_err(|error| {
+                AiError::Internal(format!(
+                    "lock legacy transcript backfill indexes failed: {error}"
+                ))
+            })?;
+        let index = indexes.get(&session_id.0).ok_or_else(|| {
+            AiError::Internal("legacy transcript backfill index was not cached".to_string())
+        })?;
+        operation(index)
+    }
+
+    fn clear_legacy_transcript_backfill_index(&self, session_id: &SessionId) -> AiResult<()> {
+        self.legacy_transcript_backfill_indexes
+            .lock()
+            .map_err(|error| {
+                AiError::Internal(format!(
+                    "lock legacy transcript backfill indexes failed: {error}"
+                ))
+            })?
+            .remove(&session_id.0);
+        Ok(())
+    }
+
     fn rebuild_index_from_transcript(&self, session_id: &SessionId) -> AiResult<AiTranscriptIndex> {
         let transcript_path = self.transcript_path(session_id);
         let file = match File::open(&transcript_path) {
@@ -1268,7 +1322,8 @@ impl AiHistoryStore {
 
     fn save_index(&self, session_id: &SessionId, index: &AiTranscriptIndex) -> AiResult<()> {
         self.ensure_session_dir(session_id)?;
-        atomic_write_json(&self.index_path(session_id), index)
+        atomic_write_json(&self.index_path(session_id), index)?;
+        self.clear_legacy_transcript_backfill_index(session_id)
     }
 
     fn create_empty_transcript(&self, session_id: &SessionId) -> AiResult<()> {
@@ -4009,6 +4064,29 @@ mod tests {
                 .sum::<usize>(),
             300
         );
+    }
+
+    #[test]
+    fn transcript_storage_state_reuses_the_legacy_index_between_backfill_pages() {
+        let (_temp, store) = store();
+        let session_id = SessionId("cached_legacy_transcript_backfill".to_string());
+        let messages = (0..300)
+            .map(|index| message(&format!("legacy-{index}"), "legacy content"))
+            .collect::<Vec<_>>();
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store.save_transcript_window(&session_id, messages).unwrap();
+
+        let first_state = store.transcript_storage_state(&session_id).unwrap();
+        assert_eq!(first_state.mode, NativeAiTranscriptStorageMode::Migrating);
+        fs::write(store.index_path(&session_id), "not valid JSON").unwrap();
+
+        let completed_state = store.transcript_storage_state(&session_id).unwrap();
+        assert_eq!(
+            completed_state.mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        assert_eq!(metadata.len(), 2);
     }
 
     #[test]

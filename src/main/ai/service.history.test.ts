@@ -128,6 +128,50 @@ describe("AiService history", () => {
         expect(loadTranscriptBlockMetadata).not.toHaveBeenCalled();
     });
 
+    it("retries a transient transcript migration status failure", async () => {
+        vi.useFakeTimers();
+        const snapshot = createSnapshot();
+        const getTranscriptStorageState = vi
+            .fn()
+            .mockResolvedValueOnce({
+                capabilityVersion: 1,
+                legacyFallbackAvailable: true,
+                migrationManifestExists: false,
+                mode: "migrating" as const,
+                sessionId: snapshot.sessionId,
+                storageVersion: 5,
+            })
+            .mockRejectedValueOnce(new Error("temporary native backend failure"))
+            .mockResolvedValue({
+                capabilityVersion: 1,
+                legacyFallbackAvailable: true,
+                migrationManifestExists: false,
+                mode: "block-native" as const,
+                sessionId: snapshot.sessionId,
+                storageVersion: 5,
+            });
+        const service = createService({
+            nativeAi: createNativeAiGateway({
+                getTranscriptCapability: vi.fn(() => ({
+                    blockNativeVersion: 1,
+                    legacyFallbackAvailable: true,
+                })),
+                getTranscriptStorageState,
+                loadSessionSnapshot: vi.fn(() => Promise.resolve(snapshot)),
+            }),
+        });
+
+        try {
+            await service.getSessionSnapshot(snapshot.sessionId);
+            await vi.advanceTimersByTimeAsync(50);
+
+            expect(getTranscriptStorageState).toHaveBeenCalledTimes(3);
+        } finally {
+            service.close();
+            vi.useRealTimers();
+        }
+    });
+
     it("deletes a persisted session when no live runtime session exists", async () => {
         const deleteSession = vi.fn();
         const service = createService({

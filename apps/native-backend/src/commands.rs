@@ -83,6 +83,7 @@ pub struct NativeBackend {
     git_runner: GitRunner,
     index_service: IndexService,
     persistence_store: Option<SqlitePersistenceStore>,
+    history_store: Option<AiHistoryStore>,
     review_service: NativeReviewService,
     runtime_setup_store: Option<RuntimeSetupStore>,
     runtime_setup_store_shared: Arc<Mutex<Option<RuntimeSetupStore>>>,
@@ -432,9 +433,10 @@ impl NativeBackend {
                     Ok(history_store) => Some(history_store),
                     Err(error) => return error_only(request.id, error.to_native_error()),
                 };
-                if let Err(error) = self.ai_engine.set_history_store(history_store) {
+                if let Err(error) = self.ai_engine.set_history_store(history_store.clone()) {
                     return error_only(request.id, error.to_native_error());
                 }
+                self.history_store = history_store;
                 let runtime_setup_store = RuntimeSetupStore::new(
                     store.app_data_dir().join("ai").join("runtime-setup.json"),
                 );
@@ -2800,6 +2802,9 @@ impl NativeBackend {
     }
 
     fn ai_history_store(&self) -> Result<AiHistoryStore, NativeError> {
+        if let Some(store) = &self.history_store {
+            return Ok(store.clone());
+        }
         let Some(store) = self.persistence_store.as_ref() else {
             return Err(NativeError::new(
                 NativeErrorCode::BackendNotReady,
