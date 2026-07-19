@@ -14,6 +14,7 @@ import type {
     AiHistorySessionSummary,
     AiRuntimeId,
     ComandoApi,
+    WorkspaceSurfaceActionRequest,
 } from "@shared/ipc";
 import {
     ACTIVE_AI_RUNTIME_IDS,
@@ -147,11 +148,17 @@ const CLAUDE_CODE_NOT_FOUND_MESSAGE =
 
 export function SidebarAgentsPanel({
     filter,
+    onRequestWorkspaceAction,
     projectId,
+    workspaceContextKey,
     worktreeId,
 }: {
     readonly filter?: string;
+    readonly onRequestWorkspaceAction?: (
+        request: WorkspaceSurfaceActionRequest,
+    ) => void;
     readonly projectId: string | null;
+    readonly workspaceContextKey?: string | null;
     readonly worktreeId: string | null;
 }) {
     const openChatSessionTab = useWorkspaceStore(
@@ -560,7 +567,40 @@ export function SidebarAgentsPanel({
     const handleOpenSession = useCallback(
         (session: SidebarAgentSessionSummary) => {
             if (isClaudeCodeSidebarSession(session)) {
+                if (
+                    onRequestWorkspaceAction &&
+                    projectId &&
+                    workspaceContextKey
+                ) {
+                    onRequestWorkspaceAction({
+                        contextKey: workspaceContextKey,
+                        kind: "focus-terminal",
+                        projectId,
+                        terminalId: session.terminalId,
+                        worktreeId,
+                    });
+                    return;
+                }
                 void focusClaudeCodeSidebarSession(session);
+                return;
+            }
+
+            if (
+                onRequestWorkspaceAction &&
+                projectId &&
+                workspaceContextKey
+            ) {
+                onRequestWorkspaceAction({
+                    contextKey: workspaceContextKey,
+                    kind: "chat-session",
+                    projectId,
+                    runtimeId: session.runtimeId as AiRuntimeId,
+                    sessionId: session.sessionId,
+                    sessionProjectId: session.projectId,
+                    sessionWorktreeId: session.worktreeId ?? null,
+                    title: session.title,
+                    worktreeId,
+                });
                 return;
             }
 
@@ -573,12 +613,33 @@ export function SidebarAgentsPanel({
                 worktreeId: session.worktreeId ?? null,
             });
         },
-        [openChatSessionTab],
+        [
+            onRequestWorkspaceAction,
+            openChatSessionTab,
+            projectId,
+            workspaceContextKey,
+            worktreeId,
+        ],
     );
 
     const handleOpenHistoryTab = useCallback(() => {
+        if (onRequestWorkspaceAction && projectId && workspaceContextKey) {
+            onRequestWorkspaceAction({
+                contextKey: workspaceContextKey,
+                kind: "chat-history",
+                projectId,
+                worktreeId,
+            });
+            return;
+        }
         void openChatHistoryTab(projectId, worktreeId);
-    }, [openChatHistoryTab, projectId, worktreeId]);
+    }, [
+        onRequestWorkspaceAction,
+        openChatHistoryTab,
+        projectId,
+        workspaceContextKey,
+        worktreeId,
+    ]);
 
     const handleOpenNewAgentMenu = useCallback(
         (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -596,16 +657,46 @@ export function SidebarAgentsPanel({
 
     const handleCreateNewAgentTab = useCallback(
         (runtimeId: ActiveAiRuntimeId) => {
+            if (onRequestWorkspaceAction && projectId && workspaceContextKey) {
+                onRequestWorkspaceAction({
+                    contextKey: workspaceContextKey,
+                    kind: "new-chat",
+                    projectId,
+                    runtimeId,
+                    worktreeId,
+                });
+                return;
+            }
             void createChatTab(projectId, worktreeId, runtimeId);
         },
-        [createChatTab, projectId, worktreeId],
+        [
+            createChatTab,
+            onRequestWorkspaceAction,
+            projectId,
+            workspaceContextKey,
+            worktreeId,
+        ],
     );
     const handleOpenClaudeCodeTerminal = useCallback(() => {
+        if (onRequestWorkspaceAction && projectId && workspaceContextKey) {
+            onRequestWorkspaceAction({
+                contextKey: workspaceContextKey,
+                kind: "new-claude-terminal",
+                projectId,
+                worktreeId,
+            });
+            return;
+        }
         void launchClaudeCodeTerminal({
             projectId,
             worktreeId,
         });
-    }, [projectId, worktreeId]);
+    }, [
+        onRequestWorkspaceAction,
+        projectId,
+        workspaceContextKey,
+        worktreeId,
+    ]);
 
     useEffect(() => {
         let cancelled = false;

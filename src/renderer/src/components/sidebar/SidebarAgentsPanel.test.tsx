@@ -131,6 +131,12 @@ function createSnapshot(
 
 async function mountSidebarAgentsPanel(
     sessions: readonly AiHistorySessionSummary[],
+    options: {
+        readonly onRequestWorkspaceAction?: Parameters<
+            typeof SidebarAgentsPanel
+        >[0]["onRequestWorkspaceAction"];
+        readonly workspaceContextKey?: string;
+    } = {},
 ): Promise<HTMLDivElement> {
     writeSidebarAgentsHistoryCache(
         "project-1",
@@ -160,7 +166,9 @@ async function mountSidebarAgentsPanel(
     await act(async () => {
         root.render(
             <SidebarAgentsPanel
+                onRequestWorkspaceAction={options.onRequestWorkspaceAction}
                 projectId="project-1"
+                workspaceContextKey={options.workspaceContextKey}
                 worktreeId="worktree-1"
             />,
         );
@@ -169,6 +177,42 @@ async function mountSidebarAgentsPanel(
 
     return container;
 }
+
+describe("SidebarAgentsPanel workspace surface actions", () => {
+    it("requests chat session opening in the active surface", async () => {
+        Object.defineProperty(globalThis, "localStorage", {
+            configurable: true,
+            value: new MemoryStorage(),
+        });
+        const onRequestWorkspaceAction = vi.fn();
+        const session = createSummary();
+        const container = await mountSidebarAgentsPanel([session], {
+            onRequestWorkspaceAction,
+            workspaceContextKey: "project-1::worktree-1",
+        });
+        const row = container.querySelector<HTMLElement>(
+            '.sidebar-agents-row[title="Cached Session"]',
+        );
+
+        expect(row).not.toBeNull();
+        await act(async () => {
+            row?.click();
+            await Promise.resolve();
+        });
+
+        expect(onRequestWorkspaceAction).toHaveBeenCalledWith({
+            contextKey: "project-1::worktree-1",
+            kind: "chat-session",
+            projectId: "project-1",
+            runtimeId: session.runtimeId,
+            sessionId: session.sessionId,
+            sessionProjectId: session.projectId,
+            sessionWorktreeId: session.worktreeId,
+            title: session.title,
+            worktreeId: "worktree-1",
+        });
+    });
+});
 
 function persistFolderState(
     sessionFolderIds: Readonly<Record<string, string>> = {},

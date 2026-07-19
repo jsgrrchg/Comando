@@ -4477,7 +4477,9 @@ export function App() {
                     <SidebarGitPanel
                         filter={gitChangesFilter}
                         onRequestWorkspaceAction={
-                            requestWorkspaceSurfaceAction
+                            isWorkspaceHostRenderer
+                                ? requestWorkspaceSurfaceAction
+                                : undefined
                         }
                         projectId={activeProjectId}
                         workspaceContextKey={workspaceActiveContextKey}
@@ -4491,9 +4493,19 @@ export function App() {
                             void handleAddGitHubItemsToChat(request)
                         }
                         onOpenSettings={openSettingsWindow}
-                        onOpenItem={handleOpenSidebarGitHubItem}
+                        onOpenItem={
+                            isWorkspaceHostRenderer
+                                ? handleOpenSidebarGitHubItem
+                                : undefined
+                        }
+                        onRequestWorkspaceAction={
+                            isWorkspaceHostRenderer
+                                ? requestWorkspaceSurfaceAction
+                                : undefined
+                        }
                         projectId={activeProjectId}
                         selectionResetSignal={gitHubSidebarSelectionResetSignal}
+                        workspaceContextKey={workspaceActiveContextKey}
                         worktreeId={activeWorktreeId}
                     />
                 ) : sidebarView === "pull_requests" ? (
@@ -4504,15 +4516,31 @@ export function App() {
                             void handleAddGitHubItemsToChat(request)
                         }
                         onOpenSettings={openSettingsWindow}
-                        onOpenItem={handleOpenSidebarGitHubItem}
+                        onOpenItem={
+                            isWorkspaceHostRenderer
+                                ? handleOpenSidebarGitHubItem
+                                : undefined
+                        }
+                        onRequestWorkspaceAction={
+                            isWorkspaceHostRenderer
+                                ? requestWorkspaceSurfaceAction
+                                : undefined
+                        }
                         projectId={activeProjectId}
                         selectionResetSignal={gitHubSidebarSelectionResetSignal}
+                        workspaceContextKey={workspaceActiveContextKey}
                         worktreeId={activeWorktreeId}
                     />
                 ) : sidebarView === "agents" ? (
                     <SidebarAgentsPanel
                         filter={agentsFilter}
+                        onRequestWorkspaceAction={
+                            isWorkspaceHostRenderer
+                                ? requestWorkspaceSurfaceAction
+                                : undefined
+                        }
                         projectId={activeProjectId}
+                        workspaceContextKey={workspaceActiveContextKey}
                         worktreeId={activeWorktreeId}
                     />
                 ) : (
