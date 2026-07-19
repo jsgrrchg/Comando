@@ -497,7 +497,6 @@ export const ChatTabView = memo(function ChatTabView({
         () => cloneComposerPartsForDraft(initialComposerParts),
     );
     const [composerExpanded, setComposerExpanded] = useState(false);
-    const [composerResetNonce, setComposerResetNonce] = useState(0);
     const [showJumpToBottom, setShowJumpToBottom] = useState(false);
     const commitComposerParts = useCallback(
         (nextParts: readonly AIComposerPart[]) => {
@@ -1795,9 +1794,11 @@ export const ChatTabView = memo(function ChatTabView({
 
     useLayoutEffect(() => {
         if (active && shouldAutoFollowRef.current) {
+            // The composer can collapse when a turn starts, changing the viewport
+            // height before the new timeline entry has been measured.
             scheduleScrollToBottom();
         }
-    }, [active, scheduleScrollToBottom, snapshot.updatedAt]);
+    }, [active, composerExpanded, scheduleScrollToBottom, snapshot.updatedAt]);
 
     useEffect(() => {
         const scrollEl = scrollRef.current;
@@ -1958,7 +1959,6 @@ export const ChatTabView = memo(function ChatTabView({
         const submittedFileContexts = [...draftFileContexts];
 
         commitComposerParts(createEmptyComposerParts());
-        setComposerResetNonce((current) => current + 1);
         clearDraftAttachments(tab.sessionId);
         clearDraftFileContexts(tab.sessionId);
         setComposerError(null);
@@ -2028,7 +2028,6 @@ export const ChatTabView = memo(function ChatTabView({
         }
 
         commitComposerParts(restoredParts);
-        setComposerResetNonce((current) => current + 1);
         setComposerError(null);
     }, [
         cancelQueuedPromptEdit,
@@ -2651,7 +2650,6 @@ export const ChatTabView = memo(function ChatTabView({
                             onToggleExpanded={() =>
                                 setComposerExpanded((value) => !value)
                             }
-                            resetNonce={composerResetNonce}
                             parts={composerParts}
                             renderFileContextPill={(fc) => (
                                 <FileContextPill
