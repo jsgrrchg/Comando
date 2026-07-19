@@ -6,7 +6,6 @@ interface CachedPayload<T> {
     readonly estimatedBytes: number;
     readonly payload: T;
     protected: boolean;
-    touchedAt: number;
 }
 
 interface TranscriptPayloadLoadOptions {
@@ -14,9 +13,13 @@ interface TranscriptPayloadLoadOptions {
 }
 
 export class TranscriptPayloadCache<T> {
+    // Map insertion order provides the LRU queues without sorting on eviction.
+    private readonly protectedPayloadRefs = new Map<string, undefined>();
     private readonly payloads = new Map<string, CachedPayload<T>>();
     private readonly pending = new Map<string, Promise<T>>();
     private readonly evictedPayloadRefs = new Set<string>();
+    private readonly recoverablePayloadRefs = new Map<string, undefined>();
+    private residentByteCount = 0;
 
     constructor(
         private readonly loader: TranscriptPayloadLoader<T>,
@@ -30,8 +33,10 @@ export class TranscriptPayloadCache<T> {
     ): Promise<T> {
         const cached = this.payloads.get(payloadRef);
         if (cached) {
-            cached.touchedAt = performance.now();
-            if (options.protect) cached.protected = true;
+            if (options.protect && !cached.protected) {
+                cached.protected = true;
+            }
+            this.touch(payloadRef, cached.protected);
             return Promise.resolve(cached.payload);
         }
         const pending = this.pending.get(payloadRef);
@@ -39,12 +44,14 @@ export class TranscriptPayloadCache<T> {
         const request = this.loader
             .load(payloadRef)
             .then((payload) => {
-                this.payloads.set(payloadRef, {
+                const cached: CachedPayload<T> = {
                     estimatedBytes: this.estimateBytes(payload),
                     payload,
                     protected: options.protect ?? false,
-                    touchedAt: performance.now(),
-                });
+                };
+                this.payloads.set(payloadRef, cached);
+                this.residentByteCount += cached.estimatedBytes;
+                this.touch(payloadRef, cached.protected);
                 this.evict();
                 return payload;
             })
@@ -55,13 +62,19 @@ export class TranscriptPayloadCache<T> {
 
     release(payloadRef: string): void {
         const cached = this.payloads.get(payloadRef);
-        if (cached) cached.protected = false;
+        if (cached) {
+            cached.protected = false;
+            this.touch(payloadRef, false);
+        }
         this.evict();
     }
 
     protect(payloadRef: string): void {
         const cached = this.payloads.get(payloadRef);
-        if (cached) cached.protected = true;
+        if (cached) {
+            cached.protected = true;
+            this.touch(payloadRef, true);
+        }
     }
 
     has(payloadRef: string): boolean {
@@ -75,10 +88,7 @@ export class TranscriptPayloadCache<T> {
     }
 
     get residentBytes(): number {
-        return [...this.payloads.values()].reduce(
-            (total, payload) => total + payload.estimatedBytes,
-            0,
-        );
+        return this.residentByteCount;
     }
 
     applyMemoryPressure(factor = 0.5): void {
@@ -91,17 +101,31 @@ export class TranscriptPayloadCache<T> {
     }
 
     private evictTo(targetBytes: number): void {
-        while (this.residentBytes > targetBytes) {
+        while (this.residentByteCount > targetBytes) {
             // Protection is a retention preference, never permission to exceed
             // the cache budget when no recoverable payload remains.
-            const candidate = [...this.payloads.entries()]
-                .filter(([, payload]) => !payload.protected)
-                .sort(([, left], [, right]) => left.touchedAt - right.touchedAt)[0] ??
-                [...this.payloads.entries()]
-                    .sort(([, left], [, right]) => left.touchedAt - right.touchedAt)[0];
-            if (!candidate) return;
-            this.payloads.delete(candidate[0]);
-            this.evictedPayloadRefs.add(candidate[0]);
+            const payloadRef = this.recoverablePayloadRefs.keys().next().value ??
+                this.protectedPayloadRefs.keys().next().value;
+            if (payloadRef === undefined) return;
+            const payload = this.payloads.get(payloadRef);
+            if (!payload) return;
+            this.payloads.delete(payloadRef);
+            this.recoverablePayloadRefs.delete(payloadRef);
+            this.protectedPayloadRefs.delete(payloadRef);
+            this.residentByteCount -= payload.estimatedBytes;
+            this.evictedPayloadRefs.add(payloadRef);
         }
+    }
+
+    private touch(payloadRef: string, isProtected: boolean): void {
+        const target = isProtected
+            ? this.protectedPayloadRefs
+            : this.recoverablePayloadRefs;
+        const other = isProtected
+            ? this.recoverablePayloadRefs
+            : this.protectedPayloadRefs;
+        other.delete(payloadRef);
+        target.delete(payloadRef);
+        target.set(payloadRef, undefined);
     }
 }

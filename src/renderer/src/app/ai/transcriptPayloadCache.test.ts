@@ -45,6 +45,23 @@ describe("TranscriptPayloadCache", () => {
         expect(cache.has("recoverable")).toBe(false);
     });
 
+    it("retains the most recently touched recoverable payload", async () => {
+        const cache = new TranscriptPayloadCache(
+            { load: (payloadRef: string) => Promise.resolve(payloadRef) },
+            2,
+            () => 1,
+        );
+        await cache.load("first");
+        await cache.load("second");
+        await cache.load("first");
+        await cache.load("third");
+
+        expect(cache.has("first")).toBe(true);
+        expect(cache.has("second")).toBe(false);
+        expect(cache.has("third")).toBe(true);
+        expect(cache.residentBytes).toBe(2);
+    });
+
     it("enforces memory pressure even when all payloads are protected", async () => {
         const cache = new TranscriptPayloadCache(
             { load: (payloadRef: string) => Promise.resolve(payloadRef.repeat(8)) },
