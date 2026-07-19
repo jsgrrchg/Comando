@@ -21,7 +21,8 @@ use uuid::Uuid;
 
 use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
-use crate::transcript_store::TranscriptStore;
+pub use crate::transcript_store::{AiTranscriptPayload, AiTranscriptPayloadWrite};
+use crate::transcript_store::{TRANSCRIPT_SCHEMA_VERSION, TranscriptStore};
 
 pub const HISTORY_FORMAT_VERSION: u32 = 1;
 const AI_DIR: &str = "ai";
@@ -29,7 +30,6 @@ const SESSIONS_DIR: &str = "sessions";
 const SESSION_META_FILE: &str = "session-meta.json";
 const SESSION_STATE_FILE: &str = "session-state.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
-const TRANSCRIPT_BLOCK_SIZE: usize = 256;
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_COMPACT_STATE_FILE: &str = "compact-state.json";
 const DEFAULT_PAGE_LIMIT: usize = 50;
@@ -540,12 +540,34 @@ impl AiHistoryStore {
             .append(session_id, entries)
     }
 
+    pub fn seal_transcript_turn(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+        entries: Vec<NativeAiTranscriptEntryEnvelope>,
+        payloads: Vec<AiTranscriptPayloadWrite>,
+    ) -> AiResult<Vec<NativeAiTranscriptBlockMetadata>> {
+        self.ensure_session_dir(session_id)?;
+        self.transcript_store(session_id)
+            .seal_turn(session_id, turn_id, entries, payloads)
+    }
+
+    pub fn load_transcript_payload(
+        &self,
+        session_id: &SessionId,
+        payload_ref: &str,
+        max_bytes: usize,
+    ) -> AiResult<AiTranscriptPayload> {
+        self.transcript_store(session_id)
+            .load_payload(session_id, payload_ref, max_bytes)
+    }
+
     pub fn load_transcript_block_metadata(
         &self,
         session_id: &SessionId,
     ) -> AiResult<Vec<NativeAiTranscriptBlockMetadata>> {
         self.transcript_store(session_id)
-            .load_block_metadata(session_id, TRANSCRIPT_BLOCK_SIZE)
+            .load_block_metadata(session_id)
     }
 
     pub fn load_transcript_before(
@@ -597,24 +619,13 @@ impl AiHistoryStore {
         session_id: &SessionId,
         block_id: &str,
     ) -> AiResult<Option<NativeAiTranscriptBlock>> {
-        let Some(index) = block_id
-            .strip_prefix(&format!("{}:", session_id.0))
-            .and_then(|value| value.parse::<usize>().ok())
-        else {
-            return Ok(None);
-        };
-        let entries = self.transcript_store(session_id).load_block(
-            session_id,
-            index,
-            TRANSCRIPT_BLOCK_SIZE,
-        )?;
-        if entries.is_empty() {
+        if !block_id.starts_with(&format!("{}:", session_id.0)) {
             return Ok(None);
         }
-        let Some(metadata) = transcript_block_metadata(session_id, index, &entries) else {
-            return Ok(None);
-        };
-        Ok(Some(NativeAiTranscriptBlock { metadata, entries }))
+        Ok(self
+            .transcript_store(session_id)
+            .load_block(session_id, block_id)?
+            .map(|(metadata, entries)| NativeAiTranscriptBlock { metadata, entries }))
     }
 
     pub fn load_session_snapshot(
@@ -851,6 +862,9 @@ impl AiHistoryStore {
         let sessions_dir = self.sessions_dir();
         let mut native_session_count = 0;
         let mut orphaned_session_dirs = 0;
+        let mut healthy = true;
+        let mut latest_error = None;
+        let mut storage_version = TRANSCRIPT_SCHEMA_VERSION;
 
         if sessions_dir.exists() {
             for entry in fs::read_dir(&sessions_dir)
@@ -866,8 +880,25 @@ impl AiHistoryStore {
                 {
                     continue;
                 }
-                if entry.path().join(SESSION_META_FILE).exists() {
+                let metadata_path = entry.path().join(SESSION_META_FILE);
+                if metadata_path.exists() {
                     native_session_count += 1;
+                    if let Ok(metadata) = read_json_file::<AiHistorySessionMetadata>(&metadata_path)
+                    {
+                        match TranscriptStore::new(&entry.path()).health(&metadata.session_id) {
+                            Ok(transcript_health) => {
+                                storage_version =
+                                    storage_version.min(transcript_health.schema_version);
+                            }
+                            Err(_error) => {
+                                healthy = false;
+                                latest_error = Some(
+                                    "Transcript storage health check failed for a native session."
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
                 } else {
                     orphaned_session_dirs += 1;
                 }
@@ -875,13 +906,13 @@ impl AiHistoryStore {
         }
 
         Ok(NativeAiHistoryStorageHealth {
-            healthy: true,
-            storage_version: HISTORY_FORMAT_VERSION,
+            healthy,
+            storage_version,
             native_session_count,
             legacy_fallback_available: false,
             migration_manifest_exists: self.history_root().join("migrations").exists(),
             orphaned_session_dirs,
-            latest_error: None,
+            latest_error,
         })
     }
 
@@ -2292,27 +2323,6 @@ fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> AiResult<T> {
     serde_json::from_str(&text).map_err(|error| history_json("parse AI history JSON", error))
 }
 
-fn transcript_block_metadata(
-    session_id: &SessionId,
-    index: usize,
-    entries: &[NativeAiTranscriptEntryEnvelope],
-) -> Option<NativeAiTranscriptBlockMetadata> {
-    let first = entries.first()?;
-    let last = entries.last()?;
-    Some(NativeAiTranscriptBlockMetadata {
-        block_id: format!("{}:{index}", session_id.0),
-        session_id: session_id.clone(),
-        start_sequence: first.sequence,
-        end_sequence: last.sequence,
-        entry_count: entries.len(),
-        estimated_row_count: entries.len(),
-        estimated_height: entries.len() as u64 * 72,
-        first_created_at: first.created_at.clone(),
-        last_created_at: last.created_at.clone(),
-        revision: 1,
-    })
-}
-
 fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> AiResult<()> {
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| history_json("serialize AI history JSON", error))?;
@@ -3556,5 +3566,141 @@ mod tests {
             .unwrap();
         assert_eq!(second_block.entries.len(), 44);
         assert_eq!(second_block.entries[0].sequence, 257);
+    }
+
+    #[test]
+    fn sealing_turn_persists_payload_and_stable_block_revision() {
+        let (_temp, store) = store();
+        let session_id = SessionId("sealed_turn".to_string());
+        let mut entry = transcript_entry(&session_id, "message-1", "collapsed summary");
+        entry.payload_ref = Some("payload:message-1".to_string());
+        let payload = AiTranscriptPayloadWrite {
+            payload_ref: "payload:message-1".to_string(),
+            value: json!({ "content": "full payload", "toolOutput": [1, 2, 3] }),
+        };
+
+        let sealed = store
+            .seal_transcript_turn(
+                &session_id,
+                "turn-1",
+                vec![entry.clone()],
+                vec![payload.clone()],
+            )
+            .unwrap();
+        assert_eq!(sealed.len(), 1);
+        assert_eq!(sealed[0].revision, 2);
+        let loaded_payload = store
+            .load_transcript_payload(&session_id, "payload:message-1", 1024)
+            .unwrap();
+        assert_eq!(loaded_payload.value, payload.value);
+
+        let resealed = store
+            .seal_transcript_turn(&session_id, "turn-1", vec![entry.clone()], vec![payload])
+            .unwrap();
+        assert_eq!(resealed[0].revision, 2);
+
+        let mut corrected = entry;
+        corrected.summary.preview = Some("corrected summary".to_string());
+        store
+            .append_transcript_entries(&session_id, vec![corrected])
+            .unwrap();
+        let corrected_metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        assert_eq!(corrected_metadata[0].revision, 3);
+
+        let next_entry = transcript_entry(&session_id, "message-2", "next turn");
+        let next_blocks = store
+            .seal_transcript_turn(&session_id, "turn-2", vec![next_entry], vec![])
+            .unwrap();
+        assert_eq!(next_blocks.len(), 1);
+        assert_eq!(next_blocks[0].block_id, format!("{}:1", session_id.0));
+        assert_eq!(next_blocks[0].start_sequence, 2);
+    }
+
+    #[test]
+    fn failed_turn_seal_rolls_back_entries_blocks_and_orphaned_payload_file() {
+        let (_temp, store) = store();
+        let session_id = SessionId("failed_seal".to_string());
+        let mut entry = transcript_entry(&session_id, "message-1", "summary");
+        entry.payload_ref = Some("payload:missing".to_string());
+        let large_payload = AiTranscriptPayloadWrite {
+            payload_ref: "payload:unused".to_string(),
+            value: Value::String("x".repeat(70 * 1024)),
+        };
+
+        let error = store
+            .seal_transcript_turn(&session_id, "turn-1", vec![entry], vec![large_payload])
+            .unwrap_err();
+
+        assert!(error.to_string().contains("was not persisted"));
+        assert!(
+            store
+                .load_transcript_block_metadata(&session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .load_transcript_after(NativeAiTranscriptCursorInput {
+                    session_id: session_id.clone(),
+                    sequence: None,
+                    limit: 10,
+                })
+                .unwrap()
+                .is_empty()
+        );
+        let payloads_dir = store.session_dir(&session_id).join("transcript-payloads");
+        assert!(!payloads_dir.exists() || fs::read_dir(payloads_dir).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn transcript_payloads_are_session_scoped_limited_and_health_checked() {
+        let (_temp, store) = store();
+        let session_id = SessionId("payload_owner".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        let mut entry = transcript_entry(&session_id, "message-1", "summary");
+        entry.payload_ref = Some("payload:large".to_string());
+        let payload_value = Value::String("x".repeat(70 * 1024));
+        store
+            .seal_transcript_turn(
+                &session_id,
+                "turn-1",
+                vec![entry],
+                vec![AiTranscriptPayloadWrite {
+                    payload_ref: "payload:large".to_string(),
+                    value: payload_value.clone(),
+                }],
+            )
+            .unwrap();
+
+        let limit_error = store
+            .load_transcript_payload(&session_id, "payload:large", 1024)
+            .unwrap_err();
+        let foreign_error = store
+            .load_transcript_payload(
+                &SessionId("different_session".to_string()),
+                "payload:large",
+                128 * 1024,
+            )
+            .unwrap_err();
+        let loaded = store
+            .load_transcript_payload(&session_id, "payload:large", 128 * 1024)
+            .unwrap();
+        let health = store.storage_health().unwrap();
+
+        assert!(limit_error.to_string().contains("exceeds the requested"));
+        assert!(
+            foreign_error
+                .to_string()
+                .contains("not found for this session")
+        );
+        assert_eq!(loaded.value, payload_value);
+        assert_eq!(health.storage_version, TRANSCRIPT_SCHEMA_VERSION);
+        assert!(health.healthy);
+        assert_eq!(
+            fs::read_dir(store.session_dir(&session_id).join("transcript-payloads"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 }
