@@ -1,0 +1,43 @@
+html,
+body,
+#root {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    background: #11111b;
+    color: #cdd6f4;
+    font-family: Inter, sans-serif;
+}
+
+.transcript-harness {
+    display: grid;
+    height: 100%;
+    place-items: center;
+}
+
+.transcript-scroll {
+    box-sizing: border-box;
+    height: 620px;
+    overflow: auto;
+    padding: 24px;
+    width: min(860px, 100vw);
+}
+
+.transcript-row,
+.live-tail {
+    background: #1e1e2e;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    box-sizing: border-box;
+    line-height: 1.45;
+    min-height: 56px;
+    padding: 16px;
+}
+
+.live-tail {
+    margin-top: 8px;
+    min-height: 96px;
+    overflow-wrap: anywhere;
+}
