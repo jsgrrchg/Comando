@@ -426,6 +426,54 @@ describe("ai-store queue", () => {
         expect(payloads?.size).toBe(0);
     });
 
+    it("shares the transcript payload budget across sessions", async () => {
+        const payloadSize = 9 * 1024 * 1024;
+        const secondTab: WorkspaceChatTab = {
+            ...TAB,
+            id: "tab-2",
+            sessionId: "session-2",
+        };
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptPayload: vi.fn((input: {
+                        readonly payloadRef: string;
+                        readonly sessionId: string;
+                    }) =>
+                        Promise.resolve({
+                            byteLength: payloadSize,
+                            capabilityVersion: 1,
+                            contentHash: input.payloadRef,
+                            payloadRef: input.payloadRef,
+                            sessionId: input.sessionId,
+                            transcriptRevision: 1,
+                            value: { content: input.payloadRef },
+                        })),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().registerSessionTab(secondTab);
+
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(TAB.sessionId, "payload:first");
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(secondTab.sessionId, "payload:second");
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.transcriptWindow
+                .payloadsByRef.has("payload:first"),
+        ).toBe(false);
+        expect(
+            useAiStore.getState().sessions[secondTab.sessionId]
+                ?.transcriptWindow.payloadsByRef.has("payload:second"),
+        ).toBe(true);
+    });
+
     it("releases evicted blocks from other session windows", async () => {
         const sessionIds = ["session-eviction-a", "session-eviction-b"] as const;
         const metadataBySession = new Map<
