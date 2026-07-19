@@ -251,18 +251,41 @@ describe("ai-store queue", () => {
             sessionId: TAB.sessionId,
             startSequence: (index - 1) * 10 + 1,
         }));
-        const getAiTranscriptBlock = vi.fn((_sessionId: string, blockId: string) => Promise.resolve({
-            ...metadata.find((item) => item.blockId === blockId)!,
-            capabilityVersion: 1,
-            entries: [],
-            transcriptRevision: 3,
-        } satisfies AiTranscriptBlock));
+        const getAiTranscriptBlock = vi.fn((_sessionId: string, blockId: string) => {
+            const blockIndex = Number(blockId.slice("block-".length));
+            return Promise.resolve({
+                ...metadata.find((item) => item.blockId === blockId)!,
+                capabilityVersion: 1,
+                entries: ["message", "thinking", "tool"].map((kind, index) => ({
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: `${kind}-${blockIndex}`,
+                    kind,
+                    payloadRef: `payload:${kind}-${blockIndex}`,
+                    sequence: blockIndex * 10 + index,
+                    sessionId: TAB.sessionId,
+                    summary: { label: kind, preview: kind, status: "completed" },
+                    updatedAt: "2026-04-14T00:00:00.000Z",
+                })),
+                transcriptRevision: 3,
+            } as AiTranscriptBlock);
+        });
+        const getAiTranscriptPayload = vi.fn((input: { readonly payloadRef: string }) =>
+            Promise.resolve({
+                byteLength: 100,
+                capabilityVersion: 1,
+                contentHash: input.payloadRef,
+                payloadRef: input.payloadRef,
+                sessionId: TAB.sessionId,
+                transcriptRevision: 3,
+                value: { content: input.payloadRef },
+            }),
+        );
         Object.defineProperty(globalThis, "window", {
             configurable: true,
             value: {
                 comando: {
                     getAiTranscriptBlock,
-                    getAiTranscriptPayload: vi.fn().mockResolvedValue(null),
+                    getAiTranscriptPayload,
                     getAiTranscriptBlockMetadata: vi.fn().mockResolvedValue({
                         blocks: metadata,
                         capabilityVersion: 1,
@@ -290,6 +313,35 @@ describe("ai-store queue", () => {
         ]);
         expect(windowState?.residentEntries).toBe(20);
         expect(getAiTranscriptBlock).toHaveBeenCalledTimes(2);
+        expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).toEqual(
+            expect.arrayContaining([
+                "payload:message-2",
+                "payload:thinking-2",
+                "payload:tool-2",
+                "payload:message-3",
+                "payload:thinking-3",
+                "payload:tool-3",
+            ]),
+        );
+
+        await useAiStore
+            .getState()
+            .prefetchTranscriptWindow(TAB.sessionId, "backward");
+
+        expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).toEqual(
+            expect.arrayContaining([
+                "payload:message-1",
+                "payload:thinking-1",
+                "payload:tool-1",
+            ]),
+        );
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcriptWindow.payloadsByRef.has(
+                    "payload:thinking-1",
+                ),
+        ).toBe(true);
     });
 
     it("keeps a command-only runtime catalog from status updates", () => {

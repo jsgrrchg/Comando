@@ -1500,20 +1500,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     get().loadTranscriptWindowBlock(sessionId, blockId),
                 ),
             );
-            const visibleMessagePayloadRefs = [
-                ...transcriptWindowStore.snapshot(sessionId).blocksById.values(),
-            ].flatMap((block) =>
-                block.entries.flatMap((entry) =>
-                    entry.kind === "message" && entry.payloadRef
-                        ? [entry.payloadRef]
-                        : [],
-                ),
-            );
-            await Promise.all(
-                visibleMessagePayloadRefs.map((payloadRef) =>
-                    get().loadTranscriptPayload(sessionId, payloadRef),
-                ),
-            );
             const windowSnapshot = transcriptWindowStore.snapshot(sessionId);
             set((state) => {
                 const current = state.sessions[sessionId]?.transcriptWindow;
@@ -1543,6 +1529,23 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     loadTranscriptWindowBlock: async (sessionId, blockId) => {
         const block = await transcriptWindowStore.load(sessionId, blockId);
+        if (block) {
+            const payloadRefs = new Set(
+                block.entries.flatMap((entry) =>
+                    entry.payloadRef &&
+                    (entry.kind === "message" ||
+                        entry.kind === "thinking" ||
+                        entry.kind === "tool")
+                        ? [entry.payloadRef]
+                        : [],
+                ),
+            );
+            await Promise.all(
+                [...payloadRefs].map((payloadRef) =>
+                    get().loadTranscriptPayload(sessionId, payloadRef),
+                ),
+            );
+        }
         const current = get().sessions[sessionId]?.transcriptWindow;
         if (!current) return block;
         const windowSnapshot = transcriptWindowStore.snapshot(sessionId);
