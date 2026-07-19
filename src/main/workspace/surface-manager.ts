@@ -33,6 +33,8 @@ interface WorkspaceSurfaceRecord {
     readonly hostWindowId: string;
     readonly id: string;
     isVisible: boolean;
+    isReady: boolean;
+    readonly pendingActions: WorkspaceSurfaceActionRequest[];
     snapshot: WorkspaceNavigationSnapshot;
     readonly view: WebContentsView;
     readonly webContents: WebContents;
@@ -213,11 +215,31 @@ export class WorkspaceSurfaceManager {
             return { delivered: false, reason: "missing-surface" };
         }
 
+        if (!surface.isReady) {
+            surface.pendingActions.push(request);
+            return { delivered: true };
+        }
+
         surface.webContents.send(
             IPC_EVENTS.workspaceSurfaceActionRequested,
             request,
         );
         return { delivered: true };
+    }
+
+    notifySurfaceReady(webContents: WebContents): void {
+        const surface = this.#getSurfaceByWebContents(webContents);
+        if (!surface || surface.webContents.isDestroyed()) {
+            return;
+        }
+
+        surface.isReady = true;
+        for (const request of surface.pendingActions.splice(0)) {
+            surface.webContents.send(
+                IPC_EVENTS.workspaceSurfaceActionRequested,
+                request,
+            );
+        }
     }
 
     revealSurfaceFileInHostTree(
@@ -516,6 +538,8 @@ export class WorkspaceSurfaceManager {
             hostWindowId: host.hostWindowId,
             id,
             isVisible: false,
+            isReady: false,
+            pendingActions: [],
             snapshot: toSurfaceSnapshot(hostSnapshot, contextKey),
             view,
             webContents,
@@ -525,6 +549,9 @@ export class WorkspaceSurfaceManager {
         this.#surfaceIdsByWebContentsId.set(webContentsId, id);
         host.surfaceIdsByContextKey.set(contextKey, id);
         windowRegistry.registerEmbeddedRenderer(webContents, context);
+        webContents.on("did-start-loading", () => {
+            surface.isReady = false;
+        });
         webContents.on("before-input-event", (event, input) => {
             const direction = resolveWorkspaceSurfaceSwitchDirection(input);
             if (!direction) {

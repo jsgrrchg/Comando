@@ -1109,6 +1109,8 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.dispatchWorkspaceSurfaceAction,
             request,
         ),
+    notifyWorkspaceSurfaceReady: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceReady),
     revealWorkspaceSurfaceFileInHostTree: (request) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree,

@@ -96,6 +96,9 @@ describe("WorkspaceSurfaceManager action routing", () => {
         expect(manager.dispatchActiveSurfaceAction("host-1", actionA)).toEqual({
             delivered: true,
         });
+        expect(surfaceA.webContents.send).not.toHaveBeenCalled();
+
+        manager.notifySurfaceReady(asWebContents(surfaceA.webContents));
         expect(surfaceA.webContents.send).toHaveBeenCalledWith(
             IPC_EVENTS.workspaceSurfaceActionRequested,
             actionA,
@@ -111,6 +114,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
         expect(surfaceB.webContents.send).not.toHaveBeenCalled();
 
         const actionB = createFileAction("project-b::__primary__", "project-b");
+        manager.notifySurfaceReady(asWebContents(surfaceB.webContents));
         expect(manager.dispatchActiveSurfaceAction("host-1", actionB)).toEqual({
             delivered: true,
         });

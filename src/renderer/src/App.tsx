@@ -838,7 +838,11 @@ export function App() {
         if (!isWorkspaceSurfaceRenderer) {
             return;
         }
-        return getComandoApi()?.onWorkspaceSurfaceActionRequested(
+        const api = getComandoApi();
+        if (!api) {
+            return;
+        }
+        const unsubscribe = api.onWorkspaceSurfaceActionRequested(
             (request: WorkspaceSurfaceActionRequest) => {
                 void executeWorkspaceSurfaceAction(request).catch((error) => {
                     console.error(
@@ -848,6 +852,8 @@ export function App() {
                 });
             },
         );
+        void api.notifyWorkspaceSurfaceReady();
+        return unsubscribe;
     }, []);
 
     useEffect(() => {

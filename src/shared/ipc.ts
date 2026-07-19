@@ -132,6 +132,7 @@ export const IPC_CHANNELS = {
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
     dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
     dispatchWorkspaceSurfaceAction: "workspace:dispatch-surface-action",
+    notifyWorkspaceSurfaceReady: "workspace:notify-surface-ready",
     revealWorkspaceSurfaceFileInHostTree:
         "workspace:reveal-surface-file-in-host-tree",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
@@ -3400,6 +3401,7 @@ export interface ComandoApi {
     dispatchWorkspaceSurfaceAction: (
         request: WorkspaceSurfaceActionRequest,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
+    notifyWorkspaceSurfaceReady: () => Promise<void>;
     revealWorkspaceSurfaceFileInHostTree: (
         request: WorkspaceSurfaceFileRevealRequest,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
