@@ -3778,6 +3778,15 @@ function buildBlockNativeTranscript(
                 messages.push(payload.message);
             } else if (isTranscriptToolPayload(payload)) {
                 toolActivity.push(payload.activity);
+            } else if (entry.kind !== "plan" && entry.kind !== "status") {
+                messages.push({
+                    attachments: [],
+                    content: entry.summary.preview ?? entry.summary.label ?? "",
+                    createdAt: entry.createdAt,
+                    id: `summary:${entry.id}`,
+                    kind: entry.kind === "thinking" ? "thinking" : "assistant",
+                    status: "completed",
+                });
             }
         }
     }
