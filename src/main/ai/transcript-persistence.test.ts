@@ -69,6 +69,71 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         });
     });
 
+    it("seals a terminal turn before checkpointing its successor", async () => {
+        const store = liveStore();
+        const firstCheckpoint = deferred<void>();
+        const checkpoints: CheckpointInput[] = [];
+        const seals: SealInput[] = [];
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                checkpoint: vi.fn(async (input: CheckpointInput) => {
+                    checkpoints.push(input);
+                    if (checkpoints.length === 1) {
+                        await firstCheckpoint.promise;
+                    }
+                }),
+                seal: vi.fn((input: SealInput) => {
+                    seals.push(input);
+                    return Promise.resolve([]);
+                }),
+            }),
+        );
+
+        store.applyEvent(messageStarted("first answer"));
+        store.applyEvent({
+            ...eventBase,
+            error: null,
+            kind: "turn-status",
+            status: "completed",
+            turnId: "turn-a",
+        });
+        coordinator.requestSeal(SESSION_ID, "completed");
+        await vi.waitFor(() => expect(checkpoints).toHaveLength(1));
+
+        const successorStartedAt = "2026-07-18T00:02:00.000Z";
+        store.applyEvent({
+            ...eventBase,
+            activeTurnStartedAt: successorStartedAt,
+            kind: "status",
+            lastError: null,
+            status: "streaming",
+            updatedAt: successorStartedAt,
+        });
+        store.applyEvent({
+            ...eventBase,
+            kind: "message-started",
+            message: message("assistant-2", "second answer", successorStartedAt),
+            messageKind: "assistant",
+            updatedAt: successorStartedAt,
+        });
+        coordinator.scheduleCheckpoint(SESSION_ID);
+
+        firstCheckpoint.resolve();
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        expect(seals).toHaveLength(1);
+        expect(seals[0]).toMatchObject({ turnId: "turn-a" });
+        expect(seals[0]?.entries.map((entry) => entry.id)).toEqual([
+            "message:assistant-1",
+            "status:active-turn:2026-07-18T00:01:00.000Z",
+        ]);
+        expect(checkpoints.at(-1)?.turnId).toBe(successorStartedAt);
+        expect(store.getSnapshot(SESSION_ID)).toMatchObject({
+            turnId: successorStartedAt,
+        });
+    });
+
     it("retries a transient failure without changing sequences or losing payloads", async () => {
         const store = liveStore();
         const checkpoints: CheckpointInput[] = [];

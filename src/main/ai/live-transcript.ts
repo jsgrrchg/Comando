@@ -69,9 +69,11 @@ interface MutableLiveTranscriptEntry
 interface SessionLiveTranscriptTail {
     readonly entriesById: Map<string, MutableLiveTranscriptEntry>;
     readonly orderedEntryIds: string[];
+    readonly pendingTerminalTails: AiLiveTranscriptTailSnapshot[];
     readonly pendingRemovedEntryIds: Set<string>;
     readonly pendingEntryRevisionById: Map<string, number>;
     revision: number;
+    readonly sessionId: string;
     stableBlocks: readonly AiTranscriptBlockMetadata[];
     stableEndSequence: number;
     terminalTurnStatus: "cancelled" | "completed" | "failed" | null;
@@ -148,9 +150,11 @@ export class AiLiveTranscriptTailStore {
         this.#sessions.set(tail.sessionId, {
             entriesById,
             orderedEntryIds: compactOrder,
+            pendingTerminalTails: [],
             pendingRemovedEntryIds: new Set(),
             pendingEntryRevisionById,
             revision: Math.max(previous?.revision ?? 0, tail.revision),
+            sessionId: tail.sessionId,
             stableBlocks: previous?.stableBlocks ?? [],
             stableEndSequence: previous?.stableEndSequence ?? 0,
             terminalTurnStatus: tail.terminalStatus,
@@ -312,6 +316,33 @@ export class AiLiveTranscriptTailStore {
         return session ? this.#snapshot(sessionId, session) : null;
     }
 
+    getPendingTerminalTurn(
+        sessionId: string,
+    ): AiLiveTranscriptTailSnapshot | null {
+        return this.#sessions.get(sessionId)?.pendingTerminalTails[0] ?? null;
+    }
+
+    acknowledgePendingTerminalTurn(
+        sessionId: string,
+        turnId: string,
+        revision: number,
+        stableBlocks: readonly AiTranscriptBlockMetadata[],
+    ): boolean {
+        const session = this.#sessions.get(sessionId);
+        const pending = session?.pendingTerminalTails[0];
+        if (
+            !session ||
+            !pending ||
+            pending.turnId !== turnId ||
+            pending.revision !== revision
+        ) {
+            return false;
+        }
+        session.pendingTerminalTails.shift();
+        this.setStableBlocks(sessionId, [...session.stableBlocks, ...stableBlocks]);
+        return true;
+    }
+
     getPayload(
         sessionId: string,
         payloadRef: string,
@@ -456,7 +487,18 @@ export class AiLiveTranscriptTailStore {
             return;
         }
         if (session.turnStartedAt !== null && session.entriesById.size > 0) {
-            return;
+            if (!session.terminalTurnStatus || !session.turnId) {
+                return;
+            }
+            // Keep the completed turn immutable while the next turn streams.
+            // Persistence seals this snapshot before checkpointing the new tail.
+            session.pendingTerminalTails.push(
+                this.#snapshot(session.sessionId, session),
+            );
+            session.entriesById.clear();
+            session.orderedEntryIds.length = 0;
+            session.pendingRemovedEntryIds.clear();
+            session.pendingEntryRevisionById.clear();
         }
         session.turnId = turnId;
         session.turnStartedAt = turnId;
@@ -527,9 +569,11 @@ export class AiLiveTranscriptTailStore {
             session = {
                 entriesById: new Map(),
                 orderedEntryIds: [],
+                pendingTerminalTails: [],
                 pendingRemovedEntryIds: new Set(),
                 pendingEntryRevisionById: new Map(),
                 revision: 0,
+                sessionId,
                 stableBlocks: [],
                 stableEndSequence: 0,
                 terminalTurnStatus: null,

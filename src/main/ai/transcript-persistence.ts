@@ -52,6 +52,7 @@ interface SessionPersistenceQueue {
     recoveredTerminalTail: AiOpenTranscriptTail | null;
     retryTimer: ReturnType<typeof setTimeout> | null;
     sealStatus: AiTranscriptTerminalStatus | null;
+    sealTurnId: string | null;
     readonly waiters: Set<() => void>;
 }
 
@@ -96,6 +97,7 @@ export class AiTranscriptPersistenceCoordinator {
     ): void {
         const queue = this.#queueFor(sessionId);
         queue.sealStatus = status;
+        queue.sealTurnId = this.store.getSnapshot(sessionId)?.turnId ?? null;
         this.#pump(sessionId);
     }
 
@@ -118,6 +120,9 @@ export class AiTranscriptPersistenceCoordinator {
             }
             queue.checkpointedRevision = recovered.revision;
             queue.sealStatus = recovered.terminalStatus;
+            queue.sealTurnId = recovered.terminalStatus
+                ? recovered.turnId
+                : null;
             return recovered;
         } finally {
             queue.isRecovering = false;
@@ -216,6 +221,51 @@ export class AiTranscriptPersistenceCoordinator {
                 queue.attempt = 0;
                 return;
             }
+            const pendingTerminal = this.store.getPendingTerminalTurn(sessionId);
+            if (pendingTerminal?.turnId && pendingTerminal.terminalTurnStatus) {
+                // The native store has one open tail per session, so finish the
+                // older tail before the successor can replace its checkpoint.
+                this.#setStatus(sessionId, queue, "checkpointing", null);
+                await this.adapter.checkpoint(
+                    checkpointFromTail(
+                        pendingTerminal,
+                        pendingTerminal.entries,
+                        [],
+                        pendingTerminal.terminalTurnStatus,
+                        pendingTerminal.turnId,
+                    ),
+                );
+                this.#setStatus(sessionId, queue, "sealing", null);
+                const metadata = await this.adapter.seal({
+                    entries: pendingTerminal.entries.map((entry) => entry.envelope),
+                    payloads: pendingTerminal.entries.flatMap((entry) =>
+                        entry.envelope.payloadRef
+                            ? [{
+                                  payloadRef: entry.envelope.payloadRef,
+                                  value: entry.payload,
+                              }]
+                            : [],
+                    ),
+                    sessionId,
+                    turnId: pendingTerminal.turnId,
+                });
+                if (
+                    this.store.acknowledgePendingTerminalTurn(
+                        sessionId,
+                        pendingTerminal.turnId,
+                        pendingTerminal.revision,
+                        metadata,
+                    )
+                ) {
+                    if (queue.sealTurnId === pendingTerminal.turnId) {
+                        queue.sealStatus = null;
+                        queue.sealTurnId = null;
+                    }
+                    this.options.onSealed?.(sessionId, metadata);
+                }
+                queue.attempt = 0;
+                return;
+            }
             const pending = this.store.takePendingEntries(sessionId);
             const removedEntryIds = this.store.takePendingRemovedEntryIds(
                 sessionId,
@@ -245,7 +295,9 @@ export class AiTranscriptPersistenceCoordinator {
                         tail,
                         pending,
                         removedEntryIds,
-                        queue.sealStatus ?? tail.terminalTurnStatus,
+                        queue.sealTurnId === tail.turnId
+                            ? queue.sealStatus ?? tail.terminalTurnStatus
+                            : tail.terminalTurnStatus,
                         tail.turnId,
                     ),
                 );
@@ -258,12 +310,18 @@ export class AiTranscriptPersistenceCoordinator {
                     sessionId,
                     removedEntryIds,
                 );
+                // A successor may have started while the checkpoint was in
+                // flight. Re-pump so its predecessor is sealed in isolation.
+                if (this.store.getPendingTerminalTurn(sessionId)) {
+                    return;
+                }
             }
 
-            if (queue.sealStatus) {
+            if (queue.sealStatus && queue.sealTurnId === tail.turnId) {
                 const latest = this.store.getSnapshot(sessionId);
                 if (!latest || latest.entries.length === 0 || !latest.turnId) {
                     queue.sealStatus = null;
+                    queue.sealTurnId = null;
                     return;
                 }
                 this.#setStatus(sessionId, queue, "sealing", null);
@@ -320,6 +378,7 @@ export class AiTranscriptPersistenceCoordinator {
         return (
             queue.isRecovering ||
             queue.recoveredTerminalTail !== null ||
+            this.store.getPendingTerminalTurn(sessionId) !== null ||
             this.store.takePendingEntries(sessionId).length > 0 ||
             this.store.takePendingRemovedEntryIds(sessionId).length > 0 ||
             (this.store.getSnapshot(sessionId)?.revision ?? 0) >
@@ -351,6 +410,7 @@ export class AiTranscriptPersistenceCoordinator {
                 recoveredTerminalTail: null,
                 retryTimer: null,
                 sealStatus: null,
+                sealTurnId: null,
                 waiters: new Set(),
             };
             this.#queues.set(sessionId, queue);
