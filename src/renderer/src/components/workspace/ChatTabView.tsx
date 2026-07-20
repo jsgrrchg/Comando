@@ -127,6 +127,7 @@ import { registerComposerSelectionMentionHandler } from "./chat/composerSelectio
 import {
     persistChatViewState,
     readPersistedChatViewState,
+    type PersistedChatViewState,
 } from "./chat/chatViewPersistence";
 import { EditedFilesBufferPanel } from "./chat/EditedFilesBufferPanel";
 import { PlanMessage } from "./chat/PlanMessage";
@@ -152,6 +153,7 @@ import {
     isTranscriptActivityRangeItem,
     isTranscriptActivitySummaryItem,
     resolveTranscriptBlockIdsInRange,
+    resolveTranscriptEntryBlockId,
     resolveUnloadedTranscriptBlockIdsInRange,
     type TranscriptActivityGroupExpansionById,
     type TranscriptTimelineItem,
@@ -242,6 +244,10 @@ type ChatSessionViewState = Pick<
     | "snapshot"
     | "transcript"
     | "transcriptWindow"
+>;
+
+type ChatSemanticRestoreAnchor = NonNullable<
+    PersistedChatViewState["anchor"]
 >;
 
 function selectChatSessionViewState(
@@ -460,11 +466,10 @@ export const ChatTabView = memo(function ChatTabView({
         trackedFiles: null,
         transcript: null,
     });
-    const semanticAnchorRef = useRef<{
-        readonly alignment: "center" | "end" | "start";
-        readonly entryId: string;
-        readonly offsetWithinEntry: number;
-    } | null>(null);
+    const semanticAnchorRef = useRef<PersistedChatViewState["anchor"]>(
+        null,
+    );
+    const semanticRestoreFallbackScrollTopRef = useRef<number | null>(null);
     const initialComposerParts = readInitialComposerPartsForTab(tab);
     const composerPartsRef = useRef<AIComposerPart[]>(initialComposerParts);
     const persistedDraftRef = useRef(tab.draft);
@@ -473,6 +478,9 @@ export const ChatTabView = memo(function ChatTabView({
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [newTurnAnchorRowId, setNewTurnAnchorRowId] = useState<
         string | null
+    >(null);
+    const [semanticRestoreAnchor, setSemanticRestoreAnchor] = useState<
+        PersistedChatViewState["anchor"]
     >(null);
     const [titleDraft, setTitleDraft] = useState("");
     const titleInputRef = useRef<HTMLInputElement | null>(null);
@@ -1495,10 +1503,10 @@ export const ChatTabView = memo(function ChatTabView({
             ),
         [tab.projectId, tab.sessionId, tab.worktreeId],
     );
-    const persistedViewStateRef = useRef<{
-        readonly isNearBottom: boolean;
-        readonly scrollTop: number;
-    } | null>(persistedViewState);
+    const persistedViewStateRef = useRef<Pick<
+        PersistedChatViewState,
+        "anchor" | "isNearBottom" | "scrollTop"
+    > | null>(persistedViewState);
 
     useEffect(() => {
         persistedViewStateRef.current = persistedViewState;
@@ -1579,6 +1587,52 @@ export const ChatTabView = memo(function ChatTabView({
         [requestChatScroll],
     );
 
+    const handleSemanticAnchorRestored = useCallback(() => {
+        semanticRestoreFallbackScrollTopRef.current = null;
+        setSemanticRestoreAnchor(null);
+        setShowJumpToBottom(true);
+    }, []);
+
+    const handleSemanticAnchorUnavailable = useCallback(() => {
+        const fallbackScrollTop = semanticRestoreFallbackScrollTopRef.current;
+        semanticRestoreFallbackScrollTopRef.current = null;
+        setSemanticRestoreAnchor(null);
+        if (fallbackScrollTop !== null) {
+            writeProgrammaticScroll(fallbackScrollTop, "restore");
+        }
+        setShowJumpToBottom(true);
+    }, [writeProgrammaticScroll]);
+
+    useEffect(() => {
+        if (!active || !semanticRestoreAnchor?.blockId) {
+            return;
+        }
+        if (!transcriptWindow?.capabilityVersion) {
+            return;
+        }
+
+        const blockId = semanticRestoreAnchor.blockId;
+        setTranscriptWindowAnchor(tab.sessionId, blockId, false);
+        if (transcriptWindow.blocksById.has(blockId)) {
+            return;
+        }
+
+        void loadTranscriptWindowBlock(tab.sessionId, blockId).then((block) => {
+            if (!block) {
+                handleSemanticAnchorUnavailable();
+            }
+        });
+    }, [
+        active,
+        handleSemanticAnchorUnavailable,
+        loadTranscriptWindowBlock,
+        semanticRestoreAnchor?.blockId,
+        setTranscriptWindowAnchor,
+        tab.sessionId,
+        transcriptWindow?.blocksById,
+        transcriptWindow?.capabilityVersion,
+    ]);
+
     const handleNewTurnScrollTarget = useCallback(
         (target: number) => {
             if (!isAnchoringNewChatTurn(scrollIntentRef.current)) {
@@ -1612,12 +1666,21 @@ export const ChatTabView = memo(function ChatTabView({
                               scrollElement.getBoundingClientRect().top),
                   )
                 : 0;
-        semanticAnchorRef.current = captureTranscriptSemanticAnchor({
+        const nextAnchor = captureTranscriptSemanticAnchor({
             entryId: firstVisibleTimelineRow
                 ? getTranscriptTimelineItemAnchorEntryId(firstVisibleTimelineRow)
                 : null,
             offsetWithinEntry,
         });
+        semanticAnchorRef.current = nextAnchor
+            ? {
+                  ...nextAnchor,
+                  blockId: resolveTranscriptEntryBlockId(
+                      transcriptWindow?.blocksById ?? new Map(),
+                      nextAnchor.entryId,
+                  ),
+              }
+            : null;
         const visibleBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
             transcriptTimelineItems,
             range.visibleStartIndex,
@@ -1650,6 +1713,7 @@ export const ChatTabView = memo(function ChatTabView({
         loadTranscriptWindowBlock,
         setTranscriptWindowAnchor,
         tab.sessionId,
+        transcriptWindow?.blocksById,
         transcriptTimelineItems,
     ]);
 
@@ -1698,6 +1762,7 @@ export const ChatTabView = memo(function ChatTabView({
             // Retained chat views do not remount between tab switches, so keep
             // the latest persisted position in memory for the next activation.
             persistedViewStateRef.current = {
+                anchor: semanticAnchorRef.current,
                 isNearBottom: nextIsNearBottom,
                 scrollTop,
             };
@@ -1924,7 +1989,28 @@ export const ChatTabView = memo(function ChatTabView({
         } else {
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
-            writeProgrammaticScroll(restoreScrollTop, "restore");
+            const persistedAnchor = persistedViewStateRef.current?.anchor ?? null;
+            const semanticBlockId =
+                persistedAnchor?.blockId ??
+                (persistedAnchor
+                    ? resolveTranscriptEntryBlockId(
+                          transcriptWindow?.blocksById ?? new Map(),
+                          persistedAnchor.entryId,
+                      )
+                    : null);
+            if (persistedAnchor && semanticBlockId) {
+                const restoreAnchor = {
+                    ...persistedAnchor,
+                    blockId: semanticBlockId,
+                };
+                semanticAnchorRef.current = restoreAnchor;
+                semanticRestoreFallbackScrollTopRef.current = restoreScrollTop;
+                setSemanticRestoreAnchor(restoreAnchor);
+            } else {
+                semanticRestoreFallbackScrollTopRef.current = null;
+                setSemanticRestoreAnchor(null);
+                writeProgrammaticScroll(restoreScrollTop, "restore");
+            }
             setJumpToBottomVisibility(!isNearBottom(scrollEl));
         }
 
@@ -1938,6 +2024,7 @@ export const ChatTabView = memo(function ChatTabView({
         writeProgrammaticScroll,
         active,
         tab.sessionId,
+        transcriptWindow?.blocksById,
     ]);
 
     useLayoutEffect(() => {
@@ -2621,6 +2708,8 @@ export const ChatTabView = memo(function ChatTabView({
                     liveTailRowId={timelineModel.liveTailRowId}
                     newTurnAnchorRowId={newTurnAnchorRowId}
                     onNewTurnScrollTarget={handleNewTurnScrollTarget}
+                    onSemanticAnchorRestored={handleSemanticAnchorRestored}
+                    onSemanticAnchorUnavailable={handleSemanticAnchorUnavailable}
                     onVirtualScrollRequest={handleTimelineVirtualScrollRequest}
                     onSetActivityGroupExpanded={setActivityGroupExpanded}
                     onSetActivityRangeExpanded={setActivityRangeExpanded}
@@ -2648,6 +2737,14 @@ export const ChatTabView = memo(function ChatTabView({
                     projectId={tab.projectId}
                     resolveFileReference={resolveChatFileReference}
                     scrollRef={scrollRef}
+                    semanticAnchorBlockLoaded={
+                        semanticRestoreAnchor?.blockId
+                            ? (transcriptWindow?.blocksById.has(
+                                  semanticRestoreAnchor.blockId,
+                              ) ?? false)
+                            : false
+                    }
+                    semanticRestoreAnchor={semanticRestoreAnchor}
                     sessionId={tab.sessionId}
                     showJumpToBottom={showJumpToBottom}
                     showStreamingIndicator={isStreaming}
@@ -3143,6 +3240,8 @@ type ChatTimelineProps = {
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSemanticAnchorRestored?: () => void;
+    readonly onSemanticAnchorUnavailable?: () => void;
     readonly onVirtualScrollRequest?: (
         request: MeasuredVirtualScrollRequest,
     ) => void;
@@ -3190,6 +3289,8 @@ type ChatTimelineProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly semanticAnchorBlockLoaded?: boolean;
+    readonly semanticRestoreAnchor?: ChatSemanticRestoreAnchor | null;
     readonly sessionId: string;
     readonly showJumpToBottom: boolean;
     readonly showStreamingIndicator: boolean;
@@ -3229,6 +3330,8 @@ const ChatTimeline = memo(function ChatTimeline({
     liveTailRowId,
     newTurnAnchorRowId,
     onNewTurnScrollTarget,
+    onSemanticAnchorRestored,
+    onSemanticAnchorUnavailable,
     onVirtualScrollRequest,
     onSetActivityGroupExpanded,
     onSetActivityRangeExpanded,
@@ -3250,6 +3353,8 @@ const ChatTimeline = memo(function ChatTimeline({
     projectId,
     resolveFileReference,
     scrollRef,
+    semanticAnchorBlockLoaded,
+    semanticRestoreAnchor,
     sessionId,
     showJumpToBottom,
     showStreamingIndicator,
@@ -3304,6 +3409,10 @@ const ChatTimeline = memo(function ChatTimeline({
                             liveTailRowId={liveTailRowId}
                             newTurnAnchorRowId={newTurnAnchorRowId}
                             onNewTurnScrollTarget={onNewTurnScrollTarget}
+                            onSemanticAnchorRestored={onSemanticAnchorRestored}
+                            onSemanticAnchorUnavailable={
+                                onSemanticAnchorUnavailable
+                            }
                             onVirtualScrollRequest={onVirtualScrollRequest}
                             onSetActivityGroupExpanded={
                                 onSetActivityGroupExpanded
@@ -3333,6 +3442,10 @@ const ChatTimeline = memo(function ChatTimeline({
                             projectId={projectId}
                             resolveFileReference={resolveFileReference}
                             scrollRef={scrollRef}
+                            semanticAnchorBlockLoaded={
+                                semanticAnchorBlockLoaded
+                            }
+                            semanticRestoreAnchor={semanticRestoreAnchor}
                             sessionId={sessionId}
                             showStreamingIndicator={showStreamingIndicator}
                             shouldDeferTrailingUserMeasurementAnchor={
@@ -3418,6 +3531,8 @@ export type ChatTimelineHistoryProps = {
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSemanticAnchorRestored?: () => void;
+    readonly onSemanticAnchorUnavailable?: () => void;
     readonly onVirtualScrollRequest?: (
         request: MeasuredVirtualScrollRequest,
     ) => void;
@@ -3461,6 +3576,8 @@ export type ChatTimelineHistoryProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly semanticAnchorBlockLoaded?: boolean;
+    readonly semanticRestoreAnchor?: ChatSemanticRestoreAnchor | null;
     readonly sessionId: string;
     readonly showStreamingIndicator: boolean;
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
@@ -3481,6 +3598,8 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
     liveTailRowId,
     newTurnAnchorRowId,
     onNewTurnScrollTarget,
+    onSemanticAnchorRestored,
+    onSemanticAnchorUnavailable,
     onVirtualScrollRequest,
     onSetActivityGroupExpanded,
     onSetActivityRangeExpanded,
@@ -3498,6 +3617,8 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
     projectId,
     resolveFileReference,
     scrollRef,
+    semanticAnchorBlockLoaded,
+    semanticRestoreAnchor,
     sessionId,
     showStreamingIndicator,
     shouldDeferTrailingUserMeasurementAnchor,
@@ -3578,6 +3699,8 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
             liveTailRowId={liveTailRowId}
             newTurnAnchorRowId={newTurnAnchorRowId}
             onNewTurnScrollTarget={onNewTurnScrollTarget}
+            onSemanticAnchorRestored={onSemanticAnchorRestored}
+            onSemanticAnchorUnavailable={onSemanticAnchorUnavailable}
             onVirtualScrollRequest={onVirtualScrollRequest}
             onVirtualRangeChange={onVirtualRangeChange}
             onVirtualResizeEnd={onVirtualResizeEnd}
@@ -3586,6 +3709,8 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
             renderRow={renderRow}
             renderStreamingIndicator={renderStreamingIndicator}
             scrollRef={scrollRef}
+            semanticAnchorBlockLoaded={semanticAnchorBlockLoaded}
+            semanticRestoreAnchor={semanticRestoreAnchor}
             sessionId={sessionId}
             showStreamingIndicator={showStreamingIndicator}
             shouldDeferTrailingUserMeasurementAnchor={

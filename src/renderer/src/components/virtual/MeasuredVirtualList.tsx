@@ -108,6 +108,7 @@ export interface MeasuredVirtualListHandle {
         options?: {
             readonly align?: "center" | "end" | "start";
             readonly offset?: number;
+            readonly reason?: MeasuredVirtualScrollRequest["reason"];
         },
     ) => void;
     readonly scrollToViewportAnchor?: (
@@ -116,7 +117,7 @@ export interface MeasuredVirtualListHandle {
 }
 
 export interface MeasuredVirtualScrollRequest {
-    readonly reason: "measure-anchor" | "scroll-to-index";
+    readonly reason: "measure-anchor" | "restore" | "scroll-to-index";
     readonly target: number;
 }
 
@@ -1363,6 +1364,7 @@ export function MeasuredVirtualList<T>({
             options?: {
                 readonly align?: "center" | "end" | "start";
                 readonly offset?: number;
+                readonly reason?: MeasuredVirtualScrollRequest["reason"];
             },
         ) => {
             const container = scrollContainerRef.current;
@@ -1373,6 +1375,7 @@ export function MeasuredVirtualList<T>({
 
             const align = options?.align ?? "start";
             const offset = options?.offset ?? 0;
+            const reason = options?.reason ?? "scroll-to-index";
             const before = container.scrollTop;
             const after = calculateMeasuredVirtualScrollTop({
                 align,
@@ -1384,7 +1387,7 @@ export function MeasuredVirtualList<T>({
                 viewportHeight: container.clientHeight,
             });
             if (onScrollRequest) {
-                onScrollRequest({ reason: "scroll-to-index", target: after });
+                onScrollRequest({ reason, target: after });
                 return;
             }
 
@@ -1393,7 +1396,7 @@ export function MeasuredVirtualList<T>({
                 after,
                 before,
                 clientHeight: container.clientHeight,
-                reason: "scroll-to-index",
+                reason,
                 scrollHeight: container.scrollHeight,
                 sessionId: measurementCacheKey,
             });

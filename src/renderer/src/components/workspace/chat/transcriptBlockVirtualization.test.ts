@@ -17,6 +17,7 @@ import {
     isTranscriptStreamingIndicatorItem,
     resolveAnchorBlockId,
     resolveTranscriptBlockIdsInRange,
+    resolveTranscriptEntryBlockId,
     resolveUnloadedTranscriptBlockIdsInRange,
     transcriptBlockEstimate,
 } from "./transcriptBlockVirtualization";
@@ -292,6 +293,12 @@ describe("transcriptBlockVirtualization", () => {
             resolveAnchorBlockId(
                 { alignment: "start", entryId: "entry-1", offsetWithinEntry: 8 },
                 blocks,
+            ),
+        ).toBe("block-1");
+        expect(
+            resolveTranscriptEntryBlockId(
+                new Map([[block.blockId, block]]),
+                "entry-1",
             ),
         ).toBe("block-1");
     });

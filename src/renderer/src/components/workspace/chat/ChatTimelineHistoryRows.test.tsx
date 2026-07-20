@@ -46,6 +46,7 @@ type MeasuredVirtualListMock = (
 const measuredVirtualListMock = vi.hoisted(() =>
     vi.fn<MeasuredVirtualListMock>(),
 );
+const mockScrollToIndex = vi.hoisted(() => vi.fn());
 const virtualListMockOptions = vi.hoisted(() => ({
     renderSecondItem: false,
 }));
@@ -54,7 +55,7 @@ let rectWidthsByElement = new WeakMap<Element, number>();
 let rectWidthFallback = 0;
 
 vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
-    const { createElement } =
+    const { createElement, useEffect } =
         await vi.importActual<typeof import("react")>("react");
 
     return {
@@ -80,7 +81,9 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             readonly getItemKey: (item: T, index: number) => string;
             readonly items: readonly T[];
             readonly onRangeChange?: () => void;
-            readonly onReady?: () => void;
+            readonly onReady?: (handle: {
+                readonly scrollToIndex: typeof mockScrollToIndex;
+            } | null) => void;
             readonly observeMeasurements?: boolean;
             readonly overscan?: number;
             readonly preserveScrollAnchorOnItemsChange?: boolean;
@@ -92,6 +95,10 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             }) => ReactNode;
             readonly scrollMarginTop?: number;
         }) => {
+            useEffect(() => {
+                onReady?.({ scrollToIndex: mockScrollToIndex });
+                return () => onReady?.(null);
+            }, [onReady]);
             measuredVirtualListMock({
                 firstEstimate:
                     items.length > 0 ? estimateSize(items[0], 0) : null,
@@ -359,6 +366,77 @@ function latestFirstMeasurementKey(): string {
 }
 
 describe("ChatTimelineHistoryRows", () => {
+    it("restores a semantic anchor only after its real row is mounted", () => {
+        const rows = createRows(3);
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        const onSemanticAnchorRestored = vi.fn();
+
+        act(() => {
+            root.render(
+                <ChatTimelineHistoryRows
+                    historyRows={rows}
+                    hotTailRowId={null}
+                    hotTailRows={[]}
+                    onSemanticAnchorRestored={onSemanticAnchorRestored}
+                    renderRow={({ row }) => <div>{row.id}</div>}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
+                    scrollRef={{ current: scrollContainer }}
+                    semanticAnchorBlockLoaded
+                    semanticRestoreAnchor={{
+                        entryId: rows[1]?.id ?? "",
+                        offsetWithinEntry: 14,
+                    }}
+                    showStreamingIndicator={false}
+                />,
+            );
+        });
+
+        expect(mockScrollToIndex).toHaveBeenCalledWith(1, {
+            align: "start",
+            offset: 14,
+            reason: "restore",
+        });
+        expect(onSemanticAnchorRestored).toHaveBeenCalledTimes(1);
+
+        root.unmount();
+    });
+
+    it("falls back only after the anchor block is resident without its entry", () => {
+        const rows = createRows(2);
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        const onSemanticAnchorUnavailable = vi.fn();
+
+        act(() => {
+            root.render(
+                <ChatTimelineHistoryRows
+                    historyRows={rows}
+                    hotTailRowId={null}
+                    hotTailRows={[]}
+                    onSemanticAnchorUnavailable={onSemanticAnchorUnavailable}
+                    renderRow={({ row }) => <div>{row.id}</div>}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
+                    scrollRef={{ current: scrollContainer }}
+                    semanticAnchorBlockLoaded
+                    semanticRestoreAnchor={{
+                        entryId: "missing-entry",
+                        offsetWithinEntry: 0,
+                    }}
+                    showStreamingIndicator={false}
+                />,
+            );
+        });
+
+        expect(onSemanticAnchorUnavailable).toHaveBeenCalledTimes(1);
+        expect(mockScrollToIndex).not.toHaveBeenCalled();
+
+        root.unmount();
+    });
     beforeEach(() => {
         (
             globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -366,6 +444,7 @@ describe("ChatTimelineHistoryRows", () => {
         rectWidthsByElement = new WeakMap<Element, number>();
         rectWidthFallback = 0;
         measuredVirtualListMock.mockClear();
+        mockScrollToIndex.mockClear();
         virtualListMockOptions.renderSecondItem = false;
         useShellStore.setState({ isResizingPanel: false });
         vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(

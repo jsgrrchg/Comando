@@ -425,6 +425,19 @@ export function resolveAnchorBlockId(
     return null;
 }
 
+export function resolveTranscriptEntryBlockId(
+    blocksById: ReadonlyMap<string, AiTranscriptBlock>,
+    entryId: string,
+): string | null {
+    for (const [blockId, block] of blocksById) {
+        if (block.entries.some((entry) => entry.id === entryId)) {
+            return blockId;
+        }
+    }
+
+    return null;
+}
+
 export function transcriptBlockEstimate(block: TranscriptVirtualBlock): number {
     return block.kind === "loaded"
         ? block.block.estimatedHeight

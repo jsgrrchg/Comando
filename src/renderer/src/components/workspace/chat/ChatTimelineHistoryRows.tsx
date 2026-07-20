@@ -26,6 +26,7 @@ import {
 
 import { ChatPresentationErrorBoundary } from "./ChatPresentationErrorBoundary";
 import {
+    getTranscriptTimelineItemAnchorEntryId,
     isChatTimelineRowItem,
     isTranscriptActivitySummaryItem,
     isTranscriptBlockSpacerItem,
@@ -68,6 +69,8 @@ interface ChatTimelineHistoryRowsProps {
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSemanticAnchorRestored?: () => void;
+    readonly onSemanticAnchorUnavailable?: () => void;
     readonly onVirtualScrollRequest?: (
         request: MeasuredVirtualScrollRequest,
     ) => void;
@@ -79,6 +82,11 @@ interface ChatTimelineHistoryRowsProps {
     }) => ReactNode;
     readonly renderStreamingIndicator: () => ReactNode;
     readonly scrollRef: RefObject<HTMLElement | null>;
+    readonly semanticAnchorBlockLoaded?: boolean;
+    readonly semanticRestoreAnchor?: {
+        readonly entryId: string;
+        readonly offsetWithinEntry: number;
+    } | null;
     readonly showStreamingIndicator: boolean;
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
@@ -135,12 +143,16 @@ export const ChatTimelineHistoryRows = memo(
         onVirtualResizeAutoFollow,
         onVirtualResizeStart,
         onNewTurnScrollTarget,
+        onSemanticAnchorRestored,
+        onSemanticAnchorUnavailable,
         onVirtualScrollRequest,
         liveTailRowId,
         newTurnAnchorRowId,
         renderRow,
         renderStreamingIndicator,
         scrollRef,
+        semanticAnchorBlockLoaded = false,
+        semanticRestoreAnchor,
         showStreamingIndicator,
         shouldDeferTrailingUserMeasurementAnchor,
         shouldPreserveVirtualMeasureAnchor,
@@ -160,11 +172,13 @@ export const ChatTimelineHistoryRows = memo(
             null,
         );
         const virtualResizeActiveRef = useRef(false);
+        const restoredSemanticAnchorKeyRef = useRef<string | null>(null);
         const handledTrailingUserMeasurementRef = useRef<string | null>(null);
         // This is intentionally local to the mounted timeline: measurements are
         // only a rendering hint and must never become persisted chat state.
         const estimateCalibrationRef = useRef(new Map<string, number>());
         const [scrollMarginTop, setScrollMarginTop] = useState(0);
+        const [virtualListVersion, setVirtualListVersion] = useState(0);
         const [contentMeasurementWidth, setContentMeasurementWidth] =
             useState(0);
         const trailingUserRowId = getTrailingUserRowId(historyRows);
@@ -283,9 +297,58 @@ export const ChatTimelineHistoryRows = memo(
         const handleVirtualListReady = useCallback(
             (handle: MeasuredVirtualListHandle | null) => {
                 virtualListHandleRef.current = handle;
+                setVirtualListVersion((version) => version + 1);
             },
             [],
         );
+
+        useLayoutEffect(() => {
+            if (!active || !semanticRestoreAnchor) {
+                return;
+            }
+
+            const restoreKey = `${semanticRestoreAnchor.entryId}:${semanticRestoreAnchor.offsetWithinEntry}`;
+            if (restoredSemanticAnchorKeyRef.current === restoreKey) {
+                return;
+            }
+
+            const anchorIndex = historyRows.findIndex(
+                (row) =>
+                    isChatTimelineRowItem(row) &&
+                    getTranscriptTimelineItemAnchorEntryId(row) ===
+                        semanticRestoreAnchor.entryId,
+            );
+            if (anchorIndex < 0) {
+                if (semanticAnchorBlockLoaded) {
+                    restoredSemanticAnchorKeyRef.current = restoreKey;
+                    onSemanticAnchorUnavailable?.();
+                }
+                return;
+            }
+
+            const handle = virtualListHandleRef.current;
+            if (!handle) {
+                return;
+            }
+
+            // The target row is real, not a spacer, so the semantic offset is
+            // meaningful even after estimates have changed around the viewport.
+            handle.scrollToIndex(anchorIndex, {
+                align: "start",
+                offset: semanticRestoreAnchor.offsetWithinEntry,
+                reason: "restore",
+            });
+            restoredSemanticAnchorKeyRef.current = restoreKey;
+            onSemanticAnchorRestored?.();
+        }, [
+            active,
+            historyRows,
+            onSemanticAnchorRestored,
+            onSemanticAnchorUnavailable,
+            semanticAnchorBlockLoaded,
+            semanticRestoreAnchor,
+            virtualListVersion,
+        ]);
 
         useLayoutEffect(() => {
             if (!active || !newTurnAnchorRowId) {
