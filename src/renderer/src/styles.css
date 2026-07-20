@@ -1475,9 +1475,16 @@ body {
 
 .markdown-file-preview table {
     width: 100%;
-    min-width: max-content;
+    min-width: 0;
     border-collapse: collapse;
     font-size: 0.94em;
+    /* Fixed layout keeps tables within the Markdown preview reading column. */
+    table-layout: fixed;
+}
+
+.markdown-file-preview__table-wrap--wide > table {
+    /* Wide tables keep readable columns and use the wrapper as a scroll surface. */
+    min-width: calc(var(--markdown-file-preview-table-columns) * 9rem);
 }
 
 .markdown-file-preview th,
@@ -1486,6 +1493,8 @@ body {
     border-bottom: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
     text-align: left;
     vertical-align: top;
+    /* Long tokens must wrap instead of widening the table beyond the preview. */
+    overflow-wrap: anywhere;
 }
 
 .markdown-file-preview th {
