@@ -2522,6 +2522,156 @@ describe("ai-store queue", () => {
         ).toBe("loaded");
     });
 
+    it("keeps a saved chat readable when its runtime status cannot be loaded", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(
+            createSnapshot({
+                messages: [
+                    createMessage({ content: "RUNTIME_FAILURE_MARKER" }),
+                ],
+            }),
+        );
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockRejectedValue(new Error("Runtime unavailable")),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(getAiSessionSnapshot).toHaveBeenCalledWith(TAB.sessionId);
+        expect(session?.historyHydrationState).toBe("loaded");
+        expect(session?.localError).toBeNull();
+        expect(session?.snapshot?.messages[0]?.content).toBe(
+            "RUNTIME_FAILURE_MARKER",
+        );
+        expect(session?.transcript.messagesById.get("message-1")?.content).toBe(
+            "RUNTIME_FAILURE_MARKER",
+        );
+    });
+
+    it("keeps a hydrated chat loaded when its prompt queue cannot be restored", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(
+            createSnapshot({
+                messages: [createMessage({ content: "QUEUE_FAILURE_MARKER" })],
+            }),
+        );
+        const getAiPromptQueue = vi
+            .fn()
+            .mockRejectedValue(new Error("Queue unavailable"));
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiPromptQueue,
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(getAiPromptQueue).toHaveBeenCalledWith(TAB.sessionId);
+        expect(session?.historyHydrationState).toBe("loaded");
+        expect(session?.localError).toBeNull();
+        expect(session?.snapshot?.messages[0]?.content).toBe(
+            "QUEUE_FAILURE_MARKER",
+        );
+        expect(session?.queue).toEqual([]);
+    });
+
+    it("marks an absent historical snapshot as missing instead of a loaded empty chat", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(null);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(getAiSessionSnapshot).toHaveBeenCalledWith(TAB.sessionId);
+        expect(session?.historyHydrationState).toBe("missing");
+        expect(session?.localError).toBe(
+            "This saved chat is no longer available.",
+        );
+    });
+
+    it("retries a missing historical snapshot and restores it when it becomes available", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(
+                createSnapshot({
+                    messages: [
+                        createMessage({ content: "RECOVERED_SNAPSHOT_MARKER" }),
+                    ],
+                }),
+            );
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+        await useAiStore.getState().ensureSession(historyTab);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(getAiSessionSnapshot).toHaveBeenCalledTimes(2);
+        expect(session?.historyHydrationState).toBe("loaded");
+        expect(session?.snapshot?.messages[0]?.content).toBe(
+            "RECOVERED_SNAPSHOT_MARKER",
+        );
+    });
+
     it("prepares a closed restored history chat before queuing a follow-up prompt", async () => {
         const historyTab: WorkspaceChatTab = {
             ...TAB,
