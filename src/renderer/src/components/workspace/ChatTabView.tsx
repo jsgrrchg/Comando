@@ -3671,6 +3671,8 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
                 canRenderFileReference={canRenderFileReference}
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
+                // Entries are independently mounted by the virtual list; a
+                // continuous tree connector would be misleading or broken.
                 flat
                 item={row.item}
                 onAddFileReferenceToChat={onAddFileReferenceToChat}

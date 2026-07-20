@@ -167,6 +167,10 @@ export function ActivitySegmentItemRow({
     item,
     ...props
 }: ActivitySegmentItemRendererProps & {
+    /**
+     * Virtualized entries do not share a stable DOM tree, so they retain the
+     * rail indentation but omit connectors that could end at an unmounted row.
+     */
     readonly flat?: boolean;
     readonly item: ChatTimelineActivitySegmentRow["items"][number];
 }) {
