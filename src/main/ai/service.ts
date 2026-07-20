@@ -712,12 +712,7 @@ export class AiService {
             payload.sessionId,
             "cancelled",
         );
-        void (this.#transcriptPersistence?.flushSession(
-            payload.sessionId,
-            750,
-        ) ?? Promise.resolve(true)).finally(() => {
-            this.#clearLiveSession(payload.sessionId);
-        });
+        void this.#flushAndClearClosedSession(payload.sessionId);
     }
 
     handleNativeSessionSnapshot(
@@ -2067,12 +2062,12 @@ export class AiService {
 
         await this.#requireNativeAiGateway().closeSession(sessionId);
         this.#transcriptPersistence?.requestSeal(sessionId, "cancelled");
-        await this.#transcriptPersistence?.flushSession(sessionId, 750);
         if (this.#nativeChildParentSessionIds.has(sessionId)) {
+            await this.#transcriptPersistence?.flushSession(sessionId, 750);
             this.#detachLiveSession(sessionId);
             return;
         }
-        this.#clearLiveSession(sessionId);
+        await this.#flushAndClearClosedSession(sessionId);
     }
 
     async deleteSession(sessionId: string): Promise<void> {
@@ -2146,12 +2141,7 @@ export class AiService {
                         sessionId,
                         "cancelled",
                     );
-                    void (this.#transcriptPersistence?.flushSession(
-                        sessionId,
-                        750,
-                    ) ?? Promise.resolve(true)).finally(() => {
-                        this.#clearLiveSession(sessionId);
-                    });
+                    void this.#flushAndClearClosedSession(sessionId);
                 }
             });
     }
@@ -2853,6 +2843,31 @@ export class AiService {
             this.#nativeSessionIds.delete(currentSessionId);
         }
         this.#scheduleSessionRetentionTimer();
+    }
+
+    async #flushAndClearClosedSession(sessionId: string): Promise<void> {
+        const persistence = this.#transcriptPersistence;
+        const completed = await (persistence?.flushSession(sessionId, 750) ??
+            Promise.resolve(true));
+        if (completed) {
+            this.#clearLiveSession(sessionId);
+            return;
+        }
+
+        // Closing the runtime must stay responsive, but the durable queue owns
+        // the tail until its retries finish successfully.
+        this.#detachLiveSession(sessionId);
+        if (!persistence) {
+            return;
+        }
+        await persistence.waitForIdle(sessionId);
+        // The session may have been reopened while its old tail was flushing.
+        if (
+            !this.#liveSessionContexts.has(sessionId) &&
+            !this.#deletedSessionIds.has(sessionId)
+        ) {
+            this.#clearLiveSession(sessionId);
+        }
     }
 
     #detachLiveSession(sessionId: string): void {

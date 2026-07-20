@@ -127,6 +127,68 @@ describe("AiService history", () => {
         }
     });
 
+    it("retains a closing tail until a timed-out checkpoint becomes durable", async () => {
+        vi.useFakeTimers();
+        let resolveCheckpoint!: () => void;
+        const blockedCheckpoint = new Promise<void>((resolve) => {
+            resolveCheckpoint = resolve;
+        });
+        const checkpointOpenTranscriptTail = vi.fn<
+            NonNullable<NativeAiGateway["checkpointOpenTranscriptTail"]>
+        >(() => blockedCheckpoint);
+        const snapshot = createSnapshot({
+            activeTurnStartedAt: "2026-04-16T12:00:00.000Z",
+            messages: [
+                {
+                    attachments: [],
+                    content: "Keep this closing output.",
+                    createdAt: "2026-04-16T12:00:01.000Z",
+                    id: "assistant-closing",
+                    kind: "assistant",
+                    status: "streaming",
+                },
+            ],
+            status: "streaming",
+        });
+        const service = createService({
+            nativeAi: createNativeAiGateway({
+                checkpointOpenTranscriptTail,
+                getTranscriptCapability: vi.fn(() => ({
+                    blockNativeVersion: 1,
+                    legacyFallbackAvailable: true,
+                })),
+                loadOpenTranscriptTail: vi.fn(() => Promise.resolve(null)),
+                sealTranscriptTurn: vi.fn(() => Promise.resolve([])),
+            }),
+        });
+
+        try {
+            service.handleNativeSessionSnapshot("window-1", {
+                kind: "snapshot",
+                snapshot,
+            });
+            await vi.waitFor(() =>
+                expect(checkpointOpenTranscriptTail).toHaveBeenCalledOnce(),
+            );
+
+            service.handleNativeSessionClosed({
+                ownerWindowId: "window-1",
+                sessionId: snapshot.sessionId,
+            });
+            await vi.advanceTimersByTimeAsync(751);
+
+            expect(service.getLiveTranscriptTail(snapshot.sessionId)).not.toBeNull();
+
+            resolveCheckpoint();
+            await vi.waitFor(() =>
+                expect(service.getLiveTranscriptTail(snapshot.sessionId)).toBeNull(),
+            );
+        } finally {
+            service.close();
+            vi.useRealTimers();
+        }
+    });
+
     it("throws when a transcript page is requested for a missing session", async () => {
         const service = createService({
             loadSessionTranscriptPage: vi.fn(() => null),

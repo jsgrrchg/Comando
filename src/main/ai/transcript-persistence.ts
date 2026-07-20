@@ -158,6 +158,17 @@ export class AiTranscriptPersistenceCoordinator {
         });
     }
 
+    async waitForIdle(sessionId: string): Promise<void> {
+        const queue = this.#queueFor(sessionId);
+        this.#pump(sessionId);
+        if (this.#isIdle(sessionId, queue)) {
+            return;
+        }
+        await new Promise<void>((resolve) => {
+            queue.waiters.add(resolve);
+        });
+    }
+
     async shutdown(timeoutMs: number): Promise<boolean> {
         const sessionIds = [...this.#queues.keys()];
         const results = await Promise.all(
@@ -178,6 +189,10 @@ export class AiTranscriptPersistenceCoordinator {
         const queue = this.#queues.get(sessionId);
         if (queue?.retryTimer) {
             clearTimeout(queue.retryTimer);
+        }
+        if (queue) {
+            // Explicit deletion supersedes any background flush waiting for idle.
+            this.#resolveWaiters(queue);
         }
         this.#queues.delete(sessionId);
         this.#statusBySessionId.delete(sessionId);

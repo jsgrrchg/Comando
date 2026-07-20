@@ -425,6 +425,29 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         blocked.resolve();
         await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
     });
+
+    it("keeps waiting for durable idle after a bounded flush times out", async () => {
+        const store = liveStore();
+        const blocked = deferred<void>();
+        const adapter = adapterStub({
+            checkpoint: vi.fn(async () => await blocked.promise),
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(store, adapter);
+        store.applyEvent(messageStarted("answer"));
+        coordinator.scheduleCheckpoint(SESSION_ID);
+
+        await expect(coordinator.flushSession(SESSION_ID, 10)).resolves.toBe(false);
+        let idle = false;
+        const waitForIdle = coordinator.waitForIdle(SESSION_ID).then(() => {
+            idle = true;
+        });
+        await Promise.resolve();
+        expect(idle).toBe(false);
+
+        blocked.resolve();
+        await waitForIdle;
+        expect(idle).toBe(true);
+    });
 });
 
 function adapterStub(
