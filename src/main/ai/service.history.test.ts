@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type {
     AiHistorySessionSummary,
+    AiOpenTranscriptTail,
     AiSessionSnapshot,
     AiSessionTranscriptPage,
     AiSessionUpdate,
@@ -181,6 +182,87 @@ describe("AiService history", () => {
             service.getTranscriptBlockMetadata(snapshot.sessionId),
         ).resolves.toBeNull();
         expect(loadTranscriptBlockMetadata).not.toHaveBeenCalled();
+    });
+
+    it("restores an open tail before returning a historical block-native snapshot", async () => {
+        const snapshot = createSnapshot({
+            activeTurnStartedAt: "2026-04-16T12:00:00.000Z",
+            status: "streaming",
+        });
+        const openTail: AiOpenTranscriptTail = {
+            entries: [{
+                createdAt: "2026-04-16T12:00:01.000Z",
+                id: "message:assistant-1",
+                kind: "message",
+                payloadRef: "tail:assistant-1",
+                sequence: 1,
+                sessionId: snapshot.sessionId,
+                summary: {
+                    label: "Assistant",
+                    preview: "Recovered streamed output.",
+                    status: "streaming",
+                },
+                updatedAt: "2026-04-16T12:00:01.000Z",
+            }],
+            entryRevisions: [{
+                entryId: "message:assistant-1",
+                entryRevision: 1,
+                ordinal: 0,
+            }],
+            payloads: [{
+                payloadRef: "tail:assistant-1",
+                value: {
+                    kind: "message",
+                    message: {
+                        attachments: [],
+                        content: "Recovered streamed output.",
+                        createdAt: "2026-04-16T12:00:01.000Z",
+                        id: "assistant-1",
+                        kind: "assistant",
+                        status: "streaming",
+                    },
+                },
+            }],
+            revision: 1,
+            sessionId: snapshot.sessionId,
+            terminalStatus: null,
+            turnId: snapshot.activeTurnStartedAt!,
+            updatedAt: "2026-04-16T12:00:01.000Z",
+        };
+        const loadOpenTranscriptTail = vi.fn(() => Promise.resolve(openTail));
+        const service = createService({
+            nativeAi: createNativeAiGateway({
+                checkpointOpenTranscriptTail: vi.fn(() => Promise.resolve()),
+                getTranscriptCapability: vi.fn(() => ({
+                    blockNativeVersion: 1,
+                    legacyFallbackAvailable: true,
+                })),
+                getTranscriptStorageState: vi.fn(() => Promise.resolve({
+                    capabilityVersion: 1,
+                    legacyFallbackAvailable: true,
+                    migrationManifestExists: false,
+                    mode: "block-native" as const,
+                    sessionId: snapshot.sessionId,
+                    storageVersion: 5,
+                })),
+                loadOpenTranscriptTail,
+                loadSessionSnapshot: vi.fn(() => Promise.resolve(snapshot)),
+                sealTranscriptTurn: vi.fn(() => Promise.resolve([])),
+            }),
+        });
+
+        try {
+            await expect(service.getSessionSnapshot(snapshot.sessionId)).resolves
+                .toMatchObject({
+                    messages: [{
+                        content: "Recovered streamed output.",
+                        id: "assistant-1",
+                    }],
+                });
+            expect(loadOpenTranscriptTail).toHaveBeenCalledOnce();
+        } finally {
+            service.close();
+        }
     });
 
     it("retries a transient transcript migration status failure", async () => {

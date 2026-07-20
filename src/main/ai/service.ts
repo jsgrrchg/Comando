@@ -1292,6 +1292,12 @@ export class AiService {
         await this.#refreshTranscriptStorageMode(sessionId, {
             preserveLegacyFallback: true,
         });
+        if (this.#usesBlockNativeTranscript(sessionId)) {
+            // Open tails are intentionally absent from sealed block metadata.
+            // Restore one before projecting the historical snapshot so an
+            // interrupted streaming turn remains visible after restart.
+            await this.#recoverTranscriptTail(sessionId);
+        }
         return this.#toRendererSessionSnapshot(
             this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot),
         );
