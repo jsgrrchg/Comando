@@ -4,14 +4,13 @@ import {
     applyAiSessionDomainEventToTranscript,
     buildAiSessionTranscriptModelFromSnapshot,
 } from "@renderer/app/ai/transcriptModel";
-import { buildBlockNativeTranscript } from "@renderer/app/ai/transcriptWindowProjection";
+import { buildBlockNativeTranscriptProjection } from "@renderer/app/ai/transcriptWindowProjection";
 import {
     readChatPerformanceCounters,
     resetChatPerformanceCounters,
 } from "@renderer/app/debug/chatPerformanceCounters";
 import {
-    reconcileChatTimelineModelFromTranscript,
-    reconcileChatTimelineModelIncrementallyFromTranscript,
+    reconcileChatTimelineModelFromProjection,
 } from "./chatTimelineModel";
 
 import {
@@ -156,18 +155,18 @@ describe("chatPerformanceFixtures", () => {
         let liveTranscript = buildAiSessionTranscriptModelFromSnapshot(
             fixture.snapshot,
         );
-        let projectedTranscript = buildBlockNativeTranscript(
+        let projection = buildBlockNativeTranscriptProjection(
             liveTranscript,
             fixture.blocksById,
             fixture.metadata,
             fixture.payloadsByRef,
-            fixture.snapshot,
         );
-        let timeline = reconcileChatTimelineModelFromTranscript(null, {
+        let timeline = reconcileChatTimelineModelFromProjection(null, null, {
             activeTurnStartedAt: fixture.snapshot.activeTurnStartedAt,
+            projection,
             status: fixture.snapshot.status,
             trackedFiles: fixture.snapshot.trackedFiles,
-            transcript: projectedTranscript,
+            updatedAt: fixture.snapshot.updatedAt,
         });
         resetChatPerformanceCounters();
 
@@ -192,24 +191,25 @@ describe("chatPerformanceFixtures", () => {
                     ).toISOString(),
                 } satisfies AiSessionDomainEvent,
             );
-            const nextProjectedTranscript = buildBlockNativeTranscript(
+            const nextProjection = buildBlockNativeTranscriptProjection(
                 liveTranscript,
                 fixture.blocksById,
                 fixture.metadata,
                 fixture.payloadsByRef,
-                fixture.snapshot,
+                projection,
             );
-            timeline = reconcileChatTimelineModelIncrementallyFromTranscript(
+            timeline = reconcileChatTimelineModelFromProjection(
                 timeline,
-                projectedTranscript,
+                projection,
                 {
                     activeTurnStartedAt: fixture.snapshot.activeTurnStartedAt,
+                    projection: nextProjection,
                     status: fixture.snapshot.status,
                     trackedFiles: fixture.snapshot.trackedFiles,
-                    transcript: nextProjectedTranscript,
+                    updatedAt: fixture.snapshot.updatedAt,
                 },
             );
-            projectedTranscript = nextProjectedTranscript;
+            projection = nextProjection;
         }
 
         const counters = readChatPerformanceCounters();
@@ -217,10 +217,13 @@ describe("chatPerformanceFixtures", () => {
             (total, block) => total + block.entries.length,
             0,
         );
-        expect(counters.timeline_full_rebuilds).toBe(fixture.deltaCount);
-        expect(counters.stable_history_entries_visited).toBe(
-            residentEntries * fixture.deltaCount,
-        );
+        expect(counters.timeline_full_rebuilds).toBe(0);
+        expect(counters.stable_history_entries_visited).toBe(0);
+        expect(
+            timeline.atomicLiveTailRow?.kind === "message"
+                ? timeline.atomicLiveTailRow.message.content
+                : null,
+        ).toBe(content);
         expect(
             passesChatPerformanceGate({
                 fullRebuildsDuringStreaming:
@@ -231,6 +234,6 @@ describe("chatPerformanceFixtures", () => {
                 sealedEntriesVisitedDuringStreaming:
                     counters.stable_history_entries_visited,
             }),
-        ).toBe(false);
+        ).toBe(true);
     });
 });

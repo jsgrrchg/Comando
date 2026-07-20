@@ -44,8 +44,9 @@ import {
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
 import {
-    buildBlockNativeTranscript,
+    buildBlockNativeTranscriptProjection,
     buildTranscriptToolPayloadRefs,
+    type BlockNativeTranscriptProjection,
 } from "@renderer/app/ai/transcriptWindowProjection";
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
@@ -82,6 +83,7 @@ import { ToolExpansionStoreProvider } from "./chat/toolExpansionStore";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
+    reconcileChatTimelineModelFromProjection,
     reconcileChatTimelineModelIncrementallyFromTranscript,
     type ChatTimelineModel,
 } from "./chat/chatTimelineModel";
@@ -439,6 +441,7 @@ export const ChatTabView = memo(function ChatTabView({
         readonly activeTurnStartedAt: string | null;
         readonly attentionToolCallIds: ReadonlySet<string>;
         readonly model: ChatTimelineModel | null;
+        readonly projection: BlockNativeTranscriptProjection | null;
         readonly sessionId: string;
         readonly status: AiSessionSnapshot["status"] | null;
         readonly trackedFiles: AiSessionSnapshot["trackedFiles"] | null;
@@ -447,6 +450,7 @@ export const ChatTabView = memo(function ChatTabView({
         activeTurnStartedAt: null,
         attentionToolCallIds: new Set(),
         model: null,
+        projection: null,
         sessionId: tab.sessionId,
         status: null,
         trackedFiles: null,
@@ -700,26 +704,30 @@ export const ChatTabView = memo(function ChatTabView({
     const storedTranscript =
         sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;
     const transcriptWindow = sessionState?.transcriptWindow ?? null;
-    const transcript = useMemo(
+    /* eslint-disable react-hooks/refs -- Projection and timeline reconciliation read the last committed identities without publishing speculative renders. */
+    const transcriptProjection = useMemo(
         () =>
             transcriptWindow?.capabilityVersion
-                ? buildBlockNativeTranscript(
+                ? buildBlockNativeTranscriptProjection(
                       storedTranscript,
                       transcriptWindow.blocksById,
                       transcriptWindow.metadata,
                       transcriptWindow.payloadsByRef,
-                      snapshot,
+                      stableTimelineRef.current.sessionId === tab.sessionId
+                          ? stableTimelineRef.current.projection
+                          : null,
                   )
-                : storedTranscript,
+                : null,
         [
-            snapshot,
             storedTranscript,
+            tab.sessionId,
             transcriptWindow?.blocksById,
             transcriptWindow?.capabilityVersion,
             transcriptWindow?.metadata,
             transcriptWindow?.payloadsByRef,
         ],
     );
+    const transcript = transcriptProjection?.hot.transcript ?? storedTranscript;
     const toolPayloadRefByActivityId = useMemo(
         () =>
             buildTranscriptToolPayloadRefs(
@@ -1232,7 +1240,6 @@ export const ChatTabView = memo(function ChatTabView({
         };
     }, [active, activeTurnKey, activeTurnStartedAt]);
 
-    /* eslint-disable react-hooks/refs -- The timeline reconciler needs the last committed model to preserve row identity during render. */
     const attentionToolCallIds = useMemo(() => {
         const toolCallIds = new Set<string>();
         if (pendingPermission?.toolCallId) {
@@ -1247,6 +1254,7 @@ export const ChatTabView = memo(function ChatTabView({
         const cachedTimeline = getCachedChatTimeline({
             activeTurnStartedAt,
             attentionToolCallIds,
+            projection: transcriptProjection,
             sessionId: tab.sessionId,
             status: snapshot.status,
             trackedFiles: canonicalTrackedFiles,
@@ -1276,8 +1284,24 @@ export const ChatTabView = memo(function ChatTabView({
                     transcriptRows: transcript.orderedEntryIds.length,
                 },
             },
-            () =>
-                reconcileChatTimelineModelIncrementallyFromTranscript(
+            () => {
+                if (transcriptProjection) {
+                    return reconcileChatTimelineModelFromProjection(
+                        previousTimelineModel,
+                        canReconcileIncrementally
+                            ? previousTimelineState.projection
+                            : null,
+                        {
+                            activeTurnStartedAt,
+                            attentionToolCallIds,
+                            projection: transcriptProjection,
+                            status: snapshot.status,
+                            trackedFiles: canonicalTrackedFiles,
+                            updatedAt: snapshot.updatedAt,
+                        },
+                    );
+                }
+                return reconcileChatTimelineModelIncrementallyFromTranscript(
                     previousTimelineModel,
                     canReconcileIncrementally
                         ? previousTimelineState.transcript
@@ -1289,15 +1313,18 @@ export const ChatTabView = memo(function ChatTabView({
                         trackedFiles: canonicalTrackedFiles,
                         transcript,
                     },
-                ),
+                );
+            },
         );
     }, [
         activeTurnStartedAt,
         attentionToolCallIds,
         canonicalTrackedFiles,
         snapshot.status,
+        snapshot.updatedAt,
         tab.sessionId,
         transcript,
+        transcriptProjection,
     ]);
     const [activityExpansionBySessionId, setActivityExpansionBySessionId] =
         useState<Record<string, TranscriptActivityGroupExpansionById>>({});
@@ -1471,6 +1498,7 @@ export const ChatTabView = memo(function ChatTabView({
             activeTurnStartedAt,
             attentionToolCallIds,
             model: timelineModel,
+            projection: transcriptProjection,
             sessionId: tab.sessionId,
             status: snapshot.status,
             trackedFiles: canonicalTrackedFiles,
@@ -1480,6 +1508,7 @@ export const ChatTabView = memo(function ChatTabView({
             activeTurnStartedAt,
             attentionToolCallIds,
             model: timelineModel,
+            projection: transcriptProjection,
             sessionId: tab.sessionId,
             status: snapshot.status,
             trackedFiles: canonicalTrackedFiles,
@@ -1493,6 +1522,7 @@ export const ChatTabView = memo(function ChatTabView({
         tab.sessionId,
         timelineModel,
         transcript,
+        transcriptProjection,
     ]);
     const persistedViewState = useMemo(
         () =>

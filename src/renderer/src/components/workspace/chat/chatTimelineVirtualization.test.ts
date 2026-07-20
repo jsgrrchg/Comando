@@ -87,6 +87,7 @@ function createMessageRow(
 ): ChatTimelineRow {
     const message = createMessage(overrides);
     return {
+        blockId: null,
         id: `message:${message.id}`,
         kind: "message",
         message,
@@ -102,6 +103,7 @@ function createToolRow({
 } = {}): ChatTimelineRow {
     const nextActivity = activity ?? createActivity();
     return {
+        blockId: null,
         id: `tool:${nextActivity.id}`,
         kind: "tool",
         reviewEntry: {

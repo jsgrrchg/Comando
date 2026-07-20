@@ -214,7 +214,14 @@ describe("transcriptBlockVirtualization", () => {
         const loadedRows = buildTranscriptTimelineItems(
             blockMetadata,
             new Map([["block-1", loadedBlock]]),
-            [{ id: "message:message-1", kind: "message", message }],
+            [
+                {
+                    blockId: "block-1",
+                    id: "message:message-1",
+                    kind: "message",
+                    message,
+                },
+            ],
         );
 
         expect(loadedRows.map((row) => row.id)).toEqual([
@@ -336,6 +343,7 @@ function createActivitySegment(
     );
 
     return {
+        blockId: null,
         changeStats: {
             additions: 0,
             approximate: false,

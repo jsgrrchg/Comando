@@ -151,25 +151,10 @@ export function buildTranscriptTimelineItems(
         return timelineRows;
     }
 
-    const blockIdByEntryId = new Map<string, string>();
-    for (const item of metadata) {
-        const block = loaded.get(item.blockId);
-        if (!block) continue;
-        incrementChatPerformanceCounter(
-            "presentation_items_visited",
-            block.entries.length,
-        );
-        for (const entry of block.entries) {
-            blockIdByEntryId.set(entry.id, item.blockId);
-        }
-    }
-
     const rowsByBlockId = new Map<string, ChatTimelineRow[]>();
     const unassignedRows: ChatTimelineRow[] = [];
     for (const row of timelineRows) {
-        const blockId = timelineEntryIds(row)
-            .map((entryId) => blockIdByEntryId.get(entryId) ?? null)
-            .find((candidate): candidate is string => candidate !== null);
+        const blockId = row.blockId;
         if (!blockId) {
             unassignedRows.push(row);
             continue;
@@ -457,24 +442,4 @@ export function captureTranscriptSemanticAnchor(input: {
         entryId: input.entryId,
         offsetWithinEntry: Math.max(0, input.offsetWithinEntry ?? 0),
     };
-}
-
-function timelineEntryIds(row: ChatTimelineRow): readonly string[] {
-    if (row.kind === "message") {
-        return [messageTranscriptEntryId(row.message.id)];
-    }
-    if (row.kind === "tool") {
-        return [row.id];
-    }
-    return row.items.map((item) =>
-        item.kind === "thinking"
-            ? messageTranscriptEntryId(item.message.id)
-            : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`,
-    );
-}
-
-function messageTranscriptEntryId(messageId: string): string {
-    return messageId.startsWith("summary:")
-        ? messageId.slice("summary:".length)
-        : `message:${messageId}`;
 }

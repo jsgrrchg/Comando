@@ -1,5 +1,6 @@
 import type { AiSessionSnapshot } from "@shared/ipc";
 import type { AiSessionTranscriptModel } from "@renderer/app/ai/transcriptModel";
+import type { BlockNativeTranscriptProjection } from "@renderer/app/ai/transcriptWindowProjection";
 import { rendererArtifactCache } from "@renderer/app/workspace/resource-budget";
 
 import type { ChatTimelineModel } from "./chatTimelineModel";
@@ -8,6 +9,7 @@ interface CachedTimeline {
     readonly activeTurnStartedAt: string | null;
     readonly attentionToolCallIdsKey: string;
     readonly model: ChatTimelineModel;
+    readonly projection: BlockNativeTranscriptProjection | null;
     readonly status: AiSessionSnapshot["status"];
     readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
     readonly transcript: AiSessionTranscriptModel;
@@ -23,6 +25,7 @@ export function getCachedChatTimeline(input: {
     readonly activeTurnStartedAt: string | null;
     readonly attentionToolCallIds: ReadonlySet<string>;
     readonly sessionId: string;
+    readonly projection: BlockNativeTranscriptProjection | null;
     readonly status: AiSessionSnapshot["status"];
     readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
     readonly transcript: AiSessionTranscriptModel;
@@ -37,6 +40,7 @@ export function getCachedChatTimeline(input: {
         cached.attentionToolCallIdsKey !==
             getAttentionToolCallIdsKey(input.attentionToolCallIds) ||
         cached.status !== input.status ||
+        cached.projection !== input.projection ||
         cached.trackedFiles !== input.trackedFiles ||
         cached.transcript !== input.transcript
     ) {
@@ -50,6 +54,7 @@ export function cacheChatTimeline(input: {
     readonly activeTurnStartedAt: string | null;
     readonly attentionToolCallIds: ReadonlySet<string>;
     readonly model: ChatTimelineModel;
+    readonly projection: BlockNativeTranscriptProjection | null;
     readonly sessionId: string;
     readonly status: AiSessionSnapshot["status"];
     readonly trackedFiles: AiSessionSnapshot["trackedFiles"];

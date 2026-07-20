@@ -27,6 +27,7 @@ function createMessage(
 describe("long content virtualization", () => {
     it("replaces a large completed assistant message with stable chunks", () => {
         const row: ChatTimelineMessageRow = {
+            blockId: null,
             id: "message:assistant-1",
             kind: "message",
             message: createMessage("word ".repeat(LONG_CONTENT_MIN_CHARACTERS)),
@@ -49,6 +50,7 @@ describe("long content virtualization", () => {
 
     it("does not split a moving stream or messages with non-text artifacts", () => {
         const streaming: ChatTimelineMessageRow = {
+            blockId: null,
             id: "message:streaming",
             kind: "message",
             message: createMessage("word ".repeat(LONG_CONTENT_MIN_CHARACTERS), {
@@ -56,6 +58,7 @@ describe("long content virtualization", () => {
             }),
         };
         const withAttachment: ChatTimelineMessageRow = {
+            blockId: null,
             id: "message:attachment",
             kind: "message",
             message: createMessage("word ".repeat(LONG_CONTENT_MIN_CHARACTERS), {

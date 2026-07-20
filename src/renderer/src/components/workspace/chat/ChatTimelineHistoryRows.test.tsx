@@ -163,6 +163,7 @@ function createRows(count: number): ChatTimelineRow[] {
         });
 
         return {
+            blockId: null,
             id: `message:${message.id}`,
             kind: "message",
             message,
@@ -226,6 +227,7 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
     }));
 
     return {
+        blockId: null,
         changeStats: { additions: 0, approximate: false, deletions: 0 },
         entries,
         id: "activity-segment:session-1:read-1",
@@ -482,6 +484,7 @@ describe("ChatTimelineHistoryRows", () => {
             throw new Error("expected a historical row");
         }
         const userRow: ChatTimelineRow = {
+            blockId: null,
             id: "message:user-next-turn",
             kind: "message",
             message: createMessage({
