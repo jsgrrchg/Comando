@@ -244,9 +244,8 @@ export function flattenTranscriptTimelineItems(
         const groupId = sourceItem.id;
         const expansion = options.expansionByGroupId[groupId];
         const isActiveGroup = options.activeGroupId === groupId;
-        const expanded =
-            expansion?.expanded ??
-            (isActiveGroup || options.defaultExpanded);
+        // Streaming must not override the user's default expansion preference.
+        const expanded = expansion?.expanded ?? options.defaultExpanded;
         timelineItems.push({
             expanded,
             groupId,

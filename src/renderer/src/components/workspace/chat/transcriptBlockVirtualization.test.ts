@@ -80,6 +80,22 @@ describe("transcriptBlockVirtualization", () => {
         ]);
     });
 
+    it("keeps active activity collapsed when the default is collapsed", () => {
+        const segment = createActivitySegment(3);
+        const items = flattenTranscriptTimelineItems([segment], {
+            activeGroupId: segment.id,
+            defaultExpanded: false,
+            expansionByGroupId: {},
+        });
+
+        expect(items).toHaveLength(1);
+        expect(items[0]).toMatchObject({
+            expanded: false,
+            id: `activity-summary:${segment.id}`,
+            kind: "activity-summary",
+        });
+    });
+
     it("uses collapsed windows instead of materializing a huge activity group", () => {
         const segment = createActivitySegment(401);
         const collapsedWindows = flattenTranscriptTimelineItems([segment], {
