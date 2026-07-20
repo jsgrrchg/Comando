@@ -26,14 +26,9 @@ import type {
     AiTranscriptBlockMetadata,
     AiTranscriptBlockMetadataOutput,
     AiTranscriptCapability,
-    AiTranscriptAroundInput,
-    AiTranscriptCursorInput,
     AiTranscriptEntryEnvelope,
-    AiTranscriptWindow,
     AiLoadTranscriptPayloadInput,
     AiTranscriptPayload,
-    AiResolveTranscriptEntryInput,
-    AiResolvedTranscriptEntry,
     AiTranscriptStorageState,
     AiSealTranscriptTurnInput,
     AiTrackedFile,
@@ -67,9 +62,7 @@ import {
     type NativeAiTranscriptBlock,
     type NativeAiTranscriptBlockMetadata,
     type NativeAiTranscriptBlockMetadataOutput,
-    type NativeAiTranscriptWindow,
     type NativeAiTranscriptPayload,
-    type NativeAiResolvedTranscriptEntry,
     type NativeAiTranscriptStorageState,
     type NativeCapabilitySet,
     type NativeAiRuntimeConnectionPayload,
@@ -463,37 +456,6 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         );
     }
 
-    async loadTranscriptBefore(
-        input: AiTranscriptCursorInput,
-    ): Promise<AiTranscriptWindow> {
-        return this.#loadTranscriptCursor("ai_load_transcript_before", input);
-    }
-
-    async loadTranscriptAfter(
-        input: AiTranscriptCursorInput,
-    ): Promise<AiTranscriptWindow> {
-        return this.#loadTranscriptCursor("ai_load_transcript_after", input);
-    }
-
-    async loadTranscriptAround(
-        input: AiTranscriptAroundInput,
-    ): Promise<AiTranscriptWindow> {
-        const output = await this.#client.request<unknown>(
-            "ai_load_transcript_around",
-            {
-                after: input.after,
-                before: input.before,
-                sequence: input.sequence,
-                sessionId: input.sessionId,
-            },
-        );
-        return requireTranscriptResponse<NativeAiTranscriptWindow>(
-            output,
-            input.sessionId,
-            "window",
-        );
-    }
-
     async loadTranscriptBlock(
         sessionId: string,
         blockId: string,
@@ -530,22 +492,6 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         );
     }
 
-    async resolveTranscriptEntry(
-        input: AiResolveTranscriptEntryInput,
-    ): Promise<AiResolvedTranscriptEntry | null> {
-        const output = await this.#client.request<unknown>(
-            "ai_resolve_transcript_entry",
-            { entryId: input.entryId, sessionId: input.sessionId },
-        );
-        return output === null
-            ? null
-            : requireTranscriptResponse<NativeAiResolvedTranscriptEntry>(
-                  output,
-                  input.sessionId,
-                  "resolved entry",
-              );
-    }
-
     async getTranscriptStorageState(
         sessionId: string,
     ): Promise<AiTranscriptStorageState> {
@@ -576,22 +522,6 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 mode: input.mode,
                 sourceDatabasePath: input.sourceDatabasePath,
             },
-        );
-    }
-
-    async #loadTranscriptCursor(
-        command: "ai_load_transcript_before" | "ai_load_transcript_after",
-        input: AiTranscriptCursorInput,
-    ): Promise<AiTranscriptWindow> {
-        const output = await this.#client.request<unknown>(command, {
-            limit: input.limit,
-            sequence: input.sequence,
-            sessionId: input.sessionId,
-        });
-        return requireTranscriptResponse<NativeAiTranscriptWindow>(
-            output,
-            input.sessionId,
-            "window",
         );
     }
 

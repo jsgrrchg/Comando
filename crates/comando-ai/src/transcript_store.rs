@@ -5,12 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use comando_types::ai::{
-    AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, AI_TRANSCRIPT_CURSOR_LIMIT_MAX,
     AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX, NativeAiCheckpointOpenTranscriptTailInput,
-    NativeAiOpenTranscriptEntryRef, NativeAiOpenTranscriptTail, NativeAiResolvedTranscriptEntry,
-    NativeAiTranscriptBlockMetadata, NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind,
-    NativeAiTranscriptEntrySummary, NativeAiTranscriptPayloadWrite,
-    NativeAiTranscriptTerminalStatus, NativeAiTranscriptWindow,
+    NativeAiOpenTranscriptEntryRef, NativeAiOpenTranscriptTail, NativeAiTranscriptBlockMetadata,
+    NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind, NativeAiTranscriptEntrySummary,
+    NativeAiTranscriptPayloadWrite, NativeAiTranscriptTerminalStatus,
 };
 use comando_types::ids::SessionId;
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -495,230 +493,12 @@ impl TranscriptStore {
         })
     }
 
-    pub(crate) fn load_before(
-        &self,
-        session_id: &SessionId,
-        sequence: Option<u64>,
-        limit: usize,
-    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        let limit = cursor_limit_to_sql(limit)?;
-        if !self.has_data_source() {
-            return Ok(Vec::new());
-        }
-        let connection = self.open(session_id, false)?;
-        let mut entries = match sequence {
-            Some(sequence) => {
-                let sequence = sequence_to_sql(sequence)?;
-                query_entries(
-                    &connection,
-                    session_id,
-                    "SELECT sequence, entry_id, kind, created_at, updated_at, summary_json, payload_ref
-                     FROM transcript_entries
-                     WHERE session_id = ?1 AND sequence < ?2
-                     ORDER BY sequence DESC
-                     LIMIT ?3",
-                    params![session_id.0, sequence, limit],
-                )?
-            }
-            None => query_entries(
-                &connection,
-                session_id,
-                "SELECT sequence, entry_id, kind, created_at, updated_at, summary_json, payload_ref
-                 FROM transcript_entries
-                 WHERE session_id = ?1
-                 ORDER BY sequence DESC
-                 LIMIT ?2",
-                params![session_id.0, limit],
-            )?,
-        };
-        entries.reverse();
-        Ok(entries)
-    }
-
-    pub(crate) fn load_after(
-        &self,
-        session_id: &SessionId,
-        sequence: Option<u64>,
-        limit: usize,
-    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        let limit = cursor_limit_to_sql(limit)?;
-        if !self.has_data_source() {
-            return Ok(Vec::new());
-        }
-        let connection = self.open(session_id, false)?;
-        match sequence {
-            Some(sequence) => {
-                let sequence = sequence_to_sql(sequence)?;
-                query_entries(
-                    &connection,
-                    session_id,
-                    "SELECT sequence, entry_id, kind, created_at, updated_at, summary_json, payload_ref
-                     FROM transcript_entries
-                     WHERE session_id = ?1 AND sequence > ?2
-                     ORDER BY sequence ASC
-                     LIMIT ?3",
-                    params![session_id.0, sequence, limit],
-                )
-            }
-            None => query_entries(
-                &connection,
-                session_id,
-                "SELECT sequence, entry_id, kind, created_at, updated_at, summary_json, payload_ref
-                 FROM transcript_entries
-                 WHERE session_id = ?1
-                 ORDER BY sequence ASC
-                 LIMIT ?2",
-                params![session_id.0, limit],
-            ),
-        }
-    }
-
-    pub(crate) fn load_around(
-        &self,
-        session_id: &SessionId,
-        sequence: u64,
-        before: usize,
-        after: usize,
-    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        let total = before.saturating_add(after).saturating_add(1);
-        if total > AI_TRANSCRIPT_CURSOR_LIMIT_MAX {
-            return Err(AiError::InvalidInput(
-                "Transcript around window exceeds the maximum limit".to_string(),
-            ));
-        }
-        if !self.has_data_source() {
-            return Ok(Vec::new());
-        }
-        let connection = self.open(session_id, false)?;
-        let sequence = sequence_to_sql(sequence)?;
-        let before = optional_cursor_limit_to_sql(before)?;
-        let after = optional_cursor_limit_to_sql(after)?;
-        let mut preceding = query_entries(
-            &connection,
-            session_id,
-            "SELECT sequence, entry_id, kind, created_at, updated_at, summary_json, payload_ref
-             FROM transcript_entries
-             WHERE session_id = ?1 AND sequence < ?2
-             ORDER BY sequence DESC
-             LIMIT ?3",
-            params![session_id.0, sequence, before],
-        )?;
-        preceding.reverse();
-        let center = query_entries(
-            &connection,
-            session_id,
-            "SELECT sequence, entry_id, kind, created_at, updated_at, summary_json, payload_ref
-             FROM transcript_entries
-             WHERE session_id = ?1 AND sequence = ?2
-             LIMIT 1",
-            params![session_id.0, sequence],
-        )?;
-        let following = query_entries(
-            &connection,
-            session_id,
-            "SELECT sequence, entry_id, kind, created_at, updated_at, summary_json, payload_ref
-             FROM transcript_entries
-             WHERE session_id = ?1 AND sequence > ?2
-             ORDER BY sequence ASC
-             LIMIT ?3",
-            params![session_id.0, sequence, after],
-        )?;
-        preceding.extend(center);
-        preceding.extend(following);
-        Ok(preceding)
-    }
-
-    pub(crate) fn describe_window(
-        &self,
-        session_id: &SessionId,
-        entries: Vec<NativeAiTranscriptEntryEnvelope>,
-    ) -> AiResult<NativeAiTranscriptWindow> {
-        if !self.has_data_source() {
-            return Ok(empty_transcript_window(session_id));
-        }
-        let connection = self.open(session_id, false)?;
-        let before_cursor = entries.first().map(|entry| entry.sequence);
-        let after_cursor = entries.last().map(|entry| entry.sequence);
-        let has_more_before = match before_cursor {
-            Some(sequence) => {
-                transcript_sequence_exists(&connection, session_id, "sequence < ?2", sequence)?
-            }
-            None => false,
-        };
-        let has_more_after = match after_cursor {
-            Some(sequence) => {
-                transcript_sequence_exists(&connection, session_id, "sequence > ?2", sequence)?
-            }
-            None => false,
-        };
-        Ok(NativeAiTranscriptWindow {
-            capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
-            session_id: session_id.clone(),
-            transcript_revision: load_transcript_revision(&connection, session_id)?,
-            before_cursor,
-            after_cursor,
-            has_more_before,
-            has_more_after,
-            entries,
-        })
-    }
-
     pub(crate) fn transcript_revision(&self, session_id: &SessionId) -> AiResult<u64> {
         if !self.has_data_source() {
             return Ok(0);
         }
         let connection = self.open(session_id, false)?;
         load_transcript_revision(&connection, session_id)
-    }
-
-    pub(crate) fn resolve_entry(
-        &self,
-        session_id: &SessionId,
-        entry_id: &str,
-    ) -> AiResult<Option<NativeAiResolvedTranscriptEntry>> {
-        if entry_id.trim().is_empty() || entry_id.len() > TRANSCRIPT_PAYLOAD_REF_MAX_BYTES {
-            return Err(AiError::InvalidInput(
-                "Transcript entry ID is outside the supported range".to_string(),
-            ));
-        }
-        if !self.has_data_source() {
-            return Ok(None);
-        }
-        let connection = self.open(session_id, false)?;
-        let entry = query_entries(
-            &connection,
-            session_id,
-            "SELECT sequence, entry_id, kind, created_at, updated_at, summary_json, payload_ref
-             FROM transcript_entries
-             WHERE session_id = ?1 AND entry_id = ?2
-             LIMIT 1",
-            params![session_id.0, entry_id],
-        )?
-        .into_iter()
-        .next();
-        let Some(entry) = entry else {
-            return Ok(None);
-        };
-        let (block_id, block_revision) = connection
-            .query_row(
-                "SELECT entries.block_id, blocks.revision
-                 FROM transcript_entries AS entries
-                 JOIN transcript_blocks AS blocks
-                    ON blocks.session_id = entries.session_id
-                    AND blocks.block_id = entries.block_id
-                 WHERE entries.session_id = ?1 AND entries.entry_id = ?2",
-                params![session_id.0, entry_id],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .map_err(|error| transcript_sql("resolve transcript entry block", error))?;
-        Ok(Some(NativeAiResolvedTranscriptEntry {
-            capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
-            session_id: session_id.clone(),
-            transcript_revision: load_transcript_revision(&connection, session_id)?,
-            block_id,
-            block_revision: sql_to_u64(block_revision, "block revision")?,
-            entry,
-        }))
     }
 
     pub(crate) fn load_block_metadata(
@@ -1101,10 +881,7 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                 UNIQUE (session_id, sequence),
                 FOREIGN KEY (session_id) REFERENCES transcript_sessions(session_id)
                     ON DELETE CASCADE
-             ) STRICT;
-
-             CREATE INDEX IF NOT EXISTS transcript_entries_session_sequence_idx
-                ON transcript_entries (session_id, sequence);",
+             ) STRICT;",
             )
             .map_err(|error| transcript_sql("create transcript base schema", error))?;
     } else if locked_version == 1 {
@@ -2022,19 +1799,6 @@ fn load_all_block_metadata(
     .collect()
 }
 
-fn empty_transcript_window(session_id: &SessionId) -> NativeAiTranscriptWindow {
-    NativeAiTranscriptWindow {
-        capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
-        session_id: session_id.clone(),
-        transcript_revision: 0,
-        before_cursor: None,
-        after_cursor: None,
-        has_more_before: false,
-        has_more_after: false,
-        entries: Vec::new(),
-    }
-}
-
 fn load_transcript_revision(connection: &Connection, session_id: &SessionId) -> AiResult<u64> {
     let revision = connection
         .query_row(
@@ -2046,28 +1810,6 @@ fn load_transcript_revision(connection: &Connection, session_id: &SessionId) -> 
         )
         .map_err(|error| transcript_sql("load transcript revision", error))?;
     sql_to_u64(revision, "revision")
-}
-
-fn transcript_sequence_exists(
-    connection: &Connection,
-    session_id: &SessionId,
-    predicate: &str,
-    sequence: u64,
-) -> AiResult<bool> {
-    let sql = format!(
-        "SELECT EXISTS (
-            SELECT 1 FROM transcript_entries
-            WHERE session_id = ?1 AND {predicate}
-         )"
-    );
-    connection
-        .query_row(
-            &sql,
-            params![session_id.0, sequence_to_sql(sequence)?],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|exists| exists == 1)
-        .map_err(|error| transcript_sql("inspect transcript cursor boundary", error))
 }
 
 fn load_block_metadata(
@@ -2324,29 +2066,6 @@ fn atomic_write_payload(path: &Path, bytes: &[u8]) -> AiResult<bool> {
     }
 }
 
-fn sequence_to_sql(sequence: u64) -> AiResult<i64> {
-    i64::try_from(sequence)
-        .map_err(|_| AiError::InvalidInput("Transcript sequence is too large".to_string()))
-}
-
-fn cursor_limit_to_sql(limit: usize) -> AiResult<i64> {
-    if limit == 0 || limit > AI_TRANSCRIPT_CURSOR_LIMIT_MAX {
-        return Err(AiError::InvalidInput(
-            "Transcript query limit is outside the supported range".to_string(),
-        ));
-    }
-    usize_to_sql(limit)
-}
-
-fn optional_cursor_limit_to_sql(limit: usize) -> AiResult<i64> {
-    if limit > AI_TRANSCRIPT_CURSOR_LIMIT_MAX {
-        return Err(AiError::InvalidInput(
-            "Transcript query limit is outside the supported range".to_string(),
-        ));
-    }
-    usize_to_sql(limit)
-}
-
 fn usize_to_sql(value: usize) -> AiResult<i64> {
     i64::try_from(value)
         .map_err(|_| AiError::InvalidInput("Transcript query limit is too large".to_string()))
@@ -2399,39 +2118,6 @@ mod tests {
     }
 
     #[test]
-    fn cursor_queries_use_the_session_sequence_index() {
-        let temp = tempfile::tempdir().unwrap();
-        let session_id = SessionId("query-plan".to_string());
-        let store = TranscriptStore::new(temp.path());
-        store
-            .append(&session_id, vec![entry(&session_id, "entry-1")])
-            .unwrap();
-        let connection = store.open(&session_id, false).unwrap();
-        let plan = connection
-            .prepare(
-                "EXPLAIN QUERY PLAN
-                 SELECT sequence, entry_id
-                 FROM transcript_entries
-                 WHERE session_id = ?1 AND sequence > ?2
-                 ORDER BY sequence ASC
-                 LIMIT ?3",
-            )
-            .unwrap()
-            .query_map(params![session_id.0, 0_i64, 10_i64], |row| {
-                row.get::<_, String>(3)
-            })
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .join("\n");
-
-        assert!(
-            plan.contains("transcript_entries_session_sequence_idx"),
-            "unexpected query plan: {plan}"
-        );
-    }
-
-    #[test]
     fn newer_schema_is_rejected_without_touching_provisional_entries() {
         let temp = tempfile::tempdir().unwrap();
         let session_id = SessionId("future-schema".to_string());
@@ -2448,14 +2134,14 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        let error = store.load_after(&session_id, None, 10).unwrap_err();
+        let error = store.load_block_metadata(&session_id).unwrap_err();
 
         assert!(error.to_string().contains("newer than supported"));
         assert_eq!(fs::read(&store.legacy_entries_path).unwrap(), legacy_bytes);
     }
 
     #[test]
-    fn repository_rejects_foreign_entries_and_oversized_windows() {
+    fn repository_rejects_foreign_entries() {
         let temp = tempfile::tempdir().unwrap();
         let session_id = SessionId("owned-session".to_string());
         let foreign_session_id = SessionId("foreign-session".to_string());
@@ -2464,16 +2150,7 @@ mod tests {
         let ownership_error = store
             .append(&session_id, vec![entry(&foreign_session_id, "entry-1")])
             .unwrap_err();
-        let limit_error = store
-            .load_after(&session_id, None, AI_TRANSCRIPT_CURSOR_LIMIT_MAX + 1)
-            .unwrap_err();
-
         assert!(ownership_error.to_string().contains("different session"));
-        assert!(
-            limit_error
-                .to_string()
-                .contains("outside the supported range")
-        );
         assert!(!store.database_path.exists());
     }
 

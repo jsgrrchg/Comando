@@ -585,7 +585,6 @@ pub struct NativeAiTranscriptBlock {
 
 pub const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION: u32 = 1;
 pub const AI_TRANSCRIPT_BLOCK_CAPABILITY_FEATURE: &str = "native-ai-transcript-block-v1";
-pub const AI_TRANSCRIPT_CURSOR_LIMIT_MAX: usize = 1_024;
 pub const AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -595,37 +594,6 @@ pub struct NativeAiTranscriptBlockMetadataOutput {
     pub session_id: SessionId,
     pub transcript_revision: u64,
     pub blocks: Vec<NativeAiTranscriptBlockMetadata>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeAiTranscriptWindow {
-    pub capability_version: u32,
-    pub session_id: SessionId,
-    pub transcript_revision: u64,
-    pub before_cursor: Option<u64>,
-    pub after_cursor: Option<u64>,
-    pub has_more_before: bool,
-    pub has_more_after: bool,
-    pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeAiResolveTranscriptEntryInput {
-    pub session_id: SessionId,
-    pub entry_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeAiResolvedTranscriptEntry {
-    pub capability_version: u32,
-    pub session_id: SessionId,
-    pub transcript_revision: u64,
-    pub block_id: String,
-    pub block_revision: u64,
-    pub entry: NativeAiTranscriptEntryEnvelope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -735,23 +703,6 @@ pub struct NativeAiSealTranscriptTurnInput {
     pub turn_id: String,
     pub entries: Vec<NativeAiTranscriptEntryEnvelope>,
     pub payloads: Vec<NativeAiTranscriptPayloadWrite>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeAiTranscriptCursorInput {
-    pub session_id: SessionId,
-    pub sequence: Option<u64>,
-    pub limit: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeAiTranscriptAroundInput {
-    pub session_id: SessionId,
-    pub sequence: u64,
-    pub before: usize,
-    pub after: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -29,14 +29,9 @@ import type {
     AiTranscriptBlockMetadata,
     AiTranscriptBlockMetadataOutput,
     AiTranscriptCapability,
-    AiTranscriptCursorInput,
     AiTranscriptEntryEnvelope,
-    AiTranscriptAroundInput,
-    AiTranscriptWindow,
     AiLoadTranscriptPayloadInput,
     AiTranscriptPayload,
-    AiResolveTranscriptEntryInput,
-    AiResolvedTranscriptEntry,
     AiTranscriptStorageState,
     AiSealTranscriptTurnInput,
     AiUserInputResponseInput,
@@ -178,12 +173,8 @@ export interface NativeAiGateway {
     getTranscriptCapability?(): AiTranscriptCapability;
     getTranscriptStorageState?(sessionId: string): Promise<AiTranscriptStorageState>;
     loadTranscriptBlockMetadata?(sessionId: string): Promise<AiTranscriptBlockMetadataOutput>;
-    loadTranscriptBefore?(input: AiTranscriptCursorInput): Promise<AiTranscriptWindow>;
-    loadTranscriptAfter?(input: AiTranscriptCursorInput): Promise<AiTranscriptWindow>;
-    loadTranscriptAround?(input: AiTranscriptAroundInput): Promise<AiTranscriptWindow>;
     loadTranscriptPayload?(input: AiLoadTranscriptPayloadInput): Promise<AiTranscriptPayload>;
     migrateSessionHistory?(input: AiHistoryMigrationInput): Promise<AiHistoryMigrationResult>;
-    resolveTranscriptEntry?(input: AiResolveTranscriptEntryInput): Promise<AiResolvedTranscriptEntry | null>;
     getRuntimeStatus?(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus>;
     saveRuntimeSettings?(input: NativeAiRuntimeSettingsRpcInput): Promise<AiRuntimeStatus>;
     launchRuntimeAuth?(input: AiRuntimeAuthLaunchInput): Promise<void>;

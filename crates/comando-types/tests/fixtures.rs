@@ -3,12 +3,11 @@ use std::path::PathBuf;
 
 use comando_types::ai::{
     NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth, NativeAiMessageDeltaPayload,
-    NativeAiMigrateSessionHistoryOutput, NativeAiResolvedTranscriptEntry,
-    NativeAiSessionCatalogUpdatedPayload, NativeAiSessionSnapshot, NativeAiSessionSummary,
-    NativeAiSessionTranscriptPage, NativeAiSubagentBreadcrumbPayload,
-    NativeAiSubagentCreatedPayload, NativeAiToolActivityPayload, NativeAiTranscriptBlock,
-    NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptPayload,
-    NativeAiTranscriptStorageState, NativeAiTranscriptWindow,
+    NativeAiMigrateSessionHistoryOutput, NativeAiSessionCatalogUpdatedPayload,
+    NativeAiSessionSnapshot, NativeAiSessionSummary, NativeAiSessionTranscriptPage,
+    NativeAiSubagentBreadcrumbPayload, NativeAiSubagentCreatedPayload, NativeAiToolActivityPayload,
+    NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptPayload,
+    NativeAiTranscriptStorageState,
 };
 use comando_types::capabilities::NativeBackendCapabilitiesOutput;
 use comando_types::commands::all_commands;
@@ -192,10 +191,8 @@ fn ai_fixtures_deserialize() {
     assert_typed_roundtrip::<NativeAiMigrateSessionHistoryOutput>("ai/history.migration.json");
     assert_typed_roundtrip::<NativeAiHistoryStorageHealth>("ai/history.health.json");
     assert_typed_roundtrip::<NativeAiTranscriptBlockMetadataOutput>("ai/transcript.metadata.json");
-    assert_typed_roundtrip::<NativeAiTranscriptWindow>("ai/transcript.window.json");
     assert_typed_roundtrip::<NativeAiTranscriptBlock>("ai/transcript.block.json");
     assert_typed_roundtrip::<NativeAiTranscriptPayload>("ai/transcript.payload.json");
-    assert_typed_roundtrip::<NativeAiResolvedTranscriptEntry>("ai/transcript.resolved.json");
     assert_typed_roundtrip::<NativeAiTranscriptStorageState>("ai/transcript.storage_state.json");
     assert_typed_roundtrip::<NativeError>("ai/transcript.error.retryable.json");
 }

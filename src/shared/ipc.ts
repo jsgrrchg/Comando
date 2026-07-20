@@ -2768,31 +2768,6 @@ export interface AiTranscriptBlockMetadataOutput {
     readonly transcriptRevision: number;
 }
 
-export interface AiTranscriptWindow {
-    readonly afterCursor: number | null;
-    readonly beforeCursor: number | null;
-    readonly capabilityVersion: number;
-    readonly entries: readonly AiTranscriptEntryEnvelope[];
-    readonly hasMoreAfter: boolean;
-    readonly hasMoreBefore: boolean;
-    readonly sessionId: string;
-    readonly transcriptRevision: number;
-}
-
-export interface AiResolveTranscriptEntryInput {
-    readonly entryId: string;
-    readonly sessionId: string;
-}
-
-export interface AiResolvedTranscriptEntry {
-    readonly blockId: string;
-    readonly blockRevision: number;
-    readonly capabilityVersion: number;
-    readonly entry: AiTranscriptEntryEnvelope;
-    readonly sessionId: string;
-    readonly transcriptRevision: number;
-}
-
 export interface AiLoadTranscriptPayloadInput {
     readonly maxBytes?: number;
     readonly payloadRef: string;
@@ -2905,30 +2880,8 @@ export interface AiSealTranscriptTurnInput {
     readonly payloads: readonly AiTranscriptPayloadWrite[];
 }
 
-export interface AiTranscriptCursorInput {
-    readonly limit: number;
-    readonly sequence: number | null;
-    readonly sessionId: string;
-}
-
-export interface AiTranscriptAroundInput {
-    readonly after: number;
-    readonly before: number;
-    readonly sequence: number;
-    readonly sessionId: string;
-}
-
 export const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION = 1;
-export const AI_TRANSCRIPT_CURSOR_LIMIT_MAX = 1_024;
 export const AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX = 64 * 1024 * 1024;
-
-export function normalizeAiTranscriptLimit(limit: number): number {
-    if (!Number.isFinite(limit)) return 1;
-    return Math.min(
-        AI_TRANSCRIPT_CURSOR_LIMIT_MAX,
-        Math.max(1, Math.trunc(limit)),
-    );
-}
 
 export type AiSessionPatchChanges = Partial<
     Omit<AiSessionSnapshot, "runtimeId" | "sessionId">

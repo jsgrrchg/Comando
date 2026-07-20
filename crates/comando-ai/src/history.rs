@@ -9,13 +9,11 @@ use comando_types::ai::{
     AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, NativeAiCheckpointOpenTranscriptTailInput,
     NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth, NativeAiListSessionHistoryInput,
     NativeAiLoadSessionTranscriptPageInput, NativeAiOpenTranscriptTail,
-    NativeAiResolvedTranscriptEntry, NativeAiRuntimeSessionMapping, NativeAiSessionSnapshot,
-    NativeAiSessionStatus, NativeAiSessionTranscriptPage, NativeAiTranscriptAroundInput,
-    NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadata,
-    NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptCursorInput,
-    NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind, NativeAiTranscriptEntrySummary,
-    NativeAiTranscriptPayload, NativeAiTranscriptStorageMode, NativeAiTranscriptStorageState,
-    NativeAiTranscriptWindow,
+    NativeAiRuntimeSessionMapping, NativeAiSessionSnapshot, NativeAiSessionStatus,
+    NativeAiSessionTranscriptPage, NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadata,
+    NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptEntryEnvelope,
+    NativeAiTranscriptEntryKind, NativeAiTranscriptEntrySummary, NativeAiTranscriptPayload,
+    NativeAiTranscriptStorageMode, NativeAiTranscriptStorageState,
 };
 use comando_types::ids::{ProjectId, RuntimeId, RuntimeSessionId, SessionId, WorktreeId};
 use rusqlite::{Connection, OptionalExtension};
@@ -607,49 +605,6 @@ impl AiHistoryStore {
         })
     }
 
-    pub fn load_transcript_before(
-        &self,
-        input: NativeAiTranscriptCursorInput,
-    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        self.transcript_store(&input.session_id).load_before(
-            &input.session_id,
-            input.sequence,
-            input.limit,
-        )
-    }
-
-    pub fn load_transcript_after(
-        &self,
-        input: NativeAiTranscriptCursorInput,
-    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        self.transcript_store(&input.session_id).load_after(
-            &input.session_id,
-            input.sequence,
-            input.limit,
-        )
-    }
-
-    pub fn load_transcript_around(
-        &self,
-        input: NativeAiTranscriptAroundInput,
-    ) -> AiResult<Vec<NativeAiTranscriptEntryEnvelope>> {
-        self.transcript_store(&input.session_id).load_around(
-            &input.session_id,
-            input.sequence,
-            input.before,
-            input.after,
-        )
-    }
-
-    pub fn describe_transcript_window(
-        &self,
-        session_id: &SessionId,
-        entries: Vec<NativeAiTranscriptEntryEnvelope>,
-    ) -> AiResult<NativeAiTranscriptWindow> {
-        self.transcript_store(session_id)
-            .describe_window(session_id, entries)
-    }
-
     pub fn load_transcript_block(
         &self,
         session_id: &SessionId,
@@ -669,15 +624,6 @@ impl AiHistoryStore {
             metadata,
             entries,
         }))
-    }
-
-    pub fn resolve_transcript_entry(
-        &self,
-        session_id: &SessionId,
-        entry_id: &str,
-    ) -> AiResult<Option<NativeAiResolvedTranscriptEntry>> {
-        self.transcript_store(session_id)
-            .resolve_entry(session_id, entry_id)
     }
 
     pub fn load_native_transcript_payload(
@@ -3772,184 +3718,6 @@ mod tests {
     }
 
     #[test]
-    fn sequenced_entries_are_idempotent_and_cursor_bounded() {
-        let (_temp, store) = store();
-        let session_id = SessionId("blocks_1".to_string());
-        let entry = transcript_entry(&session_id, "message-1", "fixture");
-        let mut updated_entry = transcript_entry(&session_id, "message-1", "updated");
-        updated_entry.sequence = 999;
-
-        store
-            .append_transcript_entries(&session_id, vec![entry.clone(), updated_entry])
-            .unwrap();
-        store
-            .append_transcript_entries(
-                &session_id,
-                vec![transcript_entry(&session_id, "message-2", "second")],
-            )
-            .unwrap();
-        let loaded = store
-            .load_transcript_after(NativeAiTranscriptCursorInput {
-                session_id: session_id.clone(),
-                sequence: None,
-                limit: 100,
-            })
-            .unwrap();
-
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].sequence, 1);
-        assert_eq!(loaded[0].session_id, session_id);
-        assert_eq!(loaded[0].summary.preview.as_deref(), Some("updated"));
-        assert_eq!(loaded[1].sequence, 2);
-
-        let before = store
-            .load_transcript_before(NativeAiTranscriptCursorInput {
-                session_id: session_id.clone(),
-                sequence: Some(2),
-                limit: 10,
-            })
-            .unwrap();
-        assert_eq!(
-            before
-                .iter()
-                .map(|entry| entry.sequence)
-                .collect::<Vec<_>>(),
-            vec![1]
-        );
-
-        let around = store
-            .load_transcript_around(NativeAiTranscriptAroundInput {
-                session_id: session_id.clone(),
-                sequence: 2,
-                before: 1,
-                after: 0,
-            })
-            .unwrap();
-        assert_eq!(
-            around
-                .iter()
-                .map(|entry| entry.sequence)
-                .collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-        assert!(
-            store
-                .load_transcript_block_metadata(&session_id)
-                .unwrap()
-                .is_empty()
-        );
-        store
-            .seal_transcript_turn(&session_id, "turn-1", loaded, vec![])
-            .unwrap();
-        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
-        assert_eq!(metadata[0].entry_count, 2);
-        assert!(
-            store
-                .session_dir(&session_id)
-                .join("transcript-v2.sqlite3")
-                .exists()
-        );
-        assert!(
-            !store
-                .session_dir(&session_id)
-                .join("transcript-entries.json")
-                .exists()
-        );
-    }
-
-    #[test]
-    fn provisional_transcript_entries_are_imported_once_without_deletion() {
-        let (_temp, store) = store();
-        let session_id = SessionId("provisional_blocks".to_string());
-        store.ensure_session_dir(&session_id).unwrap();
-        let legacy_path = store
-            .session_dir(&session_id)
-            .join("transcript-entries.json");
-        atomic_write_json(
-            &legacy_path,
-            &vec![transcript_entry(&session_id, "legacy-message", "legacy")],
-        )
-        .unwrap();
-
-        let first_load = store
-            .load_transcript_after(NativeAiTranscriptCursorInput {
-                session_id: session_id.clone(),
-                sequence: None,
-                limit: 10,
-            })
-            .unwrap();
-        assert_eq!(first_load.len(), 1);
-        assert_eq!(first_load[0].sequence, 1);
-        assert!(legacy_path.exists());
-
-        store
-            .append_transcript_entries(
-                &session_id,
-                vec![transcript_entry(&session_id, "native-message", "native")],
-            )
-            .unwrap();
-        let second_load = store
-            .load_transcript_after(NativeAiTranscriptCursorInput {
-                session_id: session_id.clone(),
-                sequence: None,
-                limit: 10,
-            })
-            .unwrap();
-        assert_eq!(
-            second_load
-                .iter()
-                .map(|entry| entry.sequence)
-                .collect::<Vec<_>>(),
-            vec![1, 2]
-        );
-    }
-
-    #[test]
-    fn concurrent_transcript_appends_assign_unique_sequences() {
-        let (_temp, store) = store();
-        let session_id = SessionId("concurrent_blocks".to_string());
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
-        let handles = (0..8)
-            .map(|worker| {
-                let store = store.clone();
-                let session_id = session_id.clone();
-                let barrier = barrier.clone();
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    for item in 0..20 {
-                        let id = format!("worker-{worker}-item-{item}");
-                        store
-                            .append_transcript_entries(
-                                &session_id,
-                                vec![transcript_entry(&session_id, id.clone(), id)],
-                            )
-                            .unwrap();
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        let loaded = store
-            .load_transcript_after(NativeAiTranscriptCursorInput {
-                session_id,
-                sequence: None,
-                limit: 1_024,
-            })
-            .unwrap();
-        assert_eq!(loaded.len(), 160);
-        assert_eq!(
-            loaded
-                .iter()
-                .map(|entry| entry.sequence)
-                .collect::<Vec<_>>(),
-            (1..=160).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
     fn transcript_blocks_use_bounded_sequence_ranges() {
         let (_temp, store) = store();
         let session_id = SessionId("bounded_blocks".to_string());
@@ -3979,7 +3747,7 @@ mod tests {
     }
 
     #[test]
-    fn paged_transcript_capabilities_enforce_limits_and_ownership() {
+    fn block_transcript_capabilities_enforce_ownership() {
         let (_temp, store) = store();
         let session_id = SessionId("paged_capabilities".to_string());
         let mut entries = (0..20)
@@ -4011,54 +3779,12 @@ mod tests {
         assert_eq!(metadata_output.blocks.len(), 1);
         assert!(metadata_output.transcript_revision > 0);
 
-        let first_entries = store
-            .load_transcript_after(NativeAiTranscriptCursorInput {
-                session_id: session_id.clone(),
-                sequence: None,
-                limit: 5,
-            })
-            .unwrap();
-        let first_window = store
-            .describe_transcript_window(&session_id, first_entries)
-            .unwrap();
-        assert_eq!(first_window.entries.len(), 5);
-        assert_eq!(first_window.before_cursor, Some(1));
-        assert_eq!(first_window.after_cursor, Some(5));
-        assert!(!first_window.has_more_before);
-        assert!(first_window.has_more_after);
-        let retry_entries = store
-            .load_transcript_after(NativeAiTranscriptCursorInput {
-                session_id: session_id.clone(),
-                sequence: None,
-                limit: 5,
-            })
-            .unwrap();
-        let retry_window = store
-            .describe_transcript_window(&session_id, retry_entries)
-            .unwrap();
-        assert_eq!(retry_window, first_window);
-
-        let around_limit_error = store
-            .load_transcript_around(NativeAiTranscriptAroundInput {
-                session_id: session_id.clone(),
-                sequence: 10,
-                before: 512,
-                after: 512,
-            })
-            .unwrap_err();
-        assert!(
-            around_limit_error
-                .to_string()
-                .contains("exceeds the maximum")
-        );
-
-        let resolved = store
-            .resolve_transcript_entry(&session_id, "message-0")
+        let block = store
+            .load_transcript_block(&session_id, &metadata_output.blocks[0].block_id)
             .unwrap()
             .unwrap();
-        assert_eq!(resolved.entry.sequence, 1);
-        assert_eq!(resolved.block_id, metadata_output.blocks[0].block_id);
-        assert_eq!(resolved.block_revision, metadata_output.blocks[0].revision);
+        assert_eq!(block.entries.len(), 20);
+        assert_eq!(block.entries[0].sequence, 1);
 
         let payload = store
             .load_native_transcript_payload(&session_id, "payload:message-0", 64 * 1024)
@@ -4078,12 +3804,6 @@ mod tests {
         assert!(
             store
                 .load_transcript_block(&session_id, "foreign_session:0")
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            store
-                .resolve_transcript_entry(&foreign_session, "message-0")
                 .unwrap()
                 .is_none()
         );
@@ -4482,16 +4202,6 @@ mod tests {
         assert!(
             store
                 .load_transcript_block_metadata(&session_id)
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            store
-                .load_transcript_after(NativeAiTranscriptCursorInput {
-                    session_id: session_id.clone(),
-                    sequence: None,
-                    limit: 10,
-                })
                 .unwrap()
                 .is_empty()
         );

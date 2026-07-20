@@ -849,16 +849,6 @@ describe("NativeAiGateway", () => {
             sessionId: "session-1",
             startSequence: 1,
         };
-        const window = {
-            afterCursor: 1,
-            beforeCursor: 1,
-            capabilityVersion: 1,
-            entries: [entry],
-            hasMoreAfter: false,
-            hasMoreBefore: false,
-            sessionId: "session-1",
-            transcriptRevision: 2,
-        };
         client.request.mockImplementation(
             <T = unknown>(command: string): Promise<T> => {
                 const outputs: Record<string, unknown> = {
@@ -879,9 +869,6 @@ describe("NativeAiGateway", () => {
                         sessionId: "session-1",
                         storageVersion: 3,
                     },
-                    ai_load_transcript_after: window,
-                    ai_load_transcript_around: window,
-                    ai_load_transcript_before: window,
                     ai_load_transcript_block: {
                         ...metadata,
                         capabilityVersion: 1,
@@ -912,14 +899,6 @@ describe("NativeAiGateway", () => {
                         startedAt: TURN_STARTED_AT,
                         updatedAt: TURN_STARTED_AT,
                     },
-                    ai_resolve_transcript_entry: {
-                        blockId: metadata.blockId,
-                        blockRevision: metadata.revision,
-                        capabilityVersion: 1,
-                        entry,
-                        sessionId: "session-1",
-                        transcriptRevision: 2,
-                    },
                 };
                 return Promise.resolve(outputs[command] as T);
             },
@@ -941,28 +920,6 @@ describe("NativeAiGateway", () => {
             gateway.loadTranscriptBlockMetadata("session-1"),
         ).resolves.toMatchObject({ blocks: [metadata], transcriptRevision: 2 });
         await expect(
-            gateway.loadTranscriptBefore({
-                limit: 10,
-                sequence: 2,
-                sessionId: "session-1",
-            }),
-        ).resolves.toEqual(window);
-        await expect(
-            gateway.loadTranscriptAfter({
-                limit: 10,
-                sequence: 0,
-                sessionId: "session-1",
-            }),
-        ).resolves.toEqual(window);
-        await expect(
-            gateway.loadTranscriptAround({
-                after: 5,
-                before: 5,
-                sequence: 1,
-                sessionId: "session-1",
-            }),
-        ).resolves.toEqual(window);
-        await expect(
             gateway.loadTranscriptBlock("session-1", metadata.blockId),
         ).resolves.toMatchObject({ blockId: metadata.blockId });
         await expect(
@@ -972,12 +929,6 @@ describe("NativeAiGateway", () => {
                 sessionId: "session-1",
             }),
         ).resolves.toMatchObject({ contentHash: "abc123" });
-        await expect(
-            gateway.resolveTranscriptEntry({
-                entryId: entry.id,
-                sessionId: "session-1",
-            }),
-        ).resolves.toMatchObject({ blockRevision: 2 });
         await expect(
             gateway.getTranscriptStorageState("session-1"),
         ).resolves.toMatchObject({ mode: "block-native" });

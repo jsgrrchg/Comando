@@ -413,26 +413,6 @@ export type NativeAiTranscriptBlockMetadataOutput = {
     readonly transcriptRevision: number;
 };
 
-export type NativeAiTranscriptWindow = {
-    readonly afterCursor: number | null;
-    readonly beforeCursor: number | null;
-    readonly capabilityVersion: number;
-    readonly entries: readonly NativeAiTranscriptEntryEnvelope[];
-    readonly hasMoreAfter: boolean;
-    readonly hasMoreBefore: boolean;
-    readonly sessionId: NativeSessionId;
-    readonly transcriptRevision: number;
-};
-
-export type NativeAiResolvedTranscriptEntry = {
-    readonly blockId: string;
-    readonly blockRevision: number;
-    readonly capabilityVersion: number;
-    readonly entry: NativeAiTranscriptEntryEnvelope;
-    readonly sessionId: NativeSessionId;
-    readonly transcriptRevision: number;
-};
-
 export type NativeAiTranscriptPayload = {
     readonly byteLength: number;
     readonly capabilityVersion: number;

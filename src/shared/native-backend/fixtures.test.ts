@@ -25,12 +25,10 @@ import type {
     NativeAiRuntimeStatus,
     NativeAiSessionSnapshot,
     NativeAiSessionTranscriptPage,
-    NativeAiResolvedTranscriptEntry,
     NativeAiTranscriptBlock,
     NativeAiTranscriptBlockMetadataOutput,
     NativeAiTranscriptPayload,
     NativeAiTranscriptStorageState,
-    NativeAiTranscriptWindow,
 } from "./ai";
 import type { NativeBackendErrorPayload } from "./errors";
 import type {
@@ -528,19 +526,11 @@ describe("native backend fixtures", () => {
             ),
         ).toMatchObject({ capabilityVersion: 1, transcriptRevision: 3 });
         expect(
-            fixture<NativeAiTranscriptWindow>("ai/transcript.window.json"),
-        ).toMatchObject({ afterCursor: 1, hasMoreAfter: true });
-        expect(
             fixture<NativeAiTranscriptBlock>("ai/transcript.block.json"),
         ).toMatchObject({ blockId: "session_1:0", transcriptRevision: 3 });
         expect(
             fixture<NativeAiTranscriptPayload>("ai/transcript.payload.json"),
         ).toMatchObject({ payloadRef: "payload:message-1" });
-        expect(
-            fixture<NativeAiResolvedTranscriptEntry>(
-                "ai/transcript.resolved.json",
-            ),
-        ).toMatchObject({ blockRevision: 3 });
         expect(
             fixture<NativeAiTranscriptStorageState>(
                 "ai/transcript.storage_state.json",
