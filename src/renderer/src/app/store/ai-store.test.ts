@@ -20,6 +20,7 @@ import {
 } from "@shared/ai-review-action-log";
 
 import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
+import { buildBlockNativeTranscript } from "@renderer/app/ai/transcriptWindowProjection";
 import { reconcileChatTimelineModelFromTranscript } from "@renderer/components/workspace/chat/chatTimelineModel";
 import { useAppStore } from "./app-store";
 import {
@@ -383,6 +384,132 @@ describe("ai-store queue", () => {
                     "block-3",
                 ),
         ).toBe(false);
+    });
+
+    it("keeps a sealed activity diff available after its rail is collapsed and expanded", async () => {
+        const blockId = "block-with-diff";
+        const payloadRef = "payload:tool-with-diff";
+        const activity = createToolActivity({
+            diffs: [
+                {
+                    hunks: [
+                        {
+                            id: "hunk-1",
+                            lines: [
+                                { id: "line-1", text: "before", type: "remove" },
+                                { id: "line-2", text: "after", type: "add" },
+                            ],
+                            newCount: 1,
+                            newStart: 1,
+                            oldCount: 1,
+                            oldStart: 1,
+                        },
+                    ],
+                    isText: true,
+                    kind: "update",
+                    newText: "after\n",
+                    oldText: "before\n",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "tool-with-diff",
+            kind: "edit",
+            status: "completed",
+            title: "Edit src/app.ts",
+        });
+        const metadata: AiTranscriptBlockMetadata = {
+            blockId,
+            endSequence: 1,
+            entryCount: 1,
+            estimatedHeight: 80,
+            estimatedRowCount: 1,
+            firstCreatedAt: activity.createdAt,
+            lastCreatedAt: activity.updatedAt,
+            revision: 1,
+            sessionId: TAB.sessionId,
+            startSequence: 1,
+        };
+        const block: AiTranscriptBlock = {
+            ...metadata,
+            capabilityVersion: 1,
+            entries: [
+                {
+                    createdAt: activity.createdAt,
+                    id: `tool:${TAB.sessionId}:${activity.id}`,
+                    kind: "tool",
+                    payloadRef,
+                    sequence: 1,
+                    sessionId: TAB.sessionId,
+                    summary: {
+                        label: activity.title,
+                        preview: activity.summary,
+                        status: activity.status,
+                    },
+                    updatedAt: activity.updatedAt,
+                },
+            ],
+            transcriptRevision: 1,
+        };
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlock: vi.fn().mockResolvedValue(block),
+                    getAiTranscriptBlockMetadata: vi.fn().mockResolvedValue({
+                        blocks: [metadata],
+                        capabilityVersion: 1,
+                        sessionId: TAB.sessionId,
+                        transcriptRevision: 1,
+                    }),
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                    getAiTranscriptPayload: vi.fn().mockResolvedValue({
+                        byteLength: 256,
+                        capabilityVersion: 1,
+                        contentHash: "tool-with-diff",
+                        payloadRef,
+                        sessionId: TAB.sessionId,
+                        transcriptRevision: 1,
+                        value: { activity, kind: "tool" },
+                    }),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        const getChangeCount = () => {
+            const session = useAiStore.getState().sessions[TAB.sessionId];
+            if (!session) throw new Error("Expected hydrated session.");
+            const transcript = buildBlockNativeTranscript(
+                session.transcript,
+                session.transcriptWindow.blocksById,
+                session.transcriptWindow.metadata,
+                session.transcriptWindow.payloadsByRef,
+                session.snapshot ?? createSnapshot(),
+            );
+            const timeline = reconcileChatTimelineModelFromTranscript(null, {
+                status: "idle",
+                trackedFiles: [],
+                transcript,
+            });
+            return timeline.historyRows.find(
+                (row) => row.kind === "activity-segment",
+            )?.summary.changeCount;
+        };
+
+        expect(getChangeCount()).toBe(1);
+
+        // Collapsing the rail unmounts the visible payload and releases it.
+        useAiStore.getState().releaseTranscriptPayload(TAB.sessionId, payloadRef);
+
+        // Expanding the same resident block must keep its diff without a reopen.
+        expect(getChangeCount()).toBe(1);
     });
 
     it("does not inject historical messages when the first live follow-up snapshot arrives", () => {
