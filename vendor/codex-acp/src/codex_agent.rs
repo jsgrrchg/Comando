@@ -50,8 +50,8 @@ use std::{
 };
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, info, warn};
-use unicode_segmentation::UnicodeSegmentation;
 
+use crate::session_title::stored_session_title;
 use crate::subagents;
 use crate::thread::Thread;
 
@@ -99,7 +99,6 @@ enum SubagentRegistrationState {
 }
 
 const SESSION_LIST_PAGE_SIZE: usize = 25;
-const SESSION_TITLE_MAX_GRAPHEMES: usize = 120;
 const SUBAGENT_NOTIFICATION_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 fn debug_ai_worker_enabled() -> bool {
@@ -1303,44 +1302,6 @@ fn mcp_server_config_from_acp(
     }
 }
 
-fn truncate_graphemes(text: &str, max_graphemes: usize) -> String {
-    let mut graphemes = text.grapheme_indices(true);
-
-    if let Some((byte_index, _)) = graphemes.nth(max_graphemes) {
-        if max_graphemes >= 3 {
-            let mut truncate_graphemes = text.grapheme_indices(true);
-            if let Some((truncate_byte_index, _)) = truncate_graphemes.nth(max_graphemes - 3) {
-                let truncated = &text[..truncate_byte_index];
-                format!("{truncated}...")
-            } else {
-                text.to_string()
-            }
-        } else {
-            let truncated = &text[..byte_index];
-            truncated.to_string()
-        }
-    } else {
-        text.to_string()
-    }
-}
-
-fn format_session_title(message: &str) -> Option<String> {
-    let normalized = message.replace(['\r', '\n'], " ");
-    let trimmed = normalized.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(truncate_graphemes(trimmed, SESSION_TITLE_MAX_GRAPHEMES))
-    }
-}
-
-fn stored_session_title(name: Option<&str>, preview: &str) -> Option<String> {
-    [name, Some(preview)]
-        .into_iter()
-        .flatten()
-        .find_map(format_session_title)
-}
-
 fn list_session_allowed_sources() -> Vec<SessionSource> {
     vec![
         SessionSource::Cli,
@@ -1379,7 +1340,7 @@ fn stored_thread_matches_list_request(
 }
 
 fn stored_thread_session_info(item: StoredThread) -> SessionInfo {
-    let title = stored_session_title(item.name.as_deref(), &item.preview);
+    let title = stored_session_title(&item);
     let updated_at = item.updated_at.to_rfc3339();
 
     SessionInfo::new(SessionId::new(item.thread_id.to_string()), item.cwd)
@@ -1407,26 +1368,6 @@ mod tests {
         finish_subagent_notification(&states, child_session_id.clone(), true);
 
         assert!(!begin_subagent_notification(&states, &child_session_id));
-    }
-
-    #[test]
-    fn stored_session_title_prefers_thread_name() {
-        assert_eq!(
-            stored_session_title(Some("renamed"), "preview"),
-            Some("renamed".to_string())
-        );
-    }
-
-    #[test]
-    fn stored_session_title_falls_back_to_preview() {
-        assert_eq!(
-            stored_session_title(None, "preview"),
-            Some("preview".to_string())
-        );
-        assert_eq!(
-            stored_session_title(Some("  "), "preview"),
-            Some("preview".to_string())
-        );
     }
 
     #[test]
