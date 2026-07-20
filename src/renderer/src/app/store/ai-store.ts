@@ -3820,7 +3820,10 @@ function keepBlockNativeLiveTranscriptWindow(
     currentSnapshot: AiSessionSnapshot,
     currentTranscript: AiSessionTranscriptModel,
 ): AiSessionSnapshot {
-    if (session.transcriptWindow.capabilityVersion === null) {
+    // Block support is global, while transcript metadata is session-specific.
+    // Keep legacy snapshots authoritative until this session has confirmed
+    // that its sealed history can be recovered from native blocks.
+    if (session.transcriptWindow.transcriptRevision === null) {
         return snapshot;
     }
 

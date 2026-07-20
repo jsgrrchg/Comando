@@ -420,6 +420,7 @@ describe("ai-store queue", () => {
                         transcriptWindow: {
                             ...session.transcriptWindow,
                             capabilityVersion: 1,
+                            transcriptRevision: 1,
                         },
                     },
                 },
@@ -444,6 +445,58 @@ describe("ai-store queue", () => {
                 .getState()
                 .sessions[TAB.sessionId]?.transcript.messages.map((message) => message.id),
         ).toEqual([restoredTailMessage.id, followUpMessage.id]);
+    });
+
+    it("keeps legacy history when block support is available but metadata is not", () => {
+        const historicalMessage = createMessage({
+            content: "Earlier response still stored in the legacy snapshot.",
+            id: "legacy-history-message",
+            status: "completed",
+        });
+        const followUpMessage = createMessage({
+            content: "Continue this chat.",
+            createdAt: "2026-04-14T00:02:00.000Z",
+            id: "legacy-follow-up-message",
+            kind: "user",
+            status: "streaming",
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [historicalMessage],
+                updatedAt: historicalMessage.createdAt,
+            }),
+        );
+        useAiStore.setState((state) => {
+            const session = state.sessions[TAB.sessionId];
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [TAB.sessionId]: {
+                        ...session,
+                        transcriptWindow: {
+                            ...session.transcriptWindow,
+                            capabilityVersion: 1,
+                        },
+                    },
+                },
+            };
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                activeTurnStartedAt: followUpMessage.createdAt,
+                messages: [historicalMessage, followUpMessage],
+                status: "streaming",
+                updatedAt: followUpMessage.createdAt,
+            }),
+        );
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcript.messages.map((message) => message.id),
+        ).toEqual([historicalMessage.id, followUpMessage.id]);
     });
 
     it("evicts transcript payloads from both the cache and UI state", async () => {
