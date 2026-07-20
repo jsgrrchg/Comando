@@ -692,7 +692,6 @@ function getInlineTriggerMatch(
 interface AIChatComposerProps {
     readonly parts: readonly AIComposerPart[];
     readonly autoFocusKey?: string;
-    readonly resetNonce?: number;
     readonly status: AiSessionSnapshot["status"];
     readonly runtimeName: string;
     readonly disabled?: boolean;
@@ -719,13 +718,6 @@ interface AIChatComposerProps {
     readonly fileInputRef: RefObject<HTMLInputElement | null>;
     readonly renderFileContextPill: (fc: AiFileContextAttachment) => ReactNode;
     readonly renderImageChip: (att: AiImageAttachment) => ReactNode;
-}
-
-export function shouldResetComposerForNonceChange(
-    previousResetNonce: number | null,
-    nextResetNonce: number,
-): boolean {
-    return previousResetNonce !== null && previousResetNonce !== nextResetNonce;
 }
 
 export function shouldAutoFocusComposerForKeyChange(
@@ -792,7 +784,6 @@ export function getComposerSubmitKeyboardAction(input: {
 export function AIChatComposer({
     parts,
     autoFocusKey,
-    resetNonce = 0,
     status,
     runtimeName,
     disabled = false,
@@ -844,7 +835,6 @@ export function AIChatComposer({
 
     const lastSyncedParts = useRef<string>("");
     const lastAutoFocusKeyRef = useRef<string | null>(null);
-    const lastResetNonceRef = useRef<number | null>(null);
     const mentionSearchRequestRef = useRef(0);
 
     const metrics = useMemo(
@@ -907,25 +897,6 @@ export function AIChatComposer({
         syncComposerDom(root, parts, metrics);
         setCaretAtEnd(root);
     }, [parts, metrics]);
-
-    useEffect(() => {
-        const root = composerRef.current;
-        if (!root) return;
-
-        const previousResetNonce = lastResetNonceRef.current;
-        lastResetNonceRef.current = resetNonce;
-
-        if (
-            !shouldResetComposerForNonceChange(previousResetNonce, resetNonce)
-        ) {
-            return;
-        }
-
-        const emptyParts: AIComposerPart[] = [{ type: "text", text: "" }];
-        lastSyncedParts.current = JSON.stringify(emptyParts);
-        syncComposerDom(root, emptyParts, metrics);
-        setCaretAtEnd(root);
-    }, [metrics, resetNonce]);
 
     useEffect(() => {
         if (!autoFocusKey || disabled) {

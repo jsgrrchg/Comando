@@ -7,6 +7,21 @@ export function isScrollViewportNearBottom(
     return scrollHeight - scrollTop - clientHeight < threshold;
 }
 
+export function shouldHoldChatScrollFollowIntent({
+    composerExpanded,
+    programmaticFollowSettling,
+    shouldAutoFollow,
+}: {
+    readonly composerExpanded: boolean;
+    readonly programmaticFollowSettling: boolean;
+    readonly shouldAutoFollow: boolean;
+}): boolean {
+    return (
+        shouldAutoFollow &&
+        (programmaticFollowSettling || composerExpanded)
+    );
+}
+
 export function resolveChatScrollPersistenceState({
     currentScrollTop,
     pendingIsNearBottom,

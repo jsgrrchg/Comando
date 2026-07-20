@@ -3,7 +3,6 @@ import fs from "node:fs";
 import type {
     AiHistorySessionSummary,
     AiFileDiff,
-    AiMessage,
     AiPermissionResponseInput,
     AiPromptResult,
     AiPromptQueueSnapshot,
@@ -26,6 +25,11 @@ import type {
     AiSessionSnapshot,
     AiToolActivity,
     AiSessionTranscriptPage,
+    AiTranscriptBlock,
+    AiTranscriptBlockMetadataOutput,
+    AiTranscriptCapability,
+    AiLoadTranscriptPayloadInput,
+    AiTranscriptPayload,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiTrackedFile,
@@ -136,6 +140,14 @@ import {
 import { buildRuntimeSpawnEnv } from "./runtime-env";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
 import {
+    AiLiveTranscriptTailStore,
+    type AiLiveTranscriptTailSnapshot,
+} from "./live-transcript";
+import {
+    AiTranscriptPersistenceCoordinator,
+    type AiTranscriptPersistenceStatus,
+} from "./transcript-persistence";
+import {
     applyCodexAuthEnv,
     buildCodexSecretPatches,
     getCodexRuntimeStatus,
@@ -228,6 +240,7 @@ const DEFAULT_AI_SESSION_RETENTION_CONFIG: AiSessionRetentionConfig = {
 };
 const RECENT_NATIVE_REVIEW_CONTEXT_TTL_MS = 60_000;
 const RETENTION_CLOSE_EVENT_GRACE_MS = 60_000;
+const TRANSCRIPT_BACKFILL_RETRY_DELAY_MS = 25;
 
 function isResyncEligibleAiSessionStatus(
     status: AiSessionSnapshot["status"],
@@ -461,6 +474,16 @@ export class AiService {
     readonly #lastRetentionSkippedRecords: AiSessionRetentionSkippedRecord[] = [];
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
+    readonly #liveTranscriptTails = new AiLiveTranscriptTailStore();
+    readonly #loadedTranscriptBlockMetadataSessionIds = new Set<string>();
+    readonly #legacyTranscriptSessionIds = new Set<string>();
+    readonly #loadingTranscriptBlockMetadataSessionIds = new Set<string>();
+    readonly #recoveredTranscriptTailSessionIds = new Set<string>();
+    readonly #transcriptRecoveryPromises = new Map<string, Promise<void>>();
+    readonly #transcriptMigrationTimers = new Map<
+        string,
+        ReturnType<typeof setTimeout>
+    >();
     readonly #liveSessionTouches = new Map<
         string,
         {
@@ -474,6 +497,7 @@ export class AiService {
     >();
     readonly #selectionMutationChains = new Map<string, Promise<void>>();
     #nativeAi: NativeAiGateway | null;
+    #transcriptPersistence: AiTranscriptPersistenceCoordinator | null = null;
     readonly #nativeAuthMigratedRuntimeIds = new Set<AiRuntimeId>();
     readonly #nativeChildParentSessionIds = new Map<string, string>();
     readonly #pendingNativeCatalogPatches = new Map<
@@ -488,6 +512,10 @@ export class AiService {
     readonly #resolvedReviewVersions = new Map<string, Map<string, number>>();
     readonly #reviewMutationChains = new Map<string, Promise<void>>();
     readonly #nativeSessionIds = new Set<string>();
+    readonly #transcriptStorageModes = new Map<
+        string,
+        "block-native" | "legacy" | "migrating"
+    >();
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionEvent: (
         ownerWindowId: string,
@@ -510,6 +538,9 @@ export class AiService {
 
     constructor(options: AiServiceOptions) {
         this.#nativeAi = options.nativeAi ?? null;
+        this.#transcriptPersistence = this.#createTranscriptPersistence(
+            this.#nativeAi,
+        );
         this.#onRuntimeStatus = options.onRuntimeStatus;
         this.#onSessionEvent = options.onSessionEvent ?? (() => undefined);
         this.#onSessionSnapshot = options.onSessionSnapshot;
@@ -547,13 +578,17 @@ export class AiService {
 
     setNativeAiGateway(nativeAi: NativeAiGateway | null): void {
         this.#nativeAi = nativeAi;
+        this.#transcriptPersistence = this.#createTranscriptPersistence(nativeAi);
     }
 
     close(): void {
         this.#clearSessionRetentionTimer();
-        void Promise.resolve(this.#nativeAi?.close()).catch((error: unknown) => {
-            debugBenignError("ai.service.close.native", error);
-        });
+        const nativeAi = this.#nativeAi;
+        void (this.#transcriptPersistence?.shutdown(750) ?? Promise.resolve(true))
+            .then(() => nativeAi?.close())
+            .catch((error: unknown) => {
+                debugBenignError("ai.service.close.native", error);
+            });
         this.#nativeReviewBaselines.clear();
         this.#recentNativeReviewContexts.clear();
         this.#resolvedReviewVersions.clear();
@@ -562,6 +597,15 @@ export class AiService {
         this.#pendingNativeCatalogPatches.clear();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
+        this.#liveTranscriptTails.clear();
+        this.#loadedTranscriptBlockMetadataSessionIds.clear();
+        this.#loadingTranscriptBlockMetadataSessionIds.clear();
+        this.#recoveredTranscriptTailSessionIds.clear();
+        this.#transcriptRecoveryPromises.clear();
+        for (const timer of this.#transcriptMigrationTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.#transcriptMigrationTimers.clear();
         this.#liveSessionTouches.clear();
         for (const sessionId of this.#retentionCloseRuntimeSessionIds.keys()) {
             this.#forgetRetentionCloseRuntimeSessions(sessionId);
@@ -614,9 +658,13 @@ export class AiService {
                 continue;
             }
 
-            const snapshot = this.#liveSnapshots.get(context.sessionId) ?? null;
+            const storedSnapshot =
+                this.#liveSnapshots.get(context.sessionId) ?? null;
+            const snapshot = storedSnapshot
+                ? this.#liveTranscriptTails.projectLegacySnapshot(storedSnapshot)
+                : null;
             if (snapshot && isResyncEligibleAiSessionStatus(snapshot.status)) {
-                snapshots.push(snapshot);
+                snapshots.push(this.#toRendererSessionSnapshot(snapshot));
             }
         }
 
@@ -636,7 +684,20 @@ export class AiService {
             return null;
         }
 
-        return this.#liveSnapshots.get(sessionId) ?? null;
+        const snapshot = this.#liveSnapshots.get(sessionId) ?? null;
+        return snapshot ? this.#toRendererSessionSnapshot(snapshot) : null;
+    }
+
+    getLiveTranscriptTail(
+        sessionId: string,
+    ): AiLiveTranscriptTailSnapshot | null {
+        return this.#liveTranscriptTails.getSnapshot(sessionId);
+    }
+
+    getTranscriptPersistenceStatus(
+        sessionId: string,
+    ): AiTranscriptPersistenceStatus | null {
+        return this.#transcriptPersistence?.getStatus(sessionId) ?? null;
     }
 
     handleNativeRuntimeStatus(status: AiRuntimeStatus): void {
@@ -647,7 +708,11 @@ export class AiService {
         readonly ownerWindowId: string;
         readonly sessionId: string;
     }): void {
-        this.#clearLiveSession(payload.sessionId);
+        this.#transcriptPersistence?.requestSeal(
+            payload.sessionId,
+            "cancelled",
+        );
+        void this.#flushAndClearClosedSession(payload.sessionId);
     }
 
     handleNativeSessionSnapshot(
@@ -677,15 +742,24 @@ export class AiService {
             ),
             ownerWindowId,
         );
+        this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
+        // Snapshots can be the only delivery path during a reconnect, so their
+        // active tail must enter the same durable queue as event-driven updates.
+        this.#transcriptPersistence?.scheduleCheckpoint(nextSnapshot.sessionId);
+        this.#scheduleTranscriptRecovery(nextSnapshot.sessionId);
+        this.#scheduleTranscriptBlockMetadataLoad(nextSnapshot.sessionId);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
-            nextSnapshot,
+            preserveCanonicalTranscriptArrays(
+                previousSnapshot,
+                nextSnapshot,
+            ),
             ownerWindowId,
         );
         this.#persistence.saveSessionSnapshot(cachedSnapshot);
         this.#promptQueue.handleSessionSnapshot(cachedSnapshot);
         this.#onSessionSnapshot(
             ownerWindowId,
-            buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
+            this.#buildRendererSessionUpdate(previousSnapshot, cachedSnapshot),
         );
     }
 
@@ -711,6 +785,22 @@ export class AiService {
             return;
         }
 
+        this.#liveTranscriptTails.applyEvent(event);
+        this.#transcriptPersistence?.scheduleCheckpoint(event.sessionId);
+        if (event.kind === "turn-status") {
+            this.#transcriptPersistence?.requestSeal(
+                event.sessionId,
+                event.status,
+            );
+        } else if (event.kind === "status" && event.status === "error") {
+            this.#transcriptPersistence?.requestSeal(event.sessionId, "failed");
+        } else if (event.kind === "session-closed") {
+            this.#transcriptPersistence?.requestSeal(
+                event.sessionId,
+                "cancelled",
+            );
+        }
+
         const previousSnapshot = this.#liveSnapshots.get(event.sessionId);
         if (previousSnapshot) {
             const nextSnapshot = this.#applyNativeSessionEvent(
@@ -723,7 +813,7 @@ export class AiService {
             );
             this.#onSessionSnapshot(
                 ownerWindowId,
-                buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
+                this.#buildRendererSessionUpdate(previousSnapshot, cachedSnapshot),
             );
             if (this.#isNativeAiSession(event.sessionId)) {
                 if (event.kind === "status" && event.status === "streaming") {
@@ -1187,14 +1277,25 @@ export class AiService {
     ): Promise<AiSessionSnapshot | null> {
         const liveSnapshot = this.#liveSnapshots.get(sessionId);
         if (liveSnapshot) {
-            return liveSnapshot;
+            await this.#refreshTranscriptStorageMode(sessionId);
+            return this.#toRendererSessionSnapshot(liveSnapshot);
         }
 
         const persistedSnapshot =
             await this.#loadPersistedSessionSnapshot(sessionId);
-        return persistedSnapshot
-            ? this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot)
-            : null;
+        if (!persistedSnapshot) return null;
+        await this.#refreshTranscriptStorageMode(sessionId, {
+            preserveLegacyFallback: true,
+        });
+        if (this.#usesBlockNativeTranscript(sessionId)) {
+            // Open tails are intentionally absent from sealed block metadata.
+            // Restore one before projecting the historical snapshot so an
+            // interrupted streaming turn remains visible after restart.
+            await this.#recoverTranscriptTail(sessionId);
+        }
+        return this.#toRendererSessionSnapshot(
+            this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot),
+        );
     }
 
     async listSessionHistory(
@@ -1236,6 +1337,64 @@ export class AiService {
         }
 
         return page;
+    }
+
+    getTranscriptCapability(): AiTranscriptCapability {
+        return (
+            this.#nativeAi?.getTranscriptCapability?.() ?? {
+                blockNativeVersion: null,
+                legacyFallbackAvailable: true,
+            }
+        );
+    }
+
+    async getTranscriptBlockMetadata(
+        sessionId: string,
+    ): Promise<AiTranscriptBlockMetadataOutput | null> {
+        const nativeAi = this.#nativeAi;
+        if (
+            !nativeAi?.getTranscriptCapability?.().blockNativeVersion ||
+            !nativeAi.loadTranscriptBlockMetadata
+        ) {
+            return null;
+        }
+        if (!(await this.#refreshTranscriptStorageMode(sessionId))) {
+            return null;
+        }
+        return await nativeAi.loadTranscriptBlockMetadata(sessionId);
+    }
+
+    async getTranscriptBlock(
+        sessionId: string,
+        blockId: string,
+    ): Promise<AiTranscriptBlock | null> {
+        const nativeAi = this.#nativeAi;
+        if (
+            !nativeAi?.getTranscriptCapability?.().blockNativeVersion ||
+            !nativeAi.loadTranscriptBlock
+        ) {
+            return null;
+        }
+        if (!(await this.#refreshTranscriptStorageMode(sessionId))) {
+            return null;
+        }
+        return await nativeAi.loadTranscriptBlock(sessionId, blockId);
+    }
+
+    async getTranscriptPayload(
+        input: AiLoadTranscriptPayloadInput,
+    ): Promise<AiTranscriptPayload | null> {
+        const nativeAi = this.#nativeAi;
+        if (
+            !nativeAi?.getTranscriptCapability?.().blockNativeVersion ||
+            !nativeAi.loadTranscriptPayload
+        ) {
+            return null;
+        }
+        if (!(await this.#refreshTranscriptStorageMode(input.sessionId))) {
+            return null;
+        }
+        return await nativeAi.loadTranscriptPayload(input);
     }
 
     async prepareSession(
@@ -1299,6 +1458,9 @@ export class AiService {
                                 parentSnapshot,
                                 ownerWindowId,
                             );
+                            await this.#recoverTranscriptTail(
+                                parentSnapshot.sessionId,
+                            );
                         }
                         this.#adoptNativeSubagentSnapshot(
                             launch.persistedSnapshot,
@@ -1320,8 +1482,12 @@ export class AiService {
                     acceptedSnapshot.sessionId,
                     ownerWindowId,
                 );
+            await this.#recoverTranscriptTail(acceptedSnapshot.sessionId);
+            await this.#refreshTranscriptStorageMode(acceptedSnapshot.sessionId);
             void this.#enforceSessionRetention();
-            return reconciledSnapshot ?? acceptedSnapshot;
+            return this.#toRendererSessionSnapshot(
+                reconciledSnapshot ?? acceptedSnapshot,
+            );
         } catch (error) {
             this.#nativeSessionIds.delete(input.sessionId);
             this.#discardPreparedSessionContextOnFailure(
@@ -1493,6 +1659,7 @@ export class AiService {
                             snapshot.sessionId,
                             ownerWindowId,
                         );
+                        await this.#recoverTranscriptTail(snapshot.sessionId);
                     }
                     this.#adoptNativeSubagentSnapshot(
                         launch.persistedSnapshot,
@@ -1876,6 +2043,8 @@ export class AiService {
     async cancelSession(sessionId: string): Promise<void> {
         this.#promptQueue.pause(sessionId);
         await this.#cancelNativeSession(sessionId);
+        this.#transcriptPersistence?.requestSeal(sessionId, "cancelled");
+        await this.#transcriptPersistence?.flushSession(sessionId, 750);
     }
 
     async #cancelNativeSession(sessionId: string): Promise<void> {
@@ -1892,11 +2061,13 @@ export class AiService {
         }
 
         await this.#requireNativeAiGateway().closeSession(sessionId);
+        this.#transcriptPersistence?.requestSeal(sessionId, "cancelled");
         if (this.#nativeChildParentSessionIds.has(sessionId)) {
+            await this.#transcriptPersistence?.flushSession(sessionId, 750);
             this.#detachLiveSession(sessionId);
             return;
         }
-        this.#clearLiveSession(sessionId);
+        await this.#flushAndClearClosedSession(sessionId);
     }
 
     async deleteSession(sessionId: string): Promise<void> {
@@ -1956,15 +2127,23 @@ export class AiService {
             )
             .map(([sessionId]) => sessionId);
 
-        Promise.resolve(this.#nativeAi?.closeOwnedByWindow(ownerWindowId)).catch(
-            (error: unknown) => {
-                debugBenignError("ai.service.closeOwnedByWindow.native", error);
-            },
-        );
         for (const sessionId of sessionIds) {
             this.#recordRetentionClose(sessionId, "window_close");
-            this.#clearLiveSession(sessionId);
+            this.#detachLiveSession(sessionId);
         }
+        void Promise.resolve(this.#nativeAi?.closeOwnedByWindow(ownerWindowId))
+            .catch((error: unknown) => {
+                debugBenignError("ai.service.closeOwnedByWindow.native", error);
+            })
+            .finally(() => {
+                for (const sessionId of sessionIds) {
+                    this.#transcriptPersistence?.requestSeal(
+                        sessionId,
+                        "cancelled",
+                    );
+                    void this.#flushAndClearClosedSession(sessionId);
+                }
+            });
     }
 
     async launchRuntimeAuth(input: AiRuntimeAuthLaunchInput): Promise<void> {
@@ -2416,6 +2595,109 @@ export class AiService {
         return this.#nativeAi;
     }
 
+    #scheduleTranscriptBlockMetadataLoad(sessionId: string): void {
+        const nativeAi = this.#nativeAi;
+        if (
+            !nativeAi?.loadTranscriptBlockMetadata ||
+            !nativeAi.getTranscriptCapability?.().blockNativeVersion ||
+            this.#loadedTranscriptBlockMetadataSessionIds.has(sessionId) ||
+            this.#loadingTranscriptBlockMetadataSessionIds.has(sessionId)
+        ) {
+            return;
+        }
+        const loadTranscriptBlockMetadata = (targetSessionId: string) =>
+            nativeAi.loadTranscriptBlockMetadata!(targetSessionId);
+
+        this.#loadingTranscriptBlockMetadataSessionIds.add(sessionId);
+        void this.#refreshTranscriptStorageMode(sessionId)
+            .then((isBlockNative) =>
+                isBlockNative
+                    ? loadTranscriptBlockMetadata(sessionId)
+                    : null,
+            )
+            .then((output) => {
+                if (!output || this.#deletedSessionIds.has(sessionId)) {
+                    return;
+                }
+                this.#liveTranscriptTails.setStableBlocks(
+                    sessionId,
+                    output.blocks,
+                );
+                this.#loadedTranscriptBlockMetadataSessionIds.add(sessionId);
+            })
+            .catch((error: unknown) => {
+                debugBenignError(
+                    "ai.service.loadTranscriptBlockMetadata",
+                    error,
+                );
+            })
+            .finally(() => {
+                this.#loadingTranscriptBlockMetadataSessionIds.delete(sessionId);
+            });
+    }
+
+    #createTranscriptPersistence(
+        nativeAi: NativeAiGateway | null,
+    ): AiTranscriptPersistenceCoordinator | null {
+        if (
+            !nativeAi?.checkpointOpenTranscriptTail ||
+            !nativeAi.loadOpenTranscriptTail ||
+            !nativeAi.sealTranscriptTurn ||
+            !nativeAi.getTranscriptCapability?.().blockNativeVersion
+        ) {
+            return null;
+        }
+        const checkpoint = nativeAi.checkpointOpenTranscriptTail.bind(nativeAi);
+        const load = nativeAi.loadOpenTranscriptTail.bind(nativeAi);
+        const seal = nativeAi.sealTranscriptTurn.bind(nativeAi);
+        return new AiTranscriptPersistenceCoordinator(
+            this.#liveTranscriptTails,
+            { checkpoint, load, seal },
+            undefined,
+            {
+                onSealed: (sessionId) => {
+                    if (this.#legacyTranscriptSessionIds.has(sessionId)) {
+                        return;
+                    }
+                    this.#transcriptStorageModes.set(sessionId, "block-native");
+                    this.#loadedTranscriptBlockMetadataSessionIds.delete(sessionId);
+                    this.#scheduleTranscriptBlockMetadataLoad(sessionId);
+                    this.#emitSealedTranscriptSnapshot(sessionId);
+                },
+            },
+        );
+    }
+
+    #scheduleTranscriptRecovery(sessionId: string): void {
+        void this.#recoverTranscriptTail(sessionId).catch((error: unknown) => {
+            debugBenignError("ai.service.recoverTranscriptTail", error);
+        });
+    }
+
+    async #recoverTranscriptTail(sessionId: string): Promise<void> {
+        if (
+            !this.#transcriptPersistence ||
+            this.#recoveredTranscriptTailSessionIds.has(sessionId)
+        ) {
+            return;
+        }
+        const existing = this.#transcriptRecoveryPromises.get(sessionId);
+        if (existing) {
+            await existing;
+            return;
+        }
+        const recovery = this.#transcriptPersistence
+            .recover(sessionId)
+            .then(() => {
+                this.#recoveredTranscriptTailSessionIds.add(sessionId);
+            })
+            .finally(() => {
+                this.#transcriptRecoveryPromises.delete(sessionId);
+            });
+        this.#transcriptRecoveryPromises.set(sessionId, recovery);
+        await recovery;
+    }
+
     #requireNativeAiGatewayForRuntime(runtimeId: AiRuntimeId): NativeAiGateway {
         const nativeAi = this.#selectNativeAiGateway(runtimeId);
         if (!nativeAi) {
@@ -2534,6 +2816,23 @@ export class AiService {
         for (const currentSessionId of sessionIdsToClear) {
             this.#nativeChildParentSessionIds.delete(currentSessionId);
             this.#liveSnapshots.delete(currentSessionId);
+            this.#liveTranscriptTails.clearSession(currentSessionId);
+            this.#transcriptPersistence?.clearSession(currentSessionId);
+            this.#recoveredTranscriptTailSessionIds.delete(currentSessionId);
+            this.#transcriptRecoveryPromises.delete(currentSessionId);
+            const migrationTimer = this.#transcriptMigrationTimers.get(
+                currentSessionId,
+            );
+            if (migrationTimer) {
+                clearTimeout(migrationTimer);
+                this.#transcriptMigrationTimers.delete(currentSessionId);
+            }
+            this.#loadedTranscriptBlockMetadataSessionIds.delete(
+                currentSessionId,
+            );
+            this.#loadingTranscriptBlockMetadataSessionIds.delete(
+                currentSessionId,
+            );
             this.#liveSessionContexts.delete(currentSessionId);
             this.#liveSessionTouches.delete(currentSessionId);
             this.#freezingSessionIds.delete(currentSessionId);
@@ -2544,6 +2843,31 @@ export class AiService {
             this.#nativeSessionIds.delete(currentSessionId);
         }
         this.#scheduleSessionRetentionTimer();
+    }
+
+    async #flushAndClearClosedSession(sessionId: string): Promise<void> {
+        const persistence = this.#transcriptPersistence;
+        const completed = await (persistence?.flushSession(sessionId, 750) ??
+            Promise.resolve(true));
+        if (completed) {
+            this.#clearLiveSession(sessionId);
+            return;
+        }
+
+        // Closing the runtime must stay responsive, but the durable queue owns
+        // the tail until its retries finish successfully.
+        this.#detachLiveSession(sessionId);
+        if (!persistence) {
+            return;
+        }
+        await persistence.waitForIdle(sessionId);
+        // The session may have been reopened while its old tail was flushing.
+        if (
+            !this.#liveSessionContexts.has(sessionId) &&
+            !this.#deletedSessionIds.has(sessionId)
+        ) {
+            this.#clearLiveSession(sessionId);
+        }
     }
 
     #detachLiveSession(sessionId: string): void {
@@ -2951,10 +3275,19 @@ export class AiService {
             ),
             ownerWindowId,
         );
+        this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
+        // A prepared session may already contain streamed output before events
+        // resume, so do not wait for a later event to make it crash-safe.
+        this.#transcriptPersistence?.scheduleCheckpoint(nextSnapshot.sessionId);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
-            nextSnapshot,
+            preserveCanonicalTranscriptArrays(
+                previousSnapshot,
+                nextSnapshot,
+            ),
             ownerWindowId,
         );
+        this.#scheduleTranscriptBlockMetadataLoad(cachedSnapshot.sessionId);
+        this.#scheduleTranscriptRecovery(cachedSnapshot.sessionId);
         if (!this.#isNativeAiSession(cachedSnapshot.sessionId)) {
             this.#persistence.saveSessionSnapshot(cachedSnapshot);
         }
@@ -3109,7 +3442,7 @@ export class AiService {
         if (options.emitUpdate) {
             this.#onSessionSnapshot(
                 ownerWindowId,
-                buildAiSessionUpdate(previousSnapshot, cachedSnapshot),
+                this.#buildRendererSessionUpdate(previousSnapshot, cachedSnapshot),
             );
         }
 
@@ -3201,76 +3534,16 @@ export class AiService {
             };
         }
 
-        if (event.kind === "message-started") {
-            return {
-                ...base,
-                messages: upsertNativeMessage(
-                    snapshot.messages,
-                    event.message,
-                ),
-            };
-        }
-
-        if (event.kind === "message-delta") {
-            return {
-                ...base,
-                messages: updateNativeMessageContent(
-                    snapshot.messages,
-                    event.messageId,
-                    event.content,
-                ),
-            };
-        }
-
-        if (event.kind === "message-completed") {
-            return {
-                ...base,
-                messages: completeNativeMessage(
-                    snapshot.messages,
-                    event.messageId,
-                ),
-            };
-        }
-
-        if (event.kind === "thinking-started") {
-            return {
-                ...base,
-                messages: upsertNativeMessage(
-                    snapshot.messages,
-                    event.message,
-                ),
-            };
-        }
-
-        if (event.kind === "thinking-delta") {
-            return {
-                ...base,
-                messages: updateNativeMessageContent(
-                    snapshot.messages,
-                    event.messageId,
-                    event.content,
-                ),
-            };
-        }
-
-        if (event.kind === "thinking-completed") {
-            return {
-                ...base,
-                messages: completeNativeMessage(
-                    snapshot.messages,
-                    event.messageId,
-                ),
-            };
-        }
-
-        if (event.kind === "image-generation") {
-            return {
-                ...base,
-                messages: upsertNativeMessage(
-                    snapshot.messages,
-                    event.message,
-                ),
-            };
+        if (
+            event.kind === "message-started" ||
+            event.kind === "message-delta" ||
+            event.kind === "message-completed" ||
+            event.kind === "thinking-started" ||
+            event.kind === "thinking-delta" ||
+            event.kind === "thinking-completed" ||
+            event.kind === "image-generation"
+        ) {
+            return base;
         }
 
         if (event.kind === "subagent-created") {
@@ -3298,15 +3571,8 @@ export class AiService {
         }
 
         if (event.kind === "tool-activity") {
-            const nextSnapshot = {
-                ...base,
-                toolActivity: upsertNativeToolActivity(
-                    snapshot.toolActivity,
-                    event.activity,
-                ),
-            };
             return this.#applyNativeToolActivityReviewDiffs(
-                nextSnapshot,
+                base,
                 event.activity,
                 event.origin,
             );
@@ -3354,20 +3620,8 @@ export class AiService {
             return base;
         }
 
-        return {
-            ...base,
-            toolActivity: snapshot.toolActivity.map((activity) =>
-                activity.id === event.toolCallId
-                    ? {
-                          ...activity,
-                          action: {
-                              kind: "open_session",
-                              sessionId: event.childSessionId,
-                          },
-                      }
-                    : activity,
-            ),
-        };
+        // Transcript events are owned by the live tail and renderer transcript.
+        return base;
     }
 
     async #captureNativeReviewBaseline(
@@ -3485,7 +3739,7 @@ export class AiService {
         );
         this.#onSessionSnapshot(
             ownerWindowId,
-            buildAiSessionUpdate(snapshot, nextSnapshot),
+            this.#buildRendererSessionUpdate(snapshot, nextSnapshot),
         );
     }
 
@@ -4125,7 +4379,7 @@ export class AiService {
         }
         this.#onSessionSnapshot(
             result.ownerWindowId,
-            buildAiSessionUpdate(previousSnapshot, nextSnapshot),
+            this.#buildRendererSessionUpdate(previousSnapshot, nextSnapshot),
         );
         void this.#enforceSessionRetention();
     }
@@ -5032,7 +5286,7 @@ export class AiService {
             }
             this.#onSessionSnapshot(
                 this.#liveSessionContexts.get(sessionId)?.ownerWindowId ?? "",
-                buildAiSessionUpdate(liveSnapshot, nextSnapshot),
+                this.#buildRendererSessionUpdate(liveSnapshot, nextSnapshot),
             );
             return nextSnapshot;
         }
@@ -5198,6 +5452,135 @@ export class AiService {
         }
 
         return mergePersistedCatalogIntoSessionSnapshot(snapshot, catalog);
+    }
+
+    #buildRendererSessionUpdate(
+        previousSnapshot: AiSessionSnapshot | null,
+        nextSnapshot: AiSessionSnapshot,
+    ): AiSessionUpdate {
+        return buildAiSessionUpdate(
+            previousSnapshot
+                ? this.#toRendererSessionSnapshot(previousSnapshot)
+                : null,
+            this.#toRendererSessionSnapshot(nextSnapshot),
+        );
+    }
+
+    #toRendererSessionSnapshot(
+        snapshot: AiSessionSnapshot,
+    ): AiSessionSnapshot {
+        if (!this.#usesBlockNativeTranscript(snapshot.sessionId)) {
+            return this.#liveTranscriptTails.projectLegacySnapshot(snapshot);
+        }
+
+        const tail = this.#liveTranscriptTails.getSnapshot(snapshot.sessionId);
+        if (!tail) {
+            return { ...snapshot, messages: [], toolActivity: [] };
+        }
+        let plan = snapshot.plan;
+        const messages: AiSessionSnapshot["messages"][number][] = [];
+        const toolActivity: AiSessionSnapshot["toolActivity"][number][] = [];
+        for (const entry of tail.entries) {
+            if (entry.payload.kind === "message") {
+                messages.push(entry.payload.message);
+            } else if (entry.payload.kind === "tool") {
+                toolActivity.push(entry.payload.activity);
+            } else if (entry.payload.kind === "plan") {
+                plan = entry.payload.plan;
+            }
+        }
+        return { ...snapshot, messages, plan, toolActivity };
+    }
+
+    #usesBlockNativeTranscript(sessionId: string): boolean {
+        return this.#transcriptStorageModes.get(sessionId) === "block-native";
+    }
+
+    async #refreshTranscriptStorageMode(
+        sessionId: string,
+        options: { readonly preserveLegacyFallback?: boolean } = {},
+    ): Promise<boolean> {
+        const nativeAi = this.#nativeAi;
+        if (!nativeAi?.getTranscriptStorageState) {
+            this.#transcriptStorageModes.set(sessionId, "legacy");
+            if (options.preserveLegacyFallback) {
+                this.#legacyTranscriptSessionIds.add(sessionId);
+            }
+            return false;
+        }
+        try {
+            const state = await nativeAi.getTranscriptStorageState(sessionId);
+            this.#transcriptStorageModes.set(sessionId, state.mode);
+            if (state.mode === "block-native") {
+                this.#legacyTranscriptSessionIds.delete(sessionId);
+                const migrationTimer = this.#transcriptMigrationTimers.get(sessionId);
+                if (migrationTimer) {
+                    clearTimeout(migrationTimer);
+                    this.#transcriptMigrationTimers.delete(sessionId);
+                }
+            } else {
+                if (options.preserveLegacyFallback) {
+                    this.#legacyTranscriptSessionIds.add(sessionId);
+                }
+                if (state.mode === "migrating") {
+                    this.#scheduleTranscriptBackfill(sessionId);
+                }
+            }
+            return state.mode === "block-native";
+        } catch (error) {
+            // A failed mode lookup must preserve the readable legacy snapshot.
+            debugBenignError("ai.service.transcriptStorageState", error);
+            const shouldRetryBackfill =
+                this.#transcriptStorageModes.get(sessionId) === "migrating";
+            this.#transcriptStorageModes.set(sessionId, "legacy");
+            if (options.preserveLegacyFallback) {
+                this.#legacyTranscriptSessionIds.add(sessionId);
+            }
+            if (shouldRetryBackfill) {
+                this.#scheduleTranscriptBackfill(sessionId);
+            }
+            return false;
+        }
+    }
+
+    #scheduleTranscriptBackfill(sessionId: string): void {
+        if (this.#transcriptMigrationTimers.has(sessionId)) {
+            return;
+        }
+        const timer = setTimeout(() => {
+            this.#transcriptMigrationTimers.delete(sessionId);
+            void this.#refreshTranscriptStorageMode(sessionId)
+                .then((isBlockNative) => {
+                    if (isBlockNative) {
+                        this.#loadedTranscriptBlockMetadataSessionIds.delete(
+                            sessionId,
+                        );
+                        this.#scheduleTranscriptBlockMetadataLoad(sessionId);
+                        // The renderer may have observed an empty block-native
+                        // snapshot while this migration was still pending.
+                        // Notify it once blocks are available so it can hydrate
+                        // without requiring the tab to be reopened.
+                        this.#emitSealedTranscriptSnapshot(sessionId);
+                    }
+                })
+                .catch((error: unknown) => {
+                    debugBenignError("ai.service.transcriptBackfill", error);
+                });
+        }, TRANSCRIPT_BACKFILL_RETRY_DELAY_MS);
+        unrefTimer(timer);
+        this.#transcriptMigrationTimers.set(sessionId, timer);
+    }
+
+    #emitSealedTranscriptSnapshot(sessionId: string): void {
+        const snapshot = this.#liveSnapshots.get(sessionId);
+        if (!snapshot) return;
+        this.#onSessionSnapshot(
+            this.#liveSessionContexts.get(sessionId)?.ownerWindowId ?? "",
+            {
+                kind: "snapshot",
+                snapshot: this.#toRendererSessionSnapshot(snapshot),
+            },
+        );
     }
 
     #persistNativeCatalogPatch(
@@ -5535,75 +5918,18 @@ function resolveCodexSecretBundle(
     };
 }
 
-function upsertNativeMessage(
-    messages: readonly AiMessage[],
-    message: AiMessage,
-): readonly AiMessage[] {
-    const existingIndex = messages.findIndex(
-        (candidate) => candidate.id === message.id,
-    );
-    if (existingIndex < 0) {
-        return [...messages, message];
+function preserveCanonicalTranscriptArrays(
+    previousSnapshot: AiSessionSnapshot | null,
+    nextSnapshot: AiSessionSnapshot,
+): AiSessionSnapshot {
+    if (!previousSnapshot) {
+        return nextSnapshot;
     }
-
-    return messages.map((candidate, index) =>
-        index === existingIndex ? { ...candidate, ...message } : candidate,
-    );
-}
-
-function updateNativeMessageContent(
-    messages: readonly AiMessage[],
-    messageId: string,
-    content: string,
-): readonly AiMessage[] {
-    return messages.map((message) =>
-        message.id === messageId
-            ? {
-                  ...message,
-                  content,
-                  status: "streaming" as const,
-              }
-            : message,
-    );
-}
-
-function completeNativeMessage(
-    messages: readonly AiMessage[],
-    messageId: string,
-): readonly AiMessage[] {
-    return messages.map((message) =>
-        message.id === messageId
-            ? {
-                  ...message,
-                  status: "completed" as const,
-              }
-            : message,
-    );
-}
-
-function upsertNativeToolActivity(
-    activities: readonly AiToolActivity[],
-    activity: AiToolActivity,
-): readonly AiToolActivity[] {
-    const existingIndex = activities.findIndex(
-        (candidate) => candidate.id === activity.id,
-    );
-    if (existingIndex < 0) {
-        return [...activities, activity];
-    }
-
-    return activities.map((candidate, index) =>
-        index === existingIndex
-            ? {
-                  ...candidate,
-                  ...activity,
-                  diffs:
-                      activity.diffs.length > 0
-                          ? activity.diffs
-                          : candidate.diffs,
-              }
-            : candidate,
-    );
+    return {
+        ...nextSnapshot,
+        messages: previousSnapshot.messages,
+        toolActivity: previousSnapshot.toolActivity,
+    };
 }
 
 function mergePersistedCatalogIntoSessionSnapshot(

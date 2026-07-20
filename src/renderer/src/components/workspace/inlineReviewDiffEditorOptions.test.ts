@@ -24,6 +24,7 @@ describe("buildInlineReviewDiffEditorOptions", () => {
         expect(options.lineNumbersMinChars).toBe(3);
         expect(options.wordWrap).toBe("on");
         expect(options.minimap?.enabled).toBe(true);
+        expect(options.occurrencesHighlight).toBe("off");
         expect(options.renderIndicators).toBe(false);
         expect(options.scrollbar).toBeUndefined();
     });

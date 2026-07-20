@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     isScrollViewportNearBottom,
     resolveChatScrollPersistenceState,
+    shouldHoldChatScrollFollowIntent,
 } from "./chatScroll";
 
 describe("isScrollViewportNearBottom", () => {
@@ -48,5 +49,27 @@ describe("resolveChatScrollPersistenceState", () => {
             isNearBottom: false,
             scrollTop: 320,
         });
+    });
+});
+
+describe("shouldHoldChatScrollFollowIntent", () => {
+    it("keeps following while a restored virtual timeline settles", () => {
+        expect(
+            shouldHoldChatScrollFollowIntent({
+                composerExpanded: false,
+                programmaticFollowSettling: true,
+                shouldAutoFollow: true,
+            }),
+        ).toBe(true);
+    });
+
+    it("lets explicit reader navigation win during settling", () => {
+        expect(
+            shouldHoldChatScrollFollowIntent({
+                composerExpanded: false,
+                programmaticFollowSettling: true,
+                shouldAutoFollow: false,
+            }),
+        ).toBe(false);
     });
 });

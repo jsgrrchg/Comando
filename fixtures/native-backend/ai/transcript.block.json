@@ -1,0 +1,30 @@
+{
+  "blockId": "session_1:0",
+  "sessionId": "session_1",
+  "startSequence": 1,
+  "endSequence": 1,
+  "entryCount": 1,
+  "estimatedRowCount": 1,
+  "estimatedHeight": 72,
+  "firstCreatedAt": "2026-07-18T00:00:00.000Z",
+  "lastCreatedAt": "2026-07-18T00:00:00.000Z",
+  "revision": 3,
+  "capabilityVersion": 1,
+  "transcriptRevision": 3,
+  "entries": [
+    {
+      "id": "message-1",
+      "sessionId": "session_1",
+      "sequence": 1,
+      "kind": "message",
+      "createdAt": "2026-07-18T00:00:00.000Z",
+      "updatedAt": "2026-07-18T00:00:00.000Z",
+      "summary": {
+        "label": "Assistant",
+        "preview": "Hello",
+        "status": "completed"
+      },
+      "payloadRef": "payload:message-1"
+    }
+  ]
+}

@@ -4,6 +4,9 @@ export const NATIVE_BACKEND_NAME = "comando-native-backend";
 export const NATIVE_PROTOCOL_VERSION = 1;
 export const NATIVE_MINIMUM_CLIENT_PROTOCOL_VERSION = 1;
 export const NATIVE_MINIMUM_BACKEND_PROTOCOL_VERSION = 1;
+export const NATIVE_AI_TRANSCRIPT_BLOCK_CAPABILITY_PREFIX =
+    "native-ai-transcript-block-v";
+export const NATIVE_AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION = 1;
 
 export type NativeCapabilitySet = {
     readonly domains: readonly string[];
@@ -53,6 +56,29 @@ export function parseNativeCapabilitySet(value: unknown): NativeCapabilitySet {
         events: parseStringArray(record.events, "events"),
         features: parseStringArray(record.features, "features"),
     };
+}
+
+export function getNativeAiTranscriptBlockCapabilityVersion(
+    capabilities: Pick<NativeCapabilitySet, "features"> | null | undefined,
+): number | null {
+    let version: number | null = null;
+    for (const feature of capabilities?.features ?? []) {
+        if (!feature.startsWith(NATIVE_AI_TRANSCRIPT_BLOCK_CAPABILITY_PREFIX)) {
+            continue;
+        }
+        const parsed = Number.parseInt(
+            feature.slice(NATIVE_AI_TRANSCRIPT_BLOCK_CAPABILITY_PREFIX.length),
+            10,
+        );
+        if (
+            Number.isSafeInteger(parsed) &&
+            parsed > 0 &&
+            parsed <= NATIVE_AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION
+        ) {
+            version = Math.max(version ?? 0, parsed);
+        }
+    }
+    return version;
 }
 
 export function parseNativeBackendHandshakeOutput(

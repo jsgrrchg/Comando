@@ -1,4 +1,5 @@
 export const MAX_RENDERER_CACHED_ARTIFACTS = 12;
+export const MAX_RENDERER_CACHED_ARTIFACT_BYTES = 32 * 1024 * 1024;
 
 export interface RendererArtifactCacheStats {
     readonly estimatedBytes: number;
@@ -9,8 +10,17 @@ export interface RendererArtifactCacheStats {
 }
 
 interface CachedArtifact {
+    readonly estimatedBytes: number;
+    readonly priority: number;
+    readonly protected: boolean;
     readonly scope: string;
     readonly value: unknown;
+}
+
+export interface RendererArtifactOptions {
+    readonly estimatedBytes?: number;
+    readonly priority?: number;
+    readonly protected?: boolean;
 }
 
 /**
@@ -24,6 +34,11 @@ export class RendererArtifactCache {
     private evictions = 0;
     private hits = 0;
     private misses = 0;
+
+    constructor(
+        private maxItems = MAX_RENDERER_CACHED_ARTIFACTS,
+        private maxBytes = MAX_RENDERER_CACHED_ARTIFACT_BYTES,
+    ) {}
 
     delete(scope: string, key: string): void {
         this.deleteArtifact(this.toArtifactKey(scope, key));
@@ -50,19 +65,49 @@ export class RendererArtifactCache {
         return artifact.value as T;
     }
 
-    set<T>(scope: string, key: string, value: T): void {
+    set<T>(
+        scope: string,
+        key: string,
+        value: T,
+        options: RendererArtifactOptions = {},
+    ): void {
         const artifactKey = this.toArtifactKey(scope, key);
         this.deleteArtifact(artifactKey);
-        this.artifacts.set(artifactKey, { scope, value });
-        this.estimatedBytes += estimateArtifactBytes(value);
+        const estimatedBytes =
+            options.estimatedBytes ?? estimateArtifactBytes(value);
+        this.artifacts.set(artifactKey, {
+            estimatedBytes,
+            priority: options.priority ?? 0,
+            protected: options.protected ?? false,
+            scope,
+            value,
+        });
+        this.estimatedBytes += estimatedBytes;
 
-        while (this.artifacts.size > MAX_RENDERER_CACHED_ARTIFACTS) {
-            const oldestKey = this.artifacts.keys().next().value;
+        while (
+            this.artifacts.size > this.maxItems ||
+            this.estimatedBytes > this.maxBytes
+        ) {
+            const oldestKey = [...this.artifacts.entries()]
+                .filter(([, artifact]) => !artifact.protected)
+                .sort(([, left], [, right]) => left.priority - right.priority)[0]?.[0];
             if (oldestKey === undefined) {
                 return;
             }
             this.evictions += 1;
             this.deleteArtifact(oldestKey);
+        }
+    }
+
+    applyMemoryPressure(factor = 0.5): void {
+        this.maxBytes = Math.max(1024 * 1024, Math.floor(this.maxBytes * factor));
+        while (this.estimatedBytes > this.maxBytes) {
+            const candidate = [...this.artifacts.entries()].find(
+                ([, artifact]) => !artifact.protected,
+            )?.[0];
+            if (!candidate) return;
+            this.evictions += 1;
+            this.deleteArtifact(candidate);
         }
     }
 
@@ -89,7 +134,7 @@ export class RendererArtifactCache {
         if (!artifact) return;
         this.estimatedBytes = Math.max(
             0,
-            this.estimatedBytes - estimateArtifactBytes(artifact.value),
+            this.estimatedBytes - artifact.estimatedBytes,
         );
         this.artifacts.delete(artifactKey);
     }

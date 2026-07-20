@@ -1,6 +1,11 @@
 import type {
     AiHistorySessionSummary,
+    AiHistoryMigrationInput,
+    AiHistoryMigrationResult,
+    AiHistoryStorageHealth,
     AiMessage,
+    AiOpenTranscriptTail,
+    AiOpenTranscriptTailCheckpoint,
     AiPermissionResponseInput,
     AiPromptResult,
     AiRuntimeAuthDisconnectInput,
@@ -17,6 +22,15 @@ import type {
     AiSessionSnapshot,
     AiSessionStatus,
     AiSessionTranscriptPage,
+    AiTranscriptBlock,
+    AiTranscriptBlockMetadata,
+    AiTranscriptBlockMetadataOutput,
+    AiTranscriptCapability,
+    AiTranscriptEntryEnvelope,
+    AiLoadTranscriptPayloadInput,
+    AiTranscriptPayload,
+    AiTranscriptStorageState,
+    AiSealTranscriptTurnInput,
     AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
@@ -25,7 +39,10 @@ import type {
     GetAiSessionTranscriptPageInput,
     ListAiSessionHistoryInput,
 } from "@shared/ipc";
+import { AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX } from "@shared/ipc";
 import {
+    getNativeAiTranscriptBlockCapabilityVersion,
+    NATIVE_AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
     nativeAiCatalogPatchToIpc,
     nativeAiEventToIpc,
     nativeAiRuntimeStatusToIpc,
@@ -34,12 +51,20 @@ import {
     type NativeAiCancelSessionOutput,
     type NativeAiCloseSessionOutput,
     type NativeAiHistorySessionSummary,
+    type NativeAiHistoryStorageHealth,
+    type NativeAiMigrateSessionHistoryOutput,
     type NativeAiLaunchRuntimeAuthOutput,
     type NativeAiReviewCaptureOutput,
     type NativeAiReviewCommandOutput,
     type NativeAiRuntimeSessionMapping,
     type NativeAiSessionSnapshot,
     type NativeAiSessionTranscriptPage,
+    type NativeAiTranscriptBlock,
+    type NativeAiTranscriptBlockMetadata,
+    type NativeAiTranscriptBlockMetadataOutput,
+    type NativeAiTranscriptPayload,
+    type NativeAiTranscriptStorageState,
+    type NativeCapabilitySet,
     type NativeAiRuntimeConnectionPayload,
     type NativeAiRuntimeStatus,
     type NativeAiSendPromptOutput,
@@ -68,6 +93,7 @@ type NativeAiClient = NativeBackendRequester & {
 };
 
 export interface NativeAiGatewayOptions {
+    readonly capabilities?: NativeCapabilitySet | null;
     readonly client: NativeAiClient;
     readonly onDiagnostic?: (message: string) => void;
     readonly onRuntimeStatus: (status: AiRuntimeStatus) => void;
@@ -96,6 +122,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     readonly #disposeEventListener: () => void;
     readonly #enabledRuntimeIds: ReadonlySet<AiRuntimeId>;
     readonly #historyEnabled: boolean;
+    readonly #transcriptBlockCapabilityVersion: number | null;
     readonly #onDiagnostic?: (message: string) => void;
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionEvent: (
@@ -118,6 +145,8 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         this.#client = options.client;
         this.#enabledRuntimeIds = DEFAULT_NATIVE_AI_RUNTIME_IDS;
         this.#historyEnabled = true;
+        this.#transcriptBlockCapabilityVersion =
+            getNativeAiTranscriptBlockCapabilityVersion(options.capabilities);
         this.#reviewEnabled = true;
         this.#onDiagnostic = options.onDiagnostic;
         this.#onRuntimeStatus = options.onRuntimeStatus;
@@ -130,6 +159,13 @@ export class NativeAiGateway implements NativeAiGatewayContract {
 
     shouldHandleRuntime(runtimeId: AiRuntimeId): boolean {
         return this.#enabledRuntimeIds.has(runtimeId);
+    }
+
+    getTranscriptCapability(): AiTranscriptCapability {
+        return {
+            blockNativeVersion: this.#transcriptBlockCapabilityVersion,
+            legacyFallbackAvailable: true,
+        };
     }
 
     async getRuntimeStatus(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus> {
@@ -352,6 +388,140 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         }
         return nativeTranscriptPageToIpc(
             requireRecord(output, "Native AI transcript page") as unknown as NativeAiSessionTranscriptPage,
+        );
+    }
+
+    async appendTranscriptEntries(
+        sessionId: string,
+        entries: readonly AiTranscriptEntryEnvelope[],
+    ): Promise<void> {
+        await this.#client.request("ai_append_transcript_entries", {
+            entries,
+            sessionId,
+        });
+    }
+
+    async checkpointOpenTranscriptTail(
+        input: AiOpenTranscriptTailCheckpoint,
+    ): Promise<void> {
+        await this.#client.request("ai_checkpoint_open_transcript_tail", {
+            entries: input.entries,
+            entryOrder: input.entryOrder,
+            payloads: input.payloads,
+            removedEntryIds: input.removedEntryIds,
+            sessionId: input.sessionId,
+            terminalStatus: input.terminalStatus,
+            turnId: input.turnId,
+        });
+    }
+
+    async loadOpenTranscriptTail(
+        sessionId: string,
+    ): Promise<AiOpenTranscriptTail | null> {
+        return await this.#client.request<AiOpenTranscriptTail | null>(
+            "ai_load_open_transcript_tail",
+            { sessionId },
+        );
+    }
+
+    async sealTranscriptTurn(
+        input: AiSealTranscriptTurnInput,
+    ): Promise<readonly AiTranscriptBlockMetadata[]> {
+        const output = await this.#client.request<unknown>(
+            "ai_seal_transcript_turn",
+            {
+                entries: input.entries,
+                payloads: input.payloads,
+                sessionId: input.sessionId,
+                turnId: input.turnId,
+            },
+        );
+        if (!Array.isArray(output)) {
+            throw new Error("Native sealed transcript metadata must be an array.");
+        }
+        return output as NativeAiTranscriptBlockMetadata[];
+    }
+
+    async loadTranscriptBlockMetadata(
+        sessionId: string,
+    ): Promise<AiTranscriptBlockMetadataOutput> {
+        const output = await this.#client.request<unknown>(
+            "ai_load_transcript_block_metadata",
+            { sessionId },
+        );
+        return requireTranscriptResponse<NativeAiTranscriptBlockMetadataOutput>(
+            output,
+            sessionId,
+            "metadata",
+        );
+    }
+
+    async loadTranscriptBlock(
+        sessionId: string,
+        blockId: string,
+    ): Promise<AiTranscriptBlock | null> {
+        const output = await this.#client.request<unknown>("ai_load_transcript_block", {
+            blockId,
+            sessionId,
+        });
+        return output === null
+            ? null
+            : requireTranscriptResponse<NativeAiTranscriptBlock>(
+                  output,
+                  sessionId,
+                  "block",
+              );
+    }
+
+    async loadTranscriptPayload(
+        input: AiLoadTranscriptPayloadInput,
+    ): Promise<AiTranscriptPayload> {
+        const output = await this.#client.request<unknown>(
+            "ai_load_transcript_payload",
+            {
+                maxBytes:
+                    input.maxBytes ?? AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX,
+                payloadRef: input.payloadRef,
+                sessionId: input.sessionId,
+            },
+        );
+        return requireTranscriptResponse<NativeAiTranscriptPayload>(
+            output,
+            input.sessionId,
+            "payload",
+        );
+    }
+
+    async getTranscriptStorageState(
+        sessionId: string,
+    ): Promise<AiTranscriptStorageState> {
+        const output = await this.#client.request<unknown>(
+            "ai_get_transcript_storage_state",
+            { sessionId },
+        );
+        return requireTranscriptResponse<NativeAiTranscriptStorageState>(
+            output,
+            sessionId,
+            "storage state",
+        );
+    }
+
+    async getHistoryStorageHealth(): Promise<AiHistoryStorageHealth> {
+        return await this.#client.request<NativeAiHistoryStorageHealth>(
+            "ai_get_history_storage_health",
+        );
+    }
+
+    async migrateSessionHistory(
+        input: AiHistoryMigrationInput,
+    ): Promise<AiHistoryMigrationResult> {
+        return await this.#client.request<NativeAiMigrateSessionHistoryOutput>(
+            "ai_migrate_session_history",
+            {
+                limit: input.limit,
+                mode: input.mode,
+                sourceDatabasePath: input.sourceDatabasePath,
+            },
         );
     }
 
@@ -1279,6 +1449,29 @@ function requireRecord(value: unknown, label: string): Record<string, unknown> {
         throw new Error(`${label} must be an object.`);
     }
     return value as Record<string, unknown>;
+}
+
+function requireTranscriptResponse<T>(
+    value: unknown,
+    sessionId: string,
+    label: string,
+): T {
+    const record = requireRecord(value, `Native transcript ${label}`);
+    if (record.sessionId !== sessionId) {
+        throw new Error(`Native transcript ${label} belongs to another session.`);
+    }
+    if (
+        typeof record.capabilityVersion !== "number" ||
+        !Number.isSafeInteger(record.capabilityVersion) ||
+        record.capabilityVersion < 1 ||
+        record.capabilityVersion >
+            NATIVE_AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION
+    ) {
+        throw new Error(
+            `Native transcript ${label} has an invalid capability version.`,
+        );
+    }
+    return record as T;
 }
 
 function requireRecordArray(value: unknown, label: string): readonly Record<string, unknown>[] {

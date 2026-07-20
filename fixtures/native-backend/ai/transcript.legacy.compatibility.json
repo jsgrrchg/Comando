@@ -1,0 +1,11 @@
+{
+  "sessionId": "legacy-session-1",
+  "messages": [
+    { "id": "user-1", "kind": "user", "content": "Review the diff", "createdAt": "2026-01-01T00:00:00.000Z", "status": "completed", "attachments": [] },
+    { "id": "thinking-1", "kind": "thinking", "content": "Inspecting files", "createdAt": "2026-01-01T00:00:01.000Z", "status": "completed", "attachments": [] },
+    { "id": "assistant-1", "kind": "assistant", "content": "Found one change", "createdAt": "2026-01-01T00:00:02.000Z", "status": "completed", "attachments": [] }
+  ],
+  "toolActivity": [
+    { "id": "tool-1", "kind": "read", "title": "Read src/app.ts", "summary": "1 file", "status": "completed" }
+  ]
+}

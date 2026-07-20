@@ -1,0 +1,8 @@
+{
+  "code": "internal_error",
+  "message": "AI storage is temporarily unavailable",
+  "details": {
+    "operation": "loadTranscriptBlock"
+  },
+  "retryable": true
+}

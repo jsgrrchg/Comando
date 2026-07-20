@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+    CHAT_INTERACTION_BUDGETS,
     CHAT_PERFORMANCE_FIXTURES,
     createChatPerformanceFixture,
     createChatPerformanceFixtureById,
     createChatPerformanceWorkspaceFixture,
+    passesChatPerformanceGate,
 } from "./chatPerformanceFixtures";
 
 describe("chatPerformanceFixtures", () => {
@@ -17,8 +19,14 @@ describe("chatPerformanceFixtures", () => {
                 trackedFileCount: 2,
             },
             {
-                id: "chat-long",
+                id: "chat-long-10k",
                 messageCount: 10_000,
+                toolActivityCount: 0,
+                trackedFileCount: 0,
+            },
+            {
+                id: "chat-extreme-100k",
+                messageCount: 100_000,
                 toolActivityCount: 0,
                 trackedFileCount: 0,
             },
@@ -63,7 +71,7 @@ describe("chatPerformanceFixtures", () => {
     });
 
     it("creates the configured stress fixtures only when explicitly requested", () => {
-        const fixture = createChatPerformanceFixtureById("chat-long");
+        const fixture = createChatPerformanceFixtureById("chat-long-10k");
 
         expect(fixture.snapshot.messages).toHaveLength(10_000);
         expect(fixture.snapshot.toolActivity).toHaveLength(0);
@@ -80,11 +88,39 @@ describe("chatPerformanceFixtures", () => {
             ),
         ).toBe(true);
         expect(fixture.panes.flatMap((pane) => pane.retainedSessionIds)).toHaveLength(
-            16,
+            20,
         );
         expect(fixture.activeStreamingSessionIds).toEqual([
             "workspace-pane-1-session-1",
             "workspace-pane-2-session-1",
         ]);
+    });
+
+    it("defines deterministic structural budgets for extreme chats", () => {
+        expect(CHAT_INTERACTION_BUDGETS).toEqual({
+            activityInitialItems: 20,
+            maxFullRebuildsDuringStreaming: 0,
+            maxMountedRows: 80,
+            transcriptBlockEntries: 256,
+        });
+    });
+
+    it("closes the rollout gate only for bounded production metrics", () => {
+        expect(
+            passesChatPerformanceGate({
+                fullRebuildsDuringStreaming: 0,
+                mountedRows: 80,
+                residentEntries: 256 * 3,
+                residentPayloadBytes: 16 * 1024 * 1024,
+            }),
+        ).toBe(true);
+        expect(
+            passesChatPerformanceGate({
+                fullRebuildsDuringStreaming: 1,
+                mountedRows: 81,
+                residentEntries: 100_000,
+                residentPayloadBytes: 16 * 1024 * 1024 + 1,
+            }),
+        ).toBe(false);
     });
 });

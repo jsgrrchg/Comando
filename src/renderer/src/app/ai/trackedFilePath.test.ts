@@ -6,6 +6,7 @@ import { useAppStore } from "@renderer/app/store/app-store";
 import {
     areTrackedFilePathReferencesEquivalent,
     areTrackedFilePathsEquivalent,
+    TrackedFilePathReferenceSet,
 } from "./trackedFilePath";
 
 afterEach(() => {
@@ -71,6 +72,16 @@ describe("trackedFilePath", () => {
                 "/workspace/two/src/app.ts",
             ),
         ).toBe(false);
+    });
+
+    it("deduplicates relative aliases without merging absolute workspaces", () => {
+        setRendererPlatform("darwin");
+        const paths = new TrackedFilePathReferenceSet();
+
+        expect(paths.add("/workspace/one/src/app.ts")).toBe(true);
+        expect(paths.add("./src/app.ts")).toBe(false);
+        expect(paths.add("/workspace/two/src/app.ts")).toBe(true);
+        expect(paths.size).toBe(2);
     });
 });
 

@@ -1,0 +1,9 @@
+{
+    "extends": "../tsconfig.base.json",
+    "compilerOptions": {
+        "lib": ["ES2023", "DOM", "DOM.Iterable"],
+        "jsx": "react-jsx",
+        "types": ["@playwright/test", "node", "vite/client"]
+    },
+    "include": ["./**/*.ts", "./**/*.tsx", "../src/renderer/**/*.ts", "../src/renderer/**/*.tsx", "../src/shared/**/*.ts", "../types/**/*.d.ts"]
+}

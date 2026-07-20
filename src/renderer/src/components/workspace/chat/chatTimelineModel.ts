@@ -10,7 +10,7 @@ import {
     isAiSessionTranscriptMutationFrom,
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
-import { areTrackedFilePathReferencesEquivalent } from "@renderer/app/ai/trackedFilePath";
+import { TrackedFilePathReferenceSet } from "@renderer/app/ai/trackedFilePath";
 
 import {
     createToolActivityReviewIndex,
@@ -24,6 +24,7 @@ import {
     type ToolActivityPresentationContext,
     type ToolActivityPresentationPolicy,
 } from "./toolActivityPresentation";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 import { isTurnStartedActivity } from "./toolActivityKinds";
 import {
     deriveActivitySegmentChangeStats,
@@ -516,19 +517,11 @@ function buildOrderedRows(
     return [...rowById.values()].sort(compareRows);
 }
 
-function addPath(paths: string[], path: string | null | undefined): void {
-    const normalizedPath = path?.trim();
-    if (
-        normalizedPath &&
-        !paths.some((existingPath) =>
-            areTrackedFilePathReferencesEquivalent(
-                existingPath,
-                normalizedPath,
-            ),
-        )
-    ) {
-        paths.push(normalizedPath);
-    }
+function addPath(
+    paths: TrackedFilePathReferenceSet,
+    path: string | null | undefined,
+): void {
+    paths.add(path);
 }
 
 function buildToolActivitySegmentSummary(
@@ -562,8 +555,8 @@ function buildToolActivitySegmentSummary(
             ? latestItem.message.createdAt
             : latestItem.entry.reviewEntry.activity.updatedAt;
 
-    const fileTargets: string[] = [];
-    const changedFileTargets: string[] = [];
+    const fileTargets = new TrackedFilePathReferenceSet();
+    const changedFileTargets = new TrackedFilePathReferenceSet();
     let changeCount = 0;
     let commandCount = 0;
     let failureCount = 0;
@@ -617,10 +610,10 @@ function buildToolActivitySegmentSummary(
     return {
         actionCount: entries.length,
         changeCount,
-        changedFileCount: changedFileTargets.length,
+        changedFileCount: changedFileTargets.size,
         commandCount,
         failureCount,
-        fileCount: fileTargets.length,
+        fileCount: fileTargets.size,
         hiddenActivityCount: entries.length,
         isInProgress: items.some((item) =>
             item.kind === "thinking"
@@ -934,10 +927,9 @@ export function reconcileChatTimelineModel(
         snapshot.activeTurnStartedAt,
     );
     const atomicLiveTailRowId = atomicLiveTailRow?.id ?? null;
-    const nextAtomicHistoryRows =
-        atomicLiveTailRow == null
-            ? [...orderedAtomicRows]
-            : orderedAtomicRows.filter((row) => row !== atomicLiveTailRow);
+    // The active row remains in the virtual data source. Its live-tail metadata
+    // is retained for incremental reconciliation and presentation only.
+    const nextAtomicHistoryRows = [...orderedAtomicRows];
     const atomicHistoryRows = reuseRows(
         previous?.atomicHistoryRows,
         nextAtomicHistoryRows,
@@ -963,10 +955,7 @@ export function reconcileChatTimelineModel(
         atomicLiveTailRow,
     );
     const liveTailRowId = liveTailRow?.id ?? null;
-    const nextHistoryRows =
-        liveTailRow == null
-            ? [...orderedRows]
-            : orderedRows.filter((row) => row !== liveTailRow);
+    const nextHistoryRows = [...orderedRows];
     const historyRows = reuseRows(previous?.historyRows, nextHistoryRows);
     const historyRowIds = reuseRowIds(previous?.historyRowIds, historyRows);
 
@@ -1036,6 +1025,7 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
     input: ChatTimelineTranscriptInput,
 ): ChatTimelineModel {
     if (!previous || !previousTranscript) {
+        incrementChatPerformanceCounter("timeline_full_rebuilds");
         return reconcileChatTimelineModelFromTranscript(previous, input);
     }
     if (
@@ -1045,6 +1035,7 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
         )
     ) {
         chatTimelineFallbackCount += 1;
+        incrementChatPerformanceCounter("timeline_full_rebuilds");
         return reconcileChatTimelineModelFromTranscript(previous, input);
     }
 
@@ -1069,6 +1060,7 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
     }
 
     chatTimelineFallbackCount += 1;
+    incrementChatPerformanceCounter("timeline_full_rebuilds");
     return reconcileChatTimelineModelFromTranscript(previous, input);
 }
 
@@ -1101,11 +1093,18 @@ function reconcileLiveTailPatch(
     atomicRowById.set(nextAtomicRow.id, nextAtomicRow);
     const presentationRowById = new Map(previous.presentationRowById);
     presentationRowById.set(presentation.liveTailRow.id, presentation.liveTailRow);
+    const nextAtomicHistoryRows = replaceLastTimelineRow(
+        previous.atomicHistoryRows,
+        nextAtomicRow,
+    );
+    const nextHistoryRows = presentation.orderedRows;
 
     return {
         ...previous,
+        atomicHistoryRows: nextAtomicHistoryRows,
         atomicLiveTailRow: nextAtomicRow,
         atomicRowById,
+        historyRows: nextHistoryRows,
         liveTailRow: presentation.liveTailRow,
         liveTailRowId: presentation.liveTailRow.id,
         orderedAtomicRows: replaceLastTimelineRow(
@@ -1147,25 +1146,17 @@ function reconcileLiveTailAppend(
     atomicRowById.set(nextAtomicRow.id, nextAtomicRow);
     const presentationRowById = new Map(previous.presentationRowById);
     presentationRowById.set(nextAtomicRow.id, nextAtomicRow);
-    const atomicHistoryRows = previous.atomicLiveTailRow
-        ? [...previous.atomicHistoryRows, previous.atomicLiveTailRow]
-        : previous.atomicHistoryRows;
-    const historyRows = previous.liveTailRow
-        ? [...previous.historyRows, previous.liveTailRow]
-        : previous.historyRows;
+    const atomicHistoryRows = [...previous.atomicHistoryRows, nextAtomicRow];
+    const historyRows = [...previous.historyRows, nextAtomicRow];
 
     return {
         ...previous,
-        atomicHistoryRowIds: previous.atomicLiveTailRow
-            ? [...previous.atomicHistoryRowIds, previous.atomicLiveTailRow.id]
-            : previous.atomicHistoryRowIds,
+        atomicHistoryRowIds: [...previous.atomicHistoryRowIds, nextAtomicRow.id],
         atomicHistoryRows,
         atomicLiveTailRow: nextAtomicRow,
         atomicLiveTailRowId: nextAtomicRow.id,
         atomicRowById,
-        historyRowIds: previous.liveTailRow
-            ? [...previous.historyRowIds, previous.liveTailRow.id]
-            : previous.historyRowIds,
+        historyRowIds: [...previous.historyRowIds, nextAtomicRow.id],
         historyRows,
         liveTailRow: nextAtomicRow,
         liveTailRowId: nextAtomicRow.id,

@@ -1,5 +1,4 @@
 import {
-    Fragment,
     memo,
     useCallback,
     useEffect,
@@ -19,37 +18,60 @@ import {
     type MeasuredVirtualViewportAnchor,
 } from "@renderer/components/virtual/MeasuredVirtualList";
 
-import type { ChatTimelineRow } from "./chatTimelineModel";
+import { ChatPresentationErrorBoundary } from "./ChatPresentationErrorBoundary";
+import {
+    isChatTimelineRowItem,
+    isTranscriptActivitySummaryItem,
+    isTranscriptBlockSpacerItem,
+    isTranscriptStreamingIndicatorItem,
+    type TranscriptTimelineItem,
+    type TranscriptTimelineVirtualRow,
+    type TranscriptStreamingIndicatorItem,
+} from "./transcriptBlockVirtualization";
 import {
     CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
+    CHAT_TIMELINE_ESTIMATE_CALIBRATION_ALPHA,
+    CHAT_TIMELINE_ESTIMATE_CALIBRATION_MAX_MULTIPLIER,
+    CHAT_TIMELINE_ESTIMATE_CALIBRATION_MIN_MULTIPLIER,
     CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN,
-    calculateChatTimelineVirtualizationCost,
     calculateChatTimelineVirtualScrollMarginTop,
+    estimateChatTimelineRowBaseHeight,
     estimateChatTimelineRowHeight,
     getChatTimelineEffectiveContentWidth,
+    getChatTimelineRowEstimateBucket,
     getChatTimelineRowIdentityKey,
     getChatTimelineRowMeasurementKey,
-    getChatTimelineRowKey,
     getChatTimelineVirtualMeasurementWidth,
     getChatTimelineVirtualRowGapPx,
-    shouldVirtualizeChatTimeline,
     type ChatTimelineRowMeasurementContext,
 } from "./chatTimelineVirtualization";
 
 const MIN_FREEZABLE_CHAT_TIMELINE_WIDTH_PX = 240;
+const NEW_TURN_ANCHOR_OFFSET_PX = 20;
+const MAX_ESTIMATE_CALIBRATION_BUCKETS = 96;
 
 interface ChatTimelineHistoryRowsProps {
     readonly active?: boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
-    readonly historyRows: readonly ChatTimelineRow[];
+    readonly historyRows: readonly TranscriptTimelineItem[];
     readonly sessionId?: string;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
-    readonly renderRow: (params: { readonly row: ChatTimelineRow }) => ReactNode;
+    readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly liveTailRowId?: string | null;
+    readonly newTurnAnchorRowId?: string | null;
+    readonly renderRow: (params: {
+        readonly isCurrentTurnTail: boolean;
+        readonly row: TranscriptTimelineVirtualRow;
+    }) => ReactNode;
+    readonly renderStreamingIndicator: (
+        item: TranscriptStreamingIndicatorItem,
+    ) => ReactNode;
     readonly scrollRef: RefObject<HTMLElement | null>;
+    readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
 }
@@ -73,6 +95,23 @@ export function resolveChatTimelineFrozenContentWidth(input: {
         : null;
 }
 
+function getTrailingUserRowId(
+    rows: readonly TranscriptTimelineItem[],
+): string | null {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        if (!row || !isChatTimelineRowItem(row)) {
+            continue;
+        }
+
+        return row.kind === "message" && row.message.kind === "user"
+            ? row.id
+            : null;
+    }
+
+    return null;
+}
+
 export const ChatTimelineHistoryRows = memo(
     function ChatTimelineHistoryRows({
         active = true,
@@ -84,8 +123,13 @@ export const ChatTimelineHistoryRows = memo(
         onVirtualResizeEnd,
         onVirtualResizeAutoFollow,
         onVirtualResizeStart,
+        onNewTurnScrollTarget,
+        liveTailRowId,
+        newTurnAnchorRowId,
         renderRow,
+        renderStreamingIndicator,
         scrollRef,
+        shouldDeferTrailingUserMeasurementAnchor,
         shouldPreserveVirtualMeasureAnchor,
         shouldPreserveVirtualResizeAnchor,
     }: ChatTimelineHistoryRowsProps) {
@@ -102,9 +146,31 @@ export const ChatTimelineHistoryRows = memo(
             null,
         );
         const virtualResizeActiveRef = useRef(false);
+        const handledTrailingUserMeasurementRef = useRef<string | null>(null);
+        // This is intentionally local to the mounted timeline: measurements are
+        // only a rendering hint and must never become persisted chat state.
+        const estimateCalibrationRef = useRef(new Map<string, number>());
         const [scrollMarginTop, setScrollMarginTop] = useState(0);
         const [contentMeasurementWidth, setContentMeasurementWidth] =
             useState(0);
+        const trailingUserRowId = getTrailingUserRowId(historyRows);
+        const shouldPreserveVirtualMeasureAnchorForItem = useCallback(
+            (row: TranscriptTimelineItem) => {
+                if (
+                    !shouldDeferTrailingUserMeasurementAnchor?.() ||
+                    row.id !== trailingUserRowId ||
+                    handledTrailingUserMeasurementRef.current === row.id
+                ) {
+                    return true;
+                }
+
+                // The newest prompt is entering at the followed edge. Let the
+                // final bottom-follow pass absorb its first real measurement.
+                handledTrailingUserMeasurementRef.current = row.id;
+                return false;
+            },
+            [shouldDeferTrailingUserMeasurementAnchor, trailingUserRowId],
+        );
         // While the pane splitter is being dragged we freeze the timeline: the
         // content keeps its pre-drag width (so rows don't reflow) and all metric
         // updates are skipped, then we re-sync once on release. frozenContentWidth
@@ -118,12 +184,6 @@ export const ChatTimelineHistoryRows = memo(
         const isActiveRef = useRef(active);
         isFreezeActiveRef.current = frozenContentWidth !== null;
         isActiveRef.current = active;
-        const virtualizationCost = calculateChatTimelineVirtualizationCost(
-            historyRows,
-        );
-        const shouldVirtualize =
-            shouldVirtualizeChatTimeline(virtualizationCost);
-
         const restorePendingResizeAnchor = useCallback(() => {
             const anchor = pendingResizeAnchorRef.current;
             pendingResizeAnchorRef.current = null;
@@ -178,10 +238,8 @@ export const ChatTimelineHistoryRows = memo(
                 nextContentMeasurementWidth;
 
             if (
-                shouldVirtualize &&
                 previousContentMeasurementWidth !== null &&
-                previousContentMeasurementWidth !==
-                    nextContentMeasurementWidth
+                previousContentMeasurementWidth !== nextContentMeasurementWidth
             ) {
                 if (shouldPreserveVirtualResizeAnchor?.() ?? true) {
                     pendingResizeAnchorRef.current =
@@ -206,7 +264,6 @@ export const ChatTimelineHistoryRows = memo(
             scheduleResizeAnchorRestore,
             scrollRef,
             shouldPreserveVirtualResizeAnchor,
-            shouldVirtualize,
         ]);
 
         const handleVirtualListReady = useCallback(
@@ -217,18 +274,70 @@ export const ChatTimelineHistoryRows = memo(
         );
 
         useLayoutEffect(() => {
-            if (!active || !shouldVirtualize) {
+            if (!active || !newTurnAnchorRowId) {
+                return;
+            }
+
+            const handle = virtualListHandleRef.current;
+            const scrollContainer = scrollRef.current;
+            const anchorIndex = historyRows.findIndex(
+                (row) => row.id === newTurnAnchorRowId,
+            );
+            if (!handle || !scrollContainer || anchorIndex < 0) {
+                return;
+            }
+
+            const anchor = handle.getItemGeometry?.(anchorIndex);
+            if (!anchor) {
+                return;
+            }
+
+            const tailIndex = liveTailRowId
+                ? historyRows.findIndex((row) => row.id === liveTailRowId)
+                : historyRows.length - 1;
+            const tail = handle.getItemGeometry?.(
+                tailIndex >= anchorIndex ? tailIndex : anchorIndex,
+            );
+            if (!tail) {
+                return;
+            }
+
+            // The composer already reduces the scroll viewport in this flex layout.
+            // Keep the prompt visible until the active turn needs more room below it.
+            const requiredEnd = Math.max(
+                0,
+                tail.start + tail.size -
+                    (anchor.start + scrollContainer.clientHeight),
+            );
+            // The parent serializes every scroll write against navigation intent.
+            onNewTurnScrollTarget?.(
+                Math.max(
+                    0,
+                    anchor.start + scrollMarginTop - NEW_TURN_ANCHOR_OFFSET_PX +
+                        requiredEnd,
+                ),
+            );
+        }, [
+            active,
+            historyRows,
+            liveTailRowId,
+            newTurnAnchorRowId,
+            onNewTurnScrollTarget,
+            scrollMarginTop,
+            scrollRef,
+        ]);
+
+        useLayoutEffect(() => {
+            if (!active) {
                 return;
             }
 
             syncLayoutMetrics();
-        }, [active, historyRows.length, shouldVirtualize, syncLayoutMetrics]);
+        }, [active, historyRows.length, syncLayoutMetrics]);
 
         useEffect(() => {
             if (
-                !active ||
-                !shouldVirtualize ||
-                typeof ResizeObserver === "undefined"
+                !active || typeof ResizeObserver === "undefined"
             ) {
                 return;
             }
@@ -253,7 +362,7 @@ export const ChatTimelineHistoryRows = memo(
                 observer.disconnect();
                 window.removeEventListener("resize", syncLayoutMetrics);
             };
-        }, [active, scrollRef, shouldVirtualize, syncLayoutMetrics]);
+        }, [active, scrollRef, syncLayoutMetrics]);
 
         useLayoutEffect(() => {
             restorePendingResizeAnchor();
@@ -274,7 +383,7 @@ export const ChatTimelineHistoryRows = memo(
         // before the first width change lands (pointerdown precedes pointermove),
         // so the pinned width matches the pre-drag layout exactly.
         useLayoutEffect(() => {
-            if (!active || !shouldVirtualize) {
+            if (!active) {
                 if (virtualResizeActiveRef.current) {
                     virtualResizeActiveRef.current = false;
                     pendingVirtualResizeEndRef.current = false;
@@ -311,13 +420,12 @@ export const ChatTimelineHistoryRows = memo(
             onVirtualResizeEnd,
             onVirtualResizeStart,
             scrollRef,
-            shouldVirtualize,
         ]);
 
         // Once the freeze lifts the DOM holds the real width again, so adopt it
         // and re-anchor exactly once — instead of on every drag frame.
         useLayoutEffect(() => {
-            if (!active || !shouldVirtualize || frozenContentWidth !== null) {
+            if (!active || frozenContentWidth !== null) {
                 return;
             }
 
@@ -332,7 +440,6 @@ export const ChatTimelineHistoryRows = memo(
             active,
             frozenContentWidth,
             onVirtualResizeEnd,
-            shouldVirtualize,
             syncLayoutMetrics,
         ]);
 
@@ -357,11 +464,12 @@ export const ChatTimelineHistoryRows = memo(
         // identity key simply ignores the width bucket it carries.
         const buildRowContext = useCallback(
             (
-                _row: ChatTimelineRow,
+                _row: TranscriptTimelineVirtualRow,
                 index: number,
             ): ChatTimelineRowMeasurementContext => ({
                 chatFontFamily,
                 chatFontSize,
+                estimateCalibration: estimateCalibrationRef.current,
                 gapPx: resolveRowGapPx(index),
                 toolActivityDefaultExpansion,
                 width: contentMeasurementWidth,
@@ -375,24 +483,108 @@ export const ChatTimelineHistoryRows = memo(
             ],
         );
 
+        const handleVirtualItemMeasured = useCallback(
+            (
+                item: TranscriptTimelineItem,
+                index: number,
+                measurement: {
+                    readonly height: number;
+                    readonly previousHeight: number | undefined;
+                },
+            ) => {
+                if (!isChatTimelineRowItem(item)) {
+                    return;
+                }
+                if (
+                    item.kind === "message" &&
+                    item.message.status === "streaming"
+                ) {
+                    // A moving stream is not representative training data for
+                    // future stable rows; it will be measured again on completion.
+                    return;
+                }
+
+                const context = buildRowContext(item, index);
+                const baseHeight = estimateChatTimelineRowBaseHeight(
+                    item,
+                    context,
+                );
+                if (!Number.isFinite(baseHeight) || baseHeight <= 0) {
+                    return;
+                }
+
+                const observedMultiplier = Math.min(
+                    CHAT_TIMELINE_ESTIMATE_CALIBRATION_MAX_MULTIPLIER,
+                    Math.max(
+                        CHAT_TIMELINE_ESTIMATE_CALIBRATION_MIN_MULTIPLIER,
+                        measurement.height / baseHeight,
+                    ),
+                );
+                const bucket = getChatTimelineRowEstimateBucket(item, context);
+                const previousMultiplier = estimateCalibrationRef.current.get(
+                    bucket,
+                );
+                const nextMultiplier =
+                    previousMultiplier === undefined
+                        ? observedMultiplier
+                        : previousMultiplier +
+                          (observedMultiplier - previousMultiplier) *
+                              CHAT_TIMELINE_ESTIMATE_CALIBRATION_ALPHA;
+
+                // Keep the calibration bounded while retaining recently seen
+                // width/type combinations for a long-lived chat view.
+                estimateCalibrationRef.current.delete(bucket);
+                estimateCalibrationRef.current.set(bucket, nextMultiplier);
+                if (
+                    estimateCalibrationRef.current.size >
+                    MAX_ESTIMATE_CALIBRATION_BUCKETS
+                ) {
+                    const oldestBucket = estimateCalibrationRef.current.keys().next()
+                        .value;
+                    if (oldestBucket) {
+                        estimateCalibrationRef.current.delete(oldestBucket);
+                    }
+                }
+            },
+            [buildRowContext],
+        );
+
         const estimateSize = useCallback(
-            (row: ChatTimelineRow, index: number) =>
-                estimateChatTimelineRowHeight(row, buildRowContext(row, index)),
+            (row: TranscriptTimelineItem, index: number) =>
+                isTranscriptBlockSpacerItem(row)
+                    ? row.estimatedHeight
+                    : isTranscriptStreamingIndicatorItem(row)
+                      ? 28
+                    : estimateChatTimelineRowHeight(
+                          row,
+                          buildRowContext(row, index),
+                      ),
             [buildRowContext],
         );
 
         const getItemMeasurementKey = useCallback(
-            (row: ChatTimelineRow, index: number) =>
-                getChatTimelineRowMeasurementKey(
-                    row,
-                    buildRowContext(row, index),
-                ),
+            (row: TranscriptTimelineItem, index: number) =>
+                isTranscriptBlockSpacerItem(row)
+                    ? `${row.id}:${row.estimatedHeight}`
+                    : isTranscriptStreamingIndicatorItem(row)
+                      ? row.id
+                    : getChatTimelineRowMeasurementKey(
+                          row,
+                          buildRowContext(row, index),
+                      ),
             [buildRowContext],
         );
 
         const getItemIdentityKey = useCallback(
-            (row: ChatTimelineRow, index: number) =>
-                getChatTimelineRowIdentityKey(row, buildRowContext(row, index)),
+            (row: TranscriptTimelineItem, index: number) =>
+                isTranscriptBlockSpacerItem(row)
+                    ? row.id
+                    : isTranscriptStreamingIndicatorItem(row)
+                      ? row.id
+                    : getChatTimelineRowIdentityKey(
+                          row,
+                          buildRowContext(row, index),
+                      ),
             [buildRowContext],
         );
 
@@ -403,9 +595,32 @@ export const ChatTimelineHistoryRows = memo(
             }: {
                 readonly index: number;
                 readonly isVisible: boolean;
-                readonly item: ChatTimelineRow;
+                readonly item: TranscriptTimelineItem;
             }) => {
+                if (isTranscriptBlockSpacerItem(item)) {
+                    return (
+                        <div
+                            aria-hidden="true"
+                            data-transcript-block-spacer={item.blockId}
+                            style={{ height: `${item.estimatedHeight}px` }}
+                        />
+                    );
+                }
                 const gapPx = resolveRowGapPx(index);
+
+                if (isTranscriptStreamingIndicatorItem(item)) {
+                    return (
+                        <div
+                            style={
+                                gapPx > 0
+                                    ? { paddingBottom: `${gapPx}px` }
+                                    : undefined
+                            }
+                        >
+                            {renderStreamingIndicator(item)}
+                        </div>
+                    );
+                }
 
                 return (
                     <div
@@ -415,27 +630,32 @@ export const ChatTimelineHistoryRows = memo(
                                 : undefined
                         }
                     >
-                        {renderRow({ row: item })}
+                        <ChatPresentationErrorBoundary
+                            fallbackKind="row"
+                            identity={getChatTimelineRowIdentityKey(
+                                item,
+                                buildRowContext(item, index),
+                            )}
+                        >
+                            {renderRow({
+                                isCurrentTurnTail:
+                                    item.id === liveTailRowId ||
+                                    (isTranscriptActivitySummaryItem(item) &&
+                                        item.groupId === liveTailRowId),
+                                row: item,
+                            })}
+                        </ChatPresentationErrorBoundary>
                     </div>
                 );
             },
             [
                 renderRow,
+                renderStreamingIndicator,
+                liveTailRowId,
                 resolveRowGapPx,
+                buildRowContext,
             ],
         );
-
-        if (!shouldVirtualize) {
-            return (
-                <>
-                    {historyRows.map((row) => (
-                        <Fragment key={row.id}>
-                            {renderRow({ row })}
-                        </Fragment>
-                    ))}
-                </>
-            );
-        }
 
         return (
             <div
@@ -455,7 +675,7 @@ export const ChatTimelineHistoryRows = memo(
                         CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
                     }
                     estimateSize={estimateSize}
-                    getItemKey={getChatTimelineRowKey}
+                    getItemKey={getTranscriptTimelineItemKey}
                     getItemIdentityKey={getItemIdentityKey}
                     getItemMeasurementKey={getItemMeasurementKey}
                     geometryCacheSignature={
@@ -474,6 +694,7 @@ export const ChatTimelineHistoryRows = memo(
                         sessionId ? `chat-timeline:${sessionId}` : undefined
                     }
                     onRangeChange={onVirtualRangeChange}
+                    onItemMeasured={handleVirtualItemMeasured}
                     onReady={handleVirtualListReady}
                     overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
                     preserveScrollAnchorOnItemsChange
@@ -483,6 +704,9 @@ export const ChatTimelineHistoryRows = memo(
                     }
                     shouldPreserveScrollAnchorOnMeasure={
                         shouldPreserveVirtualMeasureAnchor
+                    }
+                    shouldPreserveScrollAnchorForItemMeasurement={
+                        shouldPreserveVirtualMeasureAnchorForItem
                     }
                     scrollContainerRef={scrollRef}
                     scrollMarginTop={scrollMarginTop}
@@ -494,3 +718,9 @@ export const ChatTimelineHistoryRows = memo(
 );
 
 ChatTimelineHistoryRows.displayName = "ChatTimelineHistoryRows";
+
+function getTranscriptTimelineItemKey(
+    row: TranscriptTimelineItem,
+): string {
+    return row.id;
+}

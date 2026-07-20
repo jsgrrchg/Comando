@@ -1,6 +1,11 @@
 import type {
     AiPermissionResponseInput,
     AiHistorySessionSummary,
+    AiHistoryMigrationInput,
+    AiHistoryMigrationResult,
+    AiHistoryStorageHealth,
+    AiOpenTranscriptTail,
+    AiOpenTranscriptTailCheckpoint,
     AiPromptResult,
     AiPromptQueueSnapshot,
     AiSessionConfigOption,
@@ -20,6 +25,15 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
     AiSessionTranscriptPage,
+    AiTranscriptBlock,
+    AiTranscriptBlockMetadata,
+    AiTranscriptBlockMetadataOutput,
+    AiTranscriptCapability,
+    AiTranscriptEntryEnvelope,
+    AiLoadTranscriptPayloadInput,
+    AiTranscriptPayload,
+    AiTranscriptStorageState,
+    AiSealTranscriptTurnInput,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
     GetAiSessionTranscriptPageInput,
@@ -128,6 +142,13 @@ export type AiSessionFreezeSkippedReason =
     | "pending_user_input";
 
 export interface NativeAiGateway {
+    appendTranscriptEntries?(
+        sessionId: string,
+        entries: readonly AiTranscriptEntryEnvelope[],
+    ): Promise<void>;
+    checkpointOpenTranscriptTail?(
+        input: AiOpenTranscriptTailCheckpoint,
+    ): Promise<void>;
     cancelSession(sessionId: string): Promise<void>;
     captureReviewBaseline?(sessionId: string): Promise<boolean>;
     close(): Promise<void> | void;
@@ -141,9 +162,19 @@ export interface NativeAiGateway {
         parentSessionId: string,
     ): Promise<readonly AiRuntimeSessionMapping[]>;
     loadSessionSnapshot(sessionId: string): Promise<AiSessionSnapshot | null>;
+    loadOpenTranscriptTail?(
+        sessionId: string,
+    ): Promise<AiOpenTranscriptTail | null>;
     loadSessionTranscriptPage(
         input: GetAiSessionTranscriptPageInput,
     ): Promise<AiSessionTranscriptPage | null>;
+    loadTranscriptBlock?(sessionId: string, blockId: string): Promise<AiTranscriptBlock | null>;
+    getHistoryStorageHealth?(): Promise<AiHistoryStorageHealth>;
+    getTranscriptCapability?(): AiTranscriptCapability;
+    getTranscriptStorageState?(sessionId: string): Promise<AiTranscriptStorageState>;
+    loadTranscriptBlockMetadata?(sessionId: string): Promise<AiTranscriptBlockMetadataOutput>;
+    loadTranscriptPayload?(input: AiLoadTranscriptPayloadInput): Promise<AiTranscriptPayload>;
+    migrateSessionHistory?(input: AiHistoryMigrationInput): Promise<AiHistoryMigrationResult>;
     getRuntimeStatus?(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus>;
     saveRuntimeSettings?(input: NativeAiRuntimeSettingsRpcInput): Promise<AiRuntimeStatus>;
     launchRuntimeAuth?(input: AiRuntimeAuthLaunchInput): Promise<void>;
@@ -161,6 +192,9 @@ export interface NativeAiGateway {
     prepareSession(input: NativeAiPrepareSessionRpcInput): Promise<AiSessionSnapshot>;
     respondPermission(input: AiPermissionResponseInput): Promise<void>;
     respondUserInput(input: AiUserInputResponseInput): Promise<void>;
+    sealTranscriptTurn?(
+        input: AiSealTranscriptTurnInput,
+    ): Promise<readonly AiTranscriptBlockMetadata[]>;
     sendPrompt(input: NativeAiSendPromptRpcInput): Promise<AiPromptResult>;
     setSessionPinned(input: AiSessionPinnedMutationInput): Promise<void>;
     setSessionConfigOption(

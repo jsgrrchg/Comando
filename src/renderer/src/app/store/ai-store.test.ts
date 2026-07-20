@@ -8,6 +8,8 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
     AiToolActivity,
+    AiTranscriptBlock,
+    AiTranscriptBlockMetadata,
     AiTrackedFile,
     AppBootstrapSnapshot,
     WorkspaceChatTab,
@@ -18,8 +20,14 @@ import {
 } from "@shared/ai-review-action-log";
 
 import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
+import { buildBlockNativeTranscript } from "@renderer/app/ai/transcriptWindowProjection";
+import { reconcileChatTimelineModelFromTranscript } from "@renderer/components/workspace/chat/chatTimelineModel";
 import { useAppStore } from "./app-store";
-import { resetAiStoreRuntimeBuffersForTests, useAiStore } from "./ai-store";
+import {
+    applyAiTranscriptMemoryPressure,
+    resetAiStoreRuntimeBuffersForTests,
+    useAiStore,
+} from "./ai-store";
 
 const TAB: WorkspaceChatTab = {
     createdAt: "2026-04-14T00:00:00.000Z",
@@ -235,6 +243,1082 @@ describe("ai-store queue", () => {
         });
         vi.restoreAllMocks();
         vi.useRealTimers();
+    });
+
+    it("hydrates complete payloads for visible block-native transcript windows", async () => {
+        const metadata = [1, 2, 3].map((index) => ({
+            blockId: `block-${index}`,
+            endSequence: index * 10,
+            entryCount: 10,
+            estimatedHeight: 720,
+            estimatedRowCount: 10,
+            firstCreatedAt: "2026-04-14T00:00:00.000Z",
+            lastCreatedAt: "2026-04-14T00:00:00.000Z",
+            revision: 1,
+            sessionId: TAB.sessionId,
+            startSequence: (index - 1) * 10 + 1,
+        }));
+        const getAiTranscriptBlock = vi.fn((_sessionId: string, blockId: string) => {
+            const blockIndex = Number(blockId.slice("block-".length));
+            return Promise.resolve({
+                ...metadata.find((item) => item.blockId === blockId)!,
+                capabilityVersion: 1,
+                entries: ["message", "thinking", "tool"].map((kind, index) => ({
+                    createdAt: "2026-04-14T00:00:00.000Z",
+                    id: `${kind}-${blockIndex}`,
+                    kind,
+                    payloadRef: `payload:${kind}-${blockIndex}`,
+                    sequence: blockIndex * 10 + index,
+                    sessionId: TAB.sessionId,
+                    summary: { label: kind, preview: kind, status: "completed" },
+                    updatedAt: "2026-04-14T00:00:00.000Z",
+                })),
+                transcriptRevision: 3,
+            } as AiTranscriptBlock);
+        });
+        const getAiTranscriptPayload = vi.fn((input: { readonly payloadRef: string }) =>
+            Promise.resolve({
+                byteLength: 100,
+                capabilityVersion: 1,
+                contentHash: input.payloadRef,
+                payloadRef: input.payloadRef,
+                sessionId: TAB.sessionId,
+                transcriptRevision: 3,
+                value: { content: input.payloadRef },
+            }),
+        );
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlock,
+                    getAiTranscriptPayload,
+                    getAiTranscriptBlockMetadata: vi.fn().mockResolvedValue({
+                        blocks: metadata,
+                        capabilityVersion: 1,
+                        sessionId: TAB.sessionId,
+                        transcriptRevision: 3,
+                    }),
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        const windowState = useAiStore.getState().sessions[TAB.sessionId]
+            ?.transcriptWindow;
+        expect(windowState?.metadata).toHaveLength(3);
+        expect([...windowState?.blocksById.keys() ?? []]).toEqual([
+            "block-2",
+            "block-3",
+        ]);
+        expect(windowState?.residentEntries).toBe(20);
+        expect(getAiTranscriptBlock).toHaveBeenCalledTimes(2);
+        expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).toEqual(
+            expect.arrayContaining([
+                "payload:message-2",
+                "payload:thinking-2",
+                "payload:tool-2",
+                "payload:message-3",
+                "payload:thinking-3",
+                "payload:tool-3",
+            ]),
+        );
+
+        await useAiStore
+            .getState()
+            .prefetchTranscriptWindow(TAB.sessionId, "backward");
+
+        expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).toEqual(
+            expect.arrayContaining([
+                "payload:message-1",
+                "payload:thinking-1",
+                "payload:tool-1",
+            ]),
+        );
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcriptWindow.payloadsByRef.has(
+                    "payload:thinking-1",
+                ),
+        ).toBe(true);
+
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(TAB.sessionId, "payload:tool-1");
+        expect(getAiTranscriptPayload).toHaveBeenCalledWith({
+            payloadRef: "payload:tool-1",
+            sessionId: TAB.sessionId,
+        });
+
+        useAiStore
+            .getState()
+            .setTranscriptWindowAnchor(TAB.sessionId, "block-1", false);
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcriptWindow.payloadsByRef.has(
+                    "payload:thinking-1",
+                ),
+        ).toBe(true);
+        useAiStore
+            .getState()
+            .setTranscriptWindowAnchor(TAB.sessionId, "block-2", false);
+        expect(
+            [...(
+                useAiStore.getState().sessions[TAB.sessionId]?.transcriptWindow
+                    .protectedBlockIds ?? []
+            )],
+        ).toEqual(expect.arrayContaining(["block-2"]));
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcriptWindow.protectedBlockIds.has(
+                    "block-3",
+                ),
+        ).toBe(false);
+
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        const rehydratedWindow =
+            useAiStore.getState().sessions[TAB.sessionId]?.transcriptWindow;
+        expect(rehydratedWindow).toMatchObject({
+            anchorBlockId: "block-2",
+            followTail: false,
+        });
+        expect([...rehydratedWindow?.protectedBlockIds ?? []]).toEqual([
+            "block-2",
+        ]);
+    });
+
+    it("keeps a sealed activity diff available after its rail is collapsed and expanded", async () => {
+        const blockId = "block-with-diff";
+        const payloadRef = "payload:tool-with-diff";
+        const activity = createToolActivity({
+            diffs: [
+                {
+                    hunks: [
+                        {
+                            id: "hunk-1",
+                            lines: [
+                                { id: "line-1", text: "before", type: "remove" },
+                                { id: "line-2", text: "after", type: "add" },
+                            ],
+                            newCount: 1,
+                            newStart: 1,
+                            oldCount: 1,
+                            oldStart: 1,
+                        },
+                    ],
+                    isText: true,
+                    kind: "update",
+                    newText: "after\n",
+                    oldText: "before\n",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "tool-with-diff",
+            kind: "edit",
+            status: "completed",
+            title: "Edit src/app.ts",
+        });
+        const metadata: AiTranscriptBlockMetadata = {
+            blockId,
+            endSequence: 1,
+            entryCount: 1,
+            estimatedHeight: 80,
+            estimatedRowCount: 1,
+            firstCreatedAt: activity.createdAt,
+            lastCreatedAt: activity.updatedAt,
+            revision: 1,
+            sessionId: TAB.sessionId,
+            startSequence: 1,
+        };
+        const block: AiTranscriptBlock = {
+            ...metadata,
+            capabilityVersion: 1,
+            entries: [
+                {
+                    createdAt: activity.createdAt,
+                    id: `tool:${TAB.sessionId}:${activity.id}`,
+                    kind: "tool",
+                    payloadRef,
+                    sequence: 1,
+                    sessionId: TAB.sessionId,
+                    summary: {
+                        label: activity.title,
+                        preview: activity.summary,
+                        status: activity.status,
+                    },
+                    updatedAt: activity.updatedAt,
+                },
+            ],
+            transcriptRevision: 1,
+        };
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlock: vi.fn().mockResolvedValue(block),
+                    getAiTranscriptBlockMetadata: vi.fn().mockResolvedValue({
+                        blocks: [metadata],
+                        capabilityVersion: 1,
+                        sessionId: TAB.sessionId,
+                        transcriptRevision: 1,
+                    }),
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                    getAiTranscriptPayload: vi.fn().mockResolvedValue({
+                        byteLength: 256,
+                        capabilityVersion: 1,
+                        contentHash: "tool-with-diff",
+                        payloadRef,
+                        sessionId: TAB.sessionId,
+                        transcriptRevision: 1,
+                        value: { activity, kind: "tool" },
+                    }),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        const getChangeCount = () => {
+            const session = useAiStore.getState().sessions[TAB.sessionId];
+            if (!session) throw new Error("Expected hydrated session.");
+            const transcript = buildBlockNativeTranscript(
+                session.transcript,
+                session.transcriptWindow.blocksById,
+                session.transcriptWindow.metadata,
+                session.transcriptWindow.payloadsByRef,
+                session.snapshot ?? createSnapshot(),
+            );
+            const timeline = reconcileChatTimelineModelFromTranscript(null, {
+                status: "idle",
+                trackedFiles: [],
+                transcript,
+            });
+            return timeline.historyRows.find(
+                (row) => row.kind === "activity-segment",
+            )?.summary.changeCount;
+        };
+
+        expect(getChangeCount()).toBe(1);
+
+        // Collapsing the rail unmounts the visible payload and releases it.
+        useAiStore.getState().releaseTranscriptPayload(TAB.sessionId, payloadRef);
+
+        // Expanding the same resident block must keep its diff without a reopen.
+        expect(getChangeCount()).toBe(1);
+    });
+
+    it("does not inject historical messages when the first live follow-up snapshot arrives", () => {
+        const historicalMessage = createMessage({
+            content: "Earlier message that belongs to an unloaded block.",
+            id: "historical-message",
+            status: "completed",
+        });
+        const restoredTailMessage = createMessage({
+            content: "Most recent restored message.",
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "restored-tail-message",
+            status: "completed",
+        });
+        const followUpMessage = createMessage({
+            content: "Continue this chat.",
+            createdAt: "2026-04-14T00:02:00.000Z",
+            id: "follow-up-message",
+            kind: "user",
+            status: "streaming",
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [restoredTailMessage],
+                updatedAt: restoredTailMessage.createdAt,
+            }),
+        );
+        useAiStore.setState((state) => {
+            const session = state.sessions[TAB.sessionId];
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [TAB.sessionId]: {
+                        ...session,
+                        transcriptWindow: {
+                            ...session.transcriptWindow,
+                            capabilityVersion: 1,
+                            transcriptRevision: 1,
+                        },
+                    },
+                },
+            };
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                activeTurnStartedAt: followUpMessage.createdAt,
+                messages: [
+                    historicalMessage,
+                    restoredTailMessage,
+                    followUpMessage,
+                ],
+                status: "streaming",
+                updatedAt: followUpMessage.createdAt,
+            }),
+        );
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcript.messages.map((message) => message.id),
+        ).toEqual([restoredTailMessage.id, followUpMessage.id]);
+    });
+
+    it("keeps legacy history when block support is available but metadata is not", () => {
+        const historicalMessage = createMessage({
+            content: "Earlier response still stored in the legacy snapshot.",
+            id: "legacy-history-message",
+            status: "completed",
+        });
+        const followUpMessage = createMessage({
+            content: "Continue this chat.",
+            createdAt: "2026-04-14T00:02:00.000Z",
+            id: "legacy-follow-up-message",
+            kind: "user",
+            status: "streaming",
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [historicalMessage],
+                updatedAt: historicalMessage.createdAt,
+            }),
+        );
+        useAiStore.setState((state) => {
+            const session = state.sessions[TAB.sessionId];
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [TAB.sessionId]: {
+                        ...session,
+                        transcriptWindow: {
+                            ...session.transcriptWindow,
+                            capabilityVersion: 1,
+                        },
+                    },
+                },
+            };
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                activeTurnStartedAt: followUpMessage.createdAt,
+                messages: [historicalMessage, followUpMessage],
+                status: "streaming",
+                updatedAt: followUpMessage.createdAt,
+            }),
+        );
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcript.messages.map((message) => message.id),
+        ).toEqual([historicalMessage.id, followUpMessage.id]);
+    });
+
+    it("keeps an unsealed turn visible while empty block metadata catches up", async () => {
+        const previousResponse = createMessage({
+            content: "Previous response waiting to be sealed.",
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "previous-unsealed-response",
+            status: "completed",
+        });
+        const followUpMessage = createMessage({
+            content: "Continue this chat.",
+            createdAt: "2026-04-14T00:02:00.000Z",
+            id: "follow-up-live-tail",
+            kind: "user",
+            status: "streaming",
+        });
+        const getAiTranscriptBlockMetadata = vi.fn().mockResolvedValue({
+            blocks: [],
+            capabilityVersion: 1,
+            sessionId: TAB.sessionId,
+            transcriptRevision: 0,
+        });
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlockMetadata,
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [previousResponse],
+                updatedAt: previousResponse.createdAt,
+            }),
+        );
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+        useAiStore.getState().applyPromptQueueSnapshot({
+            activeItem: {
+                attachments: [],
+                composerPartsSnapshot: [
+                    { text: followUpMessage.content, type: "text" },
+                ],
+                createdAt: followUpMessage.createdAt,
+                error: null,
+                fileContextsSnapshot: [],
+                id: followUpMessage.id,
+                messageId: followUpMessage.id,
+                optimisticMessageId: followUpMessage.id,
+                projectId: TAB.projectId,
+                prompt: followUpMessage.content,
+                runtimeId: TAB.runtimeId,
+                sessionId: TAB.sessionId,
+                status: "sending",
+                title: TAB.title,
+                worktreeId: TAB.worktreeId ?? null,
+            },
+            editingItem: null,
+            items: [],
+            paused: false,
+            revision: 1,
+            sessionId: TAB.sessionId,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                activeTurnStartedAt: followUpMessage.createdAt,
+                messages: [followUpMessage],
+                status: "streaming",
+                updatedAt: followUpMessage.createdAt,
+            }),
+        );
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcript.messages.map((message) => message.id),
+        ).toEqual([previousResponse.id, followUpMessage.id]);
+        await vi.waitFor(() =>
+            expect(getAiTranscriptBlockMetadata).toHaveBeenCalledTimes(2),
+        );
+    });
+
+    it("keeps unsealed tool activity visible when a follow-up turn starts before block metadata catches up", async () => {
+        const previousResponse = createMessage({
+            content: "Previous response waiting to be sealed.",
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "previous-unsealed-response",
+            status: "completed",
+        });
+        const previousTool = createToolActivity({
+            createdAt: "2026-04-14T00:01:01.000Z",
+            diffs: [
+                {
+                    hunks: [
+                        {
+                            id: "tool-hunk-1",
+                            lines: [
+                                {
+                                    id: "tool-line-1",
+                                    text: "before",
+                                    type: "remove",
+                                },
+                                {
+                                    id: "tool-line-2",
+                                    text: "after",
+                                    type: "add",
+                                },
+                            ],
+                            newCount: 1,
+                            newStart: 1,
+                            oldCount: 1,
+                            oldStart: 1,
+                        },
+                    ],
+                    isText: true,
+                    kind: "update",
+                    newText: "after\n",
+                    oldText: "before\n",
+                    path: "src/activity-rail.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "previous-unsealed-tool",
+            kind: "edit",
+            status: "completed",
+            title: "Edit activity rail",
+            updatedAt: "2026-04-14T00:01:02.000Z",
+        });
+        const followUpMessage = createMessage({
+            content: "Continue this chat.",
+            createdAt: "2026-04-14T00:02:00.000Z",
+            id: "follow-up-live-tail",
+            kind: "user",
+            status: "streaming",
+        });
+        const getAiTranscriptBlockMetadata = vi.fn().mockResolvedValue({
+            blocks: [],
+            capabilityVersion: 1,
+            sessionId: TAB.sessionId,
+            transcriptRevision: 0,
+        });
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlockMetadata,
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [previousResponse],
+                toolActivity: [previousTool],
+                updatedAt: previousTool.updatedAt,
+            }),
+        );
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        // The live snapshot only owns the new turn while the previous one is
+        // waiting for its persisted transcript block to become observable.
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                activeTurnStartedAt: followUpMessage.createdAt,
+                messages: [followUpMessage],
+                status: "streaming",
+                toolActivity: [],
+                updatedAt: followUpMessage.createdAt,
+            }),
+        );
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(
+            session?.transcript.toolActivity.map((activity) => activity.id),
+        ).toEqual([previousTool.id]);
+
+        const timeline = reconcileChatTimelineModelFromTranscript(null, {
+            activeTurnStartedAt: followUpMessage.createdAt,
+            status: "streaming",
+            trackedFiles: session?.snapshot?.trackedFiles ?? [],
+            transcript: session.transcript,
+        });
+        const activitySegment = timeline.historyRows.find(
+            (row) => row.kind === "activity-segment",
+        );
+        expect(activitySegment).toMatchObject({
+            changeStats: {
+                additions: 1,
+                approximate: false,
+                deletions: 1,
+            },
+            kind: "activity-segment",
+            summary: {
+                actionCount: 1,
+                changeCount: 1,
+                latestActivityId: previousTool.id,
+            },
+        });
+    });
+
+    it("evicts transcript payloads from both the cache and UI state", async () => {
+        const payloadSize = 9 * 1024 * 1024;
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptPayload: vi.fn((input: { readonly payloadRef: string }) =>
+                        Promise.resolve({
+                            byteLength: payloadSize,
+                            capabilityVersion: 1,
+                            contentHash: input.payloadRef,
+                            payloadRef: input.payloadRef,
+                            sessionId: TAB.sessionId,
+                            transcriptRevision: 1,
+                            value: { content: input.payloadRef },
+                        }),
+                    ),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().registerSessionTab(TAB);
+
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(TAB.sessionId, "payload:first");
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(TAB.sessionId, "payload:second");
+
+        let payloads = useAiStore.getState().sessions[TAB.sessionId]
+            ?.transcriptWindow.payloadsByRef;
+        expect(payloads?.has("payload:first")).toBe(false);
+        expect(payloads?.has("payload:second")).toBe(true);
+
+        applyAiTranscriptMemoryPressure(0);
+
+        payloads = useAiStore.getState().sessions[TAB.sessionId]
+            ?.transcriptWindow.payloadsByRef;
+        expect(payloads?.size).toBe(0);
+    });
+
+    it("shares the transcript payload budget across sessions", async () => {
+        const payloadSize = 9 * 1024 * 1024;
+        const secondTab: WorkspaceChatTab = {
+            ...TAB,
+            id: "tab-2",
+            sessionId: "session-2",
+        };
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptPayload: vi.fn((input: {
+                        readonly payloadRef: string;
+                        readonly sessionId: string;
+                    }) =>
+                        Promise.resolve({
+                            byteLength: payloadSize,
+                            capabilityVersion: 1,
+                            contentHash: input.payloadRef,
+                            payloadRef: input.payloadRef,
+                            sessionId: input.sessionId,
+                            transcriptRevision: 1,
+                            value: { content: input.payloadRef },
+                        })),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().registerSessionTab(TAB);
+        useAiStore.getState().registerSessionTab(secondTab);
+
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(TAB.sessionId, "payload:first");
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(secondTab.sessionId, "payload:second");
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.transcriptWindow
+                .payloadsByRef.has("payload:first"),
+        ).toBe(false);
+        expect(
+            useAiStore.getState().sessions[secondTab.sessionId]
+                ?.transcriptWindow.payloadsByRef.has("payload:second"),
+        ).toBe(true);
+    });
+
+    it("releases evicted blocks from other session windows", async () => {
+        const sessionIds = ["session-eviction-a", "session-eviction-b"] as const;
+        const metadataBySession = new Map<
+            string,
+            readonly AiTranscriptBlockMetadata[]
+        >(
+            sessionIds.map((sessionId) => [
+                sessionId,
+                [1, 2, 3, 4].map((index) => ({
+                    blockId: `${sessionId}:block-${index}`,
+                    endSequence: index * 512,
+                    entryCount: 512,
+                    estimatedHeight: 512 * 72,
+                    estimatedRowCount: 512,
+                    firstCreatedAt: "2026-04-14T00:00:00.000Z",
+                    lastCreatedAt: "2026-04-14T00:00:00.000Z",
+                    revision: 1,
+                    sessionId,
+                    startSequence: (index - 1) * 512 + 1,
+                })),
+            ]),
+        );
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlock: vi.fn(
+                        (sessionId: string, blockId: string) =>
+                            Promise.resolve({
+                                ...metadataBySession
+                                    .get(sessionId)!
+                                    .find((block) => block.blockId === blockId)!,
+                                capabilityVersion: 1,
+                                entries: [],
+                                transcriptRevision: 1,
+                            } satisfies AiTranscriptBlock),
+                    ),
+                    getAiTranscriptBlockMetadata: vi.fn((sessionId: string) =>
+                        Promise.resolve({
+                            blocks: metadataBySession.get(sessionId)!,
+                            capabilityVersion: 1,
+                            sessionId,
+                            transcriptRevision: 1,
+                        }),
+                    ),
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                    getAiTranscriptPayload: vi.fn(),
+                },
+            },
+            writable: true,
+        });
+
+        for (const sessionId of sessionIds) {
+            useAiStore.getState().applySessionSnapshot(
+                createSnapshot({ sessionId }),
+            );
+        }
+        await useAiStore.getState().hydrateTranscriptWindow(sessionIds[0]);
+        await useAiStore
+            .getState()
+            .loadTranscriptWindowBlock(sessionIds[0], `${sessionIds[0]}:block-1`);
+        expect(
+            useAiStore
+                .getState()
+                .sessions[sessionIds[0]]?.transcriptWindow.blocksById.has(
+                    `${sessionIds[0]}:block-1`,
+                ),
+        ).toBe(true);
+
+        await useAiStore.getState().hydrateTranscriptWindow(sessionIds[1]);
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[sessionIds[0]]?.transcriptWindow.blocksById.has(
+                    `${sessionIds[0]}:block-1`,
+                ),
+        ).toBe(false);
+    });
+
+    it("releases live transcript entries after their sealed block is hydrated", async () => {
+        const sealedMessage = createMessage({
+            id: "sealed-message",
+            status: "completed",
+        });
+        const liveMessage = createMessage({
+            content: "Still streaming",
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "live-message",
+        });
+        const sealedTool = createToolActivity({
+            id: "sealed-tool",
+            status: "completed",
+        });
+        const liveTool = createToolActivity({
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "live-tool",
+        });
+        const metadata = {
+            blockId: "block-sealed",
+            endSequence: 2,
+            entryCount: 2,
+            estimatedHeight: 144,
+            estimatedRowCount: 2,
+            firstCreatedAt: sealedMessage.createdAt,
+            lastCreatedAt: sealedTool.createdAt,
+            revision: 1,
+            sessionId: TAB.sessionId,
+            startSequence: 1,
+        };
+        const block = {
+            ...metadata,
+            capabilityVersion: 1,
+            entries: [
+                {
+                    createdAt: sealedMessage.createdAt,
+                    id: `message:${sealedMessage.id}`,
+                    kind: "message",
+                    payloadRef: null,
+                    sequence: 1,
+                    sessionId: TAB.sessionId,
+                    summary: {
+                        label: "Assistant message",
+                        preview: sealedMessage.content,
+                        status: "completed",
+                    },
+                    updatedAt: sealedMessage.createdAt,
+                },
+                {
+                    createdAt: sealedTool.createdAt,
+                    id: `tool:${TAB.sessionId}:${sealedTool.id}`,
+                    kind: "tool",
+                    payloadRef: null,
+                    sequence: 2,
+                    sessionId: TAB.sessionId,
+                    summary: {
+                        label: sealedTool.title,
+                        preview: sealedTool.summary,
+                        status: sealedTool.status,
+                    },
+                    updatedAt: sealedTool.updatedAt,
+                },
+            ],
+            transcriptRevision: 1,
+        } as AiTranscriptBlock;
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlock: vi.fn().mockResolvedValue(block),
+                    getAiTranscriptBlockMetadata: vi.fn().mockResolvedValue({
+                        blocks: [metadata],
+                        capabilityVersion: 1,
+                        sessionId: TAB.sessionId,
+                        transcriptRevision: 1,
+                    }),
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                    getAiTranscriptPayload: vi.fn(),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [sealedMessage, liveMessage],
+                status: "streaming",
+                toolActivity: [sealedTool, liveTool],
+            }),
+        );
+
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(
+            session?.transcript.messages.map((message) => message.id),
+        ).toEqual([liveMessage.id]);
+        expect(
+            session?.transcript.toolActivity.map((activity) => activity.id),
+        ).toEqual([liveTool.id]);
+        expect(
+            session?.snapshot?.messages.map((message) => message.id),
+        ).toEqual([liveMessage.id]);
+        expect(
+            session?.snapshot?.toolActivity.map((activity) => activity.id),
+        ).toEqual([liveTool.id]);
+        expect(session?.transcriptWindow.blocksById.has(block.blockId)).toBe(
+            true,
+        );
+    });
+
+    it("keeps restored history stable when a follow-up is queued during block hydration", async () => {
+        const previousPrompt = createMessage({
+            content: "A long prompt that must remain visible during sealing.",
+            id: "previous-prompt",
+            kind: "user",
+            status: "completed",
+        });
+        const previousResponse = createMessage({
+            content: "Previous response",
+            createdAt: "2026-04-14T00:00:01.000Z",
+            id: "previous-response",
+            status: "completed",
+        });
+        const metadata: AiTranscriptBlockMetadata = {
+            blockId: "block-pending",
+            endSequence: 2,
+            entryCount: 2,
+            estimatedHeight: 288,
+            estimatedRowCount: 2,
+            firstCreatedAt: previousPrompt.createdAt,
+            lastCreatedAt: previousResponse.createdAt,
+            revision: 1,
+            sessionId: TAB.sessionId,
+            startSequence: 1,
+        };
+        const pendingBlock = createDeferred<AiTranscriptBlock>();
+        const block: AiTranscriptBlock = {
+            ...metadata,
+            capabilityVersion: 1,
+            entries: [previousPrompt, previousResponse].map((message, index) => ({
+                createdAt: message.createdAt,
+                id: `message:${message.id}`,
+                kind: "message",
+                payloadRef: null,
+                sequence: index + 1,
+                sessionId: TAB.sessionId,
+                summary: {
+                    label: message.kind === "user" ? "User message" : "Assistant message",
+                    preview: message.content,
+                    status: "completed",
+                },
+                updatedAt: message.createdAt,
+            })),
+            transcriptRevision: 1,
+        };
+        const getAiTranscriptBlock = vi.fn(() => pendingBlock.promise);
+        const enqueueAiPrompt = vi.fn().mockResolvedValue({
+            activeItem: {
+                attachments: [],
+                composerPartsSnapshot: [
+                    { text: "Continue from the restored chat.", type: "text" as const },
+                ],
+                createdAt: "2026-04-14T00:00:02.000Z",
+                error: null,
+                fileContextsSnapshot: [],
+                id: "follow-up-prompt",
+                messageId: "follow-up-prompt",
+                optimisticMessageId: "follow-up-prompt",
+                projectId: TAB.projectId,
+                prompt: "Continue from the restored chat.",
+                runtimeId: TAB.runtimeId,
+                sessionId: TAB.sessionId,
+                status: "sending" as const,
+                title: TAB.title,
+                worktreeId: TAB.worktreeId,
+            },
+            editingItem: null,
+            items: [],
+            paused: false,
+            revision: 1,
+            sessionId: TAB.sessionId,
+        });
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    enqueueAiPrompt,
+                    getAiTranscriptBlock,
+                    getAiTranscriptBlockMetadata: vi.fn().mockResolvedValue({
+                        blocks: [metadata],
+                        capabilityVersion: 1,
+                        sessionId: TAB.sessionId,
+                        transcriptRevision: 1,
+                    }),
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                    getAiTranscriptPayload: vi.fn(),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [previousPrompt, previousResponse],
+                status: "streaming",
+            }),
+        );
+
+        const hydration = useAiStore
+            .getState()
+            .hydrateTranscriptWindow(TAB.sessionId);
+        await vi.waitFor(() => expect(getAiTranscriptBlock).toHaveBeenCalledOnce());
+
+        await useAiStore
+            .getState()
+            .sendPrompt(TAB, "Continue from the restored chat.");
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({ messages: [], status: "idle" }),
+        );
+
+        expect(enqueueAiPrompt).toHaveBeenCalledWith(
+            expect.objectContaining({
+                prompt: "Continue from the restored chat.",
+                sessionId: TAB.sessionId,
+            }),
+        );
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcript.messages.map((message) => message.id),
+        ).toEqual([
+            previousPrompt.id,
+            previousResponse.id,
+            "follow-up-prompt",
+        ]);
+
+        pendingBlock.resolve(block);
+        await hydration;
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(session?.transcript.messages.map((message) => message.id)).toEqual([
+            "follow-up-prompt",
+        ]);
+        expect(session?.transcriptWindow.blocksById.has(block.blockId)).toBe(true);
+        expect(session?.activeQueuedPrompt?.queuedPrompt.id).toBe(
+            "follow-up-prompt",
+        );
+    });
+
+    it("retries sealed transcript hydration after native migration becomes available", async () => {
+        const getAiTranscriptBlockMetadata = vi
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce({
+                blocks: [],
+                capabilityVersion: 1,
+                sessionId: TAB.sessionId,
+                transcriptRevision: 1,
+            });
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlockMetadata,
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().registerSessionTab(TAB);
+
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.transcriptWindow,
+        ).toMatchObject({
+            capabilityVersion: 1,
+            isLoading: false,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({ messages: [], status: "idle" }),
+        );
+
+        await vi.waitFor(() => {
+            expect(getAiTranscriptBlockMetadata).toHaveBeenCalledTimes(2);
+        });
     });
 
     it("keeps a command-only runtime catalog from status updates", () => {
@@ -1700,6 +2784,186 @@ describe("ai-store queue", () => {
             useAiStore.getState().sessions[TAB.sessionId]
                 ?.historyHydrationState,
         ).toBe("loaded");
+    });
+
+    it("keeps a saved chat readable when its runtime status cannot be loaded", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(
+            createSnapshot({
+                messages: [
+                    createMessage({ content: "RUNTIME_FAILURE_MARKER" }),
+                ],
+            }),
+        );
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockRejectedValue(new Error("Runtime unavailable")),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(getAiSessionSnapshot).toHaveBeenCalledWith(TAB.sessionId);
+        expect(session?.historyHydrationState).toBe("loaded");
+        expect(session?.localError).toBeNull();
+        expect(session?.snapshot?.messages[0]?.content).toBe(
+            "RUNTIME_FAILURE_MARKER",
+        );
+        expect(session?.transcript.messages).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ content: "RUNTIME_FAILURE_MARKER" }),
+            ]),
+        );
+    });
+
+    it("keeps a hydrated chat loaded when its prompt queue cannot be restored", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(
+            createSnapshot({
+                messages: [createMessage({ content: "QUEUE_FAILURE_MARKER" })],
+            }),
+        );
+        const getAiPromptQueue = vi
+            .fn()
+            .mockRejectedValue(new Error("Queue unavailable"));
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiPromptQueue,
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(getAiPromptQueue).toHaveBeenCalledWith(TAB.sessionId);
+        expect(session?.historyHydrationState).toBe("loaded");
+        expect(session?.localError).toBeNull();
+        expect(session?.snapshot?.messages[0]?.content).toBe(
+            "QUEUE_FAILURE_MARKER",
+        );
+        expect(session?.queue).toEqual([]);
+    });
+
+    it("marks an absent historical snapshot as missing instead of a loaded empty chat", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(null);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(getAiSessionSnapshot).toHaveBeenCalledWith(TAB.sessionId);
+        expect(session?.historyHydrationState).toBe("missing");
+        expect(session?.localError).toBe(
+            "This saved chat is no longer available.",
+        );
+    });
+
+    it("retries a missing historical snapshot and restores it when it becomes available", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi
+            .fn()
+            .mockResolvedValueOnce(null)
+            .mockResolvedValueOnce(
+                createSnapshot({
+                    messages: [
+                        createMessage({ content: "RECOVERED_SNAPSHOT_MARKER" }),
+                    ],
+                }),
+            );
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+        await useAiStore.getState().ensureSession(historyTab);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(getAiSessionSnapshot).toHaveBeenCalledTimes(2);
+        expect(session?.historyHydrationState).toBe("loaded");
+        expect(session?.snapshot?.messages[0]?.content).toBe(
+            "RECOVERED_SNAPSHOT_MARKER",
+        );
+    });
+
+    it("treats an existing empty historical snapshot as loaded", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(createSnapshot());
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(session?.historyHydrationState).toBe("loaded");
+        expect(session?.localError).toBeNull();
+        expect(session?.snapshot?.messages).toEqual([]);
     });
 
     it("prepares a closed restored history chat before queuing a follow-up prompt", async () => {

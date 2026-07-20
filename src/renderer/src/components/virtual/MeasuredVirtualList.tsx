@@ -98,6 +98,10 @@ export interface MeasuredVirtualViewportAnchor {
 
 export interface MeasuredVirtualListHandle {
     readonly captureViewportAnchor?: () => MeasuredVirtualViewportAnchor | null;
+    readonly getItemGeometry?: (index: number) => {
+        readonly size: number;
+        readonly start: number;
+    } | null;
     readonly scrollToIndex: (
         index: number,
         options?: {
@@ -146,6 +150,26 @@ export interface MeasuredVirtualListProps<T> {
     readonly preserveScrollAnchorOnMeasure?: boolean;
     readonly shouldPreserveScrollAnchorOnItemsChange?: () => boolean;
     readonly shouldPreserveScrollAnchorOnMeasure?: () => boolean;
+    /**
+     * Lets callers skip anchor compensation for an individual measurement
+     * without disabling it for other rows in the same layout update.
+     */
+    readonly shouldPreserveScrollAnchorForItemMeasurement?: (
+        item: T,
+        index: number,
+    ) => boolean;
+    /**
+     * Observes real row heights without making the virtual list responsible for
+     * a caller-specific estimation policy.
+     */
+    readonly onItemMeasured?: (
+        item: T,
+        index: number,
+        measurement: {
+            readonly height: number;
+            readonly previousHeight: number | undefined;
+        },
+    ) => void;
     readonly renderItem: (params: {
         readonly index: number;
         readonly isVisible: boolean;
@@ -506,6 +530,8 @@ export function MeasuredVirtualList<T>({
     preserveScrollAnchorOnMeasure = false,
     shouldPreserveScrollAnchorOnItemsChange,
     shouldPreserveScrollAnchorOnMeasure,
+    shouldPreserveScrollAnchorForItemMeasurement,
+    onItemMeasured,
     renderItem,
 }: MeasuredVirtualListProps<T>) {
     const isBrowser = typeof window !== "undefined";
@@ -558,13 +584,20 @@ export function MeasuredVirtualList<T>({
     const shouldPreserveScrollAnchorOnMeasureRef = useRef(
         shouldPreserveScrollAnchorOnMeasure,
     );
+    const shouldPreserveScrollAnchorForItemMeasurementRef = useRef(
+        shouldPreserveScrollAnchorForItemMeasurement,
+    );
     const shouldPreserveScrollAnchorOnItemsChangeRef = useRef(
         shouldPreserveScrollAnchorOnItemsChange,
     );
+    const onItemMeasuredRef = useRef(onItemMeasured);
     shouldPreserveScrollAnchorOnMeasureRef.current =
         shouldPreserveScrollAnchorOnMeasure;
+    shouldPreserveScrollAnchorForItemMeasurementRef.current =
+        shouldPreserveScrollAnchorForItemMeasurement;
     shouldPreserveScrollAnchorOnItemsChangeRef.current =
         shouldPreserveScrollAnchorOnItemsChange;
+    onItemMeasuredRef.current = onItemMeasured;
     const cachedGeometry = useMemo(() => {
         const geometry = initialMeasurementsRef.current?.geometry ?? null;
         if (!geometry || geometry.items !== items) {
@@ -685,6 +718,20 @@ export function MeasuredVirtualList<T>({
         );
     }, [preserveScrollAnchorOnMeasure]);
 
+    const shouldPreserveScrollAnchorForItemMeasurementNow = useCallback(
+        (itemIndex: number) => {
+            const item = itemsRef.current[itemIndex];
+            return (
+                item === undefined ||
+                (shouldPreserveScrollAnchorForItemMeasurementRef.current?.(
+                    item,
+                    itemIndex,
+                ) ?? true)
+            );
+        },
+        [],
+    );
+
     const updateMeasuredSize = useCallback((
         key: string,
         nextSize: number,
@@ -720,13 +767,21 @@ export function MeasuredVirtualList<T>({
             previousMeasuredSize,
             previousIdentitySize,
         });
+        const item = itemsRef.current[itemIndex];
+        if (item !== undefined) {
+            onItemMeasuredRef.current?.(item, itemIndex, {
+                height: normalizedSize,
+                previousHeight: previousKnownSize,
+            });
+        }
         const range = layoutRangeRef.current;
         const anchorAdjustment = calculateMeasuredVirtualScrollAnchorAdjustment(
             {
                 itemIndex,
                 nextSize: normalizedSize,
                 preserveScrollAnchorOnMeasure:
-                    shouldPreserveScrollAnchorOnMeasureNow(),
+                    shouldPreserveScrollAnchorOnMeasureNow() &&
+                    shouldPreserveScrollAnchorForItemMeasurementNow(itemIndex),
                 previousSize: previousKnownSize,
                 virtualizationEnabled,
                 visibleStartIndex: range?.visibleStartIndex ?? 0,
@@ -786,7 +841,11 @@ export function MeasuredVirtualList<T>({
         }
 
         pendingMeasurementFrameRef.current = requestAnimationFrame(flush);
-    }, [shouldPreserveScrollAnchorOnMeasureNow, virtualizationEnabled]);
+    }, [
+        shouldPreserveScrollAnchorForItemMeasurementNow,
+        shouldPreserveScrollAnchorOnMeasureNow,
+        virtualizationEnabled,
+    ]);
 
     useEffect(() => {
         return () => {
@@ -1305,6 +1364,20 @@ export function MeasuredVirtualList<T>({
         ],
     );
 
+    const getItemGeometry = useCallback(
+        (index: number) => {
+            if (index < 0 || index >= items.length) {
+                return null;
+            }
+
+            return {
+                size: getItemSize(index),
+                start: getItemStart(index),
+            };
+        },
+        [getItemSize, getItemStart, items.length],
+    );
+
     const captureViewportAnchor = useCallback(():
         | MeasuredVirtualViewportAnchor
         | null => {
@@ -1381,6 +1454,7 @@ export function MeasuredVirtualList<T>({
     useEffect(() => {
         onReady?.({
             captureViewportAnchor,
+            getItemGeometry,
             scrollToIndex,
             scrollToViewportAnchor,
         });
@@ -1390,6 +1464,7 @@ export function MeasuredVirtualList<T>({
         };
     }, [
         captureViewportAnchor,
+        getItemGeometry,
         onReady,
         scrollToIndex,
         scrollToViewportAnchor,

@@ -56,6 +56,8 @@ import {
 } from "@shared/typography";
 import {
     CHAT_TITLE_TAB_MAX_CHARS,
+    getChatDisplayTitle,
+    getReviewChatDisplayTitle,
     truncateChatTitle,
 } from "@shared/chatTitle";
 import {
@@ -94,7 +96,11 @@ import {
     useRenderProbe,
 } from "@renderer/app/debug/renderProbe";
 import { recordWorkspacePerformanceEvent } from "@renderer/app/debug/workspacePerformanceProbe";
-import { useAiStore } from "@renderer/app/store/ai-store";
+import {
+    applyAiTranscriptMemoryPressure,
+    useAiStore,
+} from "@renderer/app/store/ai-store";
+import { rendererArtifactCache } from "@renderer/app/workspace/resource-budget";
 import { useGitStore } from "@renderer/app/store/git-store";
 import {
     getGitHubRepoKey,
@@ -126,6 +132,7 @@ import {
 } from "@renderer/app/workspace/pending-review";
 import { ChatHistoryTabView } from "@renderer/components/workspace/ChatHistoryTabView";
 import { ChatTabView } from "@renderer/components/workspace/ChatTabView";
+import { ChatPresentationErrorBoundary } from "@renderer/components/workspace/chat/ChatPresentationErrorBoundary";
 import { GitHubIssuesTabView } from "@renderer/components/workspace/GitHubIssuesTabView";
 import { GitHubIssueTabView } from "@renderer/components/workspace/GitHubIssueTabView";
 import { GitHubPullRequestsTabView } from "@renderer/components/workspace/GitHubPullRequestsTabView";
@@ -472,18 +479,6 @@ function getInlineReviewSignature(file: AiTrackedFile | null): string | null {
     ]);
 }
 
-function getInlineReviewModelRevision(file: AiTrackedFile | null): string | null {
-    if (!file) {
-        return null;
-    }
-
-    return JSON.stringify([
-        file.identityKey,
-        file.version ?? 1,
-        file.updatedAt,
-    ]);
-}
-
 function captureDiffEditorScrollState(
     editor: MonacoEditor.IStandaloneDiffEditor | null,
 ): {
@@ -605,47 +600,19 @@ function isMonacoDisposedError(error: unknown): boolean {
 type InlineReviewModelState = {
     readonly modified: MonacoEditor.ITextModel | null;
     readonly original: MonacoEditor.ITextModel | null;
-    readonly revision: string | null;
 };
 
-function disposeInlineReviewModels(models: {
-    readonly modified: MonacoEditor.ITextModel | null;
-    readonly original: MonacoEditor.ITextModel | null;
-}): void {
+function disposeInlineReviewModels(models: InlineReviewModelState): void {
     const disposedModels = new Set<MonacoEditor.ITextModel>();
 
     for (const model of [models.original, models.modified]) {
-        if (!model || disposedModels.has(model) || model.isDisposed()) {
+        if (!model || model.isDisposed() || disposedModels.has(model)) {
             continue;
         }
 
         disposedModels.add(model);
         model.dispose();
     }
-}
-
-function getOrCreateMonacoTextModel(input: {
-    readonly language: string;
-    readonly modelPath: string;
-    readonly monaco: MonacoNamespace;
-    readonly value: string;
-}): MonacoEditor.ITextModel {
-    const uri = input.monaco.Uri.parse(input.modelPath);
-    const existingModel = input.monaco.editor.getModel(uri);
-
-    if (existingModel) {
-        if (existingModel.getValue() !== input.value) {
-            existingModel.setValue(input.value);
-        }
-        input.monaco.editor.setModelLanguage(existingModel, input.language);
-        return existingModel;
-    }
-
-    return input.monaco.editor.createModel(
-        input.value,
-        input.language,
-        uri,
-    );
 }
 
 function isQuickCreateMenuSeparator(
@@ -782,6 +749,18 @@ export function WorkspaceView({
             `mounted=${hotChatTabIds.size}; panes=${workspaceViewLifecycles.lifecycleByPaneId.size}`,
         );
     }, [hotChatTabIds, workspaceViewLifecycles]);
+    useEffect(() => {
+        const releaseRecoverableArtifacts = () => {
+            rendererArtifactCache.applyMemoryPressure();
+            applyAiTranscriptMemoryPressure();
+        };
+        window.addEventListener("memorypressure", releaseRecoverableArtifacts);
+        return () =>
+            window.removeEventListener(
+                "memorypressure",
+                releaseRecoverableArtifacts,
+            );
+    }, []);
     const [externalDropTarget, setExternalDropTarget] =
         useState<WorkspacePaneDropTarget | null>(null);
     const [externalDragPreview, setExternalDragPreview] =
@@ -1939,6 +1918,33 @@ function WorkspacePaneView({
             ),
         ),
     );
+    const paneChatDisplayTitles = useAiStore(
+        useShallow(
+            useCallback(
+                (state: ReturnType<typeof useAiStore.getState>) =>
+                    Object.fromEntries(
+                        paneTabs.flatMap((tab) => {
+                            if (tab.kind !== "chat" && tab.kind !== "review") {
+                                return [];
+                            }
+                            const snapshot = state.sessions[tab.sessionId]?.snapshot;
+                            const titleInput = {
+                                manualTitle: snapshot?.manualTitle,
+                                messages: snapshot?.messages,
+                                title: snapshot?.title || tab.title,
+                            };
+                            return [[
+                                tab.id,
+                                tab.kind === "review"
+                                    ? getReviewChatDisplayTitle(titleInput)
+                                    : getChatDisplayTitle(titleInput),
+                            ]];
+                        }),
+                    ),
+                [paneTabs],
+            ),
+        ),
+    );
     const tabStripRef = useRef<HTMLDivElement | null>(null);
     const [tabContextMenu, setTabContextMenu] =
         useState<ContextMenuState<TabContextMenuPayload> | null>(null);
@@ -2808,7 +2814,10 @@ function WorkspacePaneView({
                                 const isActive = tab.id === paneActiveTabId;
                                 const isPinned = panePinnedTabIdSet.has(tab.id);
                                 const tabDisplayTitle =
-                                    getWorkspaceTabDisplayTitle(tab);
+                                    getWorkspaceTabDisplayTitle(
+                                        tab,
+                                        paneChatDisplayTitles[tab.id],
+                                    );
 
                                 return (
                                     <button
@@ -2995,16 +3004,21 @@ function WorkspacePaneView({
                                         inert={!isActiveChat}
                                         key={tab.id}
                                     >
-                                        <ChatTabView
-                                            active={isActiveChat}
-                                            onDraftChange={handleChatDraftChange}
-                                            onOpenFile={handleOpenWorkspaceFile}
-                                            onOpenImage={handleOpenChatImage}
-                                            onOpenReview={() =>
-                                                handleOpenChatReview(tab)
-                                            }
-                                            tab={tab}
-                                        />
+                                        <ChatPresentationErrorBoundary
+                                            fallbackKind="chat"
+                                            identity={`${tab.id}:${tab.sessionId}`}
+                                        >
+                                            <ChatTabView
+                                                active={isActiveChat}
+                                                onDraftChange={handleChatDraftChange}
+                                                onOpenFile={handleOpenWorkspaceFile}
+                                                onOpenImage={handleOpenChatImage}
+                                                onOpenReview={() =>
+                                                    handleOpenChatReview(tab)
+                                                }
+                                                tab={tab}
+                                            />
+                                        </ChatPresentationErrorBoundary>
                                     </div>
                                 );
                             })}
@@ -4372,14 +4386,6 @@ function FileTabView({
     const inlineReviewCurrentModelsRef = useRef<InlineReviewModelState>({
         modified: null,
         original: null,
-        revision: null,
-    });
-    const inlineReviewOwnedModelsRef = useRef<{
-        readonly modified: MonacoEditor.ITextModel | null;
-        readonly original: MonacoEditor.ITextModel | null;
-    }>({
-        modified: null,
-        original: null,
     });
     const inlineReviewScrollRestoreFrameRef = useRef<number | null>(null);
     const inlineReviewScrollStateRef = useRef<
@@ -4497,11 +4503,7 @@ function FileTabView({
         () => getInlineReviewSignature(inlineReviewTrackedFile),
         [inlineReviewTrackedFile],
     );
-    const inlineReviewModelRevision = useMemo(
-        () => getInlineReviewModelRevision(inlineReviewTrackedFile),
-        [inlineReviewTrackedFile],
-    );
-    const inlineReviewShellModelPaths = useMemo(() => {
+    const inlineReviewModelPaths = useMemo(() => {
         if (!documentAbsolutePath) {
             return null;
         }
@@ -4511,13 +4513,13 @@ function FileTabView({
                 documentAbsolutePath,
                 tab.id,
                 "review-modified",
-                "shell",
+                "inline-review",
             ),
             original: buildWorkspaceEditorModelPath(
                 documentAbsolutePath,
                 tab.id,
                 "review-original",
-                "shell",
+                "inline-review",
             ),
         };
     }, [
@@ -4525,19 +4527,17 @@ function FileTabView({
         tab.id,
     ]);
     const inlineReviewDiffEditorKey = useMemo(() => {
-        if (!inlineReviewShellModelPaths) {
+        if (!inlineReviewModelPaths) {
             return `inline-review:${tab.id}`;
         }
 
-        // @monaco-editor/react owns shell models through these path props, while
-        // applyInlineReviewModels installs the real review models. Remount when
-        // the file identity changes so the wrapper cannot replay stale shells.
+        // The wrapper owns these stable models for the lifetime of this file tab.
         return [
-            inlineReviewShellModelPaths.original,
-            inlineReviewShellModelPaths.modified,
+            inlineReviewModelPaths.original,
+            inlineReviewModelPaths.modified,
         ].join("|");
     }, [
-        inlineReviewShellModelPaths,
+        inlineReviewModelPaths,
         tab.id,
     ]);
     const reviewDiff = useMemo(
@@ -4836,12 +4836,6 @@ function FileTabView({
             state,
             tabId: fileTabIdRef.current,
         };
-
-        const viewState = modifiedEditor?.saveViewState() ?? null;
-        if (viewState) {
-            pendingEditorViewStateRef.current = viewState;
-            pendingEditorViewStateTabIdRef.current = fileTabIdRef.current;
-        }
     }, []);
 
     useLayoutEffect(() => {
@@ -5605,53 +5599,6 @@ function FileTabView({
         [clearInlineReviewScrollRestore],
     );
 
-    const restoreInlineReviewViewState = useCallback(
-        (
-            diffEditor: MonacoEditor.IStandaloneDiffEditor,
-            viewState: MonacoEditor.ICodeEditorViewState,
-        ) => {
-            clearInlineReviewScrollRestore();
-
-            const applyViewState = () => {
-                const originalEditor = diffEditor.getOriginalEditor();
-                const modifiedEditor = diffEditor.getModifiedEditor();
-
-                try {
-                    modifiedEditor.restoreViewState(viewState);
-                } catch (error) {
-                    if (!isMonacoCancellationError(error)) {
-                        throw error;
-                    }
-                }
-
-                diffEditor.layout();
-
-                const restoredState =
-                    capturePortableEditorRestoreState(modifiedEditor);
-                if (restoredState) {
-                    originalEditor.setScrollLeft(restoredState.scrollLeft);
-                    originalEditor.setScrollTop(restoredState.scrollTop);
-                }
-
-                inlineReviewScrollStateRef.current =
-                    captureDiffEditorScrollState(diffEditor);
-            };
-
-            applyViewState();
-            inlineReviewScrollRestoreFrameRef.current =
-                window.requestAnimationFrame(() => {
-                    inlineReviewScrollRestoreFrameRef.current = null;
-
-                    if (diffEditorRef.current !== diffEditor) {
-                        return;
-                    }
-
-                    applyViewState();
-                });
-        },
-        [clearInlineReviewScrollRestore],
-    );
-
     const consumePendingInlineReviewOpenLocation = useCallback(
         (diffEditor: MonacoEditor.IStandaloneDiffEditor): boolean => {
             const pendingOpenLocation = tab.pendingOpenLocation ?? null;
@@ -5663,10 +5610,6 @@ function FileTabView({
                 return false;
             }
 
-            pendingEditorViewStateTabIdRef.current = tab.id;
-            pendingEditorViewStateRef.current = diffEditor
-                .getModifiedEditor()
-                .saveViewState();
             inlineReviewScrollStateRef.current =
                 captureDiffEditorScrollState(diffEditor);
             updateFilePendingOpenLocation(tab.id, null);
@@ -5680,7 +5623,6 @@ function FileTabView({
             if (
                 !document ||
                 !trackedFile ||
-                !inlineReviewModelRevision ||
                 !diffEditorRef.current ||
                 !inlineReviewMonacoRef.current
             ) {
@@ -5690,54 +5632,39 @@ function FileTabView({
             const diffEditor = diffEditorRef.current;
             const installedModels = diffEditor.getModel();
             const currentReviewModels = inlineReviewCurrentModelsRef.current;
+            const originalModel = installedModels?.original ?? null;
+            const modifiedModel = installedModels?.modified ?? null;
             if (
-                currentReviewModels.revision ===
-                    inlineReviewModelRevision &&
-                currentReviewModels.original &&
-                currentReviewModels.modified &&
-                !currentReviewModels.original.isDisposed() &&
-                !currentReviewModels.modified.isDisposed() &&
-                installedModels?.original === currentReviewModels.original &&
-                installedModels?.modified === currentReviewModels.modified
+                !originalModel ||
+                !modifiedModel ||
+                originalModel.isDisposed() ||
+                modifiedModel.isDisposed()
+            ) {
+                return;
+            }
+
+            const modelsAreCurrent =
+                currentReviewModels.original === originalModel &&
+                currentReviewModels.modified === modifiedModel;
+            const contentChanged =
+                originalModel.getValue() !== (trackedFile.oldText ?? "") ||
+                modifiedModel.getValue() !== (trackedFile.newText ?? "");
+            if (
+                modelsAreCurrent &&
+                !contentChanged
             ) {
                 consumePendingInlineReviewOpenLocation(diffEditor);
                 return;
             }
 
             const monaco = inlineReviewMonacoRef.current;
-            const previousModels = diffEditor.getModel();
             const currentInlineReviewRestoreState =
-                currentReviewModels.revision && previousModels?.modified
+                modelsAreCurrent
                     ? capturePortableEditorRestoreState(
                           diffEditor.getModifiedEditor(),
                       )
                     : null;
             const scrollState = inlineReviewScrollStateRef.current;
-            const persistedInlineReviewViewState =
-                tab.viewState ?? pendingEditorViewStateRef.current;
-            const nextOriginalModel = getOrCreateMonacoTextModel({
-                language: monacoLanguageId,
-                modelPath: buildWorkspaceEditorModelPath(
-                    document.absolutePath,
-                    tab.id,
-                    "review-original",
-                    inlineReviewModelRevision,
-                ),
-                monaco,
-                value: trackedFile.oldText ?? "",
-            });
-            const nextModifiedModel = getOrCreateMonacoTextModel({
-                language: monacoLanguageId,
-                modelPath: buildWorkspaceEditorModelPath(
-                    document.absolutePath,
-                    tab.id,
-                    "review-modified",
-                    inlineReviewModelRevision,
-                ),
-                monaco,
-                value: trackedFile.newText ?? "",
-            });
-
             const pendingInlineReviewRestoreState =
                 pendingEditorInlineReviewRestoreStateRef.current;
             const pendingInlineReviewRestoreResolution =
@@ -5752,18 +5679,19 @@ function FileTabView({
 
             try {
                 inlineReviewDecorationsRef.current?.clear();
-                diffEditor.setModel({
-                    modified: nextModifiedModel,
-                    original: nextOriginalModel,
-                });
+
+                // Keep worker-visible URIs stable while the review content evolves.
+                monaco.editor.setModelLanguage(originalModel, monacoLanguageId);
+                monaco.editor.setModelLanguage(modifiedModel, monacoLanguageId);
+                if (originalModel.getValue() !== (trackedFile.oldText ?? "")) {
+                    originalModel.setValue(trackedFile.oldText ?? "");
+                }
+                if (modifiedModel.getValue() !== (trackedFile.newText ?? "")) {
+                    modifiedModel.setValue(trackedFile.newText ?? "");
+                }
                 inlineReviewCurrentModelsRef.current = {
-                    modified: nextModifiedModel,
-                    original: nextOriginalModel,
-                    revision: inlineReviewModelRevision,
-                };
-                inlineReviewOwnedModelsRef.current = {
-                    modified: nextModifiedModel,
-                    original: nextOriginalModel,
+                    modified: modifiedModel,
+                    original: originalModel,
                 };
                 const restoreCandidate = resolveInlineReviewRestoreCandidate({
                     currentInlineReviewRestoreState,
@@ -5771,7 +5699,6 @@ function FileTabView({
                         consumePendingInlineReviewOpenLocation(diffEditor),
                     pendingEditorInlineReviewRestoreState:
                         pendingInlineReviewRestoreResolution.state,
-                    persistedInlineReviewViewState,
                     scrollState,
                 });
 
@@ -5798,14 +5725,6 @@ function FileTabView({
                                 null;
                         }
                         break;
-                    case "viewState":
-                        restoreInlineReviewViewState(
-                            diffEditor,
-                            restoreCandidate.state,
-                        );
-                        pendingEditorViewStateRef.current =
-                            restoreCandidate.state;
-                        break;
                     case "diffScrollState":
                         restoreInlineReviewScrollState(
                             diffEditor,
@@ -5820,32 +5739,15 @@ function FileTabView({
 
                 return;
             }
-
-            if (
-                previousModels?.original &&
-                previousModels.original !== nextOriginalModel
-            ) {
-                previousModels.original.dispose();
-            }
-
-            if (
-                previousModels?.modified &&
-                previousModels.modified !== nextModifiedModel
-            ) {
-                previousModels.modified.dispose();
-            }
         },
         [
             document,
-            inlineReviewModelRevision,
             monacoLanguageId,
             consumePendingInlineReviewOpenLocation,
             restoreInlineReviewScrollState,
-            restoreInlineReviewViewState,
             restorePortableInlineReviewState,
             reviewSignature,
             tab.id,
-            tab.viewState,
         ],
     );
 
@@ -6279,7 +6181,6 @@ function FileTabView({
         inlineReviewCurrentModelsRef.current = {
             modified: null,
             original: null,
-            revision: null,
         };
     }, [clearInlineReviewScrollRestore, inlineReviewTrackedFile]);
 
@@ -6571,7 +6472,7 @@ function FileTabView({
                             language={monacoLanguageId}
                             modified=""
                             modifiedModelPath={
-                                inlineReviewShellModelPaths?.modified ?? undefined
+                                inlineReviewModelPaths?.modified ?? undefined
                             }
                             keepCurrentModifiedModel
                             keepCurrentOriginalModel
@@ -6589,16 +6490,11 @@ function FileTabView({
                                     },
                                 );
                                 diffEditorRef.current = editor;
+                                const ownedModels = editor.getModel();
                                 void runtime?.ensureMonacoTextMateForLanguage(
                                     monacoLanguageId,
                                 );
                                 inlineReviewMonacoRef.current = monaco;
-                                inlineReviewOwnedModelsRef.current = {
-                                    modified:
-                                        editor.getModel()?.modified ?? null,
-                                    original:
-                                        editor.getModel()?.original ?? null,
-                                };
                                 const originalEditor =
                                     editor.getOriginalEditor();
                                 const modifiedEditor =
@@ -6632,9 +6528,6 @@ function FileTabView({
                                 const persistInlineReviewViewState = () => {
                                     syncInlineReviewScrollState();
                                     captureInlineReviewModifiedEditorState();
-                                    scheduleEditorViewStatePersist(
-                                        modifiedEditor,
-                                    );
                                 };
                                 const cleanupAttachShortcut =
                                     bindInlineReviewAttachSelectionShortcut({
@@ -6697,8 +6590,6 @@ function FileTabView({
                                             tabId: tab.id,
                                         },
                                     );
-                                    const ownedModels =
-                                        inlineReviewOwnedModelsRef.current;
                                     cleanupOriginalTokenDebug?.dispose();
                                     cleanupModifiedTokenDebug?.dispose();
                                     cleanupAttachShortcut?.();
@@ -6715,14 +6606,13 @@ function FileTabView({
                                     inlineReviewCurrentModelsRef.current = {
                                         modified: null,
                                         original: null,
-                                        revision: null,
-                                    };
-                                    inlineReviewOwnedModelsRef.current = {
-                                        modified: null,
-                                        original: null,
                                     };
                                     setIsInlineReviewFindWidgetVisible(false);
-                                    disposeInlineReviewModels(ownedModels);
+                                    // Monaco must release its diff view-model before these models.
+                                    disposeInlineReviewModels({
+                                        modified: ownedModels?.modified ?? null,
+                                        original: ownedModels?.original ?? null,
+                                    });
                                 });
                                 setDiffEditorMountVersion(
                                     (previous) => previous + 1,
@@ -6731,7 +6621,7 @@ function FileTabView({
                             options={inlineReviewDiffEditorOptions}
                             original=""
                             originalModelPath={
-                                inlineReviewShellModelPaths?.original ?? undefined
+                                inlineReviewModelPaths?.original ?? undefined
                             }
                             theme={editorTheme}
                         />
@@ -7666,13 +7556,19 @@ function WorkspaceTabActivityIndicator({
     return null;
 }
 
-function getWorkspaceTabDisplayTitle(tab: RuntimeWorkspaceTab): string {
+function getWorkspaceTabDisplayTitle(
+    tab: RuntimeWorkspaceTab,
+    chatDisplayTitle?: string,
+): string {
     if (tab.kind === "git_commit") {
         return tab.commitSha.slice(0, 7);
     }
 
     if (tab.kind === "chat" || tab.kind === "review") {
-        return truncateChatTitle(tab.title, CHAT_TITLE_TAB_MAX_CHARS);
+        return truncateChatTitle(
+            chatDisplayTitle ?? tab.title,
+            CHAT_TITLE_TAB_MAX_CHARS,
+        );
     }
 
     return tab.title;

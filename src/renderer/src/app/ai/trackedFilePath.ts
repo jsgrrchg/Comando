@@ -10,6 +10,55 @@ export interface TrackedFilePathMatchOptions {
     readonly platform?: PathIdentityPlatform;
 }
 
+/**
+ * Deduplicates path references with the same absolute/relative matching rules
+ * used by review data, without repeatedly scanning every previous path.
+ */
+export class TrackedFilePathReferenceSet {
+    private readonly absolutePathKeys = new Set<string>();
+    private readonly absolutePathSuffixKeys = new Set<string>();
+    private readonly relativePathKeys = new Set<string>();
+
+    add(path: string | null | undefined): boolean {
+        const normalizedPath = path?.trim();
+        if (!normalizedPath) return false;
+
+        const platform = inferTrackedFilePathPlatform(normalizedPath);
+        const pathKey = normalizePathKey(normalizedPath, { platform });
+        if (looksAbsolutePath(normalizedPath)) {
+            if (this.absolutePathKeys.has(pathKey)) return false;
+
+            const suffixes = getPathSuffixKeys(pathKey);
+            if (suffixes.some((suffix) => this.relativePathKeys.has(suffix))) {
+                return false;
+            }
+
+            this.absolutePathKeys.add(pathKey);
+            for (const suffix of suffixes) {
+                this.absolutePathSuffixKeys.add(suffix);
+            }
+            return true;
+        }
+
+        if (
+            this.relativePathKeys.has(pathKey) ||
+            this.absolutePathSuffixKeys.has(pathKey)
+        ) {
+            return false;
+        }
+
+        this.relativePathKeys.add(pathKey);
+        return true;
+    }
+
+    get size(): number {
+        return (
+            this.absolutePathKeys.size +
+            this.relativePathKeys.size
+        );
+    }
+}
+
 export function matchesTrackedFilePath(
     trackedFile: AiTrackedFile,
     candidatePath: string,
@@ -117,4 +166,9 @@ function looksAbsolutePath(candidatePath: string): boolean {
         /^[a-zA-Z]:[\\/]/.test(candidatePath) ||
         /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(candidatePath)
     );
+}
+
+function getPathSuffixKeys(pathKey: string): readonly string[] {
+    const segments = pathKey.split("/").filter(Boolean);
+    return segments.map((_, index) => segments.slice(index).join("/"));
 }

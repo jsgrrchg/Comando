@@ -12,6 +12,7 @@ pub mod runtime_setup;
 pub mod scope;
 pub mod session;
 pub mod stream;
+mod transcript_store;
 pub mod user_input;
 
 pub use engine::{AiEngine, AiEngineConfig};

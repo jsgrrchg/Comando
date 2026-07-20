@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act } from "react";
+import { act, useEffect } from "react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -12,12 +12,19 @@ import {
     reconcileChatTimelineModel,
     type ChatTimelineRow,
 } from "./chatTimelineModel";
+import {
+    createTranscriptStreamingIndicatorItem,
+    type TranscriptTimelineItem,
+    type TranscriptTimelineVirtualRow,
+} from "./transcriptBlockVirtualization";
 import { createChatPerformanceFixtureById } from "./chatPerformanceFixtures";
 import {
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
-    CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
     getChatTimelineVirtualMeasurementWidth,
 } from "./chatTimelineVirtualization";
+
+const SMALL_HISTORY_ROW_COUNT = 3;
+const ACTIVITY_HEAVY_ENTRY_COUNT = 24;
 
 interface MeasuredVirtualListMockSnapshot {
     readonly firstEstimate: number | null;
@@ -40,6 +47,9 @@ type MeasuredVirtualListMock = (
 const measuredVirtualListMock = vi.hoisted(() =>
     vi.fn<MeasuredVirtualListMock>(),
 );
+const virtualListMockOptions = vi.hoisted(() => ({
+    renderSecondItem: false,
+}));
 
 let rectWidthsByElement = new WeakMap<Element, number>();
 let rectWidthFallback = 0;
@@ -102,7 +112,11 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             });
 
             const indexes =
-                items.length > 1 ? [0, items.length - 1] : [0];
+                virtualListMockOptions.renderSecondItem && items.length > 2
+                    ? [0, 1, items.length - 1]
+                    : items.length > 1
+                      ? [0, items.length - 1]
+                      : [0];
 
             return createElement(
                 "div",
@@ -154,6 +168,28 @@ function createRows(count: number): ChatTimelineRow[] {
             message,
         };
     });
+}
+
+function createLoadedBlockSpacer(): TranscriptTimelineItem {
+    return {
+        blockId: "block-1",
+        estimatedHeight: 1,
+        id: "transcript-block:block-1",
+        isLoaded: true,
+        kind: "transcript-block-spacer",
+        metadata: {
+            blockId: "block-1",
+            endSequence: 1,
+            entryCount: 1,
+            estimatedHeight: 72,
+            estimatedRowCount: 1,
+            firstCreatedAt: "2026-04-14T00:00:00.000Z",
+            lastCreatedAt: "2026-04-14T00:00:00.000Z",
+            revision: 1,
+            sessionId: "session-1",
+            startSequence: 1,
+        },
+    };
 }
 
 function createSegmentRow(entryCount = 1): ChatTimelineRow {
@@ -214,7 +250,7 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
 }
 
 function renderHistoryRows(
-    historyRows: readonly ChatTimelineRow[],
+    historyRows: readonly TranscriptTimelineItem[],
     active = true,
 ) {
     return renderToStaticMarkup(
@@ -230,6 +266,7 @@ function renderHistoryRows(
                     {row.id}
                 </div>
             )}
+            renderStreamingIndicator={() => <div>Streaming</div>}
             scrollRef={{ current: null }}
         />,
     );
@@ -267,6 +304,7 @@ function mountHistoryRows(
                         {row.id}
                     </div>
                 )}
+                renderStreamingIndicator={() => <div>Streaming</div>}
                 scrollRef={scrollRef}
             />,
         );
@@ -311,6 +349,7 @@ describe("ChatTimelineHistoryRows", () => {
         rectWidthsByElement = new WeakMap<Element, number>();
         rectWidthFallback = 0;
         measuredVirtualListMock.mockClear();
+        virtualListMockOptions.renderSecondItem = false;
         useShellStore.setState({ isResizingPanel: false });
         vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
             function getBoundingClientRect(this: Element): DOMRect {
@@ -347,19 +386,199 @@ describe("ChatTimelineHistoryRows", () => {
         document.body.innerHTML = "";
     });
 
-    it("keeps the non-virtualized path below the threshold", () => {
-        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1);
+    it("virtualizes a small history to preserve row identity", () => {
+        const rows = createRows(SMALL_HISTORY_ROW_COUNT);
         const markup = renderHistoryRows(rows);
 
-        expect(measuredVirtualListMock).not.toHaveBeenCalled();
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                firstKey: "message:message-0",
+                itemCount: SMALL_HISTORY_ROW_COUNT,
+            }),
+        );
         expect(markup).toContain("message:message-0");
         expect(markup).toContain(
-            `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 2}`,
+            `message:message-${SMALL_HISTORY_ROW_COUNT - 1}`,
         );
     });
 
-    it("passes all history rows to MeasuredVirtualList at the threshold", () => {
-        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+    it("renders the streaming indicator through the virtual list", () => {
+        const [row] = createRows(1);
+        if (!row) {
+            throw new Error("expected a timeline row");
+        }
+
+        const markup = renderHistoryRows([
+            row,
+            createTranscriptStreamingIndicatorItem("12s"),
+        ]);
+
+        expect(measuredVirtualListMock).toHaveBeenLastCalledWith(
+            expect.objectContaining({ itemCount: 2 }),
+        );
+        expect(markup).toContain("Streaming");
+    });
+
+    it("keeps visible history mounted when block-native hydration starts", () => {
+        const [visibleRow] = createRows(1);
+        if (!visibleRow) {
+            throw new Error("expected a visible row");
+        }
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        let mounts = 0;
+        let unmounts = 0;
+
+        function InstrumentedRow({
+            row,
+        }: {
+            readonly row: TranscriptTimelineVirtualRow;
+        }) {
+            useEffect(() => {
+                mounts += 1;
+                return () => {
+                    unmounts += 1;
+                };
+            }, []);
+
+            return <div data-row-id={row.id}>{row.id}</div>;
+        }
+
+        const render = (historyRows: readonly TranscriptTimelineItem[]) => {
+            root.render(
+                <ChatTimelineHistoryRows
+                    historyRows={historyRows}
+                    renderRow={({ row }) => <InstrumentedRow row={row} />}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
+                    scrollRef={{ current: scrollContainer }}
+                />,
+            );
+        };
+
+        act(() => {
+            render([visibleRow]);
+        });
+        expect(mounts).toBe(1);
+
+        act(() => {
+            render([createLoadedBlockSpacer(), visibleRow]);
+        });
+
+        // This is the exact transition performed when a sealed turn becomes
+        // block-native. Replacing the direct list with MeasuredVirtualList
+        // currently unmounts the visible row, producing the visual blink.
+        expect(unmounts).toBe(0);
+
+        act(() => {
+            root.unmount();
+        });
+    });
+
+    it("keeps virtualized history mounted when a new turn starts and streams", () => {
+        const [historyRow] = createRows(1);
+        if (!historyRow) {
+            throw new Error("expected a historical row");
+        }
+        const userRow: ChatTimelineRow = {
+            id: "message:user-next-turn",
+            kind: "message",
+            message: createMessage({
+                content: "next prompt",
+                id: "user-next-turn",
+                kind: "user",
+            }),
+        };
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        const unmountsByRowId = new Map<string, number>();
+        virtualListMockOptions.renderSecondItem = true;
+
+        function InstrumentedRow({
+            row,
+        }: {
+            readonly row: TranscriptTimelineVirtualRow;
+        }) {
+            useEffect(() => {
+                return () => {
+                    unmountsByRowId.set(
+                        row.id,
+                        (unmountsByRowId.get(row.id) ?? 0) + 1,
+                    );
+                };
+            }, [row.id]);
+
+            return <div data-row-id={row.id}>{row.id}</div>;
+        }
+
+        const render = (historyRows: readonly TranscriptTimelineItem[]) => {
+            root.render(
+                <ChatTimelineHistoryRows
+                    historyRows={historyRows}
+                    renderRow={({ row }) => <InstrumentedRow row={row} />}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
+                    scrollRef={{ current: scrollContainer }}
+                />,
+            );
+        };
+        const blockNativeHistory = [createLoadedBlockSpacer(), historyRow];
+
+        act(() => {
+            render(blockNativeHistory);
+        });
+
+        // Appending a prompt keeps previously virtualized rows mounted while
+        // the active turn remains part of the same item source.
+        act(() => {
+            render([...blockNativeHistory, userRow]);
+            render([...blockNativeHistory, userRow]);
+        });
+
+        expect(unmountsByRowId.get(historyRow.id) ?? 0).toBe(0);
+
+        act(() => {
+            root.unmount();
+        });
+    });
+
+    it("virtualizes unloaded transcript blocks at their estimated height", () => {
+        const markup = renderHistoryRows([
+            {
+                blockId: "block-1",
+                estimatedHeight: 18_432,
+                id: "transcript-block:block-1",
+                isLoaded: false,
+                kind: "transcript-block-spacer",
+                metadata: {
+                    blockId: "block-1",
+                    endSequence: 256,
+                    entryCount: 256,
+                    estimatedHeight: 18_432,
+                    estimatedRowCount: 256,
+                    firstCreatedAt: "2026-04-14T00:00:00.000Z",
+                    lastCreatedAt: "2026-04-14T00:01:00.000Z",
+                    revision: 1,
+                    sessionId: "session-1",
+                    startSequence: 1,
+                },
+            },
+        ]);
+
+        expect(measuredVirtualListMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                firstEstimate: 18_432,
+                firstKey: "transcript-block:block-1",
+                itemCount: 1,
+            }),
+        );
+        expect(markup).toContain('data-transcript-block-spacer="block-1"');
+    });
+
+    it("passes all history rows to MeasuredVirtualList", () => {
+        const rows = createRows(SMALL_HISTORY_ROW_COUNT);
         const markup = renderHistoryRows(rows);
         const firstCall = measuredVirtualListMock.mock.calls[0]?.[0];
 
@@ -369,7 +588,7 @@ describe("ChatTimelineHistoryRows", () => {
                 firstKey: "message:message-0",
                 hasOnRangeChange: true,
                 hasOnReady: true,
-                itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+                itemCount: SMALL_HISTORY_ROW_COUNT,
                 observeMeasurements: true,
                 overscan: 10,
                 preserveScrollAnchorOnItemsChange: true,
@@ -382,13 +601,13 @@ describe("ChatTimelineHistoryRows", () => {
         expect(markup).toContain("mock-measured-virtual-list");
         expect(markup).toContain("message:message-0");
         expect(markup).toContain(
-            `message:message-${CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1}`,
+            `message:message-${SMALL_HISTORY_ROW_COUNT - 1}`,
         );
         expect(markup.match(/padding-bottom:8px/g)).toHaveLength(1);
     });
 
     it("keeps the ten-thousand-message fixture DOM-bounded in the main timeline", () => {
-        const fixture = createChatPerformanceFixtureById("chat-long");
+        const fixture = createChatPerformanceFixtureById("chat-long-10k");
         const timeline = reconcileChatTimelineModel(null, fixture.snapshot);
         const markup = renderHistoryRows(timeline.historyRows);
 
@@ -402,13 +621,13 @@ describe("ChatTimelineHistoryRows", () => {
     });
 
     it("keeps virtual layout but stops row measurements while retained and hidden", () => {
-        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+        const rows = createRows(SMALL_HISTORY_ROW_COUNT);
 
         const markup = renderHistoryRows(rows, false);
 
         expect(measuredVirtualListMock).toHaveBeenCalledWith(
             expect.objectContaining({
-                itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+                itemCount: SMALL_HISTORY_ROW_COUNT,
                 observeMeasurements: false,
             }),
         );
@@ -418,7 +637,7 @@ describe("ChatTimelineHistoryRows", () => {
     it("passes activity segments through the virtual list with their stable id", () => {
         const rows = [
             createSegmentRow(),
-            ...createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD - 1),
+            ...createRows(SMALL_HISTORY_ROW_COUNT - 1),
         ];
         const markup = renderHistoryRows(rows);
         const firstCall = measuredVirtualListMock.mock.calls[0]?.[0];
@@ -426,7 +645,7 @@ describe("ChatTimelineHistoryRows", () => {
         expect(firstCall).toMatchObject({
             firstEstimate: 48,
             firstKey: "activity-segment:session-1:read-1",
-            itemCount: CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD,
+            itemCount: SMALL_HISTORY_ROW_COUNT,
         });
         expect(firstCall?.firstMeasurementKey).toContain(
             "activity-segment:session-1:read-1",
@@ -436,7 +655,7 @@ describe("ChatTimelineHistoryRows", () => {
 
     it("virtualizes the outer timeline for an activity-heavy segment", () => {
         const rows = [
-            createSegmentRow(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD),
+            createSegmentRow(ACTIVITY_HEAVY_ENTRY_COUNT),
         ];
         const markup = renderHistoryRows(rows);
 
@@ -451,7 +670,7 @@ describe("ChatTimelineHistoryRows", () => {
     });
 
     it("freezes content width during panel resize and re-syncs on release", () => {
-        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+        const rows = createRows(SMALL_HISTORY_ROW_COUNT);
         rectWidthFallback = CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX;
         const mounted = mountHistoryRows(rows);
 
@@ -526,7 +745,7 @@ describe("ChatTimelineHistoryRows", () => {
     });
 
     it("keeps resize release capped when the panel grows beyond the timeline max", () => {
-        const rows = createRows(CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD);
+        const rows = createRows(SMALL_HISTORY_ROW_COUNT);
         rectWidthFallback = 620;
         const mounted = mountHistoryRows(rows);
 

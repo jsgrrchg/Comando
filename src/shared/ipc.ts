@@ -159,6 +159,10 @@ export const IPC_CHANNELS = {
     getAiSessionSnapshot: "ai:get-session-snapshot",
     resyncAiSession: "ai:resync-session",
     getAiSessionTranscriptPage: "ai:get-session-transcript-page",
+    getAiTranscriptCapability: "ai:get-transcript-capability",
+    getAiTranscriptBlockMetadata: "ai:get-transcript-block-metadata",
+    getAiTranscriptBlock: "ai:get-transcript-block",
+    getAiTranscriptPayload: "ai:get-transcript-payload",
     getAiPromptQueue: "ai:get-prompt-queue",
     enqueueAiPrompt: "ai:enqueue-prompt",
     removeAiQueuedPrompt: "ai:remove-queued-prompt",
@@ -2714,6 +2718,171 @@ export interface AiSessionSnapshot {
     readonly worktreeId?: string | null;
 }
 
+export type AiTranscriptEntryKind =
+    | "message"
+    | "thinking"
+    | "tool"
+    | "status"
+    | "plan";
+
+export interface AiTranscriptEntrySummary {
+    readonly label: string | null;
+    readonly preview: string | null;
+    readonly status: string | null;
+}
+
+export interface AiTranscriptEntryEnvelope {
+    readonly createdAt: string;
+    readonly id: string;
+    readonly kind: AiTranscriptEntryKind;
+    readonly payloadRef: string | null;
+    readonly sequence: number;
+    readonly sessionId: string;
+    readonly summary: AiTranscriptEntrySummary;
+    readonly updatedAt: string;
+}
+
+export interface AiTranscriptBlockMetadata {
+    readonly blockId: string;
+    readonly endSequence: number;
+    readonly entryCount: number;
+    readonly estimatedHeight: number;
+    readonly estimatedRowCount: number;
+    readonly firstCreatedAt: string;
+    readonly lastCreatedAt: string;
+    readonly revision: number;
+    readonly sessionId: string;
+    readonly startSequence: number;
+}
+
+export interface AiTranscriptBlock extends AiTranscriptBlockMetadata {
+    readonly capabilityVersion: number;
+    readonly entries: readonly AiTranscriptEntryEnvelope[];
+    readonly transcriptRevision: number;
+}
+
+export interface AiTranscriptBlockMetadataOutput {
+    readonly blocks: readonly AiTranscriptBlockMetadata[];
+    readonly capabilityVersion: number;
+    readonly sessionId: string;
+    readonly transcriptRevision: number;
+}
+
+export interface AiLoadTranscriptPayloadInput {
+    readonly maxBytes?: number;
+    readonly payloadRef: string;
+    readonly sessionId: string;
+}
+
+export interface AiTranscriptPayload {
+    readonly byteLength: number;
+    readonly capabilityVersion: number;
+    readonly contentHash: string;
+    readonly payloadRef: string;
+    readonly sessionId: string;
+    readonly transcriptRevision: number;
+    readonly value: unknown;
+}
+
+export type AiTranscriptStorageMode =
+    | "block-native"
+    | "legacy"
+    | "migrating";
+
+export interface AiTranscriptStorageState {
+    readonly capabilityVersion: number;
+    readonly legacyFallbackAvailable: boolean;
+    readonly migrationManifestExists: boolean;
+    readonly mode: AiTranscriptStorageMode;
+    readonly sessionId: string;
+    readonly storageVersion: number;
+}
+
+export interface AiTranscriptCapability {
+    readonly blockNativeVersion: number | null;
+    readonly legacyFallbackAvailable: boolean;
+}
+
+export interface AiHistoryMigrationInput {
+    readonly limit?: number | null;
+    readonly mode?: string | null;
+    readonly sourceDatabasePath?: string | null;
+}
+
+export interface AiHistoryMigrationError {
+    readonly message: string;
+    readonly sessionId: string | null;
+}
+
+export interface AiHistoryMigrationResult {
+    readonly completedAt: string | null;
+    readonly errors: readonly AiHistoryMigrationError[];
+    readonly failedSessions: number;
+    readonly migratedSessions: number;
+    readonly skippedSessions: number;
+    readonly startedAt: string;
+    readonly updatedAt: string;
+}
+
+export interface AiHistoryStorageHealth {
+    readonly healthy: boolean;
+    readonly latestError: string | null;
+    readonly legacyFallbackAvailable: boolean;
+    readonly migrationManifestExists: boolean;
+    readonly nativeSessionCount: number;
+    readonly orphanedSessionDirs: number;
+    readonly storageVersion: number;
+}
+
+export type AiTranscriptTerminalStatus =
+    | "cancelled"
+    | "completed"
+    | "failed";
+
+export interface AiTranscriptPayloadWrite {
+    readonly payloadRef: string;
+    readonly value: unknown;
+}
+
+export interface AiOpenTranscriptEntryRef {
+    readonly entryId: string;
+    readonly entryRevision: number;
+    readonly ordinal: number;
+}
+
+export interface AiOpenTranscriptTailCheckpoint {
+    readonly sessionId: string;
+    readonly turnId: string;
+    readonly terminalStatus: AiTranscriptTerminalStatus | null;
+    readonly entries: readonly AiTranscriptEntryEnvelope[];
+    readonly payloads: readonly AiTranscriptPayloadWrite[];
+    /** Entries removed since the preceding durable checkpoint. */
+    readonly removedEntryIds: readonly string[];
+    /** Only entries whose persisted ordering or revision changed. */
+    readonly entryOrder: readonly AiOpenTranscriptEntryRef[];
+}
+
+export interface AiOpenTranscriptTail {
+    readonly sessionId: string;
+    readonly turnId: string;
+    readonly terminalStatus: AiTranscriptTerminalStatus | null;
+    readonly updatedAt: string;
+    readonly revision: number;
+    readonly entries: readonly AiTranscriptEntryEnvelope[];
+    readonly payloads: readonly AiTranscriptPayloadWrite[];
+    readonly entryRevisions: readonly AiOpenTranscriptEntryRef[];
+}
+
+export interface AiSealTranscriptTurnInput {
+    readonly sessionId: string;
+    readonly turnId: string;
+    readonly entries: readonly AiTranscriptEntryEnvelope[];
+    readonly payloads: readonly AiTranscriptPayloadWrite[];
+}
+
+export const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION = 1;
+export const AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX = 64 * 1024 * 1024;
+
 export type AiSessionPatchChanges = Partial<
     Omit<AiSessionSnapshot, "runtimeId" | "sessionId">
 >;
@@ -3461,6 +3630,17 @@ export interface ComandoApi {
     getAiSessionTranscriptPage: (
         input: GetAiSessionTranscriptPageInput,
     ) => Promise<AiSessionTranscriptPage>;
+    getAiTranscriptCapability: () => Promise<AiTranscriptCapability>;
+    getAiTranscriptBlockMetadata: (
+        sessionId: string,
+    ) => Promise<AiTranscriptBlockMetadataOutput | null>;
+    getAiTranscriptBlock: (
+        sessionId: string,
+        blockId: string,
+    ) => Promise<AiTranscriptBlock | null>;
+    getAiTranscriptPayload: (
+        input: AiLoadTranscriptPayloadInput,
+    ) => Promise<AiTranscriptPayload | null>;
     getAiPromptQueue: (sessionId: string) => Promise<AiPromptQueueSnapshot>;
     enqueueAiPrompt: (
         input: EnqueueAiPromptInput,

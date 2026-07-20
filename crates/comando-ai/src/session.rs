@@ -10,13 +10,6 @@ use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
 use crate::scope::SessionScope;
 
-const DEFAULT_CHAT_TITLE_RUNTIMES: &[&str] =
-    &["Claude", "Grok", "Codex", "Kilo", "OpenCode", "Agent"];
-const CHAT_TITLE_STORED_MAX_CHARS: usize = 100;
-const MAX_TITLE_WORDS: usize = 12;
-const PILL_OPEN: &str = "\u{200B}\u{00AB}";
-const PILL_CLOSE: &str = "\u{00BB}\u{200B}";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeAiSession {
     pub owner_window_id: String,
@@ -147,100 +140,14 @@ impl ManagedAiSession {
     }
 }
 
-pub(crate) fn resolve_session_title_on_prompt(
-    current_title: &str,
-    fallback_title: &str,
-    display_content: &str,
-    has_prior_user_message: bool,
-) -> String {
-    if !current_title.trim().is_empty() && !is_default_chat_title(current_title) {
-        return current_title.to_string();
-    }
-    if !has_prior_user_message {
-        let inferred = infer_chat_title_from_prompt(display_content);
-        if !inferred.is_empty() {
-            return inferred;
-        }
-    }
-    if fallback_title.trim().is_empty() {
-        current_title.to_string()
-    } else {
-        fallback_title.to_string()
-    }
-}
-
-fn is_default_chat_title(title: &str) -> bool {
-    let trimmed = title.trim();
-    let Some((runtime, number)) = trimmed.rsplit_once(' ') else {
-        return false;
-    };
-    DEFAULT_CHAT_TITLE_RUNTIMES.contains(&runtime)
-        && !number.is_empty()
-        && number.chars().all(|character| character.is_ascii_digit())
-}
-
-fn infer_chat_title_from_prompt(serialized_content: &str) -> String {
-    if serialized_content.trim().is_empty() {
-        return String::new();
-    }
-
-    let cleaned = serialized_content
-        .replace(PILL_OPEN, "")
-        .replace(PILL_CLOSE, "")
-        .replace('\u{1F4CE}', "");
-    let words = cleaned
-        .split_whitespace()
-        .filter_map(clean_title_token)
-        .filter(|token| !token.is_empty())
-        .take(MAX_TITLE_WORDS)
-        .collect::<Vec<_>>();
-
-    truncate_chat_title(&words.join(" "), CHAT_TITLE_STORED_MAX_CHARS)
-}
-
-fn clean_title_token(token: &str) -> Option<String> {
-    if token == "@fetch" || token == "/plan" {
-        return None;
-    }
-    let Some(mention) = token.strip_prefix('@') else {
-        return Some(token.to_string());
-    };
-    if mention.contains('@') {
-        return Some(token.to_string());
-    }
-    Some(
-        mention
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(mention)
-            .to_string(),
-    )
-}
-
-fn truncate_chat_title(title: &str, max_chars: usize) -> String {
-    let trimmed = title.trim();
-    if trimmed.chars().count() <= max_chars {
-        return trimmed.to_string();
-    }
-
-    let budget = max_chars.saturating_sub(1).max(1);
-    let mut head = trimmed.chars().take(budget).collect::<String>();
-    if let Some(index) = head.rfind(' ')
-        && index > budget * 3 / 5
-    {
-        head.truncate(index);
-        return format!("{}\u{2026}", head.trim_end());
-    }
-    format!("{head}\u{2026}")
-}
-
 #[derive(Debug, Default)]
 pub struct SessionRegistry {
     sessions: HashMap<String, ManagedAiSession>,
+    pending_runtime_titles: HashMap<String, String>,
 }
 
 impl SessionRegistry {
-    pub fn insert(&mut self, session: NativeAiSession) -> AiResult<NativeAiSessionSummary> {
+    pub fn insert(&mut self, mut session: NativeAiSession) -> AiResult<NativeAiSessionSummary> {
         let session_id = session.session_id.0.clone();
         if self.sessions.contains_key(&session_id) {
             return Err(AiError::SessionOwnerMismatch {
@@ -250,6 +157,7 @@ impl SessionRegistry {
             });
         }
 
+        self.apply_pending_runtime_title(&mut session);
         let summary = session.summary();
         self.sessions
             .insert(summary.session_id.0.clone(), ManagedAiSession::new(session));
@@ -258,7 +166,7 @@ impl SessionRegistry {
 
     pub fn insert_with_acp_controller(
         &mut self,
-        session: NativeAiSession,
+        mut session: NativeAiSession,
         acp_controller: AcpSessionController,
     ) -> AiResult<NativeAiSessionSummary> {
         let session_id = session.session_id.0.clone();
@@ -270,6 +178,7 @@ impl SessionRegistry {
             });
         }
 
+        self.apply_pending_runtime_title(&mut session);
         let summary = session.summary();
         self.sessions.insert(
             summary.session_id.0.clone(),
@@ -302,6 +211,32 @@ impl SessionRegistry {
         let session = self.get_mut(session_id)?;
         session.set_status(status);
         Ok(session.session.summary())
+    }
+
+    pub fn set_runtime_title(&mut self, session_id: &SessionId, title: String) {
+        let Some(session) = self.sessions.get_mut(&session_id.0) else {
+            // ACP can publish SessionInfo before its startup path has inserted
+            // the root session. Keep that title so the first status cannot win.
+            self.pending_runtime_titles
+                .insert(session_id.0.clone(), title);
+            return;
+        };
+        if session.session.title != title {
+            // Runtime titles must update the same session record used by turn
+            // lifecycle events so later status updates cannot restore a stale title.
+            session.session.title = title;
+            session.session.updated_at = now_iso8601();
+        }
+    }
+
+    fn apply_pending_runtime_title(&mut self, session: &mut NativeAiSession) {
+        let Some(title) = self.pending_runtime_titles.remove(&session.session_id.0) else {
+            return;
+        };
+        if session.title != title {
+            session.title = title;
+            session.updated_at = now_iso8601();
+        }
     }
 
     pub fn close(&mut self, session_id: &SessionId) -> AiResult<ManagedAiSession> {
@@ -422,49 +357,44 @@ mod tests {
     }
 
     #[test]
-    fn resolves_title_from_first_prompt_for_default_title() {
-        assert_eq!(
-            resolve_session_title_on_prompt(
-                "Codex 3",
-                "Codex 3",
-                "Revisa el bug de login en \u{200B}\u{00AB}@auth/session.ts\u{00BB}\u{200B}",
-                false,
-            ),
-            "Revisa el bug de login en session.ts"
+    fn runtime_title_replaces_the_default_session_title() {
+        let mut registry = SessionRegistry::default();
+        registry
+            .insert(NativeAiSession::from_prepare_input(prepare_input("s1", "w1")).unwrap())
+            .unwrap();
+
+        registry.set_runtime_title(
+            &SessionId("s1".to_string()),
+            "Investigate startup crash".to_string(),
         );
+        let summary = registry
+            .get(&SessionId("s1".to_string()))
+            .unwrap()
+            .session
+            .summary();
+
+        assert_eq!(summary.title, "Investigate startup crash");
     }
 
     #[test]
-    fn preserves_custom_title_on_prompt() {
-        assert_eq!(
-            resolve_session_title_on_prompt(
-                "Manual review title",
-                "Codex 3",
-                "Should not replace this",
-                false,
-            ),
-            "Manual review title"
+    fn applies_runtime_title_received_before_session_registration() {
+        let mut registry = SessionRegistry::default();
+        registry.set_runtime_title(
+            &SessionId("s1".to_string()),
+            "Investigate startup crash".to_string(),
         );
-    }
 
-    #[test]
-    fn keeps_default_title_after_first_user_message() {
-        assert_eq!(
-            resolve_session_title_on_prompt("Codex 3", "Codex 3", "Second prompt", true),
-            "Codex 3"
-        );
-    }
+        let summary = registry
+            .insert(NativeAiSession::from_prepare_input(prepare_input("s1", "w1")).unwrap())
+            .unwrap();
 
-    #[test]
-    fn cleans_noisy_prompt_tokens_for_title_inference() {
+        assert_eq!(summary.title, "Investigate startup crash");
         assert_eq!(
-            resolve_session_title_on_prompt(
-                "OpenCode 1",
-                "OpenCode 1",
-                "\u{200B}\u{00AB}@fetch\u{00BB}\u{200B} Analiza el repo \u{200B}\u{00AB}/plan\u{00BB}\u{200B} \u{1F4CE}screenshot.png",
-                false,
-            ),
-            "Analiza el repo screenshot.png"
+            registry
+                .mark_status(&SessionId("s1".to_string()), NativeAiSessionStatus::Idle)
+                .unwrap()
+                .title,
+            "Investigate startup crash"
         );
     }
 }

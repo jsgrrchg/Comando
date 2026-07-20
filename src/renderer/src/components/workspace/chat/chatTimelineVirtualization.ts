@@ -2,6 +2,7 @@ import type { AiToolActivityDefaultExpansion } from "@shared/ipc";
 
 import { CHAT_CONTENT_MAX_WIDTH_PX } from "./chatContentLayout";
 import type { ChatTimelineRow } from "./chatTimelineModel";
+import type { TranscriptTimelineVirtualRow } from "./transcriptBlockVirtualization";
 import {
     isFileToolActivity,
     isStatusToolActivity,
@@ -9,8 +10,6 @@ import {
     isTurnStartedActivity,
 } from "./toolActivityKinds";
 
-export const CHAT_TIMELINE_VIRTUALIZATION_ENABLED = true;
-export const CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD = 200;
 export const CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN = 10;
 export const CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 720;
 export const CHAT_TIMELINE_VIRTUAL_ROW_GAP_PX = 8;
@@ -21,18 +20,35 @@ export const CHAT_ACTIVITY_RAIL_CONTENT_TOP_PX = 4;
 export const CHAT_ACTIVITY_RAIL_ENTRY_GAP_PX = 6;
 export const CHAT_ACTIVITY_RAIL_ENTRY_PADDING_Y_PX = 4;
 export const CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX = 28;
-
-interface ShouldVirtualizeChatTimelineOptions {
-    readonly enabled?: boolean;
-    readonly threshold?: number;
-}
+export const CHAT_TIMELINE_ESTIMATE_CALIBRATION_ALPHA = 0.18;
+export const CHAT_TIMELINE_ESTIMATE_CALIBRATION_MIN_MULTIPLIER = 0.65;
+export const CHAT_TIMELINE_ESTIMATE_CALIBRATION_MAX_MULTIPLIER = 1.75;
 
 export interface ChatTimelineRowEstimateContext {
+    readonly estimateCalibration?: ReadonlyMap<string, number>;
     readonly chatFontSize?: number;
     readonly gapPx?: number;
     readonly toolActivityDefaultExpansion?: AiToolActivityDefaultExpansion;
     readonly width?: number;
 }
+
+export type ChatTimelineRowEstimateClass =
+    | "activity-entry-thinking"
+    | "activity-entry-tool"
+    | "activity-range"
+    | "activity-segment-collapsed"
+    | "activity-segment-expanded"
+    | "activity-summary"
+    | "content-chunk"
+    | "message-assistant"
+    | "message-assistant-code"
+    | "message-thinking"
+    | "message-user"
+    | "tool-file"
+    | "tool-terminal"
+    | "tool-terminal-expanded"
+    | "tool-failed"
+    | "tool";
 
 export interface ChatTimelineRowMeasurementContext
     extends ChatTimelineRowEstimateContext {
@@ -45,46 +61,64 @@ export interface ChatTimelineVirtualScrollMarginOptions {
     readonly scrollContainer: HTMLElement | null;
 }
 
-export function shouldVirtualizeChatTimeline(
-    virtualizationCost: number,
-    options: ShouldVirtualizeChatTimelineOptions = {},
-): boolean {
-    const enabled = options.enabled ?? CHAT_TIMELINE_VIRTUALIZATION_ENABLED;
-    const threshold =
-        options.threshold ?? CHAT_TIMELINE_VIRTUALIZATION_THRESHOLD;
+type TimelineMeasuredRow = ChatTimelineRow | TranscriptTimelineVirtualRow;
 
-    return enabled && virtualizationCost >= threshold;
-}
-
-export function calculateChatTimelineVirtualizationCost(
-    rows: readonly ChatTimelineRow[],
-): number {
-    return rows.reduce((cost, row) => {
-        if (row.kind !== "activity-segment") {
-            return cost + 1;
-        }
-
-        const expandedItemWeight = row.items.reduce(
-            (itemCost, item) => {
-                if (item.kind === "thinking") {
-                    return itemCost + 1;
-                }
-
-                const activity = item.entry.reviewEntry.activity;
-                const previewWeight =
-                    activity.diffs.length > 0 || activity.terminalOutput
-                        ? 2
-                        : 1;
-                return itemCost + previewWeight;
-            },
-            0,
-        );
-        return cost + 1 + expandedItemWeight;
-    }, 0);
-}
-
-export function getChatTimelineRowKey(row: ChatTimelineRow): string {
+export function getChatTimelineRowKey(row: TimelineMeasuredRow): string {
     return row.id;
+}
+
+/**
+ * Groups rows that share a similar layout. Width-sensitive groups are kept
+ * separate so a narrow-pane measurement cannot bias a wide-pane estimate.
+ */
+export function getChatTimelineRowEstimateBucket(
+    row: TimelineMeasuredRow,
+    context: ChatTimelineRowEstimateContext,
+): string {
+    const width = isWidthSensitiveChatTimelineRow(row)
+        ? getChatTimelineVirtualMeasurementWidth(context.width ?? 0)
+        : "static";
+    return `${getChatTimelineRowEstimateClass(row, context)}:${width}`;
+}
+
+export function getChatTimelineRowEstimateClass(
+    row: TimelineMeasuredRow,
+    context: ChatTimelineRowEstimateContext,
+): ChatTimelineRowEstimateClass {
+    if (row.kind === "content-chunk") return "content-chunk";
+    if (row.kind === "message") {
+        if (row.message.kind === "user") return "message-user";
+        if (row.message.kind === "thinking") return "message-thinking";
+        return countCodeBlocks(row.message.content) > 0
+            ? "message-assistant-code"
+            : "message-assistant";
+    }
+    if (row.kind === "activity-summary") return "activity-summary";
+    if (row.kind === "activity-range") return "activity-range";
+    if (row.kind === "activity-entry") {
+        return row.item.kind === "thinking"
+            ? "activity-entry-thinking"
+            : "activity-entry-tool";
+    }
+    if (row.kind === "activity-segment") {
+        return context.toolActivityDefaultExpansion === "expanded"
+            ? "activity-segment-expanded"
+            : "activity-segment-collapsed";
+    }
+
+    const activity = row.reviewEntry.activity;
+    if (isTerminalToolActivity(activity)) {
+        const startsExpanded =
+            !!activity.terminalOutput &&
+            (activity.status === "failed" ||
+                (activity.exitCode !== null && activity.exitCode !== 0));
+        return startsExpanded ? "tool-terminal-expanded" : "tool-terminal";
+    }
+    if (isFileToolActivity(activity, row.reviewEntry.trackedFiles)) {
+        return "tool-file";
+    }
+    if (activity.status === "failed") return "tool-failed";
+    return "tool";
 }
 
 // Height-affecting layout dimensions that are independent of the row's width.
@@ -102,7 +136,18 @@ function getChatTimelineRowLayoutBase(
 
 // Message rows and activity rails containing expandable thinking can reflow
 // with the available width. Tool-only rails remain width-invariant.
-export function isWidthSensitiveChatTimelineRow(row: ChatTimelineRow): boolean {
+export function isWidthSensitiveChatTimelineRow(
+    row: TimelineMeasuredRow,
+): boolean {
+    if (row.kind === "content-chunk") {
+        return true;
+    }
+    if (row.kind === "activity-entry") {
+        return row.item.kind === "thinking";
+    }
+    if (row.kind === "activity-summary" || row.kind === "activity-range") {
+        return false;
+    }
     return (
         row.kind === "message" ||
         (row.kind === "activity-segment" &&
@@ -111,7 +156,7 @@ export function isWidthSensitiveChatTimelineRow(row: ChatTimelineRow): boolean {
 }
 
 export function getChatTimelineRowMeasurementKey(
-    row: ChatTimelineRow,
+    row: TimelineMeasuredRow,
     context: ChatTimelineRowMeasurementContext,
 ): string {
     const widthSegment = isWidthSensitiveChatTimelineRow(row)
@@ -129,7 +174,7 @@ export function getChatTimelineRowMeasurementKey(
 // to this row's last real measurement instead of the heuristic estimate, so the
 // total size never snaps to a rough value mid-resize.
 export function getChatTimelineRowIdentityKey(
-    row: ChatTimelineRow,
+    row: TimelineMeasuredRow,
     context: ChatTimelineRowMeasurementContext,
 ): string {
     return `${row.id}:${getChatTimelineRowLayoutBase(
@@ -154,17 +199,41 @@ export function getChatTimelineRowIdentityKey(
 // decided the row changed) gets a new one, invalidating the cached
 // measurement. The WeakMap keeps it bounded — dropped rows are collected.
 let nextRowMeasurementToken = 0;
-const rowMeasurementTokens = new WeakMap<ChatTimelineRow, number>();
+const rowMeasurementTokens = new WeakMap<object, number>();
 
-function getRowMeasurementToken(row: ChatTimelineRow): number {
-    const existing = rowMeasurementTokens.get(row);
+function getRowMeasurementToken(row: TimelineMeasuredRow): string {
+    if (row.kind === "content-chunk") {
+        // Chunk objects are rebuilt with the surrounding presentation list.
+        // Anchor their measurement to the immutable message revision instead.
+        return `content-chunk:${getObjectMeasurementToken(
+            row.message,
+        )}:${row.chunkIndex}`;
+    }
+    if (row.kind === "activity-summary") {
+        return `activity-summary:${getObjectMeasurementToken(
+            row.segment,
+        )}:${row.expanded}`;
+    }
+    if (row.kind === "activity-range") {
+        return `activity-range:${getObjectMeasurementToken(
+            row.segment,
+        )}:${row.start}:${row.end}:${row.expanded}`;
+    }
+    if (row.kind === "activity-entry") {
+        return `activity-entry:${getObjectMeasurementToken(row.item)}`;
+    }
+    return String(getObjectMeasurementToken(row));
+}
+
+function getObjectMeasurementToken(value: object): number {
+    const existing = rowMeasurementTokens.get(value);
     if (existing !== undefined) {
         return existing;
     }
 
     const token = nextRowMeasurementToken;
     nextRowMeasurementToken += 1;
-    rowMeasurementTokens.set(row, token);
+    rowMeasurementTokens.set(value, token);
     return token;
 }
 
@@ -231,14 +300,54 @@ export function getChatTimelineVirtualRowGapPx({
 // here. The symptom of staleness is subtle — scroll jitter while flinging
 // through a long history — so it is worth updating in the same change.
 export function estimateChatTimelineRowHeight(
-    row: ChatTimelineRow,
+    row: TimelineMeasuredRow,
+    context: ChatTimelineRowEstimateContext,
+): number {
+    const baseHeight = estimateChatTimelineRowBaseHeight(row, context);
+    const multiplier = getChatTimelineRowEstimateMultiplier(row, context);
+    return Math.ceil(baseHeight * multiplier);
+}
+
+/**
+ * Keeps calibration feedback separate from the heuristic that produced it, so
+ * each observed row adjusts future estimates instead of recursively amplifying
+ * its own correction.
+ */
+export function estimateChatTimelineRowBaseHeight(
+    row: TimelineMeasuredRow,
     context: ChatTimelineRowEstimateContext,
 ): number {
     const gapPx = Math.max(0, context.gapPx ?? 0);
 
+    if (row.kind === "content-chunk") {
+        return Math.ceil(
+            estimateMessageRowHeight(
+                { ...row.message, content: row.content },
+                context,
+            ) + gapPx,
+        );
+    }
+
     if (row.kind === "message") {
         return Math.ceil(
             estimateMessageRowHeight(row.message, context) + gapPx,
+        );
+    }
+
+    if (row.kind === "activity-summary") {
+        return Math.ceil(CHAT_ACTIVITY_RAIL_HEADER_HEIGHT_PX + gapPx);
+    }
+
+    if (row.kind === "activity-range") {
+        return Math.ceil(CHAT_ACTIVITY_RAIL_DENSE_ROW_HEIGHT_PX + gapPx);
+    }
+
+    if (row.kind === "activity-entry") {
+        return Math.ceil(
+            (row.item.kind === "thinking"
+                ? 28 * getFontScale(context.chatFontSize)
+                : estimateToolActivityHeight(row.item.entry.reviewEntry, context)) +
+                gapPx,
         );
     }
 
@@ -267,6 +376,22 @@ export function estimateChatTimelineRowHeight(
 
     return Math.ceil(
         estimateToolActivityHeight(row.reviewEntry, context) + gapPx,
+    );
+}
+
+function getChatTimelineRowEstimateMultiplier(
+    row: TimelineMeasuredRow,
+    context: ChatTimelineRowEstimateContext,
+): number {
+    const multiplier = context.estimateCalibration?.get(
+        getChatTimelineRowEstimateBucket(row, context),
+    );
+    if (multiplier === undefined || !Number.isFinite(multiplier)) {
+        return 1;
+    }
+    return Math.min(
+        CHAT_TIMELINE_ESTIMATE_CALIBRATION_MAX_MULTIPLIER,
+        Math.max(CHAT_TIMELINE_ESTIMATE_CALIBRATION_MIN_MULTIPLIER, multiplier),
     );
 }
 

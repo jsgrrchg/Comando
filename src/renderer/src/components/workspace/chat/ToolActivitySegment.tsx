@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useEffect } from "react";
 
 import { useSettingsStore } from "@renderer/app/store/settings-store";
 
@@ -10,15 +10,14 @@ import { getToolActivityDescriptor } from "./toolActivityDescriptor";
 import {
     ToolActivityItem,
     type ToolActivityItemProps,
+    type ToolPayloadVisibilityChangeHandler,
 } from "./ToolActivityItem";
 import {
     ThinkingMessage,
     type ThinkingMessageProps,
 } from "./ChatMessageRow";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
-
-const ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT = 20;
-const ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT = 20;
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 
 type ToolActivitySegmentProps = Pick<
     ToolActivityItemProps,
@@ -31,7 +30,11 @@ type ToolActivitySegmentProps = Pick<
     | "worktreeId"
 > & {
     /** True only while this segment is the trailing activity of an active turn. */
+    readonly expanded?: boolean;
     readonly isCurrentTurnTail?: boolean;
+    readonly onExpandedChange?: (expanded: boolean) => void;
+    readonly onToolPayloadVisibilityChange?: ToolPayloadVisibilityChangeHandler;
+    readonly renderDetails?: boolean;
     readonly segment: ChatTimelineActivitySegmentRow;
 } & Pick<
         ThinkingMessageProps,
@@ -141,6 +144,7 @@ type ActivitySegmentItemRendererProps = Pick<
     | "chatFontSize"
     | "highlightQuery"
     | "onAddFileReferenceToChat"
+    | "onToolPayloadVisibilityChange"
     | "onOpenFile"
     | "onOpenFileReference"
     | "onOpenSession"
@@ -158,10 +162,16 @@ function getActivitySegmentItemId(
         : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`;
 }
 
-function ActivitySegmentItemRow({
+export function ActivitySegmentItemRow({
+    flat = false,
     item,
     ...props
 }: ActivitySegmentItemRendererProps & {
+    /**
+     * Virtualized entries do not share a stable DOM tree, so they retain the
+     * rail indentation but omit connectors that could end at an unmounted row.
+     */
+    readonly flat?: boolean;
     readonly item: ChatTimelineActivitySegmentRow["items"][number];
 }) {
     const openThinkingFileReference = props.onOpenFileReference ?? (() => undefined);
@@ -169,9 +179,13 @@ function ActivitySegmentItemRow({
 
     return (
         <div
-            className="activity-tree-branch min-w-0 pl-10"
-            data-activity-rail-decoration="branch"
-            data-activity-rail-indent="child"
+            className={
+                flat
+                    ? "min-w-0 pl-10"
+                    : "activity-tree-branch min-w-0 pl-10"
+            }
+            data-activity-rail-decoration={flat ? undefined : "branch"}
+            data-activity-rail-indent={flat ? undefined : "child"}
             data-thinking-message-id={
                 item.kind === "thinking" ? item.message.id : undefined
             }
@@ -185,7 +199,7 @@ function ActivitySegmentItemRow({
                     ? "expanded-only"
                     : "always"
             }
-            role="listitem"
+            role={flat ? undefined : "listitem"}
         >
             <div className="min-w-0 py-0.5">
                 {item.kind === "thinking" ? (
@@ -202,23 +216,28 @@ function ActivitySegmentItemRow({
                         resolveFileReference={resolveThinkingFileReference}
                     />
                 ) : (
-                    <ToolActivityItem
-                        activity={item.entry.reviewEntry.activity}
-                        canRenderFileReference={props.canRenderFileReference}
-                        compactTerminal
-                        onOpenFile={props.onOpenFile}
-                        onOpenFileReference={props.onOpenFileReference}
-                        onOpenSession={props.onOpenSession}
-                        projectId={props.projectId}
-                        resolveFileReference={props.resolveFileReference}
-                        surface={
-                            item.entry.policy === "standalone-change"
-                                ? "card"
-                                : "rail-row"
-                        }
-                        trackedFiles={item.entry.reviewEntry.trackedFiles}
-                        worktreeId={props.worktreeId}
-                    />
+                    <div>
+                        <ToolActivityItem
+                            activity={item.entry.reviewEntry.activity}
+                            canRenderFileReference={props.canRenderFileReference}
+                            compactTerminal
+                            onOpenFile={props.onOpenFile}
+                            onOpenFileReference={props.onOpenFileReference}
+                            onOpenSession={props.onOpenSession}
+                            onPayloadVisibilityChange={
+                                props.onToolPayloadVisibilityChange
+                            }
+                            projectId={props.projectId}
+                            resolveFileReference={props.resolveFileReference}
+                            surface={
+                                item.entry.policy === "standalone-change"
+                                    ? "card"
+                                    : "rail-row"
+                            }
+                            trackedFiles={item.entry.reviewEntry.trackedFiles}
+                            worktreeId={props.worktreeId}
+                        />
+                    </div>
                 )}
             </div>
         </div>
@@ -233,11 +252,12 @@ function ExpandedActivitySegmentItems({
     readonly contentId: string;
     readonly items: readonly ChatTimelineActivitySegmentRow["items"][number][];
 }) {
-    const [fallbackRenderLimit, setFallbackRenderLimit] = useState(
-        ACTIVITY_SEGMENT_INITIAL_RENDER_LIMIT,
-    );
-    const visibleItems = items.slice(0, fallbackRenderLimit);
-    const hasMoreFallbackItems = visibleItems.length < items.length;
+    useEffect(() => {
+        incrementChatPerformanceCounter(
+            "activity_items_mounted",
+            items.length,
+        );
+    }, [items.length]);
 
     return (
         <div
@@ -248,7 +268,7 @@ function ExpandedActivitySegmentItems({
         >
             <div className="activity-tree min-w-0" role="list">
                 <div className="flex min-w-0 flex-col gap-1.5">
-                    {visibleItems.map((item) => (
+                    {items.map((item) => (
                         <ActivitySegmentItemRow
                             {...itemRendererProps}
                             item={item}
@@ -257,22 +277,6 @@ function ExpandedActivitySegmentItems({
                     ))}
                 </div>
             </div>
-            {hasMoreFallbackItems ? (
-                <button
-                    aria-controls={contentId}
-                    className="ml-10 mt-1 text-xs text-text-secondary underline-offset-2 hover:text-text-primary hover:underline focus-visible:outline-none focus-visible:underline"
-                    onClick={() =>
-                        setFallbackRenderLimit(
-                            (current) =>
-                                current +
-                                ACTIVITY_SEGMENT_FALLBACK_RENDER_INCREMENT,
-                        )
-                    }
-                    type="button"
-                >
-                    Load 20 more
-                </button>
-            ) : null}
         </div>
     );
 }
@@ -283,11 +287,15 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
     chatFontSize,
     highlightQuery,
     onAddFileReferenceToChat,
+    onToolPayloadVisibilityChange,
     onOpenFile,
     onOpenFileReference,
     onOpenSession,
     onRevealFileReference,
+    expanded: controlledExpanded,
+    onExpandedChange,
     projectId,
+    renderDetails = true,
     resolveFileReference,
     isCurrentTurnTail = false,
     segment,
@@ -297,10 +305,17 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
         (state) => state.aiChat.toolActivityDefaultExpansion,
     );
     const defaultExpanded = defaultExpansion === "expanded";
-    const [expanded, setExpanded] = usePersistentToolExpansion(
+    const [storedExpanded, setStoredExpanded] = usePersistentToolExpansion(
         `${segment.id}:full-activity:${defaultExpansion}`,
         defaultExpanded,
     );
+    const expanded = controlledExpanded ?? storedExpanded;
+    const setExpanded = (next: boolean) => {
+        if (controlledExpanded === undefined) {
+            setStoredExpanded(next);
+        }
+        onExpandedChange?.(next);
+    };
     const canExpand = segment.items.length > 0;
     const contentId = `${segment.id}:activity`;
     const headline = getSegmentHeadline(segment, isCurrentTurnTail);
@@ -395,11 +410,11 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
         >
             {canExpand ? (
                 <button
-                    aria-controls={contentId}
+                    aria-controls={renderDetails ? contentId : undefined}
                     aria-expanded={expanded}
                     aria-label={accessibleLabel}
                     className="flex min-h-10 w-full items-center gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-bg-elevated focus-visible:bg-bg-elevated focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]"
-                    onClick={() => setExpanded((current) => !current)}
+                    onClick={() => setExpanded(!expanded)}
                     style={{
                         background: "none",
                         border: "none",
@@ -415,7 +430,7 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                 </div>
             )}
 
-            {expanded ? (
+            {expanded && renderDetails ? (
                 <ExpandedActivitySegmentItems
                     canRenderFileReference={canRenderFileReference}
                     chatFontFamily={chatFontFamily}
@@ -424,6 +439,9 @@ export const ToolActivitySegment = memo(function ToolActivitySegment({
                     highlightQuery={highlightQuery}
                     items={segment.items}
                     onAddFileReferenceToChat={onAddFileReferenceToChat}
+                    onToolPayloadVisibilityChange={
+                        onToolPayloadVisibilityChange
+                    }
                     onOpenFile={onOpenFile}
                     onOpenFileReference={onOpenFileReference}
                     onOpenSession={onOpenSession}

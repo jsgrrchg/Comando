@@ -6,10 +6,12 @@ use comando_types::ai::{
     NativeAiMigrateSessionHistoryOutput, NativeAiSessionCatalogUpdatedPayload,
     NativeAiSessionSnapshot, NativeAiSessionSummary, NativeAiSessionTranscriptPage,
     NativeAiSubagentBreadcrumbPayload, NativeAiSubagentCreatedPayload, NativeAiToolActivityPayload,
+    NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptPayload,
+    NativeAiTranscriptStorageState,
 };
 use comando_types::capabilities::NativeBackendCapabilitiesOutput;
 use comando_types::commands::all_commands;
-use comando_types::error::NativeErrorCode;
+use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::all_events;
 use comando_types::fs::NativeFsReadFileResult;
 use comando_types::git::{
@@ -188,6 +190,11 @@ fn ai_fixtures_deserialize() {
     assert_typed_roundtrip::<NativeAiSessionSnapshot>("ai/history.snapshot.json");
     assert_typed_roundtrip::<NativeAiMigrateSessionHistoryOutput>("ai/history.migration.json");
     assert_typed_roundtrip::<NativeAiHistoryStorageHealth>("ai/history.health.json");
+    assert_typed_roundtrip::<NativeAiTranscriptBlockMetadataOutput>("ai/transcript.metadata.json");
+    assert_typed_roundtrip::<NativeAiTranscriptBlock>("ai/transcript.block.json");
+    assert_typed_roundtrip::<NativeAiTranscriptPayload>("ai/transcript.payload.json");
+    assert_typed_roundtrip::<NativeAiTranscriptStorageState>("ai/transcript.storage_state.json");
+    assert_typed_roundtrip::<NativeError>("ai/transcript.error.retryable.json");
 }
 
 #[test]

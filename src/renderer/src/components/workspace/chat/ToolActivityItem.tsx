@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 
 import type {
     AiToolActivity,
@@ -41,6 +41,39 @@ import {
     isTurnStartedActivity,
 } from "./toolActivityKinds";
 import { usePersistentToolExpansion } from "./toolExpansionStore";
+
+export type ToolPayloadVisibilityChangeHandler = (
+    activityId: string,
+    visible: boolean,
+) => void;
+
+const TOOL_DETAIL_INITIAL_VISIBLE_CHARACTERS = 48_000;
+const TOOL_DETAIL_VISIBLE_CHARACTER_PAGE = 48_000;
+
+function useReportToolPayloadVisibility(
+    activityId: string,
+    visible: boolean,
+    onVisibilityChange?: ToolPayloadVisibilityChangeHandler,
+): void {
+    useEffect(() => {
+        if (!visible || !onVisibilityChange) return;
+        onVisibilityChange(activityId, true);
+        return () => onVisibilityChange(activityId, false);
+    }, [activityId, onVisibilityChange, visible]);
+}
+
+function VisibleToolPayload({
+    activityId,
+    children,
+    onVisibilityChange,
+}: {
+    readonly activityId: string;
+    readonly children: ReactNode;
+    readonly onVisibilityChange?: ToolPayloadVisibilityChangeHandler;
+}) {
+    useReportToolPayloadVisibility(activityId, true, onVisibilityChange);
+    return children;
+}
 
 /* ─── Tool icon SVGs ─── */
 
@@ -781,38 +814,90 @@ function ToolDetailCodeBlock({
     readonly preserveLayout?: boolean;
 }) {
     const languageSupport = useMarkdownCodeLanguageSupport(languageInfo);
+    const isLongContent =
+        content.length > TOOL_DETAIL_INITIAL_VISIBLE_CHARACTERS;
+    const [visibleCharacterCount, setVisibleCharacterCount] = useState(
+        () =>
+            isLongContent
+                ? TOOL_DETAIL_INITIAL_VISIBLE_CHARACTERS
+                : content.length,
+    );
+    const visibleContent = isLongContent
+        ? content.slice(0, visibleCharacterCount)
+        : content;
+    const hasHiddenContent = visibleContent.length < content.length;
+
+    const copyFullContent = async () => {
+        // The complete tool payload stays in session state; only its DOM window
+        // is bounded, so full copy must never depend on what is currently shown.
+        await window.comando?.writeClipboardText(content);
+    };
 
     return (
-        <pre
-            className="max-h-48 select-text rounded px-2 py-1.5"
-            style={{
-                backgroundColor,
-                border: accentBorder ?? "1px solid var(--color-border)",
-                color,
-                fontFamily: "var(--font-mono, monospace)",
-                fontSize: "0.92em",
-                lineHeight: 1.4,
-                margin: 0,
-                overflowX: preserveLayout ? "auto" : "hidden",
-                overflowY: "auto",
-                overflowWrap: preserveLayout ? "normal" : "anywhere",
-                whiteSpace: preserveLayout ? "pre" : "pre-wrap",
-                wordBreak: preserveLayout ? "normal" : "break-word",
-            }}
-        >
-            <code
+        <div className="min-w-0">
+            <pre
+                className="max-h-48 select-text rounded px-2 py-1.5"
                 style={{
-                    color: "inherit",
-                    whiteSpace: "inherit",
+                    backgroundColor,
+                    border: accentBorder ?? "1px solid var(--color-border)",
+                    color,
+                    fontFamily: "var(--font-mono, monospace)",
+                    fontSize: "0.92em",
+                    lineHeight: 1.4,
+                    margin: 0,
+                    overflowX: preserveLayout ? "auto" : "hidden",
+                    overflowY: "auto",
+                    overflowWrap: preserveLayout ? "normal" : "anywhere",
+                    whiteSpace: preserveLayout ? "pre" : "pre-wrap",
+                    wordBreak: preserveLayout ? "normal" : "break-word",
                 }}
             >
-                <HighlightedCodeText
-                    language={languageSupport}
-                    segmentKeyPrefix={`tool-activity:${languageInfo ?? "plain"}:${content.length}`}
-                    text={content}
-                />
-            </code>
-        </pre>
+                <code
+                    style={{
+                        color: "inherit",
+                        whiteSpace: "inherit",
+                    }}
+                >
+                    <HighlightedCodeText
+                        language={languageSupport}
+                        segmentKeyPrefix={`tool-activity:${languageInfo ?? "plain"}:${content.length}:${visibleContent.length}`}
+                        text={visibleContent}
+                    />
+                </code>
+            </pre>
+            {isLongContent ? (
+                <div className="mt-1 flex items-center gap-2 text-xs text-text-secondary">
+                    <span>
+                        Showing {visibleContent.length.toLocaleString()} of{" "}
+                        {content.length.toLocaleString()} characters
+                    </span>
+                    {hasHiddenContent ? (
+                        <button
+                            className="rounded px-1.5 py-0.5 hover:bg-bg-tertiary hover:text-text-primary"
+                            onClick={() =>
+                                setVisibleCharacterCount((current) =>
+                                    Math.min(
+                                        content.length,
+                                        current +
+                                            TOOL_DETAIL_VISIBLE_CHARACTER_PAGE,
+                                    ),
+                                )
+                            }
+                            type="button"
+                        >
+                            Show more
+                        </button>
+                    ) : null}
+                    <button
+                        className="rounded px-1.5 py-0.5 hover:bg-bg-tertiary hover:text-text-primary"
+                        onClick={() => void copyFullContent()}
+                        type="button"
+                    >
+                        Copy full output
+                    </button>
+                </div>
+            ) : null}
+        </div>
     );
 }
 
@@ -913,6 +998,7 @@ function FileToolMessage({
     fileIndex,
     onOpenFile,
     onOpenFileReference,
+    onPayloadVisibilityChange,
     pendingTrackedFiles,
     projectId,
     resolveFileReference,
@@ -934,6 +1020,7 @@ function FileToolMessage({
     readonly onOpenFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
+    readonly onPayloadVisibilityChange?: ToolPayloadVisibilityChangeHandler;
     readonly pendingTrackedFiles: readonly AiTrackedFile[];
     readonly projectId: string | null;
     readonly resolveFileReference?: (
@@ -980,6 +1067,11 @@ function FileToolMessage({
     const [expanded, setExpanded] = usePersistentToolExpansion(
         activity.id,
         false,
+    );
+    useReportToolPayloadVisibility(
+        activity.id,
+        expanded,
+        onPayloadVisibilityChange,
     );
     const toggleExpanded = () => {
         if (!hasDetail) {
@@ -1413,9 +1505,11 @@ function getTerminalToolToneColor(tone: TerminalToolTone): string {
 function TerminalToolMessage({
     activity,
     compactByDefault,
+    onPayloadVisibilityChange,
 }: {
     readonly activity: AiToolActivity;
     readonly compactByDefault: boolean;
+    readonly onPayloadVisibilityChange?: ToolPayloadVisibilityChangeHandler;
 }) {
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
@@ -1431,6 +1525,11 @@ function TerminalToolMessage({
     const [expanded, setExpanded] = usePersistentToolExpansion(
         `${activity.id}:terminal`,
         !compactByDefault && isDangerTone && hasTerminalOutput,
+    );
+    useReportToolPayloadVisibility(
+        activity.id,
+        expanded,
+        onPayloadVisibilityChange,
     );
     const failureLabel = isDangerTone
         ? activity.exitCode !== null && activity.exitCode !== 0
@@ -1566,6 +1665,7 @@ function GenericToolMessage({
     canRenderFileReference,
     onOpenFileReference,
     onOpenSession,
+    onPayloadVisibilityChange,
     openSessionTitle,
     resolveFileReference,
 }: {
@@ -1578,6 +1678,7 @@ function GenericToolMessage({
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+    readonly onPayloadVisibilityChange?: ToolPayloadVisibilityChangeHandler;
     readonly openSessionTitle: string | null;
     readonly resolveFileReference?: (
         reference: string,
@@ -1587,6 +1688,11 @@ function GenericToolMessage({
     const [expanded, setExpanded] = usePersistentToolExpansion(
         `${activity.id}:generic`,
         isFailed,
+    );
+    useReportToolPayloadVisibility(
+        activity.id,
+        expanded,
+        onPayloadVisibilityChange,
     );
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
@@ -1753,6 +1859,7 @@ function CompactToolActivityRow({
     onOpenFile,
     onOpenFileReference,
     onOpenSession,
+    onPayloadVisibilityChange,
     openSessionTitle,
     projectId,
     resolveFileReference,
@@ -1770,6 +1877,7 @@ function CompactToolActivityRow({
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+    readonly onPayloadVisibilityChange?: ToolPayloadVisibilityChangeHandler;
     readonly openSessionTitle: string | null;
     readonly projectId: string | null;
     readonly resolveFileReference?: (
@@ -1818,6 +1926,11 @@ function CompactToolActivityRow({
     const [expanded, setExpanded] = usePersistentToolExpansion(
         `${activity.sessionId}:${activity.id}:rail-row`,
         false,
+    );
+    useReportToolPayloadVisibility(
+        activity.id,
+        expanded,
+        onPayloadVisibilityChange,
     );
     const detailId = `${activity.sessionId}:${activity.id}:rail-row-details`;
     const status = getCompactActivityStatus(activity, descriptor.category);
@@ -2033,6 +2146,7 @@ export interface ToolActivityItemProps {
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
+    readonly onPayloadVisibilityChange?: ToolPayloadVisibilityChangeHandler;
     readonly trackedFiles?: readonly AiTrackedFile[];
     readonly projectId: string | null;
     readonly resolveFileReference?: (
@@ -2049,6 +2163,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     onOpenFile,
     onOpenFileReference,
     onOpenSession,
+    onPayloadVisibilityChange,
     trackedFiles = [],
     projectId,
     resolveFileReference,
@@ -2112,6 +2227,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
                 onOpenFile={onOpenFile}
                 onOpenFileReference={onOpenFileReference}
                 onOpenSession={onOpenSession}
+                onPayloadVisibilityChange={onPayloadVisibilityChange}
                 openSessionTitle={openSessionTitle}
                 projectId={projectId}
                 resolveFileReference={resolveFileReference}
@@ -2124,14 +2240,19 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     if (isFileToolActivity(activity, trackedFiles)) {
         if (hasInlineReview || hasPendingChangeReview) {
             const reviewPanel = (
-                <ChangeReviewPanel
-                    activity={activity}
-                    onOpenFile={onOpenFile}
-                    projectId={projectId}
-                    resolveFileReference={resolveFileReference}
-                    trackedFiles={trackedFiles}
-                    worktreeId={worktreeId}
-                />
+                <VisibleToolPayload
+                    activityId={activity.id}
+                    onVisibilityChange={onPayloadVisibilityChange}
+                >
+                    <ChangeReviewPanel
+                        activity={activity}
+                        onOpenFile={onOpenFile}
+                        projectId={projectId}
+                        resolveFileReference={resolveFileReference}
+                        trackedFiles={trackedFiles}
+                        worktreeId={worktreeId}
+                    />
+                </VisibleToolPayload>
             );
 
             if (isTerminalToolActivity(activity)) {
@@ -2140,6 +2261,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
                         <TerminalToolMessage
                             activity={activity}
                             compactByDefault={compactTerminal}
+                            onPayloadVisibilityChange={onPayloadVisibilityChange}
                         />
                         {reviewPanel}
                     </div>
@@ -2154,6 +2276,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
                 <TerminalToolMessage
                     activity={activity}
                     compactByDefault={compactTerminal}
+                    onPayloadVisibilityChange={onPayloadVisibilityChange}
                 />
             );
         }
@@ -2165,6 +2288,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
                 fileIndex={fileIndex}
                 onOpenFile={onOpenFile}
                 onOpenFileReference={onOpenFileReference}
+                onPayloadVisibilityChange={onPayloadVisibilityChange}
                 pendingTrackedFiles={pendingTrackedFiles}
                 projectId={projectId}
                 resolveFileReference={resolveFileReference}
@@ -2178,6 +2302,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
             <TerminalToolMessage
                 activity={activity}
                 compactByDefault={compactTerminal}
+                onPayloadVisibilityChange={onPayloadVisibilityChange}
             />
         );
     }
@@ -2188,6 +2313,7 @@ export const ToolActivityItem = memo(function ToolActivityItem({
             canRenderFileReference={canRenderFileReference}
             onOpenFileReference={onOpenFileReference}
             onOpenSession={onOpenSession}
+            onPayloadVisibilityChange={onPayloadVisibilityChange}
             openSessionTitle={openSessionTitle}
             resolveFileReference={resolveFileReference}
         />
@@ -2207,6 +2333,7 @@ function areToolActivityItemPropsEqual(
         previous.onOpenFile === next.onOpenFile &&
         previous.onOpenFileReference === next.onOpenFileReference &&
         previous.onOpenSession === next.onOpenSession &&
+        previous.onPayloadVisibilityChange === next.onPayloadVisibilityChange &&
         previous.projectId === next.projectId &&
         previous.resolveFileReference === next.resolveFileReference &&
         previous.surface === next.surface &&

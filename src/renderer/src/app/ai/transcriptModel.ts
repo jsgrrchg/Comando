@@ -7,6 +7,15 @@ import type {
     AiSessionStatus,
     AiToolActivity,
 } from "@shared/ipc";
+import {
+    AI_TRANSCRIPT_PLAN_ENTRY_ID,
+    AI_TRANSCRIPT_STATUS_ENTRY_ID,
+    attachAiSubagentSessionAction,
+    getAiTranscriptMessageEntryId,
+    getAiTranscriptToolEntryId,
+    mergeAiTranscriptMessage,
+    mergeAiTranscriptToolActivity,
+} from "@shared/ai-transcript";
 
 export type AiSessionTranscriptEntry =
     | {
@@ -91,10 +100,11 @@ interface TranscriptMergeOptions {
     readonly includePlan: boolean;
     readonly includeStatus: boolean;
     readonly includeTools: boolean;
+    readonly preserveMissingTools?: boolean;
 }
 
-const PLAN_ENTRY_ID = "plan:active";
-const STATUS_ENTRY_ID = "status:active-turn";
+const PLAN_ENTRY_ID = AI_TRANSCRIPT_PLAN_ENTRY_ID;
+const STATUS_ENTRY_ID = AI_TRANSCRIPT_STATUS_ENTRY_ID;
 const OPAQUE_ENCRYPTED_MESSAGE_PATTERN = /^gAAAAA[A-Za-z0-9_-]{40,}={0,2}$/;
 const transcriptMutationByModel = new WeakMap<
     AiSessionTranscriptModel,
@@ -269,11 +279,32 @@ export function applyAiSessionDomainEventToTranscript(
             });
         case "permission-request":
         case "session-info":
-        case "subagent-breadcrumb":
         case "subagent-created":
         case "token-usage":
         case "user-input-request":
             return transcript;
+        case "subagent-breadcrumb":
+            return replaceAiSessionTranscriptEntry(
+                transcript,
+                getToolTranscriptId(event.sessionId, event.toolCallId),
+                (entry) => {
+                    if (entry.kind !== "tool") {
+                        return entry;
+                    }
+                    const activity = attachAiSubagentSessionAction(
+                        entry.activity,
+                        event.childSessionId,
+                    );
+                    const updatedAt =
+                        entry.updatedAt > event.updatedAt
+                            ? entry.updatedAt
+                            : event.updatedAt;
+                    return activity === entry.activity &&
+                        updatedAt === entry.updatedAt
+                        ? entry
+                        : { ...entry, activity, updatedAt };
+                },
+            );
         default:
             return transcript;
     }
@@ -320,7 +351,9 @@ export function mergeAiSessionTranscriptSources(
             (options.includeStatus &&
                 entry.kind === "status" &&
                 !incomingHasStatus) ||
-            (options.includeTools && entry.kind === "tool")
+            (options.includeTools &&
+                !options.preserveMissingTools &&
+                entry.kind === "tool")
         ) {
             continue;
         }
@@ -416,14 +449,14 @@ function createToolTranscriptEntry(
 }
 
 function getMessageTranscriptId(messageId: string): string {
-    return `message:${messageId}`;
+    return getAiTranscriptMessageEntryId(messageId);
 }
 
 function getToolTranscriptId(sessionId: string, toolCallId: string): string {
-    return `tool:${sessionId}:${toolCallId}`;
+    return getAiTranscriptToolEntryId(sessionId, toolCallId);
 }
 
-function buildAiSessionTranscriptModelFromEntries(
+export function buildAiSessionTranscriptModelFromEntries(
     entries: readonly AiSessionTranscriptEntry[],
 ): AiSessionTranscriptModel {
     const sortedEntries = [...entries].sort(compareTranscriptEntries);
@@ -554,6 +587,29 @@ function removeAiSessionTranscriptEntry(
     delete entriesById[entryId];
     return buildAiSessionTranscriptModelFromOrderedEntries(
         transcript.orderedEntryIds.filter((candidateId) => candidateId !== entryId),
+        entriesById,
+    );
+}
+
+export function removeAiSessionTranscriptEntries(
+    transcript: AiSessionTranscriptModel,
+    entryIds: ReadonlySet<string>,
+): AiSessionTranscriptModel {
+    const removableEntryIds = new Set(
+        [...entryIds].filter((entryId) => transcript.entriesById[entryId]),
+    );
+    if (removableEntryIds.size === 0) {
+        return transcript;
+    }
+
+    const entriesById = { ...transcript.entriesById };
+    for (const entryId of removableEntryIds) {
+        delete entriesById[entryId];
+    }
+    return buildAiSessionTranscriptModelFromOrderedEntries(
+        transcript.orderedEntryIds.filter(
+            (entryId) => !removableEntryIds.has(entryId),
+        ),
         entriesById,
     );
 }
@@ -886,62 +942,30 @@ function mergeTranscriptEntry(
             createdAt: options.preserveCreatedAt
                 ? existing.createdAt
                 : incoming.createdAt,
-            message: mergeAiMessage(existing.message, incoming.message),
+            message: mergeAiTranscriptMessage(existing.message, incoming.message, existing.updatedAt, incoming.updatedAt),
         };
     }
 
     if (existing.kind === "tool" && incoming.kind === "tool") {
         return {
             ...incoming,
-            activity: mergeAiToolActivity(
-                existing.activity,
-                incoming.activity,
-                options,
-            ),
+            activity: {
+                ...mergeAiTranscriptToolActivity(existing.activity, incoming.activity),
+                createdAt: options.preserveCreatedAt ? existing.createdAt : incoming.createdAt,
+            },
             createdAt: options.preserveCreatedAt
                 ? existing.createdAt
                 : incoming.createdAt,
+            updatedAt:
+                existing.updatedAt > incoming.updatedAt
+                    ? existing.updatedAt
+                    : incoming.updatedAt,
         };
     }
 
     return incoming;
 }
 
-function mergeAiMessage(existing: AiMessage, incoming: AiMessage): AiMessage {
-    return {
-        ...incoming,
-        attachments:
-            existing.attachments.length > incoming.attachments.length
-                ? existing.attachments
-                : incoming.attachments,
-        content:
-            existing.content.length > incoming.content.length
-                ? existing.content
-                : incoming.content,
-        generatedImage: incoming.generatedImage ?? existing.generatedImage,
-        status:
-            existing.status === "completed" && incoming.status !== "completed"
-                ? "completed"
-                : incoming.status,
-    };
-}
-
-function mergeAiToolActivity(
-    existing: AiToolActivity,
-    incoming: AiToolActivity,
-    options: {
-        readonly preserveCreatedAt?: boolean;
-    } = {},
-): AiToolActivity {
-    return {
-        ...incoming,
-        createdAt: options.preserveCreatedAt
-            ? existing.createdAt
-            : incoming.createdAt,
-        exitCode: incoming.exitCode ?? existing.exitCode,
-        terminalOutput: incoming.terminalOutput ?? existing.terminalOutput,
-    };
-}
 
 function shouldIncludeIncomingEntry(
     entry: AiSessionTranscriptEntry,

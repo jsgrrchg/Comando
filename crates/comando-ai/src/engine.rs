@@ -41,7 +41,7 @@ use crate::runtime_setup::{
     prepare_runtime_auth_connection, prepare_runtime_launch, runtime_status,
 };
 use crate::scope::SessionScope;
-use crate::session::{NativeAiSession, SessionRegistry, resolve_session_title_on_prompt};
+use crate::session::{NativeAiSession, SessionRegistry};
 
 #[derive(Debug, Clone)]
 pub struct AiEngineConfig {
@@ -319,13 +319,6 @@ impl AiEngine {
             .target_session_id
             .clone()
             .unwrap_or_else(|| root_session_id.clone());
-        let display_text = input
-            .prompt
-            .display_text
-            .as_deref()
-            .unwrap_or(&input.prompt.text)
-            .to_string();
-        let has_prior_user_message = self.has_history_user_message(&target_session_id)?;
         let mut sessions = self.lock_sessions()?;
         let session = sessions.get_mut(&root_session_id)?;
         let Some(controller) = session.acp_controller.clone() else {
@@ -361,18 +354,6 @@ impl AiEngine {
             }
             return Err(error);
         }
-        if target_session_id == root_session_id {
-            let next_title = resolve_session_title_on_prompt(
-                &session.session.title,
-                &session.session.title,
-                &display_text,
-                has_prior_user_message,
-            );
-            if next_title != session.session.title {
-                session.session.title = next_title;
-                session.session.updated_at = now_iso8601();
-            }
-        }
         let mut summary = session.session.summary();
         drop(sessions);
         if target_session_id != root_session_id {
@@ -388,7 +369,11 @@ impl AiEngine {
         self.push_history_user_message(
             &target_session_id,
             &input.message_id.0,
-            &display_text,
+            input
+                .prompt
+                .display_text
+                .as_deref()
+                .unwrap_or(&input.prompt.text),
             &input.prompt.attachments,
         )?;
         Ok((send_prompt_output(target_session_id), summary))
@@ -837,18 +822,6 @@ impl AiEngine {
             .cloned()
             .unwrap_or_default();
         store.save_transcript_window(session_id, messages)
-    }
-
-    fn has_history_user_message(
-        &self,
-        session_id: &comando_types::ids::SessionId,
-    ) -> AiResult<bool> {
-        let messages = self.history_messages.lock().map_err(|error| {
-            AiError::Internal(format!("AI history messages lock failed: {error}"))
-        })?;
-        Ok(messages
-            .get(&session_id.0)
-            .is_some_and(|messages| messages.iter().any(is_user_history_message)))
     }
 
     fn push_history_user_message(
@@ -1553,10 +1526,6 @@ fn estimate_base64_size(data_base64: &str) -> u64 {
         0
     };
     ((data.len() as u64 * 3) / 4).saturating_sub(padding)
-}
-
-fn is_user_history_message(message: &Value) -> bool {
-    message.get("kind").and_then(Value::as_str) == Some("user")
 }
 
 fn history_message_identity(

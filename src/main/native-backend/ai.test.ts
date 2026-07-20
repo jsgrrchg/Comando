@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+    AiOpenTranscriptTail,
     AiSessionSnapshot,
     AiTrackedFile,
     AiRuntimeStatus,
@@ -21,6 +22,8 @@ import {
     type NativeAiGatewayOptions,
 } from "./ai";
 import { NativeBackendError } from "./client";
+
+const TURN_STARTED_AT = "2026-07-18T00:01:00.000Z";
 
 describe("NativeAiGateway", () => {
     it("prepares native sessions with launch context and returns a live snapshot", async () => {
@@ -769,6 +772,194 @@ describe("NativeAiGateway", () => {
         });
     });
 
+    it("routes open-tail checkpoints, recovery and sealing through native storage", async () => {
+        const client = createClient();
+        const tail = openTranscriptTail();
+        client.request.mockImplementation(
+            <T = unknown>(command: string): Promise<T> => {
+                if (command === "ai_load_open_transcript_tail") {
+                    return Promise.resolve(tail as T);
+                }
+                if (command === "ai_seal_transcript_turn") {
+                    return Promise.resolve([
+                        {
+                            blockId: "session-1:0",
+                            endSequence: 1,
+                            entryCount: 1,
+                            estimatedHeight: 72,
+                            estimatedRowCount: 1,
+                            firstCreatedAt: TURN_STARTED_AT,
+                            lastCreatedAt: TURN_STARTED_AT,
+                            revision: 2,
+                            sessionId: "session-1",
+                            startSequence: 1,
+                        },
+                    ] as T);
+                }
+                return Promise.resolve({ ok: true } as T);
+            },
+        );
+        const gateway = createGateway(client);
+        const checkpoint = {
+            entries: tail.entries,
+            entryOrder: tail.entryRevisions,
+            payloads: tail.payloads,
+            removedEntryIds: [],
+            sessionId: tail.sessionId,
+            terminalStatus: "cancelled" as const,
+            turnId: tail.turnId,
+        };
+
+        await gateway.checkpointOpenTranscriptTail(checkpoint);
+        await expect(gateway.loadOpenTranscriptTail("session-1")).resolves.toEqual(
+            tail,
+        );
+        await expect(
+            gateway.sealTranscriptTurn({
+                entries: tail.entries,
+                payloads: tail.payloads,
+                sessionId: tail.sessionId,
+                turnId: tail.turnId,
+            }),
+        ).resolves.toMatchObject([{ blockId: "session-1:0" }]);
+
+        expect(client.request).toHaveBeenCalledWith(
+            "ai_checkpoint_open_transcript_tail",
+            checkpoint,
+        );
+        expect(client.request).toHaveBeenCalledWith(
+            "ai_load_open_transcript_tail",
+            { sessionId: "session-1" },
+        );
+    });
+
+    it("exposes versioned paged transcript, payload and migration capabilities", async () => {
+        const client = createClient();
+        const tail = openTranscriptTail();
+        const entry = tail.entries[0];
+        const metadata = {
+            blockId: "session-1:0",
+            endSequence: 1,
+            entryCount: 1,
+            estimatedHeight: 72,
+            estimatedRowCount: 1,
+            firstCreatedAt: TURN_STARTED_AT,
+            lastCreatedAt: TURN_STARTED_AT,
+            revision: 2,
+            sessionId: "session-1",
+            startSequence: 1,
+        };
+        client.request.mockImplementation(
+            <T = unknown>(command: string): Promise<T> => {
+                const outputs: Record<string, unknown> = {
+                    ai_get_history_storage_health: {
+                        healthy: true,
+                        latestError: null,
+                        legacyFallbackAvailable: true,
+                        migrationManifestExists: false,
+                        nativeSessionCount: 1,
+                        orphanedSessionDirs: 0,
+                        storageVersion: 3,
+                    },
+                    ai_get_transcript_storage_state: {
+                        capabilityVersion: 1,
+                        legacyFallbackAvailable: true,
+                        migrationManifestExists: false,
+                        mode: "block-native",
+                        sessionId: "session-1",
+                        storageVersion: 3,
+                    },
+                    ai_load_transcript_block: {
+                        ...metadata,
+                        capabilityVersion: 1,
+                        entries: [entry],
+                        transcriptRevision: 2,
+                    },
+                    ai_load_transcript_block_metadata: {
+                        blocks: [metadata],
+                        capabilityVersion: 1,
+                        sessionId: "session-1",
+                        transcriptRevision: 2,
+                    },
+                    ai_load_transcript_payload: {
+                        byteLength: 10,
+                        capabilityVersion: 1,
+                        contentHash: "abc123",
+                        payloadRef: "tail:message:assistant-1",
+                        sessionId: "session-1",
+                        transcriptRevision: 2,
+                        value: { kind: "message" },
+                    },
+                    ai_migrate_session_history: {
+                        completedAt: TURN_STARTED_AT,
+                        errors: [],
+                        failedSessions: 0,
+                        migratedSessions: 1,
+                        skippedSessions: 0,
+                        startedAt: TURN_STARTED_AT,
+                        updatedAt: TURN_STARTED_AT,
+                    },
+                };
+                return Promise.resolve(outputs[command] as T);
+            },
+        );
+        const gateway = createGateway(client, {
+            capabilities: {
+                commands: [],
+                domains: ["ai"],
+                events: [],
+                features: ["native-ai-transcript-block-v1"],
+            },
+        });
+
+        expect(gateway.getTranscriptCapability()).toEqual({
+            blockNativeVersion: 1,
+            legacyFallbackAvailable: true,
+        });
+        await expect(
+            gateway.loadTranscriptBlockMetadata("session-1"),
+        ).resolves.toMatchObject({ blocks: [metadata], transcriptRevision: 2 });
+        await expect(
+            gateway.loadTranscriptBlock("session-1", metadata.blockId),
+        ).resolves.toMatchObject({ blockId: metadata.blockId });
+        await expect(
+            gateway.loadTranscriptPayload({
+                maxBytes: 1024,
+                payloadRef: "tail:message:assistant-1",
+                sessionId: "session-1",
+            }),
+        ).resolves.toMatchObject({ contentHash: "abc123" });
+        await expect(
+            gateway.getTranscriptStorageState("session-1"),
+        ).resolves.toMatchObject({ mode: "block-native" });
+        await expect(gateway.getHistoryStorageHealth()).resolves.toMatchObject({
+            healthy: true,
+        });
+        await expect(gateway.migrateSessionHistory({ limit: 1 })).resolves.toMatchObject({
+            migratedSessions: 1,
+        });
+
+        expect(createGateway(createClient()).getTranscriptCapability()).toEqual({
+            blockNativeVersion: null,
+            legacyFallbackAvailable: true,
+        });
+    });
+
+    it("rejects paged transcript responses owned by another session", async () => {
+        const client = createClient();
+        client.request.mockResolvedValue({
+            blocks: [],
+            capabilityVersion: 1,
+            sessionId: "session-2",
+            transcriptRevision: 0,
+        });
+        const gateway = createGateway(client);
+
+        await expect(
+            gateway.loadTranscriptBlockMetadata("session-1"),
+        ).rejects.toThrow("belongs to another session");
+    });
+
     it("does not hydrate review state when loading historical snapshots", async () => {
         const client = createClient();
         const legacyFile = createNativeTrackedFile({
@@ -1043,10 +1234,12 @@ function createGateway(
             | "onRuntimeStatus"
             | "onSessionCatalogPatch"
             | "onSessionEvent"
+            | "capabilities"
         >
     > = {},
 ) {
     return new NativeAiGateway({
+        capabilities: options.capabilities,
         client,
         onDiagnostic: options.onDiagnostic,
         onRuntimeStatus: options.onRuntimeStatus ?? vi.fn(),
@@ -1207,6 +1400,55 @@ function createPromptInput(): SendAiPromptInput {
         sessionId: "session-1",
         title: "Native session",
         worktreeId: "worktree-1",
+    };
+}
+
+function openTranscriptTail(): AiOpenTranscriptTail {
+    return {
+        entries: [
+            {
+                createdAt: TURN_STARTED_AT,
+                id: "message:assistant-1",
+                kind: "message",
+                payloadRef: "tail:message:assistant-1",
+                sequence: 1,
+                sessionId: "session-1",
+                summary: {
+                    label: "Assistant",
+                    preview: "Answer",
+                    status: "streaming",
+                },
+                updatedAt: TURN_STARTED_AT,
+            },
+        ],
+        entryRevisions: [
+            {
+                entryId: "message:assistant-1",
+                entryRevision: 1,
+                ordinal: 0,
+            },
+        ],
+        payloads: [
+            {
+                payloadRef: "tail:message:assistant-1",
+                value: {
+                    kind: "message",
+                    message: {
+                        attachments: [],
+                        content: "Answer",
+                        createdAt: TURN_STARTED_AT,
+                        id: "assistant-1",
+                        kind: "assistant",
+                        status: "streaming",
+                    },
+                },
+            },
+        ],
+        revision: 1,
+        sessionId: "session-1",
+        terminalStatus: null,
+        turnId: TURN_STARTED_AT,
+        updatedAt: TURN_STARTED_AT,
     };
 }
 

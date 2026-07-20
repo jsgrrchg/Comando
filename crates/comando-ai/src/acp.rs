@@ -787,11 +787,12 @@ async fn run_acp_session(
         .ok_or_else(|| "ACP runtime stdout was not available.".to_string())?;
     let transport = ByteStreams::new(stdin.compat_write(), stdout.compat());
 
-    let notification_context = NotificationContext::new(
+    let notification_context = NotificationContext::new_with_session_registry(
         session.clone(),
         event_sender.clone(),
         spec.persisted_subagent_session_mappings.clone(),
         spec.supports_subagents,
+        Arc::clone(&sessions),
     );
     let notification_context_for_handler = notification_context.clone();
     let permission_event_sender = event_sender.clone();
@@ -1885,17 +1886,51 @@ struct NotificationContext {
 }
 
 impl NotificationContext {
+    #[cfg(test)]
     fn new(
         session: NativeAiSession,
         event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
         persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
         supports_subagents: bool,
     ) -> Self {
+        Self::new_inner(
+            session,
+            event_sender,
+            persisted_subagent_session_mappings,
+            supports_subagents,
+            None,
+        )
+    }
+
+    fn new_with_session_registry(
+        session: NativeAiSession,
+        event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
+        persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
+        supports_subagents: bool,
+        session_registry: Arc<Mutex<SessionRegistry>>,
+    ) -> Self {
+        Self::new_inner(
+            session,
+            event_sender,
+            persisted_subagent_session_mappings,
+            supports_subagents,
+            Some(session_registry),
+        )
+    }
+
+    fn new_inner(
+        session: NativeAiSession,
+        event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
+        persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
+        supports_subagents: bool,
+        session_registry: Option<Arc<Mutex<SessionRegistry>>>,
+    ) -> Self {
         let inner = NotificationContextInner::new(
             session,
             event_sender,
             persisted_subagent_session_mappings,
             supports_subagents,
+            session_registry,
         );
         Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -1971,6 +2006,7 @@ struct NotificationContextInner {
     pending_unknown_runtime_tool_activities: HashMap<String, Vec<PendingToolActivity>>,
     runtime_session_id: Option<RuntimeSessionId>,
     session: NativeAiSession,
+    session_registry: Option<Arc<Mutex<SessionRegistry>>>,
     subagents_by_runtime_session_id: HashMap<String, SubagentRuntimeSession>,
     structured_subagent_runtime_session_ids: HashSet<String>,
     subagent_active_turn_ids: HashMap<String, String>,
@@ -2052,6 +2088,7 @@ impl NotificationContextInner {
         event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
         persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
         supports_subagents: bool,
+        session_registry: Option<Arc<Mutex<SessionRegistry>>>,
     ) -> Self {
         let mut app_session_id_by_runtime_session_id = HashMap::new();
         let mut subagents_by_runtime_session_id = HashMap::new();
@@ -2119,6 +2156,7 @@ impl NotificationContextInner {
             pending_unknown_runtime_tool_activities: HashMap::new(),
             runtime_session_id: session.runtime_session_id.clone(),
             session,
+            session_registry,
             subagents_by_runtime_session_id,
             structured_subagent_runtime_session_ids: HashSet::new(),
             subagent_active_turn_ids: HashMap::new(),
@@ -2796,10 +2834,23 @@ impl NotificationContextInner {
         }
 
         if let Some(title) = title.filter(|title| !is_generic_subagent_title(title)) {
-            self.session.title = title;
+            self.update_root_session_title(title);
             let summary = self.summary_for_runtime_session(runtime_session_id);
             self.emit(AI_SESSION_UPDATED_EVENT, &session_updated(&summary));
         }
+    }
+
+    fn update_root_session_title(&mut self, title: String) {
+        self.session.title = title.clone();
+        self.session.updated_at = now_iso8601();
+
+        let Some(session_registry) = self.session_registry.as_ref() else {
+            return;
+        };
+        let Ok(mut sessions) = session_registry.lock() else {
+            return;
+        };
+        sessions.set_runtime_title(&self.session.session_id, title);
     }
 
     fn handle_available_commands_update(
@@ -5191,6 +5242,82 @@ mod tests {
             launch: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn session_info_title_updates_the_registry_used_by_turn_statuses() {
+        let (sender, receiver) = std_mpsc::sync_channel(4);
+        let session = native_test_session();
+        let session_id = session.session_id.clone();
+        let mut registry = SessionRegistry::default();
+        registry.insert(session.clone()).unwrap();
+        let sessions = Arc::new(Mutex::new(registry));
+        let context = NotificationContext::new_with_session_registry(
+            session,
+            Some(sender),
+            Vec::new(),
+            true,
+            Arc::clone(&sessions),
+        );
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::SessionInfoUpdate(
+                agent_client_protocol::schema::v1::SessionInfoUpdate::new()
+                    .title("Investigate startup crash"),
+            ),
+        ));
+
+        let event = receiver.recv().unwrap();
+        assert_eq!(event.event_name, AI_SESSION_UPDATED_EVENT);
+        assert_eq!(event.payload["title"], "Investigate startup crash");
+        assert_eq!(
+            sessions
+                .lock()
+                .unwrap()
+                .get(&session_id)
+                .unwrap()
+                .session
+                .title,
+            "Investigate startup crash"
+        );
+    }
+
+    #[test]
+    fn session_info_before_registration_survives_the_first_turn_status() {
+        let (sender, receiver) = std_mpsc::sync_channel(4);
+        let session = native_test_session();
+        let session_id = session.session_id.clone();
+        let sessions = Arc::new(Mutex::new(SessionRegistry::default()));
+        let context = NotificationContext::new_with_session_registry(
+            session.clone(),
+            Some(sender),
+            Vec::new(),
+            true,
+            Arc::clone(&sessions),
+        );
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::SessionInfoUpdate(
+                agent_client_protocol::schema::v1::SessionInfoUpdate::new()
+                    .title("Investigate startup crash"),
+            ),
+        ));
+        receiver.recv().unwrap();
+
+        let mut registry = sessions.lock().unwrap();
+        let summary = registry.insert(session).unwrap();
+        assert_eq!(summary.title, "Investigate startup crash");
+        assert_eq!(
+            registry
+                .mark_status(&session_id, NativeAiSessionStatus::Idle)
+                .unwrap()
+                .title,
+            "Investigate startup crash"
+        );
     }
 
     #[test]

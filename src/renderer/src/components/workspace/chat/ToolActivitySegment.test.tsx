@@ -208,6 +208,23 @@ function renderInteractive(segment: ChatTimelineActivitySegmentRow) {
 }
 
 describe("ToolActivitySegment", () => {
+    it("acts as a summary-only row when details belong to the virtual timeline", () => {
+        const onExpandedChange = vi.fn();
+        const markup = renderToStaticMarkup(
+            createElement(ToolActivitySegment, {
+                ...DEFAULT_PROPS,
+                expanded: true,
+                onExpandedChange,
+                renderDetails: false,
+                segment: createThinkingSegment(),
+            }),
+        );
+
+        expect(markup).toContain('aria-expanded="true"');
+        expect(markup).not.toContain("data-thinking-message-id");
+        expect(markup).not.toContain("aria-controls");
+    });
+
     it("renders thinking-only work as an expandable activity rail", () => {
         const container = renderInteractive(createThinkingSegment());
         expect(container.textContent).toContain("Thought");
@@ -383,7 +400,7 @@ describe("ToolActivitySegment", () => {
         ).toBe("Full activity");
     });
 
-    it("keeps a large safe burst DOM-bounded while collapsed", () => {
+    it("renders all activity when a large safe burst is expanded", () => {
         const entries = Array.from({ length: 50 }, (_, index) =>
             createEntry(`read-${index + 1}`),
         );
@@ -410,7 +427,7 @@ describe("ToolActivitySegment", () => {
         const expandedEntries = Array.from(
             container.querySelectorAll<HTMLElement>("[data-child-activity]"),
         );
-        expect(expandedEntries).toHaveLength(20);
+        expect(expandedEntries).toHaveLength(50);
         expect(
             expandedEntries.every(
                 (entry) => entry.dataset.toolSurface === "rail-row",
@@ -422,21 +439,9 @@ describe("ToolActivitySegment", () => {
                 ?.getAttribute("aria-label"),
         ).toBe("Full activity");
 
-        const firstVisibleActivity = expandedEntries[0];
-        act(() =>
-            Array.from(container.querySelectorAll("button")).find(
-                (button) => button.textContent === "Load 20 more",
-            )?.click(),
-        );
-        expect(container.querySelectorAll("[data-child-activity]")).toHaveLength(
-            40,
-        );
-        expect(
-            container.querySelector<HTMLElement>("[data-child-activity]"),
-        ).toBe(firstVisibleActivity);
     });
 
-    it("mounts a compact incremental window for twenty thousand expanded tools", () => {
+    it("renders every activity in an expanded large segment", () => {
         const entries = Array.from({ length: 20_000 }, (_, index) =>
             createEntry(`read-${index + 1}`),
         );
@@ -447,16 +452,11 @@ describe("ToolActivitySegment", () => {
         const mountedActivities = container.querySelectorAll(
             "[data-child-activity]",
         );
-        expect(mountedActivities).toHaveLength(20);
-        expect(
-            Array.from(container.querySelectorAll("button")).some(
-                (button) => button.textContent === "Load 20 more",
-            ),
-        ).toBe(true);
+        expect(mountedActivities).toHaveLength(20_000);
         expect(
             container.querySelector('[role="region"]')?.getAttribute("aria-label"),
         ).toBe("Full activity");
-    });
+    }, 20_000);
 
     it("does not remount activity rows when the parent layout changes", () => {
         const entries = Array.from({ length: 200 }, (_, index) =>

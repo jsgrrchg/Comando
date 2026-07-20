@@ -1,7 +1,6 @@
 import type { AiSessionSnapshot } from "@shared/ipc";
 import type { AiSessionTranscriptModel } from "@renderer/app/ai/transcriptModel";
 import { rendererArtifactCache } from "@renderer/app/workspace/resource-budget";
-import { isChatStreamingStatus } from "./chatTurnStatus";
 
 import type { ChatTimelineModel } from "./chatTimelineModel";
 
@@ -28,9 +27,6 @@ export function getCachedChatTimeline(input: {
     readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
     readonly transcript: AiSessionTranscriptModel;
 }): ChatTimelineModel | null {
-    if (isChatStreamingStatus(input.status)) {
-        return null;
-    }
     const cached = rendererArtifactCache.get<CachedTimeline>(
         CHAT_TIMELINE_CACHE_SCOPE,
         input.sessionId,
@@ -59,9 +55,6 @@ export function cacheChatTimeline(input: {
     readonly trackedFiles: AiSessionSnapshot["trackedFiles"];
     readonly transcript: AiSessionTranscriptModel;
 }): void {
-    if (isChatStreamingStatus(input.status)) {
-        return;
-    }
     rendererArtifactCache.set(CHAT_TIMELINE_CACHE_SCOPE, input.sessionId, {
         ...input,
         attentionToolCallIdsKey: getAttentionToolCallIdsKey(

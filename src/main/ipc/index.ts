@@ -17,6 +17,7 @@ import {
     type AiRuntimeId,
     type AiSessionConfigOptionMutationInput,
     type GetAiSessionTranscriptPageInput,
+    type AiLoadTranscriptPayloadInput,
     type AiSessionModeMutationInput,
     type AiSessionModelMutationInput,
     type AiSessionRenameMutationInput,
@@ -390,6 +391,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.resyncAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.listAiSessionHistory);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionTranscriptPage);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiTranscriptCapability);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiTranscriptBlockMetadata);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiTranscriptBlock);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiTranscriptPayload);
     ipcMain.removeHandler(IPC_CHANNELS.getAiPromptQueue);
     ipcMain.removeHandler(IPC_CHANNELS.enqueueAiPrompt);
     ipcMain.removeHandler(IPC_CHANNELS.removeAiQueuedPrompt);
@@ -2261,6 +2266,22 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.getAiSessionTranscriptPage,
         (_event, input: GetAiSessionTranscriptPageInput) =>
             options.aiService.getSessionTranscriptPage(input),
+    );
+    ipcMain.handle(IPC_CHANNELS.getAiTranscriptCapability, () =>
+        options.aiService.getTranscriptCapability(),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getAiTranscriptBlockMetadata,
+        (_event, sessionId: string) =>
+            options.aiService.getTranscriptBlockMetadata(sessionId),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getAiTranscriptBlock,
+        (_event, sessionId: string, blockId: string) =>
+            options.aiService.getTranscriptBlock(sessionId, blockId),
+    );
+    ipcMain.handle(IPC_CHANNELS.getAiTranscriptPayload, (_event, input: AiLoadTranscriptPayloadInput) =>
+        options.aiService.getTranscriptPayload(input),
     );
     ipcMain.handle(IPC_CHANNELS.getAiPromptQueue, (event, sessionId: string) => {
         const context = requireWindowContext(event.sender, "main");

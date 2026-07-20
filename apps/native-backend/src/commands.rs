@@ -83,6 +83,7 @@ pub struct NativeBackend {
     git_runner: GitRunner,
     index_service: IndexService,
     persistence_store: Option<SqlitePersistenceStore>,
+    history_store: Option<AiHistoryStore>,
     review_service: NativeReviewService,
     runtime_setup_store: Option<RuntimeSetupStore>,
     runtime_setup_store_shared: Arc<Mutex<Option<RuntimeSetupStore>>>,
@@ -223,6 +224,14 @@ impl NativeBackend {
             | "ai_rename_session"
             | "ai_list_session_history"
             | "ai_load_session_transcript_page"
+            | "ai_append_transcript_entries"
+            | "ai_checkpoint_open_transcript_tail"
+            | "ai_load_open_transcript_tail"
+            | "ai_seal_transcript_turn"
+            | "ai_load_transcript_block_metadata"
+            | "ai_load_transcript_block"
+            | "ai_load_transcript_payload"
+            | "ai_get_transcript_storage_state"
             | "ai_load_session_snapshot"
             | "ai_list_session_runtime_mappings"
             | "ai_set_session_pinned"
@@ -348,6 +357,14 @@ impl NativeBackend {
             | "ai_rename_session"
             | "ai_list_session_history"
             | "ai_load_session_transcript_page"
+            | "ai_append_transcript_entries"
+            | "ai_checkpoint_open_transcript_tail"
+            | "ai_load_open_transcript_tail"
+            | "ai_seal_transcript_turn"
+            | "ai_load_transcript_block_metadata"
+            | "ai_load_transcript_block"
+            | "ai_load_transcript_payload"
+            | "ai_get_transcript_storage_state"
             | "ai_load_session_snapshot"
             | "ai_list_session_runtime_mappings"
             | "ai_set_session_pinned"
@@ -408,9 +425,10 @@ impl NativeBackend {
                     Ok(history_store) => Some(history_store),
                     Err(error) => return error_only(request.id, error.to_native_error()),
                 };
-                if let Err(error) = self.ai_engine.set_history_store(history_store) {
+                if let Err(error) = self.ai_engine.set_history_store(history_store.clone()) {
                     return error_only(request.id, error.to_native_error());
                 }
+                self.history_store = history_store;
                 let runtime_setup_store = RuntimeSetupStore::new(
                     store.app_data_dir().join("ai").join("runtime-setup.json"),
                 );
@@ -2343,6 +2361,156 @@ impl NativeBackend {
                     Err(error) => error_only(request.id, error),
                 }
             }
+            "ai_append_transcript_entries" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiAppendTranscriptEntriesInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .append_transcript_entries(&input.session_id, input.entries)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(()) => response_only(request.id, json!({ "ok": true })),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_checkpoint_open_transcript_tail" => {
+                let input = match parse_args::<native_ai::NativeAiCheckpointOpenTranscriptTailInput>(
+                    &request,
+                ) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .checkpoint_open_transcript_tail(input)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(()) => response_only(request.id, json!({ "ok": true })),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_open_transcript_tail" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadSessionSnapshotInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .load_open_transcript_tail(&input.session_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(tail) => response_only(
+                        request.id,
+                        serde_json::to_value(tail).expect("AI open transcript tail serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_seal_transcript_turn" => {
+                let input = match parse_args::<native_ai::NativeAiSealTranscriptTurnInput>(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .seal_transcript_turn(
+                            &input.session_id,
+                            &input.turn_id,
+                            input.entries,
+                            input.payloads,
+                        )
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(metadata) => response_only(
+                        request.id,
+                        serde_json::to_value(metadata)
+                            .expect("AI sealed transcript metadata serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_transcript_block_metadata" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadSessionSnapshotInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .load_transcript_block_metadata_output(&input.session_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(metadata) => response_only(
+                        request.id,
+                        serde_json::to_value(metadata).expect("AI transcript metadata serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_transcript_block" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadTranscriptBlockInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .load_transcript_block(&input.session_id, &input.block_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(block) => response_only(
+                        request.id,
+                        serde_json::to_value(block).expect("AI transcript block serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_transcript_payload" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadTranscriptPayloadInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .load_native_transcript_payload(
+                            &input.session_id,
+                            &input.payload_ref,
+                            input.max_bytes,
+                        )
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(payload) => response_only(
+                        request.id,
+                        serde_json::to_value(payload).expect("AI transcript payload serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_get_transcript_storage_state" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadSessionSnapshotInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .transcript_storage_state(&input.session_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(state) => response_only(
+                        request.id,
+                        serde_json::to_value(state)
+                            .expect("AI transcript storage state serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
             "ai_load_session_snapshot" => {
                 let input =
                     match parse_args::<native_ai::NativeAiLoadSessionSnapshotInput>(&request) {
@@ -2538,6 +2706,9 @@ impl NativeBackend {
     }
 
     fn ai_history_store(&self) -> Result<AiHistoryStore, NativeError> {
+        if let Some(store) = &self.history_store {
+            return Ok(store.clone());
+        }
         let Some(store) = self.persistence_store.as_ref() else {
             return Err(NativeError::new(
                 NativeErrorCode::BackendNotReady,

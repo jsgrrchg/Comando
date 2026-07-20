@@ -69,6 +69,8 @@ export function buildInlineReviewDiffEditorOptions({
         minimap: {
             enabled: minimapEnabled,
         },
+        // Inline review is read-only, so avoid scheduling occurrence work that cannot help editing.
+        occurrencesHighlight: "off",
         originalEditable: false,
         overviewRulerBorder: false,
         overviewRulerLanes: 0,

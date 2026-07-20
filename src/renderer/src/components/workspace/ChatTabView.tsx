@@ -9,6 +9,7 @@ import {
     useState,
     type ReactNode,
     type RefObject,
+    type TouchEvent,
     type WheelEvent,
 } from "react";
 
@@ -26,6 +27,7 @@ import {
     MAX_IMAGE_ATTACHMENT_BYTES,
 } from "@shared/ai-attachments";
 import { deriveTrackedFilesFromActionLog } from "@shared/ai-review-action-log";
+import { getChatDisplayTitle } from "@shared/chatTitle";
 import { resolveEditorLanguage } from "@shared/editor-language";
 
 import { useShallow } from "zustand/react/shallow";
@@ -41,10 +43,15 @@ import {
     getAiSessionTranscriptToolActivity,
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
+import {
+    buildBlockNativeTranscript,
+    buildTranscriptToolPayloadRefs,
+} from "@renderer/app/ai/transcriptWindowProjection";
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
+import { chatActivationScheduler } from "@renderer/app/workspace/chatActivationScheduler";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
@@ -75,7 +82,6 @@ import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
     reconcileChatTimelineModelIncrementallyFromTranscript,
     type ChatTimelineModel,
-    type ChatTimelineRow,
 } from "./chat/chatTimelineModel";
 import {
     cacheChatTimeline,
@@ -89,7 +95,17 @@ import { getChatSessionPreparationKey } from "./chat/chatSessionPreparation";
 import {
     isScrollViewportNearBottom,
     resolveChatScrollPersistenceState,
+    shouldHoldChatScrollFollowIntent,
 } from "./chat/chatScroll";
+import {
+    anchorNewChatTurn,
+    canApplyChatScrollOperation,
+    createChatScrollIntent,
+    followChatScrollEnd,
+    isAnchoringNewChatTurn,
+    isFollowingChatScrollEnd,
+    readChatScroll,
+} from "./chat/chatScrollIntent";
 import type { AIComposerPart } from "./chat/composerParts";
 import {
     appendSelectionMentionPart,
@@ -111,8 +127,28 @@ import {
     serializePromptWithContexts,
 } from "./chat/promptContextReferences";
 import { QueuedMessagesPanel } from "./chat/QueuedMessagesPanel";
-import { ToolActivitySegment } from "./chat/ToolActivitySegment";
+import {
+    ActivitySegmentItemRow,
+    ToolActivitySegment,
+} from "./chat/ToolActivitySegment";
 import { ToolActivityItem } from "./chat/ToolActivityItem";
+import {
+    buildTranscriptTimelineItems,
+    captureTranscriptSemanticAnchor,
+    createTranscriptStreamingIndicatorItem,
+    flattenTranscriptTimelineItems,
+    getTranscriptTimelineItemAnchorEntryId,
+    isChatTimelineRowItem,
+    isTranscriptActivityEntryItem,
+    isTranscriptActivityRangeItem,
+    isTranscriptActivitySummaryItem,
+    resolveTranscriptBlockIdsInRange,
+    resolveUnloadedTranscriptBlockIdsInRange,
+    type TranscriptActivityGroupExpansionById,
+    type TranscriptTimelineItem,
+    type TranscriptTimelineVirtualRow,
+} from "./chat/transcriptBlockVirtualization";
+import { splitLongContentRows } from "./chat/longContentVirtualization";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
@@ -144,6 +180,24 @@ interface ChatTabViewProps {
     readonly tab: RuntimeWorkspaceChatTab;
 }
 
+function getTrailingUserTimelineRowId(
+    rows: readonly TranscriptTimelineItem[],
+): string | null {
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        if (
+            row &&
+            isChatTimelineRowItem(row) &&
+            row.kind === "message" &&
+            row.message.kind === "user"
+        ) {
+            return row.id;
+        }
+    }
+
+    return null;
+}
+
 function ChatPerformanceProfiler({
     children,
     enabled,
@@ -172,10 +226,12 @@ type ChatSessionViewState = Pick<
     | "draftComposerParts"
     | "draftFileContexts"
     | "editingQueuedPrompt"
+    | "historyHydrationState"
     | "localError"
     | "queue"
     | "snapshot"
     | "transcript"
+    | "transcriptWindow"
 >;
 
 function selectChatSessionViewState(
@@ -193,10 +249,12 @@ function selectChatSessionViewState(
         draftComposerParts: session.draftComposerParts,
         draftFileContexts: session.draftFileContexts,
         editingQueuedPrompt: session.editingQueuedPrompt,
+        historyHydrationState: session.historyHydrationState,
         localError: session.localError,
         queue: session.queue,
         snapshot: session.snapshot,
         transcript: session.transcript,
+        transcriptWindow: session.transcriptWindow,
     };
 }
 
@@ -214,7 +272,6 @@ const FALLBACK_COMMANDS: readonly AiAvailableCommand[] = [
 
 const NEAR_BOTTOM_THRESHOLD = 80;
 const BOTTOM_FOLLOW_SETTLE_FRAMES = 3;
-const RESIZE_BOTTOM_SETTLE_FRAMES = 2;
 const SCROLL_PERSIST_DELAY_MS = 80;
 const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
 const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
@@ -268,6 +325,22 @@ export const ChatTabView = memo(function ChatTabView({
     const cancelQueuedPromptEdit = useAiStore((s) => s.cancelQueuedPromptEdit);
     const clearQueuedPrompts = useAiStore((s) => s.clearQueuedPrompts);
     const ensureSession = useAiStore((s) => s.ensureSession);
+    const hydrateTranscriptWindow = useAiStore(
+        (s) => s.hydrateTranscriptWindow,
+    );
+    const prefetchTranscriptWindow = useAiStore(
+        (s) => s.prefetchTranscriptWindow,
+    );
+    const loadTranscriptWindowBlock = useAiStore(
+        (s) => s.loadTranscriptWindowBlock,
+    );
+    const loadTranscriptPayload = useAiStore((s) => s.loadTranscriptPayload);
+    const releaseTranscriptPayload = useAiStore(
+        (s) => s.releaseTranscriptPayload,
+    );
+    const setTranscriptWindowAnchor = useAiStore(
+        (s) => s.setTranscriptWindowAnchor,
+    );
     const editQueuedPrompt = useAiStore((s) => s.editQueuedPrompt);
     const refreshRuntimeStatus = useAiStore((s) => s.refreshRuntimeStatus);
     const registerSessionTab = useAiStore((s) => s.registerSessionTab);
@@ -344,12 +417,14 @@ export const ChatTabView = memo(function ChatTabView({
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const timelineContentRef = useRef<HTMLDivElement | null>(null);
+    const scrollIntentRef = useRef(createChatScrollIntent());
+    const pendingNewTurnAnchorRef = useRef<string | null | undefined>(
+        undefined,
+    );
     const shouldAutoFollowRef = useRef(true);
     const pendingScrollFrameRef = useRef<number | null>(null);
-    const restoreScrollFrameRef = useRef<number | null>(null);
     const bottomFollowSettleFrameRef = useRef<number | null>(null);
     const bottomFollowSettleActiveRef = useRef(false);
-    const resizeBottomSettleFrameRef = useRef<number | null>(null);
     const resizeBottomLockRef = useRef(false);
     const resizeStartedNearBottomRef = useRef(false);
     const scrollPersistTimerRef = useRef<number | null>(null);
@@ -373,12 +448,20 @@ export const ChatTabView = memo(function ChatTabView({
         trackedFiles: null,
         transcript: null,
     });
+    const semanticAnchorRef = useRef<{
+        readonly alignment: "center" | "end" | "start";
+        readonly entryId: string;
+        readonly offsetWithinEntry: number;
+    } | null>(null);
     const initialComposerParts = readInitialComposerPartsForTab(tab);
     const composerPartsRef = useRef<AIComposerPart[]>(initialComposerParts);
     const persistedDraftRef = useRef(tab.draft);
     const lastSeenDraftComposerPartsSerializedRef = useRef("");
 
     const [isEditingTitle, setIsEditingTitle] = useState(false);
+    const [newTurnAnchorRowId, setNewTurnAnchorRowId] = useState<
+        string | null
+    >(null);
     const [titleDraft, setTitleDraft] = useState("");
     const titleInputRef = useRef<HTMLInputElement | null>(null);
     const skipTitleCommitRef = useRef(false);
@@ -458,7 +541,6 @@ export const ChatTabView = memo(function ChatTabView({
         () => cloneComposerPartsForDraft(initialComposerParts),
     );
     const [composerExpanded, setComposerExpanded] = useState(false);
-    const [composerResetNonce, setComposerResetNonce] = useState(0);
     const [showJumpToBottom, setShowJumpToBottom] = useState(false);
     const commitComposerParts = useCallback(
         (nextParts: readonly AIComposerPart[]) => {
@@ -575,15 +657,134 @@ export const ChatTabView = memo(function ChatTabView({
         }
     }, [active, ensureSession, sessionPreparationKey]);
 
+    useEffect(() => {
+        if (!active) return;
+        return chatActivationScheduler.activate(tab.id, async (phase) => {
+            if (phase === "window") {
+                await hydrateTranscriptWindow(tab.sessionId);
+            }
+            if (phase === "prefetch") {
+                await prefetchTranscriptWindow(tab.sessionId, "backward");
+            }
+        });
+    }, [
+        active,
+        hydrateTranscriptWindow,
+        prefetchTranscriptWindow,
+        tab.id,
+        tab.sessionId,
+    ]);
+
+    useEffect(() => {
+        if (active) return;
+        // Cold tabs retain their metadata and persisted anchor, but must not
+        // pin transcript blocks that prevent the global budget from evicting.
+        setTranscriptWindowAnchor(tab.sessionId, null, false);
+    }, [active, setTranscriptWindowAnchor, tab.sessionId]);
+
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
-    const transcript = sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;
+    const chatDisplayTitle = useMemo(
+        () =>
+            getChatDisplayTitle({
+                manualTitle: snapshot.manualTitle,
+                messages: snapshot.messages,
+                title: snapshot.title || tab.title,
+            }),
+        [snapshot.manualTitle, snapshot.messages, snapshot.title, tab.title],
+    );
+    const storedTranscript =
+        sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;
+    const transcriptWindow = sessionState?.transcriptWindow ?? null;
+    const transcript = useMemo(
+        () =>
+            transcriptWindow?.capabilityVersion
+                ? buildBlockNativeTranscript(
+                      storedTranscript,
+                      transcriptWindow.blocksById,
+                      transcriptWindow.metadata,
+                      transcriptWindow.payloadsByRef,
+                      snapshot,
+                  )
+                : storedTranscript,
+        [
+            snapshot,
+            storedTranscript,
+            transcriptWindow?.blocksById,
+            transcriptWindow?.capabilityVersion,
+            transcriptWindow?.metadata,
+            transcriptWindow?.payloadsByRef,
+        ],
+    );
+    const toolPayloadRefByActivityId = useMemo(
+        () =>
+            buildTranscriptToolPayloadRefs(
+                transcriptWindow?.blocksById ?? new Map(),
+            ),
+        [transcriptWindow?.blocksById],
+    );
+    const visibleToolPayloadRefCounts = useRef(new Map<string, number>());
+    const handleToolPayloadVisibilityChange = useCallback(
+        (activityId: string, visible: boolean) => {
+            const payloadRef = toolPayloadRefByActivityId.get(activityId);
+            if (!payloadRef) return;
+            if (!visible) {
+                const nextCount = Math.max(
+                    0,
+                    (visibleToolPayloadRefCounts.current.get(payloadRef) ?? 1) -
+                        1,
+                );
+                if (nextCount > 0) {
+                    visibleToolPayloadRefCounts.current.set(
+                        payloadRef,
+                        nextCount,
+                    );
+                    return;
+                }
+                visibleToolPayloadRefCounts.current.delete(payloadRef);
+                releaseTranscriptPayload(tab.sessionId, payloadRef);
+                return;
+            }
+            const currentCount =
+                visibleToolPayloadRefCounts.current.get(payloadRef) ?? 0;
+            visibleToolPayloadRefCounts.current.set(
+                payloadRef,
+                currentCount + 1,
+            );
+            if (currentCount > 0) return;
+            void loadTranscriptPayload(tab.sessionId, payloadRef).then(() => {
+                if (!visibleToolPayloadRefCounts.current.has(payloadRef)) {
+                    releaseTranscriptPayload(tab.sessionId, payloadRef);
+                }
+            });
+        },
+        [
+            loadTranscriptPayload,
+            releaseTranscriptPayload,
+            tab.sessionId,
+            toolPayloadRefByActivityId,
+        ],
+    );
+    useEffect(
+        () => () => {
+            for (const payloadRef of visibleToolPayloadRefCounts.current.keys()) {
+                releaseTranscriptPayload(tab.sessionId, payloadRef);
+            }
+            visibleToolPayloadRefCounts.current.clear();
+        },
+        [releaseTranscriptPayload, tab.sessionId],
+    );
     const isStreaming = isChatStreamingStatus(snapshot.status);
     const activeTurnKey = isActiveChatTurnStatus(snapshot.status)
         ? tab.sessionId
         : null;
     const activeTurnStartedAt = getActiveTurnStartedAt(snapshot, transcript);
     const currentError = sessionState?.localError ?? snapshot.lastError;
+    const hasMissingHistoricalSnapshot =
+        sessionState?.historyHydrationState === "missing";
+    const retryHistoricalHydration = useCallback(() => {
+        void ensureSession(sessionTab);
+    }, [ensureSession, sessionTab]);
     const availableCommands =
         snapshot.availableCommands.length > 0
             ? snapshot.availableCommands
@@ -1094,6 +1295,143 @@ export const ChatTabView = memo(function ChatTabView({
         tab.sessionId,
         transcript,
     ]);
+    const [activityExpansionBySessionId, setActivityExpansionBySessionId] =
+        useState<Record<string, TranscriptActivityGroupExpansionById>>({});
+    const activityExpansionByGroupId =
+        activityExpansionBySessionId[tab.sessionId] ?? {};
+    const transcriptTimelineItems = useMemo(
+        () => {
+            const sourceItems = transcriptWindow?.capabilityVersion
+                ? buildTranscriptTimelineItems(
+                      transcriptWindow.metadata,
+                      transcriptWindow.blocksById,
+                      timelineModel.historyRows,
+                  )
+                : timelineModel.historyRows;
+            const itemsWithStreamingIndicator = isStreaming
+                ? [
+                      ...sourceItems,
+                      createTranscriptStreamingIndicatorItem(elapsed),
+                  ]
+                : sourceItems;
+            const flattenedItems = flattenTranscriptTimelineItems(
+                itemsWithStreamingIndicator,
+                {
+                    activeGroupId:
+                        timelineModel.liveTailRow?.kind === "activity-segment"
+                            ? timelineModel.liveTailRow.id
+                            : null,
+                    defaultExpanded:
+                        aiChatSettings.toolActivityDefaultExpansion ===
+                        "expanded",
+                    expansionByGroupId: activityExpansionByGroupId,
+                },
+            );
+            return splitLongContentRows(
+                flattenedItems,
+                (item): item is typeof item & { readonly kind: "message" } =>
+                    item.kind === "message",
+            );
+        },
+        [
+            activityExpansionByGroupId,
+            aiChatSettings.toolActivityDefaultExpansion,
+            elapsed,
+            isStreaming,
+            timelineModel.historyRows,
+            timelineModel.liveTailRow,
+            transcriptWindow?.blocksById,
+            transcriptWindow?.capabilityVersion,
+            transcriptWindow?.metadata,
+        ],
+    );
+
+    const beginNewTurnAnchor = useCallback(() => {
+        if (!shouldAutoFollowRef.current) {
+            return;
+        }
+
+        pendingNewTurnAnchorRef.current = getTrailingUserTimelineRowId(
+            transcriptTimelineItems,
+        );
+        setNewTurnAnchorRowId(null);
+        scrollIntentRef.current = anchorNewChatTurn(scrollIntentRef.current);
+    }, [transcriptTimelineItems]);
+
+    useLayoutEffect(() => {
+        if (
+            pendingNewTurnAnchorRef.current === undefined ||
+            !isAnchoringNewChatTurn(scrollIntentRef.current)
+        ) {
+            return;
+        }
+
+        const trailingUserRowId = getTrailingUserTimelineRowId(
+            transcriptTimelineItems,
+        );
+        if (
+            !trailingUserRowId ||
+            trailingUserRowId === pendingNewTurnAnchorRef.current
+        ) {
+            return;
+        }
+
+        pendingNewTurnAnchorRef.current = undefined;
+        setNewTurnAnchorRowId(trailingUserRowId);
+        setShowJumpToBottom(false);
+    }, [transcriptTimelineItems]);
+    const setActivityGroupExpanded = useCallback(
+        (groupId: string, expanded: boolean) => {
+            setActivityExpansionBySessionId((current) => ({
+                ...current,
+                [tab.sessionId]: {
+                    ...current[tab.sessionId],
+                    [groupId]: {
+                        ...current[tab.sessionId]?.[groupId],
+                        expanded,
+                    },
+                },
+            }));
+        },
+        [tab.sessionId],
+    );
+    const setActivityRangeExpanded = useCallback(
+        (groupId: string, start: number, expanded: boolean) => {
+            setActivityExpansionBySessionId((current) => {
+                const currentSession = current[tab.sessionId] ?? {};
+                const currentGroup = currentSession[groupId];
+                const expandedRangeStarts = new Set(
+                    currentGroup?.expandedRangeStarts,
+                );
+                const collapsedRangeStarts = new Set(
+                    currentGroup?.collapsedRangeStarts,
+                );
+                if (expanded) {
+                    expandedRangeStarts.add(start);
+                    collapsedRangeStarts.delete(start);
+                } else {
+                    expandedRangeStarts.delete(start);
+                    collapsedRangeStarts.add(start);
+                }
+                return {
+                    ...current,
+                    [tab.sessionId]: {
+                        ...currentSession,
+                        [groupId]: {
+                            ...currentGroup,
+                            collapsedRangeStarts: [
+                                ...collapsedRangeStarts,
+                            ].sort((left, right) => left - right),
+                            expandedRangeStarts: [...expandedRangeStarts].sort(
+                                (left, right) => left - right,
+                            ),
+                        },
+                    },
+                };
+            });
+        },
+        [tab.sessionId],
+    );
     /* eslint-enable react-hooks/refs */
     // Commit the reconciled timeline to the ref after render so StrictMode's
     // double-render cannot leave a stale/discarded model written during memo.
@@ -1161,10 +1499,30 @@ export const ChatTabView = memo(function ChatTabView({
         );
     }, []);
 
+    const writeProgrammaticScroll = useCallback((target: number) => {
+        const el = scrollRef.current;
+        if (!el) {
+            return;
+        }
+
+        const nextScrollTop = Math.max(
+            0,
+            Math.min(target, el.scrollHeight - el.clientHeight),
+        );
+        if (Math.abs(el.scrollTop - nextScrollTop) < 1) {
+            return;
+        }
+
+        // Centralizing writes prevents concurrent layout paths from fighting.
+        el.scrollTop = nextScrollTop;
+    }, []);
+
     const scrollToBottom = useCallback(() => {
         const el = scrollRef.current;
-        if (el) el.scrollTop = el.scrollHeight;
-    }, []);
+        if (el) {
+            writeProgrammaticScroll(el.scrollHeight);
+        }
+    }, [writeProgrammaticScroll]);
 
     const cancelPendingScrollToBottom = useCallback(() => {
         if (pendingScrollFrameRef.current === null) {
@@ -1187,11 +1545,8 @@ export const ChatTabView = memo(function ChatTabView({
     }, []);
 
     const scheduleBottomFollowSettle = useCallback(() => {
-        if (bottomFollowSettleFrameRef.current !== null) {
-            window.cancelAnimationFrame(bottomFollowSettleFrameRef.current);
-            bottomFollowSettleFrameRef.current = null;
-        }
-
+        const generation = scrollIntentRef.current.navigationGeneration;
+        cancelBottomFollowSettle();
         bottomFollowSettleActiveRef.current = true;
 
         const runSettleFrame = (remainingFrames: number) => {
@@ -1201,12 +1556,16 @@ export const ChatTabView = memo(function ChatTabView({
 
                     if (
                         !bottomFollowSettleActiveRef.current ||
-                        !shouldAutoFollowRef.current
+                        !canApplyChatScrollOperation(
+                            scrollIntentRef.current,
+                            generation,
+                        )
                     ) {
                         bottomFollowSettleActiveRef.current = false;
                         return;
                     }
 
+                    // Virtual rows can finish measuring after the first restore.
                     scrollToBottom();
 
                     if (remainingFrames > 1) {
@@ -1220,33 +1579,97 @@ export const ChatTabView = memo(function ChatTabView({
         };
 
         runSettleFrame(BOTTOM_FOLLOW_SETTLE_FRAMES);
-    }, [scrollToBottom]);
+    }, [cancelBottomFollowSettle, scrollToBottom]);
 
-    const cancelResizeBottomSettle = useCallback(() => {
-        if (resizeBottomSettleFrameRef.current === null) {
+    const scheduleScrollToBottom = useCallback(() => {
+        if (!isFollowingChatScrollEnd(scrollIntentRef.current)) {
             return;
         }
 
-        window.cancelAnimationFrame(resizeBottomSettleFrameRef.current);
-        resizeBottomSettleFrameRef.current = null;
-    }, []);
+        // One frame coalesces the layout changes that happened before paint.
+        if (
+            pendingScrollFrameRef.current !== null ||
+            bottomFollowSettleActiveRef.current
+        ) {
+            return;
+        }
 
-    const scheduleScrollToBottom = useCallback(() => {
-        cancelPendingScrollToBottom();
+        const generation = scrollIntentRef.current.navigationGeneration;
         bottomFollowSettleActiveRef.current = true;
 
         pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
             pendingScrollFrameRef.current = null;
+            if (
+                !canApplyChatScrollOperation(
+                    scrollIntentRef.current,
+                    generation,
+                )
+            ) {
+                bottomFollowSettleActiveRef.current = false;
+                return;
+            }
             scrollToBottom();
             scheduleBottomFollowSettle();
         });
-    }, [
-        cancelPendingScrollToBottom,
-        scheduleBottomFollowSettle,
-        scrollToBottom,
-    ]);
+    }, [scheduleBottomFollowSettle, scrollToBottom]);
+
+    const handleNewTurnScrollTarget = useCallback(
+        (target: number) => {
+            if (!isAnchoringNewChatTurn(scrollIntentRef.current)) {
+                return;
+            }
+
+            writeProgrammaticScroll(target);
+        },
+        [writeProgrammaticScroll],
+    );
 
     const handleTimelineVirtualRangeChange = useCallback((range: MeasuredVirtualRange) => {
+        const firstVisibleTimelineRow = transcriptTimelineItems
+            .slice(range.visibleStartIndex, range.visibleEndIndex + 1)
+            .find(isChatTimelineRowItem);
+        const scrollElement = scrollRef.current;
+        const listItemElement = firstVisibleTimelineRow
+            ? [...(
+                  timelineContentRef.current?.querySelectorAll<HTMLElement>(
+                      "[data-list-key]",
+                  ) ?? []
+              )].find((element) => element.dataset.listKey === firstVisibleTimelineRow.id)
+            : null;
+        const offsetWithinEntry =
+            scrollElement && listItemElement
+                ? Math.max(
+                      0,
+                      scrollElement.scrollTop -
+                          (scrollElement.scrollTop +
+                              listItemElement.getBoundingClientRect().top -
+                              scrollElement.getBoundingClientRect().top),
+                  )
+                : 0;
+        semanticAnchorRef.current = captureTranscriptSemanticAnchor({
+            entryId: firstVisibleTimelineRow
+                ? getTranscriptTimelineItemAnchorEntryId(firstVisibleTimelineRow)
+                : null,
+            offsetWithinEntry,
+        });
+        const visibleBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
+            transcriptTimelineItems,
+            range.visibleStartIndex,
+            range.visibleEndIndex,
+        );
+        const residentBlockIds = resolveTranscriptBlockIdsInRange(
+            transcriptTimelineItems,
+            range.visibleStartIndex,
+            range.visibleEndIndex,
+        );
+        setTranscriptWindowAnchor(
+            tab.sessionId,
+            residentBlockIds[0] ?? null,
+            shouldAutoFollowRef.current,
+        );
+        for (const blockId of visibleBlockIds) {
+            void loadTranscriptWindowBlock(tab.sessionId, blockId);
+        }
         recordChatPerformanceMetric("virtual_range", {
             sessionId: tab.sessionId,
             values: {
@@ -1257,12 +1680,17 @@ export const ChatTabView = memo(function ChatTabView({
                 ),
             },
         });
-        if (shouldAutoFollowRef.current) {
-            scheduleScrollToBottom();
-        }
-    }, [scheduleScrollToBottom, tab.sessionId]);
+    }, [
+        loadTranscriptWindowBlock,
+        setTranscriptWindowAnchor,
+        tab.sessionId,
+        transcriptTimelineItems,
+    ]);
 
     const handleTimelineVirtualResizeAutoFollow = useCallback(() => {
+        if (isAnchoringNewChatTurn(scrollIntentRef.current)) {
+            return;
+        }
         scheduleScrollToBottom();
         setShowJumpToBottom(false);
     }, [scheduleScrollToBottom]);
@@ -1273,6 +1701,14 @@ export const ChatTabView = memo(function ChatTabView({
 
     const shouldPreserveTimelineVirtualMeasureAnchor = useCallback(() => {
         return !resizeBottomLockRef.current;
+    }, []);
+
+    const shouldDeferTimelineTrailingUserMeasurementAnchor = useCallback(() => {
+        return (
+            shouldAutoFollowRef.current &&
+            isFollowingChatScrollEnd(scrollIntentRef.current) &&
+            !resizeBottomLockRef.current
+        );
     }, []);
 
     const persistCurrentViewState = useCallback(
@@ -1305,6 +1741,7 @@ export const ChatTabView = memo(function ChatTabView({
                 tab.worktreeId ?? null,
                 tab.sessionId,
                 {
+                    anchor: semanticAnchorRef.current,
                     isNearBottom: nextIsNearBottom,
                     scrollTop,
                 },
@@ -1376,43 +1813,19 @@ export const ChatTabView = memo(function ChatTabView({
         [persistCurrentViewState],
     );
 
-    // When a splitter drag starts at the bottom, bottom-follow is the user's
-    // intent. Keep that intent alive while virtual rows re-measure at the
-    // released width, then settle to the final bottom over a couple of frames.
     const settleResizeScrollToBottom = useCallback(() => {
-        cancelResizeBottomSettle();
-
         shouldAutoFollowRef.current = true;
         scrollToBottom();
 
-        const runSettleFrame = (remainingFrames: number) => {
-            resizeBottomSettleFrameRef.current = window.requestAnimationFrame(
-                () => {
-                    resizeBottomSettleFrameRef.current = null;
-                    shouldAutoFollowRef.current = true;
-                    scrollToBottom();
-
-                    if (remainingFrames > 1) {
-                        runSettleFrame(remainingFrames - 1);
-                        return;
-                    }
-
-                    const scrollEl = scrollRef.current;
-                    if (scrollEl) {
-                        scheduleScrollPersist(scrollEl.scrollTop, true);
-                    }
-                    resizeBottomLockRef.current = false;
-                    resizeStartedNearBottomRef.current = false;
-                },
-            );
-        };
-
-        runSettleFrame(RESIZE_BOTTOM_SETTLE_FRAMES);
-    }, [cancelResizeBottomSettle, scheduleScrollPersist, scrollToBottom]);
+        const scrollEl = scrollRef.current;
+        if (scrollEl) {
+            scheduleScrollPersist(scrollEl.scrollTop, true);
+        }
+        resizeBottomLockRef.current = false;
+        resizeStartedNearBottomRef.current = false;
+    }, [scheduleScrollPersist, scrollToBottom]);
 
     const handleTimelineVirtualResizeStart = useCallback(() => {
-        cancelResizeBottomSettle();
-
         const scrollEl = scrollRef.current;
         const startedNearBottom =
             shouldAutoFollowRef.current ||
@@ -1424,7 +1837,7 @@ export const ChatTabView = memo(function ChatTabView({
         if (startedNearBottom) {
             shouldAutoFollowRef.current = true;
         }
-    }, [cancelResizeBottomSettle, isNearBottom]);
+    }, [isNearBottom]);
 
     const handleTimelineVirtualResizeEnd = useCallback(() => {
         if (resizeStartedNearBottomRef.current) {
@@ -1438,33 +1851,49 @@ export const ChatTabView = memo(function ChatTabView({
 
     const handleTimelineWheelCapture = useCallback(
         (event: WheelEvent<HTMLDivElement>) => {
-            if (event.deltaY >= 0 || !shouldAutoFollowRef.current) {
+            if (
+                !shouldAutoFollowRef.current ||
+                (event.deltaY >= 0 &&
+                    !isAnchoringNewChatTurn(scrollIntentRef.current))
+            ) {
                 return;
             }
 
             cancelPendingScrollToBottom();
             cancelBottomFollowSettle();
-            cancelResizeBottomSettle();
             shouldAutoFollowRef.current = false;
+            scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
+            pendingNewTurnAnchorRef.current = undefined;
+            setNewTurnAnchorRowId(null);
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
-        [
-            cancelBottomFollowSettle,
-            cancelPendingScrollToBottom,
-            cancelResizeBottomSettle,
-        ],
+        [cancelBottomFollowSettle, cancelPendingScrollToBottom],
+    );
+
+    const handleTimelineTouchStart = useCallback(
+        () => {
+            if (!shouldAutoFollowRef.current) {
+                return;
+            }
+
+            // Touch scrolling has no wheel event, so invalidate follow eagerly.
+            cancelPendingScrollToBottom();
+            cancelBottomFollowSettle();
+            shouldAutoFollowRef.current = false;
+            scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
+            pendingNewTurnAnchorRef.current = undefined;
+            setNewTurnAnchorRowId(null);
+            resizeBottomLockRef.current = false;
+            resizeStartedNearBottomRef.current = false;
+        },
+        [cancelBottomFollowSettle, cancelPendingScrollToBottom],
     );
 
     useEffect(() => {
         return () => {
             cancelPendingScrollToBottom();
             cancelBottomFollowSettle();
-            if (restoreScrollFrameRef.current !== null) {
-                window.cancelAnimationFrame(restoreScrollFrameRef.current);
-                restoreScrollFrameRef.current = null;
-            }
-            cancelResizeBottomSettle();
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
             flushScheduledScrollPersist();
@@ -1472,7 +1901,6 @@ export const ChatTabView = memo(function ChatTabView({
     }, [
         cancelPendingScrollToBottom,
         cancelBottomFollowSettle,
-        cancelResizeBottomSettle,
         flushScheduledScrollPersist,
     ]);
 
@@ -1509,10 +1937,6 @@ export const ChatTabView = memo(function ChatTabView({
             cancelled = true;
             cancelPendingScrollToBottom();
             cancelBottomFollowSettle();
-            if (restoreScrollFrameRef.current !== null) {
-                window.cancelAnimationFrame(restoreScrollFrameRef.current);
-                restoreScrollFrameRef.current = null;
-            }
             const flushedState = flushScheduledScrollPersist();
             persistCurrentViewState(
                 resolveChatScrollPersistenceState({
@@ -1533,52 +1957,37 @@ export const ChatTabView = memo(function ChatTabView({
 
         if (shouldRestoreBottom) {
             shouldAutoFollowRef.current = true;
+            scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
             scheduleScrollToBottom();
             setJumpToBottomVisibility(false);
         } else {
             shouldAutoFollowRef.current = false;
-            scrollEl.scrollTop = restoreScrollTop;
+            scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
+            writeProgrammaticScroll(restoreScrollTop);
             setJumpToBottomVisibility(!isNearBottom(scrollEl));
         }
 
-        if (restoreScrollFrameRef.current !== null) {
-            window.cancelAnimationFrame(restoreScrollFrameRef.current);
-        }
-        restoreScrollFrameRef.current = window.requestAnimationFrame(() => {
-            restoreScrollFrameRef.current = null;
-            const nextScrollEl = scrollRef.current;
-            if (!nextScrollEl) {
-                return;
-            }
-
-            if (shouldRestoreBottom) {
-                scrollToBottom();
-                setJumpToBottomVisibility(false);
-                return;
-            }
-
-            nextScrollEl.scrollTop = restoreScrollTop;
-            setJumpToBottomVisibility(!isNearBottom(nextScrollEl));
-        });
-
         return persistViewStateOnDeactivate;
     }, [
-        cancelBottomFollowSettle,
         cancelPendingScrollToBottom,
+        cancelBottomFollowSettle,
         flushScheduledScrollPersist,
         isNearBottom,
         persistCurrentViewState,
         scheduleScrollToBottom,
         scrollToBottom,
+        writeProgrammaticScroll,
         active,
         tab.sessionId,
     ]);
 
     useLayoutEffect(() => {
         if (active && shouldAutoFollowRef.current) {
+            // The composer can collapse when a turn starts, changing the viewport
+            // height before the new timeline entry has been measured.
             scheduleScrollToBottom();
         }
-    }, [active, scheduleScrollToBottom, snapshot.updatedAt]);
+    }, [active, composerExpanded, scheduleScrollToBottom, snapshot.updatedAt]);
 
     useEffect(() => {
         const scrollEl = scrollRef.current;
@@ -1618,9 +2027,21 @@ export const ChatTabView = memo(function ChatTabView({
             return;
         }
 
+        if (isAnchoringNewChatTurn(scrollIntentRef.current)) {
+            // The anchor policy owns programmatic movement until the user
+            // explicitly navigates away or chooses to follow the latest tail.
+            setShowJumpToBottom(false);
+            scheduleScrollPersist(el.scrollTop, false);
+            return;
+        }
+
         if (
-            shouldAutoFollowRef.current &&
-            (bottomFollowSettleActiveRef.current || composerExpanded)
+            shouldHoldChatScrollFollowIntent({
+                composerExpanded,
+                programmaticFollowSettling:
+                    bottomFollowSettleActiveRef.current,
+                shouldAutoFollow: shouldAutoFollowRef.current,
+            })
         ) {
             setShowJumpToBottom(false);
             scheduleScrollPersist(el.scrollTop, true);
@@ -1629,6 +2050,13 @@ export const ChatTabView = memo(function ChatTabView({
 
         const nextIsNearBottom = isNearBottom(el);
         shouldAutoFollowRef.current = nextIsNearBottom;
+        scrollIntentRef.current = nextIsNearBottom
+            ? followChatScrollEnd(scrollIntentRef.current)
+            : readChatScroll(scrollIntentRef.current);
+        if (!nextIsNearBottom) {
+            pendingNewTurnAnchorRef.current = undefined;
+            setNewTurnAnchorRowId(null);
+        }
         setShowJumpToBottom(!nextIsNearBottom);
         scheduleScrollPersist(el.scrollTop, nextIsNearBottom);
     }, [composerExpanded, isNearBottom, scheduleScrollPersist]);
@@ -1636,8 +2064,10 @@ export const ChatTabView = memo(function ChatTabView({
     const handleJumpToBottom = useCallback(() => {
         cancelPendingScrollToBottom();
         cancelBottomFollowSettle();
-        cancelResizeBottomSettle();
         shouldAutoFollowRef.current = true;
+        scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
+        pendingNewTurnAnchorRef.current = undefined;
+        setNewTurnAnchorRowId(null);
         resizeBottomLockRef.current = false;
         resizeStartedNearBottomRef.current = false;
         scrollToBottom();
@@ -1649,7 +2079,6 @@ export const ChatTabView = memo(function ChatTabView({
     }, [
         cancelBottomFollowSettle,
         cancelPendingScrollToBottom,
-        cancelResizeBottomSettle,
         scheduleBottomFollowSettle,
         scheduleScrollPersist,
         scrollToBottom,
@@ -1739,10 +2168,11 @@ export const ChatTabView = memo(function ChatTabView({
         const submittedFileContexts = [...draftFileContexts];
 
         commitComposerParts(createEmptyComposerParts());
-        setComposerResetNonce((current) => current + 1);
         clearDraftAttachments(tab.sessionId);
         clearDraftFileContexts(tab.sessionId);
         setComposerError(null);
+
+        beginNewTurnAnchor();
 
         try {
             await sendPrompt(tab, prompt, {
@@ -1809,7 +2239,6 @@ export const ChatTabView = memo(function ChatTabView({
         }
 
         commitComposerParts(restoredParts);
-        setComposerResetNonce((current) => current + 1);
         setComposerError(null);
     }, [
         cancelQueuedPromptEdit,
@@ -1933,9 +2362,9 @@ export const ChatTabView = memo(function ChatTabView({
     const handleStopSession = useCallback(() => {
         requestStopAgentSession({
             sessionId: tab.sessionId,
-            title: snapshot.title || tab.title || "Chat",
+            title: chatDisplayTitle,
         });
-    }, [snapshot.title, tab.sessionId, tab.title]);
+    }, [chatDisplayTitle, tab.sessionId]);
 
     useEffect(() => {
         composerPartsRef.current = composerParts;
@@ -2090,7 +2519,7 @@ export const ChatTabView = memo(function ChatTabView({
                 durationMs: actualDuration,
                 sessionId: tab.sessionId,
                 values: {
-                    historyRows: timelineModel.historyRows.length,
+                    historyRows: transcriptTimelineItems.length,
                     liveTailRows: timelineModel.liveTailRow ? 1 : 0,
                     toolRows: timelineModel.orderedAtomicRows.filter(
                         (row) => row.kind === "tool",
@@ -2100,7 +2529,7 @@ export const ChatTabView = memo(function ChatTabView({
         },
         [
             tab.sessionId,
-            timelineModel.historyRows.length,
+            transcriptTimelineItems.length,
             timelineModel.liveTailRow,
             timelineModel.orderedAtomicRows,
         ],
@@ -2168,7 +2597,7 @@ export const ChatTabView = memo(function ChatTabView({
                                     }
 
                                     skipTitleCommitRef.current = false;
-                                    setTitleDraft(snapshot.title || "");
+                                    setTitleDraft(chatDisplayTitle);
                                     setIsEditingTitle(true);
                                 }}
                                 title={
@@ -2177,7 +2606,7 @@ export const ChatTabView = memo(function ChatTabView({
                                         : "Double-click to rename"
                                 }
                             >
-                                {snapshot.title || "Chat"}
+                                {chatDisplayTitle}
                             </span>
                             {parentSessionId ? (
                                 <button
@@ -2223,11 +2652,13 @@ export const ChatTabView = memo(function ChatTabView({
                     canRenderFileReference={canRenderFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={aiChatSettings.chatFontSize}
-                    elapsed={elapsed}
                     covered={composerExpanded}
-                    historyRows={timelineModel.historyRows}
-                    isStreaming={isStreaming}
-                    liveTailRow={timelineModel.liveTailRow}
+                    historyRows={transcriptTimelineItems}
+                    liveTailRowId={timelineModel.liveTailRowId}
+                    newTurnAnchorRowId={newTurnAnchorRowId}
+                    onNewTurnScrollTarget={handleNewTurnScrollTarget}
+                    onSetActivityGroupExpanded={setActivityGroupExpanded}
+                    onSetActivityRangeExpanded={setActivityRangeExpanded}
                     onAddFileReferenceToChat={
                         handleAddResolvedFileReferenceToChat
                     }
@@ -2235,8 +2666,12 @@ export const ChatTabView = memo(function ChatTabView({
                     onOpenImage={onOpenImage}
                     onOpenResolvedFileReference={handleOpenResolvedFileReference}
                     onOpenSession={openAiSessionById}
+                    onToolPayloadVisibilityChange={
+                        handleToolPayloadVisibilityChange
+                    }
                     onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
+                    onTouchStart={handleTimelineTouchStart}
                     onWheelCapture={handleTimelineWheelCapture}
                     onJumpToBottom={handleJumpToBottom}
                     onVirtualRangeChange={handleTimelineVirtualRangeChange}
@@ -2252,6 +2687,9 @@ export const ChatTabView = memo(function ChatTabView({
                     showJumpToBottom={showJumpToBottom}
                     shouldPreserveVirtualMeasureAnchor={
                         shouldPreserveTimelineVirtualMeasureAnchor
+                    }
+                    shouldDeferTrailingUserMeasurementAnchor={
+                        shouldDeferTimelineTrailingUserMeasurementAnchor
                     }
                     shouldPreserveVirtualResizeAnchor={
                         shouldPreserveTimelineVirtualResizeAnchor
@@ -2294,7 +2732,14 @@ export const ChatTabView = memo(function ChatTabView({
                                     onSendNow={handleSendQueuedPromptNow}
                                 />
                             ) : null}
-                            {currentError ? renderError(currentError) : null}
+                            {currentError
+                                ? renderError(
+                                      currentError,
+                                      hasMissingHistoricalSnapshot
+                                          ? retryHistoricalHydration
+                                          : undefined,
+                                  )
+                                : null}
                             {composerError ? renderError(composerError) : null}
 
                             {pendingReviewCount > 0 ? (
@@ -2429,7 +2874,6 @@ export const ChatTabView = memo(function ChatTabView({
                             onToggleExpanded={() =>
                                 setComposerExpanded((value) => !value)
                             }
-                            resetNonce={composerResetNonce}
                             parts={composerParts}
                             renderFileContextPill={(fc) => (
                                 <FileContextPill
@@ -2587,7 +3031,7 @@ function renderPermissionRequest(
     );
 }
 
-function renderError(error: string) {
+function renderError(error: string, onRetry?: () => void) {
     return (
         <div
             className="mb-2 flex min-w-0 max-w-full items-start gap-2 rounded-lg px-2.5 py-2"
@@ -2618,6 +3062,15 @@ function renderError(error: string) {
             >
                 {error}
             </span>
+            {onRetry ? (
+                <button
+                    className="app-no-drag shrink-0 rounded px-2 py-1 text-[11px] font-medium transition-colors hover:bg-white/10"
+                    onClick={onRetry}
+                    type="button"
+                >
+                    Retry
+                </button>
+            ) : null}
         </div>
     );
 }
@@ -2716,13 +3169,26 @@ type ChatTimelineProps = {
     ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
-    readonly elapsed: string;
     readonly covered?: boolean;
-    readonly historyRows: readonly ChatTimelineRow[];
-    readonly isStreaming: boolean;
-    readonly liveTailRow: ChatTimelineRow | null;
+    readonly historyRows: readonly TranscriptTimelineItem[];
+    readonly liveTailRowId: string | null;
+    readonly newTurnAnchorRowId: string | null;
+    readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSetActivityGroupExpanded: (
+        groupId: string,
+        expanded: boolean,
+    ) => void;
+    readonly onSetActivityRangeExpanded: (
+        groupId: string,
+        start: number,
+        expanded: boolean,
+    ) => void;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly onToolPayloadVisibilityChange?: (
+        activityId: string,
+        visible: boolean,
     ) => void;
     readonly onOpenFile: (
         projectId: string,
@@ -2741,6 +3207,7 @@ type ChatTimelineProps = {
         reference: ResolvedProjectFileReference,
     ) => void;
     readonly onScroll: () => void;
+    readonly onTouchStart?: (event: TouchEvent<HTMLDivElement>) => void;
     readonly onWheelCapture?: (event: WheelEvent<HTMLDivElement>) => void;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeEnd?: () => void;
@@ -2753,6 +3220,7 @@ type ChatTimelineProps = {
     readonly scrollRef: RefObject<HTMLDivElement | null>;
     readonly sessionId: string;
     readonly showJumpToBottom: boolean;
+    readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
@@ -2780,12 +3248,15 @@ const ChatTimeline = memo(function ChatTimeline({
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
-    elapsed,
     covered,
     historyRows,
-    isStreaming,
-    liveTailRow,
+    liveTailRowId,
+    newTurnAnchorRowId,
+    onNewTurnScrollTarget,
+    onSetActivityGroupExpanded,
+    onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
+    onToolPayloadVisibilityChange,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -2793,6 +3264,7 @@ const ChatTimeline = memo(function ChatTimeline({
     onJumpToBottom,
     onRevealFileReference,
     onScroll,
+    onTouchStart,
     onWheelCapture,
     onVirtualRangeChange,
     onVirtualResizeEnd,
@@ -2803,6 +3275,7 @@ const ChatTimeline = memo(function ChatTimeline({
     scrollRef,
     sessionId,
     showJumpToBottom,
+    shouldDeferTrailingUserMeasurementAnchor,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     timelineContentRef,
@@ -2811,8 +3284,7 @@ const ChatTimeline = memo(function ChatTimeline({
     useRenderProbe("ChatTimeline", {
         active,
         historyRows: historyRows.length,
-        isStreaming,
-        rows: historyRows.length + (liveTailRow ? 1 : 0),
+        rows: historyRows.length,
     });
 
     const timelineContainerClassName = covered
@@ -2830,6 +3302,7 @@ const ChatTimeline = memo(function ChatTimeline({
                     ref={scrollRef}
                     className="chat-scroll h-full min-h-0 min-w-0 overflow-y-auto px-3 py-3"
                     onScroll={onScroll}
+                    onTouchStart={onTouchStart}
                     onWheelCapture={onWheelCapture}
                 >
                     <ChatContentColumn
@@ -2847,8 +3320,20 @@ const ChatTimeline = memo(function ChatTimeline({
                             chatFontFamily={chatFontFamily}
                             chatFontSize={chatFontSize}
                             historyRows={historyRows}
+                            liveTailRowId={liveTailRowId}
+                            newTurnAnchorRowId={newTurnAnchorRowId}
+                            onNewTurnScrollTarget={onNewTurnScrollTarget}
+                            onSetActivityGroupExpanded={
+                                onSetActivityGroupExpanded
+                            }
+                            onSetActivityRangeExpanded={
+                                onSetActivityRangeExpanded
+                            }
                             onAddFileReferenceToChat={
                                 onAddFileReferenceToChat
+                            }
+                            onToolPayloadVisibilityChange={
+                                onToolPayloadVisibilityChange
                             }
                             onOpenFile={onOpenFile}
                             onOpenImage={onOpenImage}
@@ -2867,6 +3352,9 @@ const ChatTimeline = memo(function ChatTimeline({
                             resolveFileReference={resolveFileReference}
                             scrollRef={scrollRef}
                             sessionId={sessionId}
+                            shouldDeferTrailingUserMeasurementAnchor={
+                                shouldDeferTrailingUserMeasurementAnchor
+                            }
                             shouldPreserveVirtualMeasureAnchor={
                                 shouldPreserveVirtualMeasureAnchor
                             }
@@ -2875,30 +3363,6 @@ const ChatTimeline = memo(function ChatTimeline({
                             }
                             worktreeId={worktreeId}
                         />
-                        <ChatTimelineLiveTail
-                            canRenderFileReference={
-                                canRenderFileReference
-                            }
-                            chatFontFamily={chatFontFamily}
-                            chatFontSize={chatFontSize}
-                            onAddFileReferenceToChat={
-                                onAddFileReferenceToChat
-                            }
-                            onOpenFile={onOpenFile}
-                            onOpenImage={onOpenImage}
-                            onOpenResolvedFileReference={
-                                onOpenResolvedFileReference
-                            }
-                            onOpenSession={onOpenSession}
-                            onRevealFileReference={onRevealFileReference}
-                            projectId={projectId}
-                            resolveFileReference={resolveFileReference}
-                            row={liveTailRow}
-                            worktreeId={worktreeId}
-                        />
-                        {isStreaming ? (
-                            <StreamingIndicator elapsed={elapsed} />
-                        ) : null}
                     </ChatContentColumn>
                 </div>
                 <ChatJumpToBottomButton
@@ -2964,9 +3428,25 @@ type ChatTimelineHistoryProps = {
     ) => boolean;
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
-    readonly historyRows: readonly ChatTimelineRow[];
+    readonly historyRows: readonly TranscriptTimelineItem[];
+    readonly liveTailRowId: string | null;
+    readonly newTurnAnchorRowId: string | null;
+    readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSetActivityGroupExpanded: (
+        groupId: string,
+        expanded: boolean,
+    ) => void;
+    readonly onSetActivityRangeExpanded: (
+        groupId: string,
+        start: number,
+        expanded: boolean,
+    ) => void;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly onToolPayloadVisibilityChange?: (
+        activityId: string,
+        visible: boolean,
     ) => void;
     readonly onOpenFile: (
         projectId: string,
@@ -2993,6 +3473,7 @@ type ChatTimelineHistoryProps = {
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
     readonly sessionId: string;
+    readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly worktreeId: string | null;
@@ -3004,7 +3485,13 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     chatFontFamily,
     chatFontSize,
     historyRows,
+    liveTailRowId,
+    newTurnAnchorRowId,
+    onNewTurnScrollTarget,
+    onSetActivityGroupExpanded,
+    onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
+    onToolPayloadVisibilityChange,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -3018,12 +3505,19 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     resolveFileReference,
     scrollRef,
     sessionId,
+    shouldDeferTrailingUserMeasurementAnchor,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     worktreeId,
 }: ChatTimelineHistoryProps) {
     const renderRow = useCallback(
-        ({ row }: { readonly row: ChatTimelineRow }) => (
+        ({
+            isCurrentTurnTail,
+            row,
+        }: {
+            readonly isCurrentTurnTail: boolean;
+            readonly row: TranscriptTimelineVirtualRow;
+        }) => (
             // The list `key` is owned by each call site (the virtual list keys
             // its row wrapper; the non-virtual path keys via Fragment), so this
             // renderer only describes a row's content.
@@ -3032,6 +3526,9 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
                 chatFontFamily={chatFontFamily}
                 chatFontSize={chatFontSize}
                 onAddFileReferenceToChat={onAddFileReferenceToChat}
+                onToolPayloadVisibilityChange={
+                    onToolPayloadVisibilityChange
+                }
                 onOpenFile={onOpenFile}
                 onOpenImage={onOpenImage}
                 onOpenResolvedFileReference={onOpenResolvedFileReference}
@@ -3039,6 +3536,9 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
                 onRevealFileReference={onRevealFileReference}
                 projectId={projectId}
                 resolveFileReference={resolveFileReference}
+                isCurrentTurnTail={isCurrentTurnTail}
+                onSetActivityGroupExpanded={onSetActivityGroupExpanded}
+                onSetActivityRangeExpanded={onSetActivityRangeExpanded}
                 row={row}
                 worktreeId={worktreeId}
             />
@@ -3048,15 +3548,24 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontFamily,
             chatFontSize,
             onAddFileReferenceToChat,
+            onToolPayloadVisibilityChange,
             onOpenFile,
             onOpenImage,
             onOpenResolvedFileReference,
             onOpenSession,
+            onSetActivityGroupExpanded,
+            onSetActivityRangeExpanded,
             onRevealFileReference,
             projectId,
             resolveFileReference,
             worktreeId,
         ],
+    );
+    const renderStreamingIndicator = useCallback(
+        (item: { readonly elapsed: string }) => (
+            <StreamingIndicator elapsed={item.elapsed} />
+        ),
+        [],
     );
 
     return (
@@ -3065,13 +3574,20 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             historyRows={historyRows}
+            liveTailRowId={liveTailRowId}
+            newTurnAnchorRowId={newTurnAnchorRowId}
+            onNewTurnScrollTarget={onNewTurnScrollTarget}
             onVirtualRangeChange={onVirtualRangeChange}
             onVirtualResizeEnd={onVirtualResizeEnd}
             onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
             onVirtualResizeStart={onVirtualResizeStart}
             renderRow={renderRow}
+            renderStreamingIndicator={renderStreamingIndicator}
             scrollRef={scrollRef}
             sessionId={sessionId}
+            shouldDeferTrailingUserMeasurementAnchor={
+                shouldDeferTrailingUserMeasurementAnchor
+            }
             shouldPreserveVirtualMeasureAnchor={
                 shouldPreserveVirtualMeasureAnchor
             }
@@ -3084,81 +3600,6 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
 
 ChatTimelineHistory.displayName = "ChatTimelineHistory";
 
-type ChatTimelineLiveTailProps = {
-    readonly canRenderFileReference?: (
-        rawReference: string,
-        reference: ResolvedProjectFileReference,
-    ) => boolean;
-    readonly chatFontFamily?: string;
-    readonly chatFontSize?: number;
-    readonly onAddFileReferenceToChat?: (
-        reference: ResolvedProjectFileReference,
-    ) => void;
-    readonly onOpenFile: (
-        projectId: string,
-        relativePath: string,
-        worktreeId?: string | null,
-        reviewContext?: RuntimeWorkspaceFileReviewContext | null,
-        openLocation?: RuntimeWorkspaceFileOpenLocation | null,
-    ) => Promise<void>;
-    readonly onOpenImage: (attachment: AiImageAttachment) => Promise<void>;
-    readonly onOpenResolvedFileReference: (
-        reference: ResolvedProjectFileReference,
-    ) => void;
-    readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
-    readonly onRevealFileReference?: (
-        reference: ResolvedProjectFileReference,
-    ) => void;
-    readonly projectId: string | null;
-    readonly resolveFileReference: (
-        reference: string,
-    ) => ResolvedProjectFileReference | null;
-    readonly row: ChatTimelineRow | null;
-    readonly worktreeId: string | null;
-};
-
-const ChatTimelineLiveTail = memo(function ChatTimelineLiveTail({
-    canRenderFileReference,
-    chatFontFamily,
-    chatFontSize,
-    onAddFileReferenceToChat,
-    onOpenFile,
-    onOpenImage,
-    onOpenResolvedFileReference,
-    onOpenSession,
-    onRevealFileReference,
-    projectId,
-    resolveFileReference,
-    row,
-    worktreeId,
-}: ChatTimelineLiveTailProps) {
-    if (!row) {
-        return null;
-    }
-
-    return (
-        <ChatTimelineRowView
-            canRenderFileReference={canRenderFileReference}
-            chatFontFamily={chatFontFamily}
-            chatFontSize={chatFontSize}
-            key={row.id}
-            onAddFileReferenceToChat={onAddFileReferenceToChat}
-            onOpenFile={onOpenFile}
-            onOpenImage={onOpenImage}
-            onOpenResolvedFileReference={onOpenResolvedFileReference}
-            onOpenSession={onOpenSession}
-            onRevealFileReference={onRevealFileReference}
-            projectId={projectId}
-            resolveFileReference={resolveFileReference}
-            isCurrentTurnTail={true}
-            row={row}
-            worktreeId={worktreeId}
-        />
-    );
-});
-
-ChatTimelineLiveTail.displayName = "ChatTimelineLiveTail";
-
 type ChatTimelineRowViewProps = {
     readonly canRenderFileReference?: (
         rawReference: string,
@@ -3167,8 +3608,21 @@ type ChatTimelineRowViewProps = {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly isCurrentTurnTail?: boolean;
+    readonly onSetActivityGroupExpanded: (
+        groupId: string,
+        expanded: boolean,
+    ) => void;
+    readonly onSetActivityRangeExpanded: (
+        groupId: string,
+        start: number,
+        expanded: boolean,
+    ) => void;
     readonly onAddFileReferenceToChat?: (
         reference: ResolvedProjectFileReference,
+    ) => void;
+    readonly onToolPayloadVisibilityChange?: (
+        activityId: string,
+        visible: boolean,
     ) => void;
     readonly onOpenFile: (
         projectId: string,
@@ -3189,7 +3643,7 @@ type ChatTimelineRowViewProps = {
     readonly resolveFileReference: (
         reference: string,
     ) => ResolvedProjectFileReference | null;
-    readonly row: ChatTimelineRow;
+    readonly row: TranscriptTimelineVirtualRow;
     readonly worktreeId: string | null;
 };
 
@@ -3198,7 +3652,10 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     chatFontFamily,
     chatFontSize,
     isCurrentTurnTail = false,
+    onSetActivityGroupExpanded,
+    onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
+    onToolPayloadVisibilityChange,
     onOpenFile,
     onOpenImage,
     onOpenResolvedFileReference,
@@ -3209,6 +3666,29 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
     row,
     worktreeId,
 }: ChatTimelineRowViewProps) {
+    if (row.kind === "content-chunk") {
+        return (
+            <div
+                className="min-w-0 w-full"
+                data-content-chunk={row.chunkIndex}
+            >
+                <ChatMessageRow
+                    canRenderFileReference={canRenderFileReference}
+                    chatFontFamily={chatFontFamily}
+                    chatFontSize={chatFontSize}
+                    // Chunks are only emitted for attachment-free assistant text.
+                    // The persisted message retains the complete, copyable payload.
+                    message={{ ...row.message, content: row.content }}
+                    onAddFileReferenceToChat={onAddFileReferenceToChat}
+                    onOpenFile={onOpenResolvedFileReference}
+                    onOpenImage={onOpenImage}
+                    onRevealFileReference={onRevealFileReference}
+                    resolveFileReference={resolveFileReference}
+                />
+            </div>
+        );
+    }
+
     if (row.kind === "message") {
         return (
             <div className="min-w-0 w-full">
@@ -3227,36 +3707,104 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
         );
     }
 
-    if (row.kind === "activity-segment") {
+    if (isTranscriptActivitySummaryItem(row)) {
         return (
             <div className="min-w-0 w-full">
                 <ToolActivitySegment
                     canRenderFileReference={canRenderFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={chatFontSize}
+                    expanded={row.expanded}
                     isCurrentTurnTail={isCurrentTurnTail}
+                    onExpandedChange={(expanded) =>
+                        onSetActivityGroupExpanded(row.groupId, expanded)
+                    }
                     onAddFileReferenceToChat={onAddFileReferenceToChat}
+                    onToolPayloadVisibilityChange={
+                        onToolPayloadVisibilityChange
+                    }
                     onOpenFile={onOpenFile}
                     onOpenFileReference={onOpenResolvedFileReference}
                     onOpenSession={onOpenSession}
                     onRevealFileReference={onRevealFileReference}
                     projectId={projectId}
                     resolveFileReference={resolveFileReference}
-                    segment={row}
+                    renderDetails={false}
+                    segment={row.segment}
                     worktreeId={worktreeId}
                 />
             </div>
         );
     }
 
+    if (isTranscriptActivityRangeItem(row)) {
+        return (
+            <ActivityRangeToggle
+                end={row.end}
+                expanded={row.expanded}
+                onExpandedChange={(expanded) =>
+                    onSetActivityRangeExpanded(row.groupId, row.start, expanded)
+                }
+                start={row.start}
+            />
+        );
+    }
+
+    if (isTranscriptActivityEntryItem(row)) {
+        return (
+            <ActivitySegmentItemRow
+                canRenderFileReference={canRenderFileReference}
+                chatFontFamily={chatFontFamily}
+                chatFontSize={chatFontSize}
+                // Entries are independently mounted by the virtual list; a
+                // continuous tree connector would be misleading or broken.
+                flat
+                item={row.item}
+                onAddFileReferenceToChat={onAddFileReferenceToChat}
+                onOpenFile={onOpenFile}
+                onOpenFileReference={onOpenResolvedFileReference}
+                onOpenSession={onOpenSession}
+                onRevealFileReference={onRevealFileReference}
+                onToolPayloadVisibilityChange={onToolPayloadVisibilityChange}
+                projectId={projectId}
+                resolveFileReference={resolveFileReference}
+                worktreeId={worktreeId}
+            />
+        );
+    }
+
+    if (row.kind === "activity-segment") {
+        return (
+            <ToolActivitySegment
+                canRenderFileReference={canRenderFileReference}
+                chatFontFamily={chatFontFamily}
+                chatFontSize={chatFontSize}
+                isCurrentTurnTail={isCurrentTurnTail}
+                onAddFileReferenceToChat={onAddFileReferenceToChat}
+                onOpenFile={onOpenFile}
+                onOpenFileReference={onOpenResolvedFileReference}
+                onOpenSession={onOpenSession}
+                onRevealFileReference={onRevealFileReference}
+                onToolPayloadVisibilityChange={onToolPayloadVisibilityChange}
+                projectId={projectId}
+                resolveFileReference={resolveFileReference}
+                segment={row}
+                worktreeId={worktreeId}
+            />
+        );
+    }
+
     return (
-        <div className="min-w-0 w-full">
+        <div
+            className="min-w-0 w-full"
+        >
             <ToolActivityItem
                 activity={row.reviewEntry.activity}
                 canRenderFileReference={canRenderFileReference}
                 onOpenFile={onOpenFile}
                 onOpenFileReference={onOpenResolvedFileReference}
                 onOpenSession={onOpenSession}
+                onPayloadVisibilityChange={onToolPayloadVisibilityChange}
                 projectId={projectId}
                 resolveFileReference={resolveFileReference}
                 trackedFiles={row.reviewEntry.trackedFiles}
@@ -3267,6 +3815,31 @@ const ChatTimelineRowView = memo(function ChatTimelineRowView({
 });
 
 ChatTimelineRowView.displayName = "ChatTimelineRowView";
+
+function ActivityRangeToggle({
+    end,
+    expanded,
+    onExpandedChange,
+    start,
+}: {
+    readonly end: number;
+    readonly expanded: boolean;
+    readonly onExpandedChange: (expanded: boolean) => void;
+    readonly start: number;
+}) {
+    const label = `${expanded ? "Hide" : "Show"} actions ${start + 1}–${end}`;
+
+    return (
+        <button
+            aria-expanded={expanded}
+            className="app-no-drag ml-10 rounded px-2 py-1 text-left text-[11px] text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
+            onClick={() => onExpandedChange(!expanded)}
+            type="button"
+        >
+            {label}
+        </button>
+    );
+}
 
 function UserInputRequestCard({
     onRespond,
