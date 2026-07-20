@@ -230,6 +230,10 @@ import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
 import {
+    activateWorkspaceSurfaceAndNotifyHost,
+    persistWorkspaceSurfaceSnapshot,
+} from "@main/workspace/surface-snapshot-persistence";
+import {
     isWorkspaceSurfaceActionRequest,
     isWorkspaceSurfaceActionCompletion,
     isWorkspaceSurfaceFileRevealRequest,
@@ -1793,21 +1797,21 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
                 snapshot,
             ).snapshot;
-            const surfaceUpdate = workspaceSurfaceManager.mergeSurfaceSnapshot(
-                event.sender,
-                normalizedSnapshot,
-            );
-            if (surfaceUpdate) {
-                await options.workspaceService.saveSnapshot(
-                    context.workspaceId!,
-                    surfaceUpdate.snapshot,
-                );
-                workspaceSurfaceManager
-                    .getHostWebContents(surfaceUpdate.hostWindowId)
-                    ?.send(
-                        IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
-                        surfaceUpdate.snapshot,
-                    );
+            if (
+                await persistWorkspaceSurfaceSnapshot({
+                    manager: workspaceSurfaceManager,
+                    saveSnapshot: (workspaceId, nextSnapshot) =>
+                        Promise.resolve(
+                            options.workspaceService.saveSnapshot(
+                                workspaceId,
+                                nextSnapshot,
+                            ),
+                        ),
+                    sender: event.sender,
+                    snapshot: normalizedSnapshot,
+                    workspaceId: context.workspaceId!,
+                })
+            ) {
                 return;
             }
             if (workspaceSurfaceManager.isSurface(event.sender)) {
@@ -2017,7 +2021,13 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             if (workspaceSurfaceManager.isSurface(event.sender)) {
                 return;
             }
-            if (!workspaceSurfaceManager.activate(context.windowId, contextKey)) {
+            if (
+                !activateWorkspaceSurfaceAndNotifyHost({
+                    contextKey,
+                    hostWindowId: context.windowId,
+                    manager: workspaceSurfaceManager,
+                })
+            ) {
                 return;
             }
             const activeContext = workspaceSurfaceManager.getActiveContext(
