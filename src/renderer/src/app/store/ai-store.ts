@@ -1796,8 +1796,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
             if (!current) {
                 return sessions === state.sessions ? state : { sessions };
             }
-            const payloadsByRef = new Map(current.payloadsByRef);
-            payloadsByRef.delete(payloadRef);
+
+            // Releasing makes the payload evictable; it must remain projected
+            // until the cache actually evicts it, otherwise collapsing a rail
+            // erases its diff before the user can expand it again.
             return {
                 sessions: {
                     ...sessions,
@@ -1805,7 +1807,6 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         ...sessions[sessionId],
                         transcriptWindow: {
                             ...current,
-                            payloadsByRef,
                         },
                     },
                 },
