@@ -3599,20 +3599,8 @@ export class AiService {
             return base;
         }
 
-        return {
-            ...base,
-            toolActivity: snapshot.toolActivity.map((activity) =>
-                activity.id === event.toolCallId
-                    ? {
-                          ...activity,
-                          action: {
-                              kind: "open_session",
-                              sessionId: event.childSessionId,
-                          },
-                      }
-                    : activity,
-            ),
-        };
+        // Transcript events are owned by the live tail and renderer transcript.
+        return base;
     }
 
     async #captureNativeReviewBaseline(

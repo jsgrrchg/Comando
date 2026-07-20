@@ -13,6 +13,7 @@ import {
     AI_TRANSCRIPT_PLAN_ENTRY_ID,
     AI_TRANSCRIPT_STATUS_ENTRY_ID,
     appendAiTranscriptDelta,
+    attachAiSubagentSessionAction,
     getAiTranscriptMessageEntryId,
     getAiTranscriptToolEntryId,
     getAiTranscriptTurnEntryId,
@@ -66,9 +67,18 @@ interface MutableLiveTranscriptEntry
     entryRevision: number;
 }
 
+interface PendingSubagentBreadcrumb {
+    readonly childSessionId: string;
+    readonly updatedAt: string;
+}
+
 interface SessionLiveTranscriptTail {
     readonly entriesById: Map<string, MutableLiveTranscriptEntry>;
     readonly orderedEntryIds: string[];
+    readonly pendingSubagentBreadcrumbsByEntryId: Map<
+        string,
+        PendingSubagentBreadcrumb
+    >;
     readonly pendingTerminalTails: AiLiveTranscriptTailSnapshot[];
     readonly pendingRemovedEntryIds: Set<string>;
     readonly pendingEntryRevisionById: Map<string, number>;
@@ -150,6 +160,9 @@ export class AiLiveTranscriptTailStore {
         this.#sessions.set(tail.sessionId, {
             entriesById,
             orderedEntryIds: compactOrder,
+            pendingSubagentBreadcrumbsByEntryId: new Map(
+                previous?.pendingSubagentBreadcrumbsByEntryId ?? [],
+            ),
             pendingTerminalTails: [],
             pendingRemovedEntryIds: new Set(),
             pendingEntryRevisionById,
@@ -182,6 +195,18 @@ export class AiLiveTranscriptTailStore {
         for (const entryId of previous.pendingRemovedEntryIds) {
             this.#removeEntry(restored, entryId);
         }
+        for (const [entryId, breadcrumb] of [
+            ...restored.pendingSubagentBreadcrumbsByEntryId,
+        ]) {
+            const activity = restored.entriesById.get(entryId)?.payload;
+            if (activity?.kind === "tool") {
+                this.#applySubagentBreadcrumb(
+                    restored,
+                    activity.activity.id,
+                    breadcrumb,
+                );
+            }
+        }
         if (
             previous.terminalTurnStatus !== null &&
             restored.terminalTurnStatus !== previous.terminalTurnStatus
@@ -213,10 +238,7 @@ export class AiLiveTranscriptTailStore {
             if (activity.createdAt < turnId) {
                 continue;
             }
-            this.#upsertEntry(
-                session,
-                createToolEntry(snapshot.sessionId, activity),
-            );
+            this.#upsertToolActivity(session, activity);
         }
         this.#upsertEntry(
             session,
@@ -283,6 +305,22 @@ export class AiLiveTranscriptTailStore {
             if (event.activeTurnStartedAt) {
                 this.#beginTurn(session, event.activeTurnStartedAt);
             }
+        }
+
+        if (event.kind === "tool-activity") {
+            if (canCreateEntry(session, event.activity.createdAt)) {
+                ensureProvisionalTurn(session, event.activity.createdAt);
+                this.#upsertToolActivity(session, event.activity);
+            }
+            return this.#snapshot(event.sessionId, session);
+        }
+
+        if (event.kind === "subagent-breadcrumb") {
+            this.#applySubagentBreadcrumb(session, event.toolCallId, {
+                childSessionId: event.childSessionId,
+                updatedAt: event.updatedAt,
+            });
+            return this.#snapshot(event.sessionId, session);
         }
 
         const entry = createEntryFromEvent(session, event);
@@ -434,6 +472,7 @@ export class AiLiveTranscriptTailStore {
         }
         session.entriesById.clear();
         session.orderedEntryIds.length = 0;
+        session.pendingSubagentBreadcrumbsByEntryId.clear();
         session.pendingRemovedEntryIds.clear();
         session.pendingEntryRevisionById.clear();
         session.turnId = null;
@@ -497,6 +536,7 @@ export class AiLiveTranscriptTailStore {
             );
             session.entriesById.clear();
             session.orderedEntryIds.length = 0;
+            session.pendingSubagentBreadcrumbsByEntryId.clear();
             session.pendingRemovedEntryIds.clear();
             session.pendingEntryRevisionById.clear();
         }
@@ -530,6 +570,83 @@ export class AiLiveTranscriptTailStore {
         if (entryId) {
             this.#removeEntry(session, entryId);
         }
+    }
+
+    #applySubagentBreadcrumb(
+        session: SessionLiveTranscriptTail,
+        toolCallId: string,
+        breadcrumb: PendingSubagentBreadcrumb,
+    ): void {
+        const entryId = getAiTranscriptToolEntryId(
+            session.sessionId,
+            toolCallId,
+        );
+        const existing = session.entriesById.get(entryId);
+        if (!existing || existing.payload.kind !== "tool") {
+            const pending =
+                session.pendingSubagentBreadcrumbsByEntryId.get(entryId);
+            if (!pending || breadcrumb.updatedAt >= pending.updatedAt) {
+                // ACP normally emits the tool first, but recovery and transport
+                // replay may temporarily invert that order.
+                session.pendingSubagentBreadcrumbsByEntryId.set(
+                    entryId,
+                    breadcrumb,
+                );
+            }
+            return;
+        }
+
+        session.pendingSubagentBreadcrumbsByEntryId.delete(entryId);
+        const activity = attachAiSubagentSessionAction(
+            existing.payload.activity,
+            breadcrumb.childSessionId,
+        );
+        if (
+            activity === existing.payload.activity &&
+            existing.envelope.updatedAt >= breadcrumb.updatedAt
+        ) {
+            return;
+        }
+
+        this.#upsertEntry(
+            session,
+            createToolEntry(
+                session.sessionId,
+                activity,
+                maximumTimestamp(
+                    existing.envelope.updatedAt,
+                    breadcrumb.updatedAt,
+                ),
+            ),
+        );
+    }
+
+    #upsertToolActivity(
+        session: SessionLiveTranscriptTail,
+        activity: AiToolActivity,
+    ): void {
+        const entryId = getAiTranscriptToolEntryId(
+            session.sessionId,
+            activity.id,
+        );
+        const breadcrumb =
+            session.pendingSubagentBreadcrumbsByEntryId.get(entryId);
+        session.pendingSubagentBreadcrumbsByEntryId.delete(entryId);
+        this.#upsertEntry(
+            session,
+            createToolEntry(
+                session.sessionId,
+                breadcrumb
+                    ? attachAiSubagentSessionAction(
+                          activity,
+                          breadcrumb.childSessionId,
+                      )
+                    : activity,
+                breadcrumb
+                    ? maximumTimestamp(activity.updatedAt, breadcrumb.updatedAt)
+                    : activity.updatedAt,
+            ),
+        );
     }
 
     #renumberEntries(
@@ -569,6 +686,7 @@ export class AiLiveTranscriptTailStore {
             session = {
                 entriesById: new Map(),
                 orderedEntryIds: [],
+                pendingSubagentBreadcrumbsByEntryId: new Map(),
                 pendingTerminalTails: [],
                 pendingRemovedEntryIds: new Set(),
                 pendingEntryRevisionById: new Map(),
@@ -737,13 +855,6 @@ function createEntryFromEvent(
             event.updatedAt,
         );
     }
-    if (event.kind === "tool-activity") {
-        if (!canCreateEntry(session, event.activity.createdAt)) {
-            return null;
-        }
-        ensureProvisionalTurn(session, event.activity.createdAt);
-        return createToolEntry(event.sessionId, event.activity);
-    }
     if (event.kind === "status" && event.activeTurnStartedAt) {
         return createStatusEntry(event.sessionId, {
             activeTurnStartedAt: event.activeTurnStartedAt,
@@ -814,6 +925,7 @@ function createMessageEntry(
 function createToolEntry(
     sessionId: string,
     activity: AiToolActivity,
+    updatedAt = activity.updatedAt,
 ): AiLiveTranscriptEntry {
     const id = getAiTranscriptToolEntryId(sessionId, activity.id);
     return {
@@ -829,7 +941,7 @@ function createToolEntry(
                 preview: activity.summary,
                 status: activity.status,
             },
-            updatedAt: activity.updatedAt,
+            updatedAt,
         },
         payload: { activity, kind: "tool" },
     };
@@ -932,7 +1044,14 @@ function mergeLiveEntry(
     ) {
         const existingActivity = existing.payload.activity;
         const incomingActivity = incoming.payload.activity;
-        return createToolEntry(incoming.envelope.sessionId, mergeAiTranscriptToolActivity(existingActivity, incomingActivity));
+        return createToolEntry(
+            incoming.envelope.sessionId,
+            mergeAiTranscriptToolActivity(existingActivity, incomingActivity),
+            maximumTimestamp(
+                existing.envelope.updatedAt,
+                incoming.envelope.updatedAt,
+            ),
+        );
     }
     if (incoming.envelope.updatedAt < existing.envelope.updatedAt) {
         return existing;

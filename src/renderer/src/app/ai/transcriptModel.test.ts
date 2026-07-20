@@ -507,6 +507,59 @@ describe("transcriptModel", () => {
         ]);
     });
 
+    it("attaches subagent breadcrumbs and preserves them across tool updates", () => {
+        let transcript = buildAiSessionTranscriptModel({
+            messages: [],
+            toolActivity: [createToolActivity()],
+        });
+        const breadcrumb = createSessionEvent({
+            childSessionId: "session-1:subagent:child-1",
+            kind: "subagent-breadcrumb",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-14T00:00:02.000Z",
+        });
+
+        transcript = applyAiSessionDomainEventToTranscript(
+            transcript,
+            breadcrumb,
+        );
+        expect(getAiSessionTranscriptToolActivity(transcript)).toEqual([
+            expect.objectContaining({
+                action: {
+                    kind: "open_session",
+                    sessionId: "session-1:subagent:child-1",
+                },
+            }),
+        ]);
+
+        transcript = applyAiSessionDomainEventToTranscript(
+            transcript,
+            createSessionEvent({
+                activity: createToolActivity({
+                    status: "completed",
+                    updatedAt: "2026-04-14T00:00:03.000Z",
+                }),
+                kind: "tool-activity",
+                updatedAt: "2026-04-14T00:00:03.000Z",
+            }),
+        );
+        const replayed = applyAiSessionDomainEventToTranscript(
+            transcript,
+            breadcrumb,
+        );
+
+        expect(getAiSessionTranscriptToolActivity(transcript)).toEqual([
+            expect.objectContaining({
+                action: {
+                    kind: "open_session",
+                    sessionId: "session-1:subagent:child-1",
+                },
+                status: "completed",
+            }),
+        ]);
+        expect(replayed).toBe(transcript);
+    });
+
     it("merges selected incoming sources without replacing the whole transcript", () => {
         const current = buildAiSessionTranscriptModel({
             activeTurnStartedAt: "2026-04-14T00:00:03.000Z",

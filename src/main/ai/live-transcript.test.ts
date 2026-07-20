@@ -130,6 +130,118 @@ describe("AiLiveTranscriptTailStore", () => {
         ]);
     });
 
+    it("persists subagent breadcrumbs through replay and later tool updates", () => {
+        const store = new AiLiveTranscriptTailStore();
+        store.applyEvent({
+            ...eventBase,
+            activity: toolActivity(
+                "tool-1",
+                "2026-07-18T00:01:02.000Z",
+            ),
+            kind: "tool-activity",
+        });
+        const breadcrumb = {
+            ...eventBase,
+            childSessionId: "session-1:subagent:child-1",
+            kind: "subagent-breadcrumb" as const,
+            toolCallId: "tool-1",
+            updatedAt: "2026-07-18T00:01:03.000Z",
+        };
+
+        const linked = store.applyEvent(breadcrumb);
+        const pendingTool = store
+            .takePendingEntries(SESSION_ID)
+            .find((entry) => entry.payload.kind === "tool");
+        const replayed = store.applyEvent(breadcrumb);
+
+        expect(linked.entries[0]?.payload).toMatchObject({
+            activity: {
+                action: {
+                    kind: "open_session",
+                    sessionId: "session-1:subagent:child-1",
+                },
+            },
+            kind: "tool",
+        });
+        expect(pendingTool?.payload).toMatchObject({
+            activity: {
+                action: {
+                    kind: "open_session",
+                    sessionId: "session-1:subagent:child-1",
+                },
+            },
+        });
+        expect(replayed.revision).toBe(linked.revision);
+
+        const completed = store.applyEvent({
+            ...eventBase,
+            activity: {
+                ...toolActivity(
+                    "tool-1",
+                    "2026-07-18T00:01:02.000Z",
+                ),
+                status: "completed",
+                updatedAt: "2026-07-18T00:01:04.000Z",
+            },
+            kind: "tool-activity",
+            updatedAt: "2026-07-18T00:01:04.000Z",
+        });
+        const projected = store.projectLegacySnapshot(sessionSnapshot());
+
+        expect(completed.entries[0]?.payload).toMatchObject({
+            activity: {
+                action: {
+                    kind: "open_session",
+                    sessionId: "session-1:subagent:child-1",
+                },
+                status: "completed",
+            },
+        });
+        expect(projected.toolActivity).toEqual([
+            expect.objectContaining({
+                action: {
+                    kind: "open_session",
+                    sessionId: "session-1:subagent:child-1",
+                },
+                id: "tool-1",
+                status: "completed",
+            }),
+        ]);
+    });
+
+    it("retains an early subagent breadcrumb until its tool activity arrives", () => {
+        const store = new AiLiveTranscriptTailStore();
+        store.applyEvent({
+            ...eventBase,
+            childSessionId: "session-1:subagent:child-1",
+            kind: "subagent-breadcrumb",
+            toolCallId: "tool-1",
+            updatedAt: "2026-07-18T00:01:03.000Z",
+        });
+
+        const resolved = store.applyEvent({
+            ...eventBase,
+            activity: toolActivity(
+                "tool-1",
+                "2026-07-18T00:01:02.000Z",
+            ),
+            kind: "tool-activity",
+        });
+
+        expect(resolved.entries[0]?.payload).toMatchObject({
+            activity: {
+                action: {
+                    kind: "open_session",
+                    sessionId: "session-1:subagent:child-1",
+                },
+            },
+            kind: "tool",
+        });
+        expect(resolved.entries[0]?.envelope.updatedAt).toBe(
+            "2026-07-18T00:01:03.000Z",
+        );
+    });
+
     it("derives a legacy snapshot only when requested", () => {
         const store = new AiLiveTranscriptTailStore();
         const snapshot = sessionSnapshot({

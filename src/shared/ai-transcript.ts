@@ -33,11 +33,35 @@ export function mergeAiTranscriptToolActivity(existing: AiToolActivity, incoming
     const incomingWins = incoming.updatedAt > existing.updatedAt || (incoming.updatedAt === existing.updatedAt && stableAiTranscriptJson(incoming) >= stableAiTranscriptJson(existing));
     const winner = incomingWins ? incoming : existing;
     const fallback = incomingWins ? existing : incoming;
+    // Session links are durable transcript enrichment and must survive later
+    // status-only updates from runtimes that do not repeat the action.
+    const action = winner.action ?? fallback.action;
     return {
         ...winner,
+        ...(action === undefined ? {} : { action }),
         diffs: winner.diffs.length > 0 ? winner.diffs : fallback.diffs,
         exitCode: winner.exitCode ?? fallback.exitCode,
         terminalOutput: winner.terminalOutput ?? fallback.terminalOutput,
+    };
+}
+
+export function attachAiSubagentSessionAction(
+    activity: AiToolActivity,
+    childSessionId: string,
+): AiToolActivity {
+    if (
+        activity.action?.kind === "open_session" &&
+        activity.action.sessionId === childSessionId
+    ) {
+        return activity;
+    }
+
+    return {
+        ...activity,
+        action: {
+            kind: "open_session",
+            sessionId: childSessionId,
+        },
     };
 }
 

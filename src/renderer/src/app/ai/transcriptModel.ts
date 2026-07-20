@@ -10,6 +10,7 @@ import type {
 import {
     AI_TRANSCRIPT_PLAN_ENTRY_ID,
     AI_TRANSCRIPT_STATUS_ENTRY_ID,
+    attachAiSubagentSessionAction,
     getAiTranscriptMessageEntryId,
     getAiTranscriptToolEntryId,
     mergeAiTranscriptMessage,
@@ -277,11 +278,32 @@ export function applyAiSessionDomainEventToTranscript(
             });
         case "permission-request":
         case "session-info":
-        case "subagent-breadcrumb":
         case "subagent-created":
         case "token-usage":
         case "user-input-request":
             return transcript;
+        case "subagent-breadcrumb":
+            return replaceAiSessionTranscriptEntry(
+                transcript,
+                getToolTranscriptId(event.sessionId, event.toolCallId),
+                (entry) => {
+                    if (entry.kind !== "tool") {
+                        return entry;
+                    }
+                    const activity = attachAiSubagentSessionAction(
+                        entry.activity,
+                        event.childSessionId,
+                    );
+                    const updatedAt =
+                        entry.updatedAt > event.updatedAt
+                            ? entry.updatedAt
+                            : event.updatedAt;
+                    return activity === entry.activity &&
+                        updatedAt === entry.updatedAt
+                        ? entry
+                        : { ...entry, activity, updatedAt };
+                },
+            );
         default:
             return transcript;
     }
@@ -931,6 +953,10 @@ function mergeTranscriptEntry(
             createdAt: options.preserveCreatedAt
                 ? existing.createdAt
                 : incoming.createdAt,
+            updatedAt:
+                existing.updatedAt > incoming.updatedAt
+                    ? existing.updatedAt
+                    : incoming.updatedAt,
         };
     }
 
