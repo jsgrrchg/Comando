@@ -5265,13 +5265,15 @@ mod tests {
             "runtime-parent",
             SessionUpdate::SessionInfoUpdate(
                 agent_client_protocol::schema::v1::SessionInfoUpdate::new()
-                    .title("Investigate startup crash"),
+                    .title("Investigate startup crash")
+                    .updated_at("2026-07-20T12:00:00.000Z"),
             ),
         ));
 
         let event = receiver.recv().unwrap();
         assert_eq!(event.event_name, AI_SESSION_UPDATED_EVENT);
         assert_eq!(event.payload["title"], "Investigate startup crash");
+        assert!(event.payload["updatedAt"].as_str().is_some_and(|value| !value.is_empty()));
         assert_eq!(
             sessions
                 .lock()

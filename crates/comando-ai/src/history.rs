@@ -3163,6 +3163,23 @@ mod tests {
     }
 
     #[test]
+    fn custom_title_remains_the_display_title_after_reloading_history() {
+        let (temp, store) = store();
+        let metadata = metadata("session_1");
+        store.create_session(metadata.clone()).unwrap();
+        store
+            .rename_session(&metadata.session_id, "Manual title".to_string())
+            .unwrap();
+        drop(store);
+
+        let reloaded = AiHistoryStore::new(temp.path()).unwrap();
+        let metadata = reloaded.load_metadata(&metadata.session_id).unwrap();
+
+        assert_eq!(metadata.custom_title.as_deref(), Some("Manual title"));
+        assert_eq!(metadata.display_title(), "Manual title");
+    }
+
+    #[test]
     fn deleting_a_session_removes_its_persisted_subtree() {
         let (_temp, store) = store();
         let parent = metadata("parent");

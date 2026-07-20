@@ -5,6 +5,7 @@ import type { AiSessionSnapshot } from "@shared/ipc";
 import {
     applyNormalizedSessionCatalogToSnapshot,
     applySessionCatalogToSnapshot,
+    getSessionDisplayTitle,
     isPathInsideRoot,
     isSamePath,
     normalizeAdditionalRoots,
@@ -740,6 +741,7 @@ describe("session-core model reconciliation", () => {
             title: "Manual title",
             updatedAt: "2026-04-23T00:02:00.000Z",
         });
+        expect(getSessionDisplayTitle(updated)).toBe("Manual title");
     });
 
     it("applies runtime titles when the session was not manually renamed", () => {
