@@ -72,7 +72,9 @@ describe("AiService history", () => {
     });
 
     it("checkpoints an active tail received only through a native snapshot", async () => {
-        const checkpointOpenTranscriptTail = vi.fn(() => Promise.resolve());
+        const checkpointOpenTranscriptTail = vi.fn<
+            NonNullable<NativeAiGateway["checkpointOpenTranscriptTail"]>
+        >(() => Promise.resolve());
         const snapshot = createSnapshot({
             activeTurnStartedAt: "2026-04-16T12:00:00.000Z",
             messages: [
@@ -108,14 +110,16 @@ describe("AiService history", () => {
             await vi.waitFor(() =>
                 expect(checkpointOpenTranscriptTail).toHaveBeenCalledOnce(),
             );
-            expect(checkpointOpenTranscriptTail).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    entries: expect.arrayContaining([
-                        expect.objectContaining({ id: "message:assistant-1" }),
-                    ]),
-                    sessionId: snapshot.sessionId,
-                    turnId: snapshot.activeTurnStartedAt,
-                }),
+            const checkpoint = checkpointOpenTranscriptTail.mock.calls[0]?.[0];
+            expect(checkpoint).toMatchObject({
+                sessionId: snapshot.sessionId,
+                turnId: snapshot.activeTurnStartedAt,
+            });
+            // Assert entries separately so Vitest's untyped asymmetric matcher is not assigned.
+            expect(checkpoint?.entries).toEqual(
+                expect.arrayContaining([
+                    expect.objectContaining({ id: "message:assistant-1" }),
+                ]),
             );
         } finally {
             service.close();
