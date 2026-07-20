@@ -243,7 +243,7 @@ describe("ai-store queue", () => {
         vi.useRealTimers();
     });
 
-    it("hydrates bounded block-native transcript windows in the production store", async () => {
+    it("hydrates complete payloads for visible block-native transcript windows", async () => {
         const metadata = [1, 2, 3].map((index) => ({
             blockId: `block-${index}`,
             endSequence: index * 10,
@@ -322,12 +322,11 @@ describe("ai-store queue", () => {
             expect.arrayContaining([
                 "payload:message-2",
                 "payload:thinking-2",
+                "payload:tool-2",
                 "payload:message-3",
                 "payload:thinking-3",
+                "payload:tool-3",
             ]),
-        );
-        expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).not.toContain(
-            "payload:tool-2",
         );
 
         await useAiStore
@@ -335,10 +334,11 @@ describe("ai-store queue", () => {
             .prefetchTranscriptWindow(TAB.sessionId, "backward");
 
         expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).toEqual(
-            expect.arrayContaining(["payload:message-1", "payload:thinking-1"]),
-        );
-        expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).not.toContain(
-            "payload:tool-1",
+            expect.arrayContaining([
+                "payload:message-1",
+                "payload:thinking-1",
+                "payload:tool-1",
+            ]),
         );
         expect(
             useAiStore

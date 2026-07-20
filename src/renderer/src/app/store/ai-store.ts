@@ -1674,19 +1674,21 @@ export const useAiStore = create<AiStore>((set, get) => ({
     loadTranscriptWindowBlock: async (sessionId, blockId) => {
         const block = await transcriptWindowStore.load(sessionId, blockId);
         if (block) {
-            // Message and thinking text is needed to render a visible block.
-            // Tool payloads can include terminal output, diffs, and raw JSON,
-            // so they remain unloaded until an explicit payload request.
-            const visibleTextPayloadRefs = new Set(
+            // A sealed turn replaces the live tail with this visible block.
+            // Hydrate its tool payloads too so review diffs remain inspectable
+            // across that handoff and after reopening the chat.
+            const visiblePayloadRefs = new Set(
                 block.entries.flatMap((entry) =>
                     entry.payloadRef &&
-                    (entry.kind === "message" || entry.kind === "thinking")
+                    (entry.kind === "message" ||
+                        entry.kind === "thinking" ||
+                        entry.kind === "tool")
                         ? [entry.payloadRef]
                         : [],
                 ),
             );
             await Promise.all(
-                [...visibleTextPayloadRefs].map((payloadRef) =>
+                [...visiblePayloadRefs].map((payloadRef) =>
                     get().loadTranscriptPayload(sessionId, payloadRef),
                 ),
             );
