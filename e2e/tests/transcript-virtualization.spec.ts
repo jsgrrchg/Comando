@@ -69,11 +69,6 @@ test("virtualized history remains mounted while a new turn streams", async ({ pa
 test("streaming has no transient frame continuity violations", async ({
     page,
 }, testInfo) => {
-    test.fail(
-        true,
-        "The extracted hot tail still exposes scroll continuity violations until Fase 3 lands.",
-    );
-
     const diagnostic = await page.evaluate(async () => {
         return window.comandoTranscriptHarness.runStreamingDiagnostic();
     });

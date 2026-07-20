@@ -20,6 +20,7 @@ import {
     MeasuredVirtualList,
     type MeasuredVirtualListHandle,
     type MeasuredVirtualRange,
+    type MeasuredVirtualScrollRequest,
     type MeasuredVirtualViewportAnchor,
 } from "@renderer/components/virtual/MeasuredVirtualList";
 
@@ -67,6 +68,9 @@ interface ChatTimelineHistoryRowsProps {
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onVirtualScrollRequest?: (
+        request: MeasuredVirtualScrollRequest,
+    ) => void;
     readonly liveTailRowId?: string | null;
     readonly newTurnAnchorRowId?: string | null;
     readonly renderRow: (params: {
@@ -131,6 +135,7 @@ export const ChatTimelineHistoryRows = memo(
         onVirtualResizeAutoFollow,
         onVirtualResizeStart,
         onNewTurnScrollTarget,
+        onVirtualScrollRequest,
         liveTailRowId,
         newTurnAnchorRowId,
         renderRow,
@@ -710,6 +715,7 @@ export const ChatTimelineHistoryRows = memo(
                         onRangeChange={onVirtualRangeChange}
                         onItemMeasured={handleVirtualItemMeasured}
                         onReady={handleVirtualListReady}
+                        onScrollRequest={onVirtualScrollRequest}
                         overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
                         preserveScrollAnchorOnItemsChange
                         preserveScrollAnchorOnMeasure

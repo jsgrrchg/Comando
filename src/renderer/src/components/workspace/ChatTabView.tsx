@@ -63,7 +63,6 @@ import {
     isChatPerformanceProbeEnabled,
     measureChatPerformance,
     recordChatPerformanceMetric,
-    recordChatScrollWrite,
     type ChatScrollWriteReason,
 } from "@renderer/app/debug/chatPerformanceProbe";
 import type {
@@ -71,7 +70,10 @@ import type {
     RuntimeWorkspaceFileOpenLocation,
     RuntimeWorkspaceFileReviewContext,
 } from "@renderer/app/workspace/tree";
-import type { MeasuredVirtualRange } from "@renderer/components/virtual/MeasuredVirtualList";
+import type {
+    MeasuredVirtualRange,
+    MeasuredVirtualScrollRequest,
+} from "@renderer/components/virtual/MeasuredVirtualList";
 
 import { AIChatAgentControls } from "./AIChatAgentControls";
 import { LanguageIcon } from "./LanguageIcon";
@@ -103,13 +105,17 @@ import {
 } from "./chat/chatScroll";
 import {
     anchorNewChatTurn,
-    canApplyChatScrollOperation,
     createChatScrollIntent,
     followChatScrollEnd,
     isAnchoringNewChatTurn,
     isFollowingChatScrollEnd,
     readChatScroll,
 } from "./chat/chatScrollIntent";
+import {
+    createChatScrollCoordinator,
+    type ChatScrollCoordinator,
+    type ChatScrollTarget,
+} from "./chat/chatScrollCoordinator";
 import type { AIComposerPart } from "./chat/composerParts";
 import {
     appendSelectionMentionPart,
@@ -275,7 +281,6 @@ const FALLBACK_COMMANDS: readonly AiAvailableCommand[] = [
 ];
 
 const NEAR_BOTTOM_THRESHOLD = 80;
-const BOTTOM_FOLLOW_SETTLE_FRAMES = 3;
 const SCROLL_PERSIST_DELAY_MS = 80;
 const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
 const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
@@ -427,9 +432,9 @@ export const ChatTabView = memo(function ChatTabView({
         undefined,
     );
     const shouldAutoFollowRef = useRef(true);
-    const pendingScrollFrameRef = useRef<number | null>(null);
-    const bottomFollowSettleFrameRef = useRef<number | null>(null);
-    const bottomFollowSettleActiveRef = useRef(false);
+    const [scrollCoordinator] = useState<ChatScrollCoordinator>(
+        createChatScrollCoordinator,
+    );
     const resizeBottomLockRef = useRef(false);
     const resizeStartedNearBottomRef = useRef(false);
     const scrollPersistTimerRef = useRef<number | null>(null);
@@ -1517,136 +1522,62 @@ export const ChatTabView = memo(function ChatTabView({
         );
     }, []);
 
-    const writeProgrammaticScroll = useCallback(
-        (target: number, reason: ChatScrollWriteReason) => {
-            const el = scrollRef.current;
-            if (!el) {
-                return;
-            }
-
-            const nextScrollTop = Math.max(
-                0,
-                Math.min(target, el.scrollHeight - el.clientHeight),
-            );
-            if (Math.abs(el.scrollTop - nextScrollTop) < 1) {
-                return;
-            }
-
-            const previousScrollTop = el.scrollTop;
-            // Centralizing writes prevents concurrent layout paths from fighting.
-            el.scrollTop = nextScrollTop;
-            recordChatScrollWrite({
-                after: nextScrollTop,
-                before: previousScrollTop,
-                clientHeight: el.clientHeight,
+    const requestChatScroll = useCallback(
+        (request: {
+            readonly reason: Exclude<ChatScrollWriteReason, "settle">;
+            readonly target: ChatScrollTarget;
+        }) => {
+            scrollCoordinator.request(request, {
+                element: scrollRef.current,
                 navigationGeneration:
                     scrollIntentRef.current.navigationGeneration,
-                reason,
-                scrollHeight: el.scrollHeight,
                 sessionId: tab.sessionId,
             });
         },
-        [tab.sessionId],
+        [scrollCoordinator, tab.sessionId],
+    );
+
+    const writeProgrammaticScroll = useCallback(
+        (target: ChatScrollTarget, reason: Exclude<ChatScrollWriteReason, "settle">) => {
+            requestChatScroll({ reason, target });
+            // Layout effects need the followed edge before paint. Requests from
+            // the virtualizer stay microtask-coalesced so one commit picks one
+            // highest-priority movement instead of competing scroll writes.
+            scrollCoordinator.flush();
+        },
+        [requestChatScroll, scrollCoordinator],
     );
 
     const scrollToBottom = useCallback(
-        (reason: "follow-end" | "settle" = "follow-end") => {
-            const el = scrollRef.current;
-            if (el) {
-                writeProgrammaticScroll(el.scrollHeight, reason);
-            }
+        (reason: "follow-end" = "follow-end") => {
+            writeProgrammaticScroll("end", reason);
         },
         [writeProgrammaticScroll],
     );
 
     const cancelPendingScrollToBottom = useCallback(() => {
-        if (pendingScrollFrameRef.current === null) {
-            return;
-        }
-
-        window.cancelAnimationFrame(pendingScrollFrameRef.current);
-        pendingScrollFrameRef.current = null;
-    }, []);
-
-    const cancelBottomFollowSettle = useCallback(() => {
-        bottomFollowSettleActiveRef.current = false;
-
-        if (bottomFollowSettleFrameRef.current === null) {
-            return;
-        }
-
-        window.cancelAnimationFrame(bottomFollowSettleFrameRef.current);
-        bottomFollowSettleFrameRef.current = null;
-    }, []);
-
-    const scheduleBottomFollowSettle = useCallback(() => {
-        const generation = scrollIntentRef.current.navigationGeneration;
-        cancelBottomFollowSettle();
-        bottomFollowSettleActiveRef.current = true;
-
-        const runSettleFrame = (remainingFrames: number) => {
-            bottomFollowSettleFrameRef.current = window.requestAnimationFrame(
-                () => {
-                    bottomFollowSettleFrameRef.current = null;
-
-                    if (
-                        !bottomFollowSettleActiveRef.current ||
-                        !canApplyChatScrollOperation(
-                            scrollIntentRef.current,
-                            generation,
-                        )
-                    ) {
-                        bottomFollowSettleActiveRef.current = false;
-                        return;
-                    }
-
-                    // Virtual rows can finish measuring after the first restore.
-                    scrollToBottom("settle");
-
-                    if (remainingFrames > 1) {
-                        runSettleFrame(remainingFrames - 1);
-                        return;
-                    }
-
-                    bottomFollowSettleActiveRef.current = false;
-                },
-            );
-        };
-
-        runSettleFrame(BOTTOM_FOLLOW_SETTLE_FRAMES);
-    }, [cancelBottomFollowSettle, scrollToBottom]);
+        // A direct user gesture invalidates queued corrections before they can
+        // override the reader's position in the next microtask.
+        scrollCoordinator.cancelPending();
+    }, [scrollCoordinator]);
 
     const scheduleScrollToBottom = useCallback(() => {
         if (!isFollowingChatScrollEnd(scrollIntentRef.current)) {
             return;
         }
 
-        // One frame coalesces the layout changes that happened before paint.
-        if (
-            pendingScrollFrameRef.current !== null ||
-            bottomFollowSettleActiveRef.current
-        ) {
-            return;
-        }
-
-        const generation = scrollIntentRef.current.navigationGeneration;
-        bottomFollowSettleActiveRef.current = true;
-
-        pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
-            pendingScrollFrameRef.current = null;
-            if (
-                !canApplyChatScrollOperation(
-                    scrollIntentRef.current,
-                    generation,
-                )
-            ) {
-                bottomFollowSettleActiveRef.current = false;
-                return;
-            }
-            scrollToBottom();
-            scheduleBottomFollowSettle();
+        requestChatScroll({
+            reason: "follow-end",
+            target: "end",
         });
-    }, [scheduleBottomFollowSettle, scrollToBottom]);
+    }, [requestChatScroll]);
+
+    const handleTimelineVirtualScrollRequest = useCallback(
+        (request: MeasuredVirtualScrollRequest) => {
+            requestChatScroll(request);
+        },
+        [requestChatScroll],
+    );
 
     const handleNewTurnScrollTarget = useCallback(
         (target: number) => {
@@ -1895,7 +1826,6 @@ export const ChatTabView = memo(function ChatTabView({
             }
 
             cancelPendingScrollToBottom();
-            cancelBottomFollowSettle();
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
             pendingNewTurnAnchorRef.current = undefined;
@@ -1903,7 +1833,7 @@ export const ChatTabView = memo(function ChatTabView({
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
-        [cancelBottomFollowSettle, cancelPendingScrollToBottom],
+        [cancelPendingScrollToBottom],
     );
 
     const handleTimelineTouchStart = useCallback(
@@ -1914,7 +1844,6 @@ export const ChatTabView = memo(function ChatTabView({
 
             // Touch scrolling has no wheel event, so invalidate follow eagerly.
             cancelPendingScrollToBottom();
-            cancelBottomFollowSettle();
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
             pendingNewTurnAnchorRef.current = undefined;
@@ -1922,20 +1851,18 @@ export const ChatTabView = memo(function ChatTabView({
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
-        [cancelBottomFollowSettle, cancelPendingScrollToBottom],
+        [cancelPendingScrollToBottom],
     );
 
     useEffect(() => {
         return () => {
             cancelPendingScrollToBottom();
-            cancelBottomFollowSettle();
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
             flushScheduledScrollPersist();
         };
     }, [
         cancelPendingScrollToBottom,
-        cancelBottomFollowSettle,
         flushScheduledScrollPersist,
     ]);
 
@@ -1971,7 +1898,6 @@ export const ChatTabView = memo(function ChatTabView({
         const persistViewStateOnDeactivate = () => {
             cancelled = true;
             cancelPendingScrollToBottom();
-            cancelBottomFollowSettle();
             const flushedState = flushScheduledScrollPersist();
             persistCurrentViewState(
                 resolveChatScrollPersistenceState({
@@ -1993,7 +1919,7 @@ export const ChatTabView = memo(function ChatTabView({
         if (shouldRestoreBottom) {
             shouldAutoFollowRef.current = true;
             scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
-            scheduleScrollToBottom();
+            scrollToBottom();
             setJumpToBottomVisibility(false);
         } else {
             shouldAutoFollowRef.current = false;
@@ -2005,11 +1931,9 @@ export const ChatTabView = memo(function ChatTabView({
         return persistViewStateOnDeactivate;
     }, [
         cancelPendingScrollToBottom,
-        cancelBottomFollowSettle,
         flushScheduledScrollPersist,
         isNearBottom,
         persistCurrentViewState,
-        scheduleScrollToBottom,
         scrollToBottom,
         writeProgrammaticScroll,
         active,
@@ -2020,9 +1944,9 @@ export const ChatTabView = memo(function ChatTabView({
         if (active && shouldAutoFollowRef.current) {
             // The composer can collapse when a turn starts, changing the viewport
             // height before the new timeline entry has been measured.
-            scheduleScrollToBottom();
+            scrollToBottom();
         }
-    }, [active, composerExpanded, scheduleScrollToBottom, snapshot.updatedAt]);
+    }, [active, composerExpanded, scrollToBottom, snapshot.updatedAt]);
 
     useEffect(() => {
         const scrollEl = scrollRef.current;
@@ -2073,8 +1997,7 @@ export const ChatTabView = memo(function ChatTabView({
         if (
             shouldHoldChatScrollFollowIntent({
                 composerExpanded,
-                programmaticFollowSettling:
-                    bottomFollowSettleActiveRef.current,
+                programmaticFollowSettling: false,
                 shouldAutoFollow: shouldAutoFollowRef.current,
             })
         ) {
@@ -2089,16 +2012,23 @@ export const ChatTabView = memo(function ChatTabView({
             ? followChatScrollEnd(scrollIntentRef.current)
             : readChatScroll(scrollIntentRef.current);
         if (!nextIsNearBottom) {
+            // Scrollbar drags and keyboard navigation do not pass through the
+            // wheel/touch handlers, so they cancel queued writes here as well.
+            cancelPendingScrollToBottom();
             pendingNewTurnAnchorRef.current = undefined;
             setNewTurnAnchorRowId(null);
         }
         setShowJumpToBottom(!nextIsNearBottom);
         scheduleScrollPersist(el.scrollTop, nextIsNearBottom);
-    }, [composerExpanded, isNearBottom, scheduleScrollPersist]);
+    }, [
+        cancelPendingScrollToBottom,
+        composerExpanded,
+        isNearBottom,
+        scheduleScrollPersist,
+    ]);
 
     const handleJumpToBottom = useCallback(() => {
         cancelPendingScrollToBottom();
-        cancelBottomFollowSettle();
         shouldAutoFollowRef.current = true;
         scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
         pendingNewTurnAnchorRef.current = undefined;
@@ -2106,15 +2036,12 @@ export const ChatTabView = memo(function ChatTabView({
         resizeBottomLockRef.current = false;
         resizeStartedNearBottomRef.current = false;
         scrollToBottom();
-        scheduleBottomFollowSettle();
         setShowJumpToBottom(false);
 
         const scrollEl = scrollRef.current;
         scheduleScrollPersist(scrollEl?.scrollTop ?? 0, true);
     }, [
-        cancelBottomFollowSettle,
         cancelPendingScrollToBottom,
-        scheduleBottomFollowSettle,
         scheduleScrollPersist,
         scrollToBottom,
     ]);
@@ -2694,6 +2621,7 @@ export const ChatTabView = memo(function ChatTabView({
                     liveTailRowId={timelineModel.liveTailRowId}
                     newTurnAnchorRowId={newTurnAnchorRowId}
                     onNewTurnScrollTarget={handleNewTurnScrollTarget}
+                    onVirtualScrollRequest={handleTimelineVirtualScrollRequest}
                     onSetActivityGroupExpanded={setActivityGroupExpanded}
                     onSetActivityRangeExpanded={setActivityRangeExpanded}
                     onAddFileReferenceToChat={
@@ -3215,6 +3143,9 @@ type ChatTimelineProps = {
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onVirtualScrollRequest?: (
+        request: MeasuredVirtualScrollRequest,
+    ) => void;
     readonly onSetActivityGroupExpanded: (
         groupId: string,
         expanded: boolean,
@@ -3298,6 +3229,7 @@ const ChatTimeline = memo(function ChatTimeline({
     liveTailRowId,
     newTurnAnchorRowId,
     onNewTurnScrollTarget,
+    onVirtualScrollRequest,
     onSetActivityGroupExpanded,
     onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
@@ -3372,6 +3304,7 @@ const ChatTimeline = memo(function ChatTimeline({
                             liveTailRowId={liveTailRowId}
                             newTurnAnchorRowId={newTurnAnchorRowId}
                             onNewTurnScrollTarget={onNewTurnScrollTarget}
+                            onVirtualScrollRequest={onVirtualScrollRequest}
                             onSetActivityGroupExpanded={
                                 onSetActivityGroupExpanded
                             }
@@ -3485,6 +3418,9 @@ export type ChatTimelineHistoryProps = {
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onVirtualScrollRequest?: (
+        request: MeasuredVirtualScrollRequest,
+    ) => void;
     readonly onSetActivityGroupExpanded: (
         groupId: string,
         expanded: boolean,
@@ -3545,6 +3481,7 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
     liveTailRowId,
     newTurnAnchorRowId,
     onNewTurnScrollTarget,
+    onVirtualScrollRequest,
     onSetActivityGroupExpanded,
     onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
@@ -3641,6 +3578,7 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
             liveTailRowId={liveTailRowId}
             newTurnAnchorRowId={newTurnAnchorRowId}
             onNewTurnScrollTarget={onNewTurnScrollTarget}
+            onVirtualScrollRequest={onVirtualScrollRequest}
             onVirtualRangeChange={onVirtualRangeChange}
             onVirtualResizeEnd={onVirtualResizeEnd}
             onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}

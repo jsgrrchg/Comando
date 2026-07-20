@@ -115,6 +115,11 @@ export interface MeasuredVirtualListHandle {
     ) => void;
 }
 
+export interface MeasuredVirtualScrollRequest {
+    readonly reason: "measure-anchor" | "scroll-to-index";
+    readonly target: number;
+}
+
 export interface MeasuredVirtualListProps<T> {
     readonly items: readonly T[];
     readonly enabled?: boolean;
@@ -147,6 +152,11 @@ export interface MeasuredVirtualListProps<T> {
     readonly geometryCacheSignature?: string | null;
     readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onReady?: (handle: MeasuredVirtualListHandle | null) => void;
+    /**
+     * Lets a host with richer navigation policy own DOM scroll writes. The list
+     * still calculates its exact target, but reports it as a correction request.
+     */
+    readonly onScrollRequest?: (request: MeasuredVirtualScrollRequest) => void;
     readonly preserveScrollAnchorOnItemsChange?: boolean;
     readonly preserveScrollAnchorOnMeasure?: boolean;
     readonly shouldPreserveScrollAnchorOnItemsChange?: () => boolean;
@@ -527,6 +537,7 @@ export function MeasuredVirtualList<T>({
     geometryCacheSignature = null,
     onRangeChange,
     onReady,
+    onScrollRequest,
     preserveScrollAnchorOnItemsChange = false,
     preserveScrollAnchorOnMeasure = false,
     shouldPreserveScrollAnchorOnItemsChange,
@@ -1237,6 +1248,11 @@ export function MeasuredVirtualList<T>({
 
         const before = container.scrollTop;
         const after = Math.max(0, before + adjustment);
+        if (onScrollRequest) {
+            onScrollRequest({ reason: "measure-anchor", target: after });
+            return;
+        }
+
         container.scrollTop = after;
         recordChatScrollWrite({
             after,
@@ -1250,6 +1266,7 @@ export function MeasuredVirtualList<T>({
         measuredSizes,
         measurementCacheKey,
         preserveScrollAnchorOnMeasure,
+        onScrollRequest,
         shouldPreserveScrollAnchorOnMeasureNow,
         scrollContainerRef,
         virtualizationEnabled,
@@ -1366,6 +1383,11 @@ export function MeasuredVirtualList<T>({
                 totalSize: layout.totalSize,
                 viewportHeight: container.clientHeight,
             });
+            if (onScrollRequest) {
+                onScrollRequest({ reason: "scroll-to-index", target: after });
+                return;
+            }
+
             container.scrollTop = after;
             recordChatScrollWrite({
                 after,
@@ -1383,6 +1405,7 @@ export function MeasuredVirtualList<T>({
             layout.totalSize,
             measurementCacheKey,
             normalizedScrollMarginTop,
+            onScrollRequest,
             scrollContainerRef,
         ],
     );

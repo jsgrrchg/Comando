@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import {
     useCallback,
     useEffect,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
@@ -11,11 +12,15 @@ import {
 import type { AiSessionSnapshot } from "@shared/ipc";
 import {
     markChatPerformanceFrame,
-    recordChatScrollWrite,
     setChatPerformanceProbeEnabledForTests,
     type ChatPerformanceProbeEvent,
 } from "@renderer/app/debug/chatPerformanceProbe";
 import { ChatTimelineHistory } from "@renderer/components/workspace/ChatTabView";
+import {
+    createChatScrollCoordinator,
+    type ChatScrollCoordinator,
+} from "@renderer/components/workspace/chat/chatScrollCoordinator";
+import type { MeasuredVirtualScrollRequest } from "@renderer/components/virtual/MeasuredVirtualList";
 import type { ChatTimelineRow } from "@renderer/components/workspace/chat/chatTimelineModel";
 
 import "@renderer/styles.css";
@@ -211,7 +216,9 @@ function TranscriptHarness() {
     const diagnosticFrame = useRef(0);
     const diagnosticPhase = useRef("idle");
     const previousFrameAt = useRef(0);
-    const bottomFollowFrameRef = useRef<number | null>(null);
+    const [scrollCoordinator] = useState<ChatScrollCoordinator>(
+        createChatScrollCoordinator,
+    );
     const [historyRows, setHistoryRows] = useState(createInitialHistory);
     const [streamingText, setStreamingText] = useState<string | null>(null);
 
@@ -309,50 +316,61 @@ function TranscriptHarness() {
         [],
     );
 
-    const writeToBottom = useCallback((reason: "follow-end" | "settle") => {
-        const scrollElement = scrollRef.current;
-        if (!scrollElement) {
-            return;
-        }
-        const before = scrollElement.scrollTop;
-        const after = Math.max(
-            0,
-            scrollElement.scrollHeight - scrollElement.clientHeight,
-        );
-        if (Math.abs(after - before) < 1) {
-            return;
-        }
-        scrollElement.scrollTop = after;
-        recordChatScrollWrite({
-            after,
-            before,
-            clientHeight: scrollElement.clientHeight,
-            navigationGeneration: 0,
-            reason,
-            scrollHeight: scrollElement.scrollHeight,
-            sessionId: "e2e-transcript",
-        });
-    }, []);
+    const requestScroll = useCallback(
+        (request: {
+            readonly reason: "follow-end" | "measure-anchor" | "scroll-to-index";
+            readonly target: "end" | number;
+        }) => {
+            scrollCoordinator.request(request, {
+                element: scrollRef.current,
+                navigationGeneration: 0,
+                sessionId: "e2e-transcript",
+            });
+        },
+        [scrollCoordinator],
+    );
 
-    const scheduleBottomFollow = useCallback(() => {
-        if (bottomFollowFrameRef.current !== null) {
-            return;
-        }
-        let remainingFrames = 4;
-        const follow = () => {
-            bottomFollowFrameRef.current = null;
-            writeToBottom(remainingFrames === 4 ? "follow-end" : "settle");
-            remainingFrames -= 1;
-            if (remainingFrames > 0) {
-                bottomFollowFrameRef.current = requestAnimationFrame(follow);
-            }
-        };
-        bottomFollowFrameRef.current = requestAnimationFrame(follow);
-    }, [writeToBottom]);
+    const handleVirtualScrollRequest = useCallback(
+        (request: MeasuredVirtualScrollRequest) => {
+            requestScroll(request);
+        },
+        [requestScroll],
+    );
+
+    const handleVirtualResizeAutoFollow = useCallback(() => {
+        requestScroll({ reason: "follow-end", target: "end" });
+    }, [requestScroll]);
+
+    const followEndNow = useCallback(() => {
+        requestScroll({ reason: "follow-end", target: "end" });
+        scrollCoordinator.flush();
+    }, [requestScroll, scrollCoordinator]);
+
+    useLayoutEffect(() => {
+        followEndNow();
+    }, [followEndNow, hotTailRow, timelineItems]);
 
     useEffect(() => {
-        scheduleBottomFollow();
-    }, [hotTailRow, scheduleBottomFollow, timelineItems]);
+        // Initial virtual geometry is asynchronous in this isolated harness.
+        // Keep its bounded startup reconciliation separate from normal stream
+        // updates, which are resolved synchronously in the layout effect above.
+        let remainingFrames = 4;
+        let followFrame: number | null = null;
+        const followInitialGeometry = () => {
+            followEndNow();
+            remainingFrames -= 1;
+            if (remainingFrames > 0) {
+                followFrame = requestAnimationFrame(followInitialGeometry);
+            }
+        };
+        followFrame = requestAnimationFrame(followInitialGeometry);
+
+        return () => {
+            if (followFrame !== null) {
+                cancelAnimationFrame(followFrame);
+            }
+        };
+    }, [followEndNow]);
 
     useEffect(() => {
         const scrollElement = scrollRef.current;
@@ -516,13 +534,14 @@ function TranscriptHarness() {
                             streamingText === null ? null : STREAMING_ROW_ID
                         }
                         newTurnAnchorRowId={null}
+                        onVirtualScrollRequest={handleVirtualScrollRequest}
                         onOpenFile={() => Promise.resolve()}
                         onOpenImage={() => Promise.resolve()}
                         onOpenResolvedFileReference={() => undefined}
                         onSetActivityGroupExpanded={() => undefined}
                         onSetActivityRangeExpanded={() => undefined}
                         onVirtualRangeChange={handleVirtualRangeChange}
-                        onVirtualResizeAutoFollow={scheduleBottomFollow}
+                        onVirtualResizeAutoFollow={handleVirtualResizeAutoFollow}
                         projectId={null}
                         resolveFileReference={() => null}
                         scrollRef={scrollRef}
