@@ -4,6 +4,9 @@ import type {
     AiSessionSnapshot,
     AiToolActivity,
     AiTrackedFile,
+    AiTranscriptBlock,
+    AiTranscriptBlockMetadata,
+    AiTranscriptPayload,
 } from "@shared/ipc";
 
 const FIXTURE_STARTED_AT_MS = Date.UTC(2026, 0, 1, 0, 0, 0);
@@ -18,6 +21,14 @@ export interface ChatPerformanceFixtureDefinition {
 
 export interface ChatPerformanceFixture {
     readonly definition: ChatPerformanceFixtureDefinition;
+    readonly snapshot: AiSessionSnapshot;
+}
+
+export interface BlockNativeStreamingPerformanceFixture {
+    readonly blocksById: ReadonlyMap<string, AiTranscriptBlock>;
+    readonly deltaCount: 1_000;
+    readonly metadata: readonly AiTranscriptBlockMetadata[];
+    readonly payloadsByRef: ReadonlyMap<string, AiTranscriptPayload>;
     readonly snapshot: AiSessionSnapshot;
 }
 
@@ -52,6 +63,7 @@ export const CHAT_INTERACTION_BUDGETS = {
     activityInitialItems: 20,
     maxFullRebuildsDuringStreaming: 0,
     maxMountedRows: 80,
+    maxSealedEntriesVisitedDuringStreaming: 0,
     transcriptBlockEntries: 256,
 } as const;
 
@@ -60,6 +72,7 @@ export interface ChatPerformanceGateMetrics {
     readonly mountedRows: number;
     readonly residentEntries: number;
     readonly residentPayloadBytes: number;
+    readonly sealedEntriesVisitedDuringStreaming: number;
 }
 
 export function passesChatPerformanceGate(
@@ -69,6 +82,8 @@ export function passesChatPerformanceGate(
         metrics.fullRebuildsDuringStreaming <=
             CHAT_INTERACTION_BUDGETS.maxFullRebuildsDuringStreaming &&
         metrics.mountedRows <= CHAT_INTERACTION_BUDGETS.maxMountedRows &&
+        metrics.sealedEntriesVisitedDuringStreaming <=
+            CHAT_INTERACTION_BUDGETS.maxSealedEntriesVisitedDuringStreaming &&
         metrics.residentEntries <= CHAT_INTERACTION_BUDGETS.transcriptBlockEntries * 3 &&
         metrics.residentPayloadBytes <= 16 * 1024 * 1024
     );
@@ -181,6 +196,84 @@ export function createChatPerformanceWorkspaceFixture(): ChatPerformanceWorkspac
         ],
         id: "workspace-multipane",
         panes,
+    };
+}
+
+export function createBlockNativeStreamingPerformanceFixture(): BlockNativeStreamingPerformanceFixture {
+    const blockEntryCount = CHAT_INTERACTION_BUDGETS.transcriptBlockEntries;
+    const metadata = Array.from({ length: 3 }, (_, blockIndex) => {
+        const startSequence = blockIndex * blockEntryCount + 1;
+        const endSequence = startSequence + blockEntryCount - 1;
+        return {
+            blockId: `${FIXTURE_SESSION_ID}:block-${blockIndex + 1}`,
+            endSequence,
+            entryCount: blockEntryCount,
+            estimatedHeight: blockEntryCount * 72,
+            estimatedRowCount: blockEntryCount,
+            firstCreatedAt: timestampFor(startSequence),
+            lastCreatedAt: timestampFor(endSequence),
+            revision: 1,
+            sessionId: FIXTURE_SESSION_ID,
+            startSequence,
+        } satisfies AiTranscriptBlockMetadata;
+    });
+    const blocksById = new Map<string, AiTranscriptBlock>();
+    for (const item of metadata) {
+        const entries = Array.from({ length: item.entryCount }, (_, index) => {
+            const sequence = item.startSequence + index;
+            const createdAt = timestampFor(sequence);
+            return {
+                createdAt,
+                id: `message:sealed-${sequence}`,
+                kind: "message" as const,
+                payloadRef: null,
+                sequence,
+                sessionId: FIXTURE_SESSION_ID,
+                summary: {
+                    label: `Sealed message ${sequence}`,
+                    preview: `Stable block-native fixture entry ${sequence}.`,
+                    status: "completed",
+                },
+                updatedAt: createdAt,
+            };
+        });
+        blocksById.set(item.blockId, {
+            ...item,
+            capabilityVersion: 1,
+            entries,
+            transcriptRevision: 1,
+        });
+    }
+
+    const baseSnapshot = createChatPerformanceFixture({
+        id: "block-native-streaming",
+        messageCount: 0,
+        toolActivityCount: 0,
+        trackedFileCount: 0,
+    }).snapshot;
+    const activeTurnStartedAt = timestampFor(blockEntryCount * 3 + 1);
+    return {
+        blocksById,
+        deltaCount: 1_000,
+        metadata,
+        payloadsByRef: new Map(),
+        snapshot: {
+            ...baseSnapshot,
+            activeTurnStartedAt,
+            messages: [
+                {
+                    attachments: [],
+                    content: "",
+                    createdAt: activeTurnStartedAt,
+                    id: "streaming-assistant",
+                    kind: "assistant",
+                    status: "streaming",
+                },
+            ],
+            status: "streaming",
+            title: "Performance fixture: block-native-streaming",
+            updatedAt: activeTurnStartedAt,
+        },
     };
 }
 

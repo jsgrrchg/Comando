@@ -1,4 +1,10 @@
 import type { AiFileDiff } from "@shared/ipc";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
+import {
+    getChatPerformanceTimestamp,
+    measureChatPerformance,
+    recordChatPerformanceMetric,
+} from "@renderer/app/debug/chatPerformanceProbe";
 
 import {
     computeDecisionHunks,
@@ -25,14 +31,26 @@ export function prepareDiffPreview(
     diff: AiFileDiff,
     signal: AbortSignal,
 ): Promise<PreparedDiffPreview> {
+    incrementChatPerformanceCounter("diff_prepares");
+    const lineCount = diff.hunks.reduce(
+        (count, hunk) => count + hunk.lines.length,
+        0,
+    );
     if (typeof Worker === "undefined") {
-        return Promise.resolve({
-            decisionHunks: computeDecisionHunks(diff),
-            lines: computeDiffLines(diff),
-            visualBlocks: computeVisualDiffBlocks(diff),
-        });
+        return Promise.resolve(
+            measureChatPerformance(
+                "diff_prepare_ms",
+                { values: { cacheHit: 0, lineCount, worker: 0 } },
+                () => ({
+                    decisionHunks: computeDecisionHunks(diff),
+                    lines: computeDiffLines(diff),
+                    visualBlocks: computeVisualDiffBlocks(diff),
+                }),
+            ),
+        );
     }
 
+    const startedAt = getChatPerformanceTimestamp();
     const id = nextRequestId;
     nextRequestId += 1;
     return new Promise<PreparedDiffPreview>((resolve, reject) => {
@@ -55,6 +73,12 @@ export function prepareDiffPreview(
             if (data.id !== id) return;
             signal.removeEventListener("abort", abort);
             diffWorker.terminate();
+            if (startedAt !== null) {
+                recordChatPerformanceMetric("diff_prepare_ms", {
+                    durationMs: performance.now() - startedAt,
+                    values: { cacheHit: 0, lineCount, worker: 1 },
+                });
+            }
             resolve({ decisionHunks: data.decisionHunks, lines: data.lines, visualBlocks: data.visualBlocks });
         };
         diffWorker.onerror = (event) => {

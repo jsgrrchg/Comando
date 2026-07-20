@@ -12,6 +12,11 @@ import {
 import { useSettingsStore } from "@renderer/app/store/settings-store";
 import { useShellStore } from "@renderer/app/store/shell-store";
 import {
+    hashChatPerformanceLabel,
+    isChatPerformanceProbeEnabled,
+    recordChatPerformanceMetric,
+} from "@renderer/app/debug/chatPerformanceProbe";
+import {
     MeasuredVirtualList,
     type MeasuredVirtualListHandle,
     type MeasuredVirtualRange,
@@ -495,6 +500,23 @@ export const ChatTimelineHistoryRows = memo(
                 if (!isChatTimelineRowItem(item)) {
                     return;
                 }
+                const context = buildRowContext(item, index);
+                if (isChatPerformanceProbeEnabled()) {
+                    recordChatPerformanceMetric("virtual_measure", {
+                        sessionId,
+                        values: {
+                            height: measurement.height,
+                            index,
+                            measurementKeyRevision: hashChatPerformanceLabel(
+                                getChatTimelineRowMeasurementKey(item, context),
+                            ),
+                            previousHeight: measurement.previousHeight,
+                            rowRevision: hashChatPerformanceLabel(
+                                getChatTimelineRowIdentityKey(item, context),
+                            ),
+                        },
+                    });
+                }
                 if (
                     item.kind === "message" &&
                     item.message.status === "streaming"
@@ -504,7 +526,6 @@ export const ChatTimelineHistoryRows = memo(
                     return;
                 }
 
-                const context = buildRowContext(item, index);
                 const baseHeight = estimateChatTimelineRowBaseHeight(
                     item,
                     context,
@@ -546,7 +567,7 @@ export const ChatTimelineHistoryRows = memo(
                     }
                 }
             },
-            [buildRowContext],
+            [buildRowContext, sessionId],
         );
 
         const estimateSize = useCallback(
@@ -624,6 +645,9 @@ export const ChatTimelineHistoryRows = memo(
 
                 return (
                     <div
+                        data-current-turn-tail={
+                            item.id === liveTailRowId ? "true" : undefined
+                        }
                         style={
                             gapPx > 0
                                 ? { paddingBottom: `${gapPx}px` }

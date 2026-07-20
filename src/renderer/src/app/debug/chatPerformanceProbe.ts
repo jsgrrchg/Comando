@@ -1,16 +1,35 @@
 const CHAT_PERFORMANCE_PROBE_STORAGE_KEY = "comando:chat-performance-probe";
-const MAX_CHAT_PERFORMANCE_EVENTS = 500;
+const MAX_CHAT_PERFORMANCE_EVENTS = 10_000;
 
 export type ChatPerformanceMetric =
     | "ack_lag_ms"
     | "apply_event_ms"
+    | "block_projection_ms"
+    | "chat_frame"
+    | "code_highlight_ms"
     | "delta_buffer_wait_ms"
+    | "diff_prepare_ms"
+    | "long_task"
+    | "markdown_commit"
     | "markdown_parse_ms"
+    | "presentation_build_ms"
     | "react_commit_ms"
     | "review_index_ms"
+    | "scroll_write"
     | "timeline_reconcile_ms"
+    | "transcript_payload_batch_ms"
+    | "transcript_payload_load_ms"
     | "transcript_patch_ms"
+    | "virtual_measure"
     | "virtual_range";
+
+export type ChatScrollWriteReason =
+    | "follow-end"
+    | "measure-anchor"
+    | "new-turn"
+    | "restore"
+    | "scroll-to-index"
+    | "settle";
 
 export interface ChatPerformanceMetricInput {
     readonly durationMs?: number;
@@ -38,6 +57,18 @@ type ChatPerformanceProbeRoot = typeof globalThis & {
 
 let enabledForTests: boolean | null = null;
 let cachedEnabled: boolean | null = null;
+let longTaskObserver: PerformanceObserver | null = null;
+let longTaskObserverAttempted = false;
+let activeChatPerformanceFrameTime = 0;
+
+const CHAT_SCROLL_REASON_CODE: Readonly<Record<ChatScrollWriteReason, number>> = {
+    "follow-end": 1,
+    "measure-anchor": 2,
+    "new-turn": 3,
+    restore: 4,
+    "scroll-to-index": 5,
+    settle: 6,
+};
 
 export function isChatPerformanceProbeEnabled(): boolean {
     if (enabledForTests !== null) {
@@ -120,6 +151,14 @@ export function recordChatPerformanceMetric(
         return;
     }
 
+    ensureChatLongTaskObserver();
+    appendChatPerformanceEvent(metric, input);
+}
+
+function appendChatPerformanceEvent(
+    metric: ChatPerformanceMetric,
+    input: ChatPerformanceMetricInput,
+): void {
     const store = getChatPerformanceProbeStore();
     store.events.push({
         durationMs:
@@ -134,6 +173,30 @@ export function recordChatPerformanceMetric(
     });
     if (store.events.length > MAX_CHAT_PERFORMANCE_EVENTS) {
         store.events.splice(0, store.events.length - MAX_CHAT_PERFORMANCE_EVENTS);
+    }
+}
+
+function ensureChatLongTaskObserver(): void {
+    if (
+        longTaskObserverAttempted ||
+        typeof PerformanceObserver === "undefined"
+    ) {
+        return;
+    }
+
+    longTaskObserverAttempted = true;
+    try {
+        longTaskObserver = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+                appendChatPerformanceEvent("long_task", {
+                    durationMs: entry.duration,
+                    values: { startTime: entry.startTime },
+                });
+            }
+        });
+        longTaskObserver.observe({ entryTypes: ["longtask"] });
+    } catch {
+        longTaskObserver = null;
     }
 }
 
@@ -166,6 +229,65 @@ export function measureChatPerformance<T>(
     }
 }
 
+export async function measureChatPerformanceAsync<T>(
+    metric: ChatPerformanceMetric,
+    input: Omit<ChatPerformanceMetricInput, "durationMs">,
+    operation: () => Promise<T>,
+): Promise<T> {
+    if (!isChatPerformanceProbeEnabled()) {
+        return operation();
+    }
+
+    const start = performance.now();
+    try {
+        return await operation();
+    } finally {
+        recordChatPerformanceMetric(metric, {
+            ...input,
+            durationMs: performance.now() - start,
+        });
+    }
+}
+
+export function recordChatScrollWrite(input: {
+    readonly after: number;
+    readonly before: number;
+    readonly clientHeight: number;
+    readonly navigationGeneration?: number;
+    readonly reason: ChatScrollWriteReason;
+    readonly scrollHeight: number;
+    readonly sessionId?: string;
+}): void {
+    recordChatPerformanceMetric("scroll_write", {
+        sessionId: input.sessionId,
+        values: {
+            after: input.after,
+            before: input.before,
+            clientHeight: input.clientHeight,
+            frameTime: activeChatPerformanceFrameTime,
+            navigationGeneration: input.navigationGeneration,
+            reasonCode: CHAT_SCROLL_REASON_CODE[input.reason],
+            scrollHeight: input.scrollHeight,
+        },
+    });
+}
+
+export function markChatPerformanceFrame(frameAt: number): void {
+    if (!isChatPerformanceProbeEnabled() || !Number.isFinite(frameAt)) {
+        return;
+    }
+    activeChatPerformanceFrameTime = Number(frameAt.toFixed(2));
+}
+
+export function hashChatPerformanceLabel(value: string): number {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+}
+
 export function setChatPerformanceProbeEnabledForTests(
     enabled: boolean | null,
 ): void {
@@ -178,6 +300,10 @@ export function resetChatPerformanceProbeForTests(): void {
     delete root.__COMANDO_CHAT_PERFORMANCE_PROBE__;
     delete root.__comandoChatPerformanceProbeDump;
     delete root.__comandoChatPerformanceProbeReset;
+    longTaskObserver?.disconnect();
+    longTaskObserver = null;
+    longTaskObserverAttempted = false;
+    activeChatPerformanceFrameTime = 0;
     enabledForTests = null;
     cachedEnabled = null;
 }

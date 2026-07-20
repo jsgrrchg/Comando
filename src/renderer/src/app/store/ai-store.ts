@@ -97,8 +97,10 @@ import { matchesTrackedFilePath } from "@renderer/app/ai/trackedFilePath";
 import {
     getChatPerformanceTimestamp,
     measureChatPerformance,
+    measureChatPerformanceAsync,
     recordChatPerformanceMetric,
 } from "@renderer/app/debug/chatPerformanceProbe";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceReviewTab,
@@ -777,12 +779,32 @@ function createTranscriptPayloadCache(): TranscriptPayloadCache<AiTranscriptPayl
                 if (!identity) {
                     throw new Error("The transcript payload cache key is invalid.");
                 }
-                const payload = await getComandoApi().getAiTranscriptPayload({
-                    payloadRef: identity.payloadRef,
-                    sessionId: identity.sessionId,
-                });
+                const startedAt = getChatPerformanceTimestamp();
+                incrementChatPerformanceCounter(
+                    "transcript_payload_ipc_count",
+                );
+                const payload = await getComandoApi().getAiTranscriptPayload(
+                    {
+                        payloadRef: identity.payloadRef,
+                        sessionId: identity.sessionId,
+                    },
+                );
                 if (!payload) {
                     throw new Error("The transcript payload could not be found.");
+                }
+                incrementChatPerformanceCounter(
+                    "transcript_payload_bytes",
+                    payload.byteLength,
+                );
+                if (startedAt !== null) {
+                    recordChatPerformanceMetric(
+                        "transcript_payload_load_ms",
+                        {
+                            durationMs: performance.now() - startedAt,
+                            sessionId: identity.sessionId,
+                            values: { byteLength: payload.byteLength },
+                        },
+                    );
                 }
                 return payload;
             },
@@ -1713,10 +1735,21 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         : [],
                 ),
             );
-            await Promise.all(
-                [...visiblePayloadRefs].map((payloadRef) =>
-                    get().loadTranscriptPayload(sessionId, payloadRef),
-                ),
+            await measureChatPerformanceAsync(
+                "transcript_payload_batch_ms",
+                {
+                    sessionId,
+                    values: { payloadRefs: visiblePayloadRefs.size },
+                },
+                () =>
+                    Promise.all(
+                        [...visiblePayloadRefs].map((payloadRef) =>
+                            get().loadTranscriptPayload(
+                                sessionId,
+                                payloadRef,
+                            ),
+                        ),
+                    ),
             );
         }
         const current = get().sessions[sessionId]?.transcriptWindow;

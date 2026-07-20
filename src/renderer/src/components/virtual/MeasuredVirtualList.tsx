@@ -9,6 +9,7 @@ import {
     type RefObject,
 } from "react";
 import { MAX_CACHED_CHAT_VIEW_ARTIFACTS } from "@renderer/components/workspace/chatViewResourceBudget";
+import { recordChatScrollWrite } from "@renderer/app/debug/chatPerformanceProbe";
 
 const DEFAULT_OVERSCAN = 4;
 const DEFAULT_VIEWPORT_HEIGHT = 720;
@@ -1234,9 +1235,20 @@ export function MeasuredVirtualList<T>({
             return;
         }
 
-        container.scrollTop = Math.max(0, container.scrollTop + adjustment);
+        const before = container.scrollTop;
+        const after = Math.max(0, before + adjustment);
+        container.scrollTop = after;
+        recordChatScrollWrite({
+            after,
+            before,
+            clientHeight: container.clientHeight,
+            reason: "measure-anchor",
+            scrollHeight: container.scrollHeight,
+            sessionId: measurementCacheKey,
+        });
     }, [
         measuredSizes,
+        measurementCacheKey,
         preserveScrollAnchorOnMeasure,
         shouldPreserveScrollAnchorOnMeasureNow,
         scrollContainerRef,
@@ -1344,7 +1356,8 @@ export function MeasuredVirtualList<T>({
 
             const align = options?.align ?? "start";
             const offset = options?.offset ?? 0;
-            container.scrollTop = calculateMeasuredVirtualScrollTop({
+            const before = container.scrollTop;
+            const after = calculateMeasuredVirtualScrollTop({
                 align,
                 itemSize: getItemSize(index),
                 itemStart: getItemStart(index),
@@ -1353,12 +1366,22 @@ export function MeasuredVirtualList<T>({
                 totalSize: layout.totalSize,
                 viewportHeight: container.clientHeight,
             });
+            container.scrollTop = after;
+            recordChatScrollWrite({
+                after,
+                before,
+                clientHeight: container.clientHeight,
+                reason: "scroll-to-index",
+                scrollHeight: container.scrollHeight,
+                sessionId: measurementCacheKey,
+            });
         },
         [
             getItemSize,
             getItemStart,
             items,
             layout.totalSize,
+            measurementCacheKey,
             normalizedScrollMarginTop,
             scrollContainerRef,
         ],
@@ -1511,6 +1534,7 @@ export function MeasuredVirtualList<T>({
                 <div
                     key={virtualItem.key}
                     data-list-key={virtualItem.key}
+                    data-measurement-key={virtualItem.measurementKey}
                     ref={registerMeasuredElement}
                     style={{
                         left: 0,

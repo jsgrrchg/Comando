@@ -17,7 +17,11 @@ import {
 } from "@shared/composer-display-markers";
 
 import { extractFenceLanguageToken } from "../../app/editor/codeLanguage";
-import { measureChatPerformance } from "@renderer/app/debug/chatPerformanceProbe";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
+import {
+    measureChatPerformance,
+    recordChatPerformanceMetric,
+} from "@renderer/app/debug/chatPerformanceProbe";
 import { openExternalUrl } from "../../app/utils/external-url";
 import {
     parseMarkdownListItem,
@@ -160,7 +164,11 @@ function parseBlocks(text: string): Block[] {
 
 function parseBlocksUnmeasured(text: string): Block[] {
     const cached = parsedBlockCache.get(text);
-    if (cached) return cached;
+    if (cached) {
+        incrementChatPerformanceCounter("markdown_cache_hits");
+        return cached;
+    }
+    incrementChatPerformanceCounter("markdown_chars_reparsed", text.length);
     const blocks: Block[] = [];
     let cursor = 0;
     let lastIndex = 0;
@@ -2201,7 +2209,16 @@ export const MarkdownContent = memo(function MarkdownContent({
     /* eslint-enable react-hooks/refs */
     useEffect(() => {
         previousParsedBlocksRef.current = parsedBlocks;
-    }, [parsedBlocks]);
+        recordChatPerformanceMetric("markdown_commit", {
+            values: {
+                blockCount: parsedBlocks.blocks.length,
+                contentChars: content.length,
+                live: live ? 1 : 0,
+                renderedChars: renderedContent.length,
+                stableContentChars: parsedBlocks.stableContentLength,
+            },
+        });
+    }, [content.length, live, parsedBlocks, renderedContent.length]);
     const blocks = parsedBlocks.blocks;
     const contentRef = useRef<HTMLDivElement | null>(null);
     const [fileReferenceContextMenu, setFileReferenceContextMenu] =
@@ -2303,6 +2320,10 @@ export const MarkdownContent = memo(function MarkdownContent({
     return (
         <div
             className="chat-assistant-content min-w-0 w-full max-w-full"
+            data-markdown-content-chars={content.length}
+            data-markdown-live={live ? "true" : "false"}
+            data-markdown-rendered-chars={renderedContent.length}
+            data-markdown-stable-chars={parsedBlocks.stableContentLength}
             onContextMenu={handleContextMenu}
             ref={contentRef}
             style={{

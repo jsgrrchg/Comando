@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 
 interface TranscriptHarnessSnapshot {
+    readonly bottomGap: number;
+    readonly clientHeight: number;
     readonly historyRowMounts: number;
     readonly historyRowUnmounts: number;
     readonly mountedHistoryRowIds: readonly string[];
@@ -37,14 +39,43 @@ test("virtualized history remains mounted while a new turn streams", async ({ pa
     expect(after.historyRowMounts).toBe(before.historyRowMounts);
     expect(after.historyRowUnmounts).toBe(before.historyRowUnmounts);
     expect(after.mountedHistoryRowIds).toContain("message:assistant-1999");
-    expect(after.scrollTop).toBeGreaterThanOrEqual(after.scrollHeight - 620);
-    expect(diagnostic.samples.map((sample) => sample.phase)).toEqual([
-        "before-turn",
+    expect(after.bottomGap).toBeLessThanOrEqual(120);
+    expect(diagnostic.samples.map((sample) => sample.phase)).toContain(
         "turn-started",
-        "stream-1",
-        "stream-2",
-        "stream-3",
-    ]);
+    );
+    expect(diagnostic.samples.map((sample) => sample.phase)).toContain(
+        "stream-5",
+    );
     expect(diagnostic.virtualRanges.length).toBeGreaterThan(0);
-    await expect(page.getByTestId("live-tail")).toContainText("Third streamed chunk");
+    expect(
+        diagnostic.performanceEvents.some(
+            (event: { readonly metric: string }) =>
+                event.metric === "markdown_commit",
+        ),
+    ).toBe(true);
+    await expect(page.getByText("return true;", { exact: false })).toBeVisible();
+});
+
+test("streaming has no transient frame continuity violations", async ({
+    page,
+}, testInfo) => {
+    test.fail(
+        true,
+        "The current virtualized hot tail is expected to expose transient frame violations until Fases 1-3 land.",
+    );
+
+    const diagnostic = await page.evaluate(async () => {
+        return window.comandoTranscriptHarness.runStreamingDiagnostic();
+    });
+    await testInfo.attach("transcript-frame-continuity-diagnostic", {
+        body: JSON.stringify(diagnostic, null, 2),
+        contentType: "application/json",
+    });
+
+    expect(diagnostic.violations).toEqual({
+        bottomGapFrames: [],
+        longTaskCount: 0,
+        markdownLagFrames: [],
+        multiScrollWriteFrames: [],
+    });
 });

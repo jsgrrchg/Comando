@@ -1,6 +1,7 @@
 import type { AiSessionSnapshot } from "@shared/ipc";
 
 import type { ChatTimelineMessageRow } from "./chatTimelineModel";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 
 // Keep every virtual item comfortably smaller than an entire agent transcript.
 // Both limits apply because minified output can have few newlines, while prose
@@ -29,6 +30,10 @@ export function splitLongContentRows<T>(
     rows: readonly T[],
     isMessageRow: (row: T) => row is T & ChatTimelineMessageRow,
 ): readonly (T | LongContentChunkRow)[] {
+    incrementChatPerformanceCounter(
+        "presentation_items_visited",
+        rows.length,
+    );
     const result: (T | LongContentChunkRow)[] = [];
 
     for (const row of rows) {

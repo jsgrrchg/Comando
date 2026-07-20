@@ -10,6 +10,7 @@ import type {
     ChatTimelineRow,
 } from "./chatTimelineModel";
 import type { LongContentChunkRow } from "./longContentVirtualization";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 
 export const ACTIVITY_GROUP_WINDOW_SIZE = 200;
 
@@ -142,6 +143,10 @@ export function buildTranscriptTimelineItems(
     loaded: ReadonlyMap<string, AiTranscriptBlock>,
     timelineRows: readonly ChatTimelineRow[],
 ): readonly TranscriptTimelineSourceItem[] {
+    incrementChatPerformanceCounter(
+        "presentation_items_visited",
+        metadata.length + timelineRows.length,
+    );
     if (metadata.length === 0) {
         return timelineRows;
     }
@@ -150,6 +155,10 @@ export function buildTranscriptTimelineItems(
     for (const item of metadata) {
         const block = loaded.get(item.blockId);
         if (!block) continue;
+        incrementChatPerformanceCounter(
+            "presentation_items_visited",
+            block.entries.length,
+        );
         for (const entry of block.entries) {
             blockIdByEntryId.set(entry.id, item.blockId);
         }
@@ -230,6 +239,10 @@ export function flattenTranscriptTimelineItems(
     sourceItems: readonly TranscriptTimelineSourceItem[],
     options: FlattenTranscriptTimelineItemsOptions,
 ): readonly TranscriptTimelineItem[] {
+    incrementChatPerformanceCounter(
+        "presentation_items_visited",
+        sourceItems.length,
+    );
     const timelineItems: TranscriptTimelineItem[] = [];
 
     for (const sourceItem of sourceItems) {

@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
     measureChatPerformance,
+    measureChatPerformanceAsync,
     recordChatPerformanceMetric,
+    recordChatScrollWrite,
     resetChatPerformanceProbeForTests,
     setChatPerformanceProbeEnabledForTests,
 } from "./chatPerformanceProbe";
@@ -49,7 +51,7 @@ describe("chatPerformanceProbe", () => {
 
     it("caps the in-memory dump", () => {
         setChatPerformanceProbeEnabledForTests(true);
-        for (let index = 0; index < 520; index += 1) {
+        for (let index = 0; index < 10_020; index += 1) {
             recordChatPerformanceMetric("markdown_parse_ms", {
                 values: { contentChars: index },
             });
@@ -58,6 +60,42 @@ describe("chatPerformanceProbe", () => {
             __comandoChatPerformanceProbeDump?: () => readonly unknown[];
         };
 
-        expect(root.__comandoChatPerformanceProbeDump?.()).toHaveLength(500);
+        expect(root.__comandoChatPerformanceProbeDump?.()).toHaveLength(10_000);
+    });
+
+    it("records async work and scroll causes without storing raw labels", async () => {
+        setChatPerformanceProbeEnabledForTests(true);
+        await measureChatPerformanceAsync(
+            "transcript_payload_batch_ms",
+            { sessionId: "sensitive-session", values: { payloadRefs: 3 } },
+            () => Promise.resolve(),
+        );
+        recordChatScrollWrite({
+            after: 120,
+            before: 80,
+            clientHeight: 600,
+            navigationGeneration: 4,
+            reason: "settle",
+            scrollHeight: 720,
+            sessionId: "sensitive-session",
+        });
+
+        const root = globalThis as typeof globalThis & {
+            __comandoChatPerformanceProbeDump?: () => ReadonlyArray<{
+                readonly metric: string;
+                readonly values: Readonly<Record<string, number>>;
+            }>;
+        };
+        const dump = root.__comandoChatPerformanceProbeDump?.() ?? [];
+        expect(dump.map((event) => event.metric)).toEqual([
+            "transcript_payload_batch_ms",
+            "scroll_write",
+        ]);
+        expect(dump[1]?.values).toMatchObject({
+            navigationGeneration: 4,
+            reasonCode: 6,
+        });
+        expect(JSON.stringify(dump)).not.toContain("sensitive-session");
+        expect(JSON.stringify(dump)).not.toContain("settle");
     });
 });

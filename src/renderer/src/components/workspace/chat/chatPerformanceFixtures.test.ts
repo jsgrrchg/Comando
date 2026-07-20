@@ -1,8 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { AiSessionDomainEvent } from "@shared/ipc";
+import {
+    applyAiSessionDomainEventToTranscript,
+    buildAiSessionTranscriptModelFromSnapshot,
+} from "@renderer/app/ai/transcriptModel";
+import { buildBlockNativeTranscript } from "@renderer/app/ai/transcriptWindowProjection";
+import {
+    readChatPerformanceCounters,
+    resetChatPerformanceCounters,
+} from "@renderer/app/debug/chatPerformanceCounters";
+import {
+    reconcileChatTimelineModelFromTranscript,
+    reconcileChatTimelineModelIncrementallyFromTranscript,
+} from "./chatTimelineModel";
 
 import {
     CHAT_INTERACTION_BUDGETS,
     CHAT_PERFORMANCE_FIXTURES,
+    createBlockNativeStreamingPerformanceFixture,
     createChatPerformanceFixture,
     createChatPerformanceFixtureById,
     createChatPerformanceWorkspaceFixture,
@@ -10,6 +25,8 @@ import {
 } from "./chatPerformanceFixtures";
 
 describe("chatPerformanceFixtures", () => {
+    beforeEach(resetChatPerformanceCounters);
+
     it("declares the long-chat datasets used by the performance plan", () => {
         expect(CHAT_PERFORMANCE_FIXTURES).toEqual([
             {
@@ -101,6 +118,7 @@ describe("chatPerformanceFixtures", () => {
             activityInitialItems: 20,
             maxFullRebuildsDuringStreaming: 0,
             maxMountedRows: 80,
+            maxSealedEntriesVisitedDuringStreaming: 0,
             transcriptBlockEntries: 256,
         });
     });
@@ -112,6 +130,7 @@ describe("chatPerformanceFixtures", () => {
                 mountedRows: 80,
                 residentEntries: 256 * 3,
                 residentPayloadBytes: 16 * 1024 * 1024,
+                sealedEntriesVisitedDuringStreaming: 0,
             }),
         ).toBe(true);
         expect(
@@ -120,6 +139,97 @@ describe("chatPerformanceFixtures", () => {
                 mountedRows: 81,
                 residentEntries: 100_000,
                 residentPayloadBytes: 16 * 1024 * 1024 + 1,
+                sealedEntriesVisitedDuringStreaming: 1,
+            }),
+        ).toBe(false);
+    });
+
+    it("measures the production block-native path instead of trusting literal gate values", () => {
+        const fixture = createBlockNativeStreamingPerformanceFixture();
+        expect(fixture.metadata).toHaveLength(3);
+        expect(
+            [...fixture.blocksById.values()].map(
+                (block) => block.entries.length,
+            ),
+        ).toEqual([256, 256, 256]);
+
+        let liveTranscript = buildAiSessionTranscriptModelFromSnapshot(
+            fixture.snapshot,
+        );
+        let projectedTranscript = buildBlockNativeTranscript(
+            liveTranscript,
+            fixture.blocksById,
+            fixture.metadata,
+            fixture.payloadsByRef,
+            fixture.snapshot,
+        );
+        let timeline = reconcileChatTimelineModelFromTranscript(null, {
+            activeTurnStartedAt: fixture.snapshot.activeTurnStartedAt,
+            status: fixture.snapshot.status,
+            trackedFiles: fixture.snapshot.trackedFiles,
+            transcript: projectedTranscript,
+        });
+        resetChatPerformanceCounters();
+
+        let content = "";
+        for (let index = 0; index < fixture.deltaCount; index += 1) {
+            content += index % 20 === 19 ? "\n" : "x";
+            liveTranscript = applyAiSessionDomainEventToTranscript(
+                liveTranscript,
+                {
+                    content,
+                    delta: content.at(-1) ?? "",
+                    kind: "message-delta",
+                    messageId: "streaming-assistant",
+                    messageKind: "assistant",
+                    origin: "live",
+                    parentSessionId: null,
+                    runtimeId: fixture.snapshot.runtimeId,
+                    runtimeSessionId: fixture.snapshot.runtimeSessionId,
+                    sessionId: fixture.snapshot.sessionId,
+                    updatedAt: new Date(
+                        Date.parse(fixture.snapshot.updatedAt) + index + 1,
+                    ).toISOString(),
+                } satisfies AiSessionDomainEvent,
+            );
+            const nextProjectedTranscript = buildBlockNativeTranscript(
+                liveTranscript,
+                fixture.blocksById,
+                fixture.metadata,
+                fixture.payloadsByRef,
+                fixture.snapshot,
+            );
+            timeline = reconcileChatTimelineModelIncrementallyFromTranscript(
+                timeline,
+                projectedTranscript,
+                {
+                    activeTurnStartedAt: fixture.snapshot.activeTurnStartedAt,
+                    status: fixture.snapshot.status,
+                    trackedFiles: fixture.snapshot.trackedFiles,
+                    transcript: nextProjectedTranscript,
+                },
+            );
+            projectedTranscript = nextProjectedTranscript;
+        }
+
+        const counters = readChatPerformanceCounters();
+        const residentEntries = [...fixture.blocksById.values()].reduce(
+            (total, block) => total + block.entries.length,
+            0,
+        );
+        expect(counters.timeline_full_rebuilds).toBe(fixture.deltaCount);
+        expect(counters.stable_history_entries_visited).toBe(
+            residentEntries * fixture.deltaCount,
+        );
+        expect(
+            passesChatPerformanceGate({
+                fullRebuildsDuringStreaming:
+                    counters.timeline_full_rebuilds,
+                mountedRows: 80,
+                residentEntries,
+                residentPayloadBytes: 0,
+                sealedEntriesVisitedDuringStreaming:
+                    counters.stable_history_entries_visited,
             }),
         ).toBe(false);
     });

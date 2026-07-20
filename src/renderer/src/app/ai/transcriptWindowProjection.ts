@@ -11,8 +11,37 @@ import {
     buildAiSessionTranscriptModel,
     type AiSessionTranscriptModel,
 } from "./transcriptModel";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
+import { measureChatPerformance } from "@renderer/app/debug/chatPerformanceProbe";
 
 export function buildBlockNativeTranscript(
+    liveTranscript: AiSessionTranscriptModel,
+    blocksById: ReadonlyMap<string, AiTranscriptBlock>,
+    metadata: readonly AiTranscriptBlockMetadata[],
+    payloadsByRef: ReadonlyMap<string, AiTranscriptPayload>,
+    snapshot: AiSessionSnapshot,
+): AiSessionTranscriptModel {
+    return measureChatPerformance(
+        "block_projection_ms",
+        {
+            sessionId: snapshot.sessionId,
+            values: {
+                metadataBlocks: metadata.length,
+                residentBlocks: blocksById.size,
+            },
+        },
+        () =>
+            buildBlockNativeTranscriptUnmeasured(
+                liveTranscript,
+                blocksById,
+                metadata,
+                payloadsByRef,
+                snapshot,
+            ),
+    );
+}
+
+function buildBlockNativeTranscriptUnmeasured(
     liveTranscript: AiSessionTranscriptModel,
     blocksById: ReadonlyMap<string, AiTranscriptBlock>,
     metadata: readonly AiTranscriptBlockMetadata[],
@@ -26,6 +55,11 @@ export function buildBlockNativeTranscript(
     for (const item of metadata) {
         const block = blocksById.get(item.blockId);
         if (!block) continue;
+        incrementChatPerformanceCounter("timeline_blocks_built");
+        incrementChatPerformanceCounter(
+            "stable_history_entries_visited",
+            block.entries.length,
+        );
         for (const entry of block.entries) {
             sealedEntryIds.add(entry.id);
             const payload = entry.payloadRef

@@ -10,6 +10,8 @@ import {
 
 import type { AiFileDiff, AiTrackedFile } from "@shared/ipc";
 import { MeasuredVirtualList } from "@renderer/components/virtual/MeasuredVirtualList";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
+import { measureChatPerformance } from "@renderer/app/debug/chatPerformanceProbe";
 
 import { DiffLineView } from "./DiffLineView";
 import { HunkActionBar } from "./HunkActionBar";
@@ -701,15 +703,28 @@ export function EditedFileDiffPreview({
         typeof Worker !== "undefined" &&
         diffLineCount >= EDITED_DIFF_PREVIEW_LINE_VIRTUALIZATION_THRESHOLD;
     const synchronouslyPreparedDiff = useMemo<PreparedDiffPreview | null>(
-        () =>
-            expanded && !shouldPrepareInWorker
-                ? {
-                      decisionHunks: computeDecisionHunks(diff),
-                      lines: computeDiffLines(diff),
-                      visualBlocks: computeVisualDiffBlocks(diff),
-                  }
-                : null,
-        [diff, expanded, shouldPrepareInWorker],
+        () => {
+            if (!expanded || shouldPrepareInWorker) {
+                return null;
+            }
+            incrementChatPerformanceCounter("diff_prepares");
+            return measureChatPerformance(
+                "diff_prepare_ms",
+                {
+                    values: {
+                        cacheHit: 0,
+                        lineCount: diffLineCount,
+                        worker: 0,
+                    },
+                },
+                () => ({
+                    decisionHunks: computeDecisionHunks(diff),
+                    lines: computeDiffLines(diff),
+                    visualBlocks: computeVisualDiffBlocks(diff),
+                }),
+            );
+        },
+        [diff, diffLineCount, expanded, shouldPrepareInWorker],
     );
     const [workerPreparedDiff, setWorkerPreparedDiff] = useState<{
         readonly diff: AiFileDiff;

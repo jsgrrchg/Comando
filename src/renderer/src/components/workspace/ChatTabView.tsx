@@ -62,6 +62,8 @@ import {
     isChatPerformanceProbeEnabled,
     measureChatPerformance,
     recordChatPerformanceMetric,
+    recordChatScrollWrite,
+    type ChatScrollWriteReason,
 } from "@renderer/app/debug/chatPerformanceProbe";
 import type {
     RuntimeWorkspaceChatTab,
@@ -149,6 +151,7 @@ import {
     type TranscriptTimelineVirtualRow,
 } from "./chat/transcriptBlockVirtualization";
 import { splitLongContentRows } from "./chat/longContentVirtualization";
+import { useChatStreamingFrameProbe } from "./chat/useChatStreamingFrameProbe";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
@@ -278,6 +281,7 @@ const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
     createEmptyComposerParts();
 const EMPTY_DRAFT_FILE_CONTEXTS: readonly AiFileContextAttachment[] = [];
 const EMPTY_TRANSCRIPT_MODEL = createEmptyAiSessionTranscriptModel();
+const EMPTY_ACTIVITY_EXPANSION: TranscriptActivityGroupExpansionById = {};
 const CLOSED_SUBAGENT_MESSAGE =
     "This subagent was closed by its parent thread and can’t receive new messages.";
 const PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
@@ -1298,41 +1302,55 @@ export const ChatTabView = memo(function ChatTabView({
     const [activityExpansionBySessionId, setActivityExpansionBySessionId] =
         useState<Record<string, TranscriptActivityGroupExpansionById>>({});
     const activityExpansionByGroupId =
-        activityExpansionBySessionId[tab.sessionId] ?? {};
+        activityExpansionBySessionId[tab.sessionId] ?? EMPTY_ACTIVITY_EXPANSION;
     const transcriptTimelineItems = useMemo(
-        () => {
-            const sourceItems = transcriptWindow?.capabilityVersion
-                ? buildTranscriptTimelineItems(
-                      transcriptWindow.metadata,
-                      transcriptWindow.blocksById,
-                      timelineModel.historyRows,
-                  )
-                : timelineModel.historyRows;
-            const itemsWithStreamingIndicator = isStreaming
-                ? [
-                      ...sourceItems,
-                      createTranscriptStreamingIndicatorItem(elapsed),
-                  ]
-                : sourceItems;
-            const flattenedItems = flattenTranscriptTimelineItems(
-                itemsWithStreamingIndicator,
+        () =>
+            measureChatPerformance(
+                "presentation_build_ms",
                 {
-                    activeGroupId:
-                        timelineModel.liveTailRow?.kind === "activity-segment"
-                            ? timelineModel.liveTailRow.id
-                            : null,
-                    defaultExpanded:
-                        aiChatSettings.toolActivityDefaultExpansion ===
-                        "expanded",
-                    expansionByGroupId: activityExpansionByGroupId,
+                    sessionId: tab.sessionId,
+                    values: {
+                        metadataBlocks: transcriptWindow?.metadata.length ?? 0,
+                        timelineRows: timelineModel.historyRows.length,
+                    },
                 },
-            );
-            return splitLongContentRows(
-                flattenedItems,
-                (item): item is typeof item & { readonly kind: "message" } =>
-                    item.kind === "message",
-            );
-        },
+                () => {
+                    const sourceItems = transcriptWindow?.capabilityVersion
+                        ? buildTranscriptTimelineItems(
+                              transcriptWindow.metadata,
+                              transcriptWindow.blocksById,
+                              timelineModel.historyRows,
+                          )
+                        : timelineModel.historyRows;
+                    const itemsWithStreamingIndicator = isStreaming
+                        ? [
+                              ...sourceItems,
+                              createTranscriptStreamingIndicatorItem(elapsed),
+                          ]
+                        : sourceItems;
+                    const flattenedItems = flattenTranscriptTimelineItems(
+                        itemsWithStreamingIndicator,
+                        {
+                            activeGroupId:
+                                timelineModel.liveTailRow?.kind ===
+                                "activity-segment"
+                                    ? timelineModel.liveTailRow.id
+                                    : null,
+                            defaultExpanded:
+                                aiChatSettings.toolActivityDefaultExpansion ===
+                                "expanded",
+                            expansionByGroupId: activityExpansionByGroupId,
+                        },
+                    );
+                    return splitLongContentRows(
+                        flattenedItems,
+                        (item): item is typeof item & {
+                            readonly kind: "message";
+                        } =>
+                            item.kind === "message",
+                    );
+                },
+            ),
         [
             activityExpansionByGroupId,
             aiChatSettings.toolActivityDefaultExpansion,
@@ -1340,11 +1358,24 @@ export const ChatTabView = memo(function ChatTabView({
             isStreaming,
             timelineModel.historyRows,
             timelineModel.liveTailRow,
+            tab.sessionId,
             transcriptWindow?.blocksById,
             transcriptWindow?.capabilityVersion,
             transcriptWindow?.metadata,
         ],
     );
+    const getPerformanceNavigationGeneration = useCallback(
+        () => scrollIntentRef.current.navigationGeneration,
+        [],
+    );
+    useChatStreamingFrameProbe({
+        active,
+        getNavigationGeneration: getPerformanceNavigationGeneration,
+        isStreaming,
+        scrollRef,
+        sessionId: tab.sessionId,
+        timelineContentRef,
+    });
 
     const beginNewTurnAnchor = useCallback(() => {
         if (!shouldAutoFollowRef.current) {
@@ -1499,30 +1530,47 @@ export const ChatTabView = memo(function ChatTabView({
         );
     }, []);
 
-    const writeProgrammaticScroll = useCallback((target: number) => {
-        const el = scrollRef.current;
-        if (!el) {
-            return;
-        }
+    const writeProgrammaticScroll = useCallback(
+        (target: number, reason: ChatScrollWriteReason) => {
+            const el = scrollRef.current;
+            if (!el) {
+                return;
+            }
 
-        const nextScrollTop = Math.max(
-            0,
-            Math.min(target, el.scrollHeight - el.clientHeight),
-        );
-        if (Math.abs(el.scrollTop - nextScrollTop) < 1) {
-            return;
-        }
+            const nextScrollTop = Math.max(
+                0,
+                Math.min(target, el.scrollHeight - el.clientHeight),
+            );
+            if (Math.abs(el.scrollTop - nextScrollTop) < 1) {
+                return;
+            }
 
-        // Centralizing writes prevents concurrent layout paths from fighting.
-        el.scrollTop = nextScrollTop;
-    }, []);
+            const previousScrollTop = el.scrollTop;
+            // Centralizing writes prevents concurrent layout paths from fighting.
+            el.scrollTop = nextScrollTop;
+            recordChatScrollWrite({
+                after: nextScrollTop,
+                before: previousScrollTop,
+                clientHeight: el.clientHeight,
+                navigationGeneration:
+                    scrollIntentRef.current.navigationGeneration,
+                reason,
+                scrollHeight: el.scrollHeight,
+                sessionId: tab.sessionId,
+            });
+        },
+        [tab.sessionId],
+    );
 
-    const scrollToBottom = useCallback(() => {
-        const el = scrollRef.current;
-        if (el) {
-            writeProgrammaticScroll(el.scrollHeight);
-        }
-    }, [writeProgrammaticScroll]);
+    const scrollToBottom = useCallback(
+        (reason: "follow-end" | "settle" = "follow-end") => {
+            const el = scrollRef.current;
+            if (el) {
+                writeProgrammaticScroll(el.scrollHeight, reason);
+            }
+        },
+        [writeProgrammaticScroll],
+    );
 
     const cancelPendingScrollToBottom = useCallback(() => {
         if (pendingScrollFrameRef.current === null) {
@@ -1566,7 +1614,7 @@ export const ChatTabView = memo(function ChatTabView({
                     }
 
                     // Virtual rows can finish measuring after the first restore.
-                    scrollToBottom();
+                    scrollToBottom("settle");
 
                     if (remainingFrames > 1) {
                         runSettleFrame(remainingFrames - 1);
@@ -1619,7 +1667,7 @@ export const ChatTabView = memo(function ChatTabView({
                 return;
             }
 
-            writeProgrammaticScroll(target);
+            writeProgrammaticScroll(target, "new-turn");
         },
         [writeProgrammaticScroll],
     );
@@ -1963,7 +2011,7 @@ export const ChatTabView = memo(function ChatTabView({
         } else {
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
-            writeProgrammaticScroll(restoreScrollTop);
+            writeProgrammaticScroll(restoreScrollTop, "restore");
             setJumpToBottomVisibility(!isNearBottom(scrollEl));
         }
 
@@ -3420,7 +3468,7 @@ function ChatJumpToBottomButton(props: {
     );
 }
 
-type ChatTimelineHistoryProps = {
+export type ChatTimelineHistoryProps = {
     readonly active: boolean;
     readonly canRenderFileReference?: (
         rawReference: string,
@@ -3479,7 +3527,7 @@ type ChatTimelineHistoryProps = {
     readonly worktreeId: string | null;
 };
 
-const ChatTimelineHistory = memo(function ChatTimelineHistory({
+export const ChatTimelineHistory = memo(function ChatTimelineHistory({
     active,
     canRenderFileReference,
     chatFontFamily,
