@@ -2557,8 +2557,10 @@ describe("ai-store queue", () => {
         expect(session?.snapshot?.messages[0]?.content).toBe(
             "RUNTIME_FAILURE_MARKER",
         );
-        expect(session?.transcript.messagesById.get("message-1")?.content).toBe(
-            "RUNTIME_FAILURE_MARKER",
+        expect(session?.transcript.messages).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ content: "RUNTIME_FAILURE_MARKER" }),
+            ]),
         );
     });
 

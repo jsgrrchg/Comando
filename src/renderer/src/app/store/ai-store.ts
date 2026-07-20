@@ -2942,16 +2942,14 @@ async function executePassiveSessionHydration(
     });
 
     try {
-        const runtimeStatusPromise = getComandoApi().getAiRuntimeStatus(
-            tab.runtimeId,
-        );
+        const runtimeStatusPromise = getComandoApi()
+            .getAiRuntimeStatus(tab.runtimeId)
+            .catch(() => null);
         const snapshotPromise = getComandoApi().getAiSessionSnapshot(
             tab.sessionId,
         );
-        const [runtimeStatus, snapshot] = await Promise.all([
-            runtimeStatusPromise,
-            snapshotPromise,
-        ]);
+        const snapshot = await snapshotPromise;
+        const runtimeStatus = await runtimeStatusPromise;
         const resolvedSnapshot =
             snapshot ??
             createEmptySessionSnapshot(
@@ -2960,7 +2958,9 @@ async function executePassiveSessionHydration(
             );
 
         set((state) => {
-            const runtimeCatalog = extractRuntimeCatalogFromStatus(runtimeStatus);
+            const runtimeCatalog = runtimeStatus
+                ? extractRuntimeCatalogFromStatus(runtimeStatus)
+                : null;
             const nextCatalog =
                 runtimeCatalog && hasRuntimeCatalog(runtimeCatalog)
                     ? runtimeCatalog
@@ -2982,10 +2982,12 @@ async function executePassiveSessionHydration(
                       [tab.runtimeId]: nextCatalog,
                   }
                 : state.runtimeCatalogById;
-            const nextRuntimeStatusById = {
-                ...state.runtimeStatusById,
-                [runtimeStatus.runtimeId]: runtimeStatus,
-            };
+            const nextRuntimeStatusById = runtimeStatus
+                ? {
+                      ...state.runtimeStatusById,
+                      [runtimeStatus.runtimeId]: runtimeStatus,
+                  }
+                : state.runtimeStatusById;
 
             if (currentSession?.runtimeState === "live") {
                 return {
