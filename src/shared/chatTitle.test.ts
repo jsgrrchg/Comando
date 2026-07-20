@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
     CHAT_TITLE_STORED_MAX_CHARS,
+    getChatDisplayTitle,
+    getReviewChatDisplayTitle,
     inferChatTitleFromPrompt,
     isDefaultChatTitle,
     truncateChatTitle,
@@ -111,5 +113,62 @@ describe("inferChatTitleFromPrompt", () => {
         expect(inferChatTitleFromPrompt(input)).toBe(
             "Contacta a user@example.com sobre esto",
         );
+    });
+});
+
+describe("getChatDisplayTitle", () => {
+    it("uses the first prompt only while the runtime title is still a default", () => {
+        expect(
+            getChatDisplayTitle({
+                title: "Claude 1",
+                messages: [
+                    { kind: "user", content: "Investigate the startup crash" },
+                ],
+            }),
+        ).toBe("Investigate the startup crash");
+    });
+
+    it("treats generic bootstrap titles as provisional", () => {
+        expect(
+            getChatDisplayTitle({
+                title: "AI Session",
+                messages: [
+                    { kind: "user", content: "Investigate the startup crash" },
+                ],
+            }),
+        ).toBe("Investigate the startup crash");
+    });
+
+    it("keeps manual and runtime titles ahead of the prompt fallback", () => {
+        const messages = [
+            { kind: "user", content: "Investigate the startup crash" },
+        ];
+
+        expect(
+            getChatDisplayTitle({
+                title: "Runtime generated title",
+                messages,
+            }),
+        ).toBe("Runtime generated title");
+        expect(
+            getChatDisplayTitle({
+                manualTitle: "Manual title",
+                title: "Runtime generated title",
+                messages,
+            }),
+        ).toBe("Manual title");
+    });
+});
+
+describe("getReviewChatDisplayTitle", () => {
+    it("keeps the review prefix while using the prompt fallback", () => {
+        expect(
+            getReviewChatDisplayTitle({
+                title: "Review · Claude 1",
+                messages: [
+                    { kind: "user", content: "Investigate the startup crash" },
+                ],
+            }),
+        ).toBe("Review · Investigate the startup crash");
     });
 });

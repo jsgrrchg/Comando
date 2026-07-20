@@ -4,6 +4,8 @@ export const CHAT_TITLE_STORED_MAX_CHARS = 100;
 
 export const DEFAULT_CHAT_TITLE_PATTERN =
     /^(Claude|Grok|Codex|Kilo|OpenCode|Agent) \d+$/;
+const GENERIC_CHAT_TITLES = new Set(["AI Session", "Chat"]);
+const REVIEW_TITLE_PREFIX = "Review · ";
 
 const PILL_OPEN = "\u200B\u00AB";
 const PILL_CLOSE = "\u00BB\u200B";
@@ -81,4 +83,46 @@ export function inferChatTitleFromPrompt(serializedContent: string): string {
     const words = text.split(" ").filter(Boolean).slice(0, MAX_TITLE_WORDS);
     const joined = words.join(" ");
     return truncateChatTitle(joined, CHAT_TITLE_STORED_MAX_CHARS);
+}
+
+type ChatTitleMessage = {
+    readonly content: string;
+    readonly kind: string;
+};
+
+export function getChatDisplayTitle(input: {
+    readonly manualTitle?: string | null;
+    readonly messages?: readonly ChatTitleMessage[];
+    readonly title: string;
+}): string {
+    const manualTitle = input.manualTitle?.trim();
+    if (manualTitle) {
+        return manualTitle;
+    }
+
+    const storedTitle = input.title.trim();
+    if (
+        !isDefaultChatTitle(storedTitle) &&
+        !GENERIC_CHAT_TITLES.has(storedTitle)
+    ) {
+        return storedTitle || "Chat";
+    }
+
+    const firstUserMessage = input.messages?.find(
+        (message) => message.kind === "user" && message.content.trim(),
+    );
+    // The prompt label is a display-only fallback. It must never become a
+    // competing persisted title while the runtime is still naming the session.
+    return inferChatTitleFromPrompt(firstUserMessage?.content ?? "") || storedTitle || "Chat";
+}
+
+export function getReviewChatDisplayTitle(input: {
+    readonly manualTitle?: string | null;
+    readonly messages?: readonly ChatTitleMessage[];
+    readonly title: string;
+}): string {
+    const title = input.title.startsWith(REVIEW_TITLE_PREFIX)
+        ? input.title.slice(REVIEW_TITLE_PREFIX.length)
+        : input.title;
+    return `${REVIEW_TITLE_PREFIX}${getChatDisplayTitle({ ...input, title })}`;
 }

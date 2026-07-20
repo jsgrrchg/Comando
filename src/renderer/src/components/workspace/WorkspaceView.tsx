@@ -56,6 +56,8 @@ import {
 } from "@shared/typography";
 import {
     CHAT_TITLE_TAB_MAX_CHARS,
+    getChatDisplayTitle,
+    getReviewChatDisplayTitle,
     truncateChatTitle,
 } from "@shared/chatTitle";
 import {
@@ -1916,6 +1918,33 @@ function WorkspacePaneView({
             ),
         ),
     );
+    const paneChatDisplayTitles = useAiStore(
+        useShallow(
+            useCallback(
+                (state: ReturnType<typeof useAiStore.getState>) =>
+                    Object.fromEntries(
+                        paneTabs.flatMap((tab) => {
+                            if (tab.kind !== "chat" && tab.kind !== "review") {
+                                return [];
+                            }
+                            const snapshot = state.sessions[tab.sessionId]?.snapshot;
+                            const titleInput = {
+                                manualTitle: snapshot?.manualTitle,
+                                messages: snapshot?.messages,
+                                title: snapshot?.title || tab.title,
+                            };
+                            return [[
+                                tab.id,
+                                tab.kind === "review"
+                                    ? getReviewChatDisplayTitle(titleInput)
+                                    : getChatDisplayTitle(titleInput),
+                            ]];
+                        }),
+                    ),
+                [paneTabs],
+            ),
+        ),
+    );
     const tabStripRef = useRef<HTMLDivElement | null>(null);
     const [tabContextMenu, setTabContextMenu] =
         useState<ContextMenuState<TabContextMenuPayload> | null>(null);
@@ -2785,7 +2814,10 @@ function WorkspacePaneView({
                                 const isActive = tab.id === paneActiveTabId;
                                 const isPinned = panePinnedTabIdSet.has(tab.id);
                                 const tabDisplayTitle =
-                                    getWorkspaceTabDisplayTitle(tab);
+                                    getWorkspaceTabDisplayTitle(
+                                        tab,
+                                        paneChatDisplayTitles[tab.id],
+                                    );
 
                                 return (
                                     <button
@@ -7524,13 +7556,19 @@ function WorkspaceTabActivityIndicator({
     return null;
 }
 
-function getWorkspaceTabDisplayTitle(tab: RuntimeWorkspaceTab): string {
+function getWorkspaceTabDisplayTitle(
+    tab: RuntimeWorkspaceTab,
+    chatDisplayTitle?: string,
+): string {
     if (tab.kind === "git_commit") {
         return tab.commitSha.slice(0, 7);
     }
 
     if (tab.kind === "chat" || tab.kind === "review") {
-        return truncateChatTitle(tab.title, CHAT_TITLE_TAB_MAX_CHARS);
+        return truncateChatTitle(
+            chatDisplayTitle ?? tab.title,
+            CHAT_TITLE_TAB_MAX_CHARS,
+        );
     }
 
     return tab.title;

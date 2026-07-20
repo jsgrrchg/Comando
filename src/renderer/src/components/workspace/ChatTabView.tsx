@@ -27,6 +27,7 @@ import {
     MAX_IMAGE_ATTACHMENT_BYTES,
 } from "@shared/ai-attachments";
 import { deriveTrackedFilesFromActionLog } from "@shared/ai-review-action-log";
+import { getChatDisplayTitle } from "@shared/chatTitle";
 import { resolveEditorLanguage } from "@shared/editor-language";
 
 import { useShallow } from "zustand/react/shallow";
@@ -679,6 +680,15 @@ export const ChatTabView = memo(function ChatTabView({
 
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
+    const chatDisplayTitle = useMemo(
+        () =>
+            getChatDisplayTitle({
+                manualTitle: snapshot.manualTitle,
+                messages: snapshot.messages,
+                title: snapshot.title || tab.title,
+            }),
+        [snapshot.manualTitle, snapshot.messages, snapshot.title, tab.title],
+    );
     const storedTranscript =
         sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;
     const transcriptWindow = sessionState?.transcriptWindow ?? null;
@@ -2277,9 +2287,9 @@ export const ChatTabView = memo(function ChatTabView({
     const handleStopSession = useCallback(() => {
         requestStopAgentSession({
             sessionId: tab.sessionId,
-            title: snapshot.title || tab.title || "Chat",
+            title: chatDisplayTitle,
         });
-    }, [snapshot.title, tab.sessionId, tab.title]);
+    }, [chatDisplayTitle, tab.sessionId]);
 
     useEffect(() => {
         composerPartsRef.current = composerParts;
@@ -2512,7 +2522,7 @@ export const ChatTabView = memo(function ChatTabView({
                                     }
 
                                     skipTitleCommitRef.current = false;
-                                    setTitleDraft(snapshot.title || "");
+                                    setTitleDraft(chatDisplayTitle);
                                     setIsEditingTitle(true);
                                 }}
                                 title={
@@ -2521,7 +2531,7 @@ export const ChatTabView = memo(function ChatTabView({
                                         : "Double-click to rename"
                                 }
                             >
-                                {snapshot.title || "Chat"}
+                                {chatDisplayTitle}
                             </span>
                             {parentSessionId ? (
                                 <button
