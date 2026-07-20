@@ -499,6 +499,93 @@ describe("ai-store queue", () => {
         ).toEqual([historicalMessage.id, followUpMessage.id]);
     });
 
+    it("keeps an unsealed turn visible while empty block metadata catches up", async () => {
+        const previousResponse = createMessage({
+            content: "Previous response waiting to be sealed.",
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "previous-unsealed-response",
+            status: "completed",
+        });
+        const followUpMessage = createMessage({
+            content: "Continue this chat.",
+            createdAt: "2026-04-14T00:02:00.000Z",
+            id: "follow-up-live-tail",
+            kind: "user",
+            status: "streaming",
+        });
+        const getAiTranscriptBlockMetadata = vi.fn().mockResolvedValue({
+            blocks: [],
+            capabilityVersion: 1,
+            sessionId: TAB.sessionId,
+            transcriptRevision: 0,
+        });
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlockMetadata,
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [previousResponse],
+                updatedAt: previousResponse.createdAt,
+            }),
+        );
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+        useAiStore.getState().applyPromptQueueSnapshot({
+            activeItem: {
+                attachments: [],
+                composerPartsSnapshot: [
+                    { text: followUpMessage.content, type: "text" },
+                ],
+                createdAt: followUpMessage.createdAt,
+                error: null,
+                fileContextsSnapshot: [],
+                id: followUpMessage.id,
+                messageId: followUpMessage.id,
+                optimisticMessageId: followUpMessage.id,
+                projectId: TAB.projectId,
+                prompt: followUpMessage.content,
+                runtimeId: TAB.runtimeId,
+                sessionId: TAB.sessionId,
+                status: "sending",
+                title: TAB.title,
+                worktreeId: TAB.worktreeId,
+            },
+            editingItem: null,
+            items: [],
+            paused: false,
+            revision: 1,
+            sessionId: TAB.sessionId,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                activeTurnStartedAt: followUpMessage.createdAt,
+                messages: [followUpMessage],
+                status: "streaming",
+                updatedAt: followUpMessage.createdAt,
+            }),
+        );
+
+        expect(
+            useAiStore
+                .getState()
+                .sessions[TAB.sessionId]?.transcript.messages.map((message) => message.id),
+        ).toEqual([previousResponse.id, followUpMessage.id]);
+        await vi.waitFor(() =>
+            expect(getAiTranscriptBlockMetadata).toHaveBeenCalledTimes(2),
+        );
+    });
+
     it("evicts transcript payloads from both the cache and UI state", async () => {
         const payloadSize = 9 * 1024 * 1024;
         Object.defineProperty(globalThis, "window", {

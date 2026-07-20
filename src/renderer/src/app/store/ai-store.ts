@@ -77,6 +77,7 @@ import {
 } from "@renderer/app/ai/sessionReviewPreferences";
 import {
     applyAiSessionDomainEventToTranscript,
+    buildAiSessionTranscriptModel,
     buildAiSessionTranscriptModelFromSnapshot,
     createEmptyAiSessionTranscriptModel,
     getSnapshotTranscriptMergeOptions,
@@ -109,6 +110,7 @@ type AiSessionRuntimeState = "history" | "live";
 
 const ensureSessionInFlight = new Map<string, Promise<void>>();
 const transcriptWindowHydrations = new Map<string, Promise<void>>();
+const transcriptWindowRefreshRequests = new Set<string>();
 const TRANSCRIPT_PAYLOAD_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 // Sharing this cache keeps the payload budget fixed as users open more sessions.
 let transcriptPayloadCache = createTranscriptPayloadCache();
@@ -743,6 +745,7 @@ export function resetAiStoreRuntimeBuffersForTests(): void {
     resetAiSessionResyncWatchdogs();
     optimisticSnapshotMutationStates.clear();
     transcriptWindowHydrations.clear();
+    transcriptWindowRefreshRequests.clear();
     transcriptWindowStore.reset();
     transcriptPayloadCache = createTranscriptPayloadCache();
 }
@@ -1396,6 +1399,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
                           existingCatalog,
                       )
                     : snapshot;
+            shouldRefreshSealedTranscript =
+                shouldRefreshSealedTranscript ||
+                hasPendingTranscriptBlockHandoff(incomingSnapshot, session);
             const resolved = resolveIncomingSessionSnapshot(
                 incomingSnapshot,
                 session,
@@ -1414,9 +1420,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 syncedTitle = resolvedSnapshot.title;
             }
             shouldRefreshSealedTranscript =
-                snapshot.status === "idle" &&
-                snapshot.messages.length === 0 &&
-                session.transcriptWindow.capabilityVersion !== null;
+                shouldRefreshSealedTranscript ||
+                (snapshot.status === "idle" &&
+                    snapshot.messages.length === 0 &&
+                    session.transcriptWindow.capabilityVersion !== null);
             // Runtime defaults must come from provider state, never from the
             // optimistic session overlay applied by the resolver.
             const nextCatalog = extractRuntimeCatalog(incomingSnapshot);
@@ -1545,7 +1552,12 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     hydrateTranscriptWindow: async (sessionId) => {
         const existing = transcriptWindowHydrations.get(sessionId);
-        if (existing) return await existing;
+        if (existing) {
+            // A seal can finish while an older metadata read is in flight.
+            // Queue one trailing read so the renderer observes that revision.
+            transcriptWindowRefreshRequests.add(sessionId);
+            return await existing;
+        }
 
         const request = (async () => {
             const api = getComandoApi();
@@ -1646,6 +1658,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
             }));
         }).finally(() => {
             transcriptWindowHydrations.delete(sessionId);
+            if (transcriptWindowRefreshRequests.delete(sessionId)) {
+                void get().hydrateTranscriptWindow(sessionId);
+            }
         });
         transcriptWindowHydrations.set(sessionId, request);
         await request;
@@ -3745,8 +3760,13 @@ function resolveIncomingSessionSnapshotBase(
         currentSnapshot,
         currentTranscript,
     );
-    const incomingTranscript =
+    const projectedIncomingTranscript =
         buildAiSessionTranscriptModelFromSnapshot(boundedIncomingSnapshot);
+    const incomingTranscript = preserveUnsealedTranscriptTail(
+        projectedIncomingTranscript,
+        session,
+        currentTranscript,
+    );
     const changedKeys = options.changedKeys ?? null;
     const hasAcceptedIncomingSnapshot =
         session.lastIncomingSnapshotUpdatedAt !== null;
@@ -3812,6 +3832,110 @@ function resolveIncomingSessionSnapshotBase(
         ),
         transcript: currentTranscript,
     };
+}
+
+function preserveUnsealedTranscriptTail(
+    incomingTranscript: AiSessionTranscriptModel,
+    session: AiSessionClientState,
+    currentTranscript: AiSessionTranscriptModel,
+): AiSessionTranscriptModel {
+    if (session.transcriptWindow.capabilityVersion === null) {
+        return incomingTranscript;
+    }
+
+    const latestSealedAt = getLatestSealedTranscriptTimestamp(session);
+    const messages = currentTranscript.messages.filter((message) =>
+        isTranscriptEntryNewerThanSealedWindow(message.createdAt, latestSealedAt),
+    );
+    const toolActivity = currentTranscript.toolActivity.filter((activity) =>
+        isTranscriptEntryNewerThanSealedWindow(
+            activity.createdAt,
+            latestSealedAt,
+        ),
+    );
+    if (messages.length === 0 && toolActivity.length === 0) {
+        return incomingTranscript;
+    }
+
+    // Keep the not-yet-indexed tail visible until block hydration removes the
+    // same entry IDs after the native seal becomes observable.
+    return mergeAiSessionTranscriptSources(
+        buildAiSessionTranscriptModel({ messages, toolActivity }),
+        incomingTranscript,
+        {
+            includeMessages: true,
+            includePlan: true,
+            includeStatus: true,
+            includeTools: true,
+        },
+    );
+}
+
+function hasPendingTranscriptBlockHandoff(
+    incomingSnapshot: AiSessionSnapshot,
+    session: AiSessionClientState,
+): boolean {
+    if (
+        session.transcriptWindow.capabilityVersion === null ||
+        !session.snapshot ||
+        !incomingSnapshot.activeTurnStartedAt
+    ) {
+        return false;
+    }
+
+    const latestSealedAt = getLatestSealedTranscriptTimestamp(session);
+    const incomingMessageIds = new Set(
+        incomingSnapshot.messages.map((message) => message.id),
+    );
+    const incomingToolIds = new Set(
+        incomingSnapshot.toolActivity.map((activity) => activity.id),
+    );
+    const activeTurnStartedAt = incomingSnapshot.activeTurnStartedAt;
+    const transcript = getSessionTranscript(session, session.snapshot);
+
+    return (
+        transcript.messages.some(
+            (message) =>
+                isTranscriptEntryNewerThanSealedWindow(
+                    message.createdAt,
+                    latestSealedAt,
+                ) &&
+                isTimestampBefore(message.createdAt, activeTurnStartedAt) &&
+                !incomingMessageIds.has(message.id),
+        ) ||
+        transcript.toolActivity.some(
+            (activity) =>
+                isTranscriptEntryNewerThanSealedWindow(
+                    activity.createdAt,
+                    latestSealedAt,
+                ) &&
+                isTimestampBefore(activity.createdAt, activeTurnStartedAt) &&
+                !incomingToolIds.has(activity.id),
+        )
+    );
+}
+
+function getLatestSealedTranscriptTimestamp(
+    session: AiSessionClientState,
+): string | null {
+    return session.transcriptWindow.metadata.reduce<string | null>(
+        (latest, block) =>
+            latest === null || isTimestampAtOrAfter(block.lastCreatedAt, latest)
+                ? block.lastCreatedAt
+                : latest,
+        null,
+    );
+}
+
+function isTranscriptEntryNewerThanSealedWindow(
+    createdAt: string,
+    latestSealedAt: string | null,
+): boolean {
+    return latestSealedAt === null || isTimestampBefore(latestSealedAt, createdAt);
+}
+
+function isTimestampBefore(candidate: string, baseline: string): boolean {
+    return !isTimestampAtOrAfter(candidate, baseline);
 }
 
 function keepBlockNativeLiveTranscriptWindow(
