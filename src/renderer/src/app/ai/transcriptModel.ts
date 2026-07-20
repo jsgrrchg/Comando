@@ -100,6 +100,7 @@ interface TranscriptMergeOptions {
     readonly includePlan: boolean;
     readonly includeStatus: boolean;
     readonly includeTools: boolean;
+    readonly preserveMissingTools?: boolean;
 }
 
 const PLAN_ENTRY_ID = AI_TRANSCRIPT_PLAN_ENTRY_ID;
@@ -350,7 +351,9 @@ export function mergeAiSessionTranscriptSources(
             (options.includeStatus &&
                 entry.kind === "status" &&
                 !incomingHasStatus) ||
-            (options.includeTools && entry.kind === "tool")
+            (options.includeTools &&
+                !options.preserveMissingTools &&
+                entry.kind === "tool")
         ) {
             continue;
         }

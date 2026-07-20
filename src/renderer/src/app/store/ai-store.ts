@@ -3893,6 +3893,9 @@ function preserveUnsealedTranscriptTail(
             includePlan: true,
             includeStatus: true,
             includeTools: true,
+            // The live snapshot does not own tools that are still waiting for
+            // their sealed transcript block to become observable.
+            preserveMissingTools: true,
         },
     );
 }
