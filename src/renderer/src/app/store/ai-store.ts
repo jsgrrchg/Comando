@@ -1590,11 +1590,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 return;
             }
 
+            let hydrationView = resolveTranscriptHydrationView(
+                get().sessions[sessionId]?.transcriptWindow,
+                metadata.blocks,
+            );
             transcriptWindowStore.setMetadata(sessionId, metadata.blocks);
-            const visibleBlockIds = metadata.blocks
-                .slice(-2)
-                .map((block) => block.blockId);
-            transcriptWindowStore.protect(sessionId, new Set(visibleBlockIds));
+            transcriptWindowStore.protect(
+                sessionId,
+                hydrationView.protectedBlockIds,
+            );
             const evictedSessionIds = transcriptWindowStore.takeEvictedSessionIds();
             if (evictedSessionIds.length > 0) {
                 set((state) => ({
@@ -1605,10 +1609,30 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 }));
             }
             await Promise.all(
-                visibleBlockIds.map((blockId) =>
+                hydrationView.loadBlockIds.map((blockId) =>
                     get().loadTranscriptWindowBlock(sessionId, blockId),
                 ),
             );
+            // Scrolling can change the anchor while blocks are loading. Apply
+            // the freshest view state before eviction and projection.
+            hydrationView = resolveTranscriptHydrationView(
+                get().sessions[sessionId]?.transcriptWindow,
+                metadata.blocks,
+            );
+            transcriptWindowStore.protect(
+                sessionId,
+                hydrationView.protectedBlockIds,
+            );
+            const finalEvictedSessionIds =
+                transcriptWindowStore.takeEvictedSessionIds();
+            if (finalEvictedSessionIds.length > 0) {
+                set((state) => ({
+                    sessions: synchronizeEvictedTranscriptWindowSessions(
+                        state.sessions,
+                        finalEvictedSessionIds,
+                    ),
+                }));
+            }
             const windowSnapshot = transcriptWindowStore.snapshot(sessionId);
             set((state) => {
                 const currentSession = state.sessions[sessionId];
@@ -1618,7 +1642,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     windowSnapshot,
                     metadata.capabilityVersion,
                     metadata.transcriptRevision,
-                    new Set(visibleBlockIds),
+                    hydrationView.protectedBlockIds,
+                    hydrationView.anchorBlockId,
+                    hydrationView.followTail,
                 );
                 const transcriptWindow = {
                     ...next,
@@ -2668,6 +2694,56 @@ function transcriptWindowStateFromSnapshot(
         residentEntries: snapshot.residentEntries,
         transcriptRevision,
     };
+}
+
+function resolveTranscriptHydrationView(
+    current: AiTranscriptWindowClientState | undefined,
+    metadata: readonly AiTranscriptBlockMetadata[],
+): {
+    readonly anchorBlockId: string | null;
+    readonly followTail: boolean;
+    readonly loadBlockIds: readonly string[];
+    readonly protectedBlockIds: ReadonlySet<string>;
+} {
+    const metadataBlockIds = new Set(metadata.map((block) => block.blockId));
+    const followTail = current?.followTail ?? true;
+    const anchorBlockId = resolveTranscriptHydrationAnchor(current, metadata);
+    const protectedBlockIds = new Set<string>();
+    if (followTail) {
+        for (const block of metadata.slice(-2)) {
+            protectedBlockIds.add(block.blockId);
+        }
+    } else {
+        for (const blockId of current?.protectedBlockIds ?? []) {
+            if (metadataBlockIds.has(blockId)) {
+                protectedBlockIds.add(blockId);
+            }
+        }
+        if (anchorBlockId) {
+            protectedBlockIds.add(anchorBlockId);
+        }
+    }
+    const loadBlockIds =
+        protectedBlockIds.size > 0
+            ? [...protectedBlockIds]
+            : metadata.slice(-2).map((block) => block.blockId);
+    return {
+        anchorBlockId,
+        followTail,
+        loadBlockIds,
+        protectedBlockIds,
+    };
+}
+
+function resolveTranscriptHydrationAnchor(
+    current: AiTranscriptWindowClientState | undefined,
+    metadata: readonly AiTranscriptBlockMetadata[],
+): string | null {
+    const anchorBlockId = current?.anchorBlockId ?? null;
+    return anchorBlockId &&
+        metadata.some((block) => block.blockId === anchorBlockId)
+        ? anchorBlockId
+        : null;
 }
 
 function synchronizeEvictedTranscriptWindowSessions(

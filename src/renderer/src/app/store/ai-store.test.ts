@@ -384,6 +384,18 @@ describe("ai-store queue", () => {
                     "block-3",
                 ),
         ).toBe(false);
+
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        const rehydratedWindow =
+            useAiStore.getState().sessions[TAB.sessionId]?.transcriptWindow;
+        expect(rehydratedWindow).toMatchObject({
+            anchorBlockId: "block-2",
+            followTail: false,
+        });
+        expect([...rehydratedWindow?.protectedBlockIds ?? []]).toEqual([
+            "block-2",
+        ]);
     });
 
     it("keeps a sealed activity diff available after its rail is collapsed and expanded", async () => {
