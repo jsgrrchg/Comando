@@ -6,6 +6,7 @@ import {
     isValidElement,
     memo,
     type AnchorHTMLAttributes,
+    type CSSProperties,
     type HTMLAttributes,
     type ImgHTMLAttributes,
     type InputHTMLAttributes,
@@ -150,6 +151,7 @@ function reactNodeToText(node: ReactNode): string {
 
 interface MarkdownAstNode {
     children?: MarkdownAstNode[];
+    tagName?: string;
     type?: string;
 }
 
@@ -402,15 +404,51 @@ function createMarkdownPreviewComponents({
     };
 }
 
-function MarkdownPreviewTable({
-    children,
-    node: _node,
-    ...props
-}: TableHTMLAttributes<HTMLTableElement> & { readonly node?: unknown }) {
-    void _node;
+const MARKDOWN_TABLE_FIT_COLUMN_LIMIT = 8;
+
+function getMarkdownTableColumnCount(node: unknown): number {
+    if (!node || typeof node !== "object") {
+        return 0;
+    }
+
+    const tableNode = node as MarkdownAstNode;
+    const header = tableNode.children?.find(
+        (child) => child.tagName === "thead",
+    );
+    const headerRow = header?.children?.find(
+        (child) => child.tagName === "tr",
+    );
 
     return (
-        <div className="markdown-file-preview__table-wrap">
+        headerRow?.children?.filter((child) => child.tagName === "th")
+            .length ?? 0
+    );
+}
+
+function MarkdownPreviewTable({
+    children,
+    node,
+    ...props
+}: TableHTMLAttributes<HTMLTableElement> & { readonly node?: unknown }) {
+    const columnCount = getMarkdownTableColumnCount(node);
+    const shouldEnableWideTableScroll =
+        columnCount > MARKDOWN_TABLE_FIT_COLUMN_LIMIT;
+    const tableWrapClassName = [
+        "markdown-file-preview__table-wrap",
+        shouldEnableWideTableScroll &&
+            "markdown-file-preview__table-wrap--wide",
+    ]
+        .filter(Boolean)
+        .join(" ");
+    const tableWrapStyle = shouldEnableWideTableScroll
+        ? ({
+              // Reserve a readable width per column before falling back to scroll.
+              "--markdown-file-preview-table-columns": columnCount,
+          } as CSSProperties)
+        : undefined;
+
+    return (
+        <div className={tableWrapClassName} style={tableWrapStyle}>
             <table {...props}>{children}</table>
         </div>
     );

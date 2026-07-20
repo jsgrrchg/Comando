@@ -690,7 +690,7 @@ describe("MarkdownFilePreview", () => {
         expect(markup).toContain('aria-label="Diagram"');
     });
 
-    it("wraps large tables in the horizontal overflow container", () => {
+    it("uses horizontal scrolling for tables wider than the fit-to-width limit", () => {
         const columns = Array.from({ length: 12 }, (_, index) => `Col ${index}`);
         const content = [
             `| ${columns.join(" | ")} |`,
@@ -700,9 +700,46 @@ describe("MarkdownFilePreview", () => {
 
         const markup = renderStaticMarkdownFilePreview({ content });
 
-        expect(markup).toContain("markdown-file-preview__table-wrap");
+        expect(markup).toContain(
+            "markdown-file-preview__table-wrap--wide",
+        );
+        expect(markup).toContain(
+            "--markdown-file-preview-table-columns:12",
+        );
         expect(markup).toContain("<table>");
         expect(markup).toContain("Col 11 value");
+    });
+
+    it("fits Markdown tables to the preview column and wraps cell content", () => {
+        const styles = readMarkdownPreviewStyles();
+        const tableRule =
+            styles.match(/\.markdown-file-preview table\s*\{[^}]*\}/)?.[0] ??
+            "";
+        const cellRule =
+            styles.match(
+                /\.markdown-file-preview th,\s*\.markdown-file-preview td\s*\{[^}]*\}/,
+            )?.[0] ?? "";
+
+        expect(tableRule).toContain("width: 100%");
+        expect(tableRule).toContain("min-width: 0");
+        expect(tableRule).toContain("table-layout: fixed");
+        expect(cellRule).toContain("overflow-wrap: anywhere");
+    });
+
+    it("keeps tables with up to eight columns fit to the preview width", () => {
+        const columns = Array.from({ length: 8 }, (_, index) => `Col ${index}`);
+        const content = [
+            `| ${columns.join(" | ")} |`,
+            `| ${columns.map(() => "---").join(" | ")} |`,
+            `| ${columns.map((column) => `${column} value`).join(" | ")} |`,
+        ].join("\n");
+
+        const markup = renderStaticMarkdownFilePreview({ content });
+
+        expect(markup).toContain("markdown-file-preview__table-wrap");
+        expect(markup).not.toContain(
+            "markdown-file-preview__table-wrap--wide",
+        );
     });
 
     it("keeps rendered Markdown stable when large content rerenders with unchanged content", () => {
