@@ -368,6 +368,49 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         });
     });
 
+    it("seals a terminal update after its entries were checkpointed", async () => {
+        const store = liveStore();
+        const checkpoints: CheckpointInput[] = [];
+        const seal = vi.fn((input: SealInput) => {
+            void input;
+            return Promise.resolve([sealedMetadata()]);
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                checkpoint: vi.fn((input: CheckpointInput) => {
+                    checkpoints.push(input);
+                    return Promise.resolve();
+                }),
+                seal,
+            }),
+        );
+
+        store.applyEvent(messageStarted("final answer"));
+        coordinator.scheduleCheckpoint(SESSION_ID);
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        store.applyEvent({
+            ...eventBase,
+            error: null,
+            kind: "turn-status",
+            status: "completed",
+            turnId: "turn-1",
+        });
+        coordinator.requestSeal(SESSION_ID, "completed");
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        expect(checkpoints).toHaveLength(2);
+        expect(checkpoints[1]).toMatchObject({
+            entries: [],
+            entryOrder: [],
+            payloads: [],
+            terminalStatus: "completed",
+            turnId: "turn-1",
+        });
+        expect(seal).toHaveBeenCalledOnce();
+    });
+
     it("bounds shutdown flush when durable storage does not respond", async () => {
         const store = liveStore();
         const blocked = deferred<void>();

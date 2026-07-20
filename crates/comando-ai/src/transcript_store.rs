@@ -247,9 +247,14 @@ impl TranscriptStore {
                 "Open transcript turn ID must not be empty".to_string(),
             ));
         }
-        if entry_order.is_empty() {
+        if entry_order.is_empty()
+            && (removed_entry_ids.is_empty() && terminal_status.is_none()
+                || !entries.is_empty()
+                || !payloads.is_empty())
+        {
             return Err(AiError::InvalidInput(
-                "Open transcript tail must contain at least one entry".to_string(),
+                "Open transcript tail update must include ordered entries, removals, or a terminal status"
+                    .to_string(),
             ));
         }
         validate_entry_ownership(&session_id, &entries)?;
@@ -2572,6 +2577,55 @@ mod tests {
                 .map(|entry| &entry.id)
                 .collect::<Vec<_>>(),
             vec![&first.id, &second.id, &third.id],
+        );
+    }
+
+    #[test]
+    fn checkpoint_persists_terminal_status_without_entry_updates() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_id = SessionId("terminal-open-tail".to_string());
+        let store = TranscriptStore::new(temp.path());
+        let first = entry(&session_id, "entry-1");
+
+        store
+            .checkpoint_open_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-1".to_string(),
+                terminal_status: None,
+                entries: vec![first.clone()],
+                payloads: Vec::new(),
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![NativeAiOpenTranscriptEntryRef {
+                    entry_id: first.id.clone(),
+                    entry_revision: 1,
+                    ordinal: 0,
+                }],
+            })
+            .unwrap();
+
+        store
+            .checkpoint_open_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-1".to_string(),
+                terminal_status: Some(NativeAiTranscriptTerminalStatus::Completed),
+                entries: Vec::new(),
+                payloads: Vec::new(),
+                removed_entry_ids: Vec::new(),
+                entry_order: Vec::new(),
+            })
+            .unwrap();
+
+        let tail = store.load_open_tail(&session_id).unwrap().unwrap();
+        assert_eq!(
+            tail.terminal_status,
+            Some(NativeAiTranscriptTerminalStatus::Completed)
+        );
+        assert_eq!(
+            tail.entries
+                .iter()
+                .map(|entry| &entry.id)
+                .collect::<Vec<_>>(),
+            vec![&first.id]
         );
     }
 
