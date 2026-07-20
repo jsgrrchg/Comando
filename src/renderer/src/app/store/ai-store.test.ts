@@ -2674,6 +2674,34 @@ describe("ai-store queue", () => {
         );
     });
 
+    it("treats an existing empty historical snapshot as loaded", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            sessionOpenMode: "history",
+        };
+        const getAiSessionSnapshot = vi.fn().mockResolvedValue(createSnapshot());
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(createRuntimeStatus()),
+                    getAiSessionSnapshot,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(session?.historyHydrationState).toBe("loaded");
+        expect(session?.localError).toBeNull();
+        expect(session?.snapshot?.messages).toEqual([]);
+    });
+
     it("prepares a closed restored history chat before queuing a follow-up prompt", async () => {
         const historyTab: WorkspaceChatTab = {
             ...TAB,

@@ -186,7 +186,12 @@ interface ActiveQueuedPromptState {
     readonly queuedPrompt: QueuedPrompt;
 }
 
-type AiHistoryHydrationState = "not_loaded" | "loading" | "loaded" | "failed";
+type AiHistoryHydrationState =
+    | "not_loaded"
+    | "loading"
+    | "loaded"
+    | "missing"
+    | "failed";
 
 interface AiTranscriptWindowClientState {
     readonly anchorBlockId: string | null;
@@ -2949,13 +2954,31 @@ async function executePassiveSessionHydration(
             tab.sessionId,
         );
         const snapshot = await snapshotPromise;
+        if (!snapshot) {
+            set((state) => {
+                const currentSession = state.sessions[tab.sessionId] ?? null;
+                if (currentSession?.runtimeState === "live") {
+                    return state;
+                }
+
+                return {
+                    sessions: {
+                        ...state.sessions,
+                        [tab.sessionId]: {
+                            ...(currentSession ??
+                                createSessionState(null, "history")),
+                            historyHydrationState: "missing",
+                            localError: "This saved chat is no longer available.",
+                            meta: buildSessionMeta(tab),
+                            runtimeState: "history",
+                        },
+                    },
+                };
+            });
+            return;
+        }
         const runtimeStatus = await runtimeStatusPromise;
-        const resolvedSnapshot =
-            snapshot ??
-            createEmptySessionSnapshot(
-                tab,
-                get().runtimeCatalogById[tab.runtimeId] ?? null,
-            );
+        const resolvedSnapshot = snapshot;
 
         set((state) => {
             const runtimeCatalog = runtimeStatus
@@ -3003,19 +3026,10 @@ async function executePassiveSessionHydration(
                     ...state.sessions,
                     [tab.sessionId]: {
                         ...(currentSession ?? createSessionState(null, "history")),
-                        ...(snapshot
-                            ? resolveIncomingSnapshotProgress(
-                                  currentSession,
-                                  incomingSnapshot.updatedAt,
-                              )
-                            : {
-                                  incomingSnapshotVersion:
-                                      currentSession?.incomingSnapshotVersion ??
-                                      0,
-                                  lastIncomingSnapshotUpdatedAt:
-                                      currentSession?.lastIncomingSnapshotUpdatedAt ??
-                                      null,
-                              }),
+                        ...resolveIncomingSnapshotProgress(
+                            currentSession,
+                            incomingSnapshot.updatedAt,
+                        ),
                         localError: null,
                         historyHydrationState: "loaded",
                         meta: buildSessionMeta(tab),

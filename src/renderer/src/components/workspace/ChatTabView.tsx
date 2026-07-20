@@ -224,6 +224,7 @@ type ChatSessionViewState = Pick<
     | "draftComposerParts"
     | "draftFileContexts"
     | "editingQueuedPrompt"
+    | "historyHydrationState"
     | "localError"
     | "queue"
     | "snapshot"
@@ -246,6 +247,7 @@ function selectChatSessionViewState(
         draftComposerParts: session.draftComposerParts,
         draftFileContexts: session.draftFileContexts,
         editingQueuedPrompt: session.editingQueuedPrompt,
+        historyHydrationState: session.historyHydrationState,
         localError: session.localError,
         queue: session.queue,
         snapshot: session.snapshot,
@@ -764,6 +766,11 @@ export const ChatTabView = memo(function ChatTabView({
         : null;
     const activeTurnStartedAt = getActiveTurnStartedAt(snapshot, transcript);
     const currentError = sessionState?.localError ?? snapshot.lastError;
+    const hasMissingHistoricalSnapshot =
+        sessionState?.historyHydrationState === "missing";
+    const retryHistoricalHydration = useCallback(() => {
+        void ensureSession(sessionTab);
+    }, [ensureSession, sessionTab]);
     const availableCommands =
         snapshot.availableCommands.length > 0
             ? snapshot.availableCommands
@@ -2640,7 +2647,14 @@ export const ChatTabView = memo(function ChatTabView({
                                     onSendNow={handleSendQueuedPromptNow}
                                 />
                             ) : null}
-                            {currentError ? renderError(currentError) : null}
+                            {currentError
+                                ? renderError(
+                                      currentError,
+                                      hasMissingHistoricalSnapshot
+                                          ? retryHistoricalHydration
+                                          : undefined,
+                                  )
+                                : null}
                             {composerError ? renderError(composerError) : null}
 
                             {pendingReviewCount > 0 ? (
@@ -2932,7 +2946,7 @@ function renderPermissionRequest(
     );
 }
 
-function renderError(error: string) {
+function renderError(error: string, onRetry?: () => void) {
     return (
         <div
             className="mb-2 flex min-w-0 max-w-full items-start gap-2 rounded-lg px-2.5 py-2"
@@ -2963,6 +2977,15 @@ function renderError(error: string) {
             >
                 {error}
             </span>
+            {onRetry ? (
+                <button
+                    className="app-no-drag shrink-0 rounded px-2 py-1 text-[11px] font-medium transition-colors hover:bg-white/10"
+                    onClick={onRetry}
+                    type="button"
+                >
+                    Retry
+                </button>
+            ) : null}
         </div>
     );
 }
