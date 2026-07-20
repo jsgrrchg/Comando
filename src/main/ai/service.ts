@@ -748,6 +748,9 @@ export class AiService {
             ownerWindowId,
         );
         this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
+        // Snapshots can be the only delivery path during a reconnect, so their
+        // active tail must enter the same durable queue as event-driven updates.
+        this.#transcriptPersistence?.scheduleCheckpoint(nextSnapshot.sessionId);
         this.#scheduleTranscriptRecovery(nextSnapshot.sessionId);
         this.#scheduleTranscriptBlockMetadataLoad(nextSnapshot.sessionId);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
@@ -3252,6 +3255,9 @@ export class AiService {
             ownerWindowId,
         );
         this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
+        // A prepared session may already contain streamed output before events
+        // resume, so do not wait for a later event to make it crash-safe.
+        this.#transcriptPersistence?.scheduleCheckpoint(nextSnapshot.sessionId);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
             preserveCanonicalTranscriptArrays(
                 previousSnapshot,

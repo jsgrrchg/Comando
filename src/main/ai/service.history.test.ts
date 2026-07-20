@@ -71,6 +71,57 @@ describe("AiService history", () => {
         expect(page).toEqual(expectedPage);
     });
 
+    it("checkpoints an active tail received only through a native snapshot", async () => {
+        const checkpointOpenTranscriptTail = vi.fn(() => Promise.resolve());
+        const snapshot = createSnapshot({
+            activeTurnStartedAt: "2026-04-16T12:00:00.000Z",
+            messages: [
+                {
+                    attachments: [],
+                    content: "Recovered streamed output.",
+                    createdAt: "2026-04-16T12:00:01.000Z",
+                    id: "assistant-1",
+                    kind: "assistant",
+                    status: "streaming",
+                },
+            ],
+            status: "streaming",
+        });
+        const service = createService({
+            nativeAi: createNativeAiGateway({
+                checkpointOpenTranscriptTail,
+                getTranscriptCapability: vi.fn(() => ({
+                    blockNativeVersion: 1,
+                    legacyFallbackAvailable: true,
+                })),
+                loadOpenTranscriptTail: vi.fn(() => Promise.resolve(null)),
+                sealTranscriptTurn: vi.fn(() => Promise.resolve([])),
+            }),
+        });
+
+        try {
+            service.handleNativeSessionSnapshot("window-1", {
+                kind: "snapshot",
+                snapshot,
+            });
+
+            await vi.waitFor(() =>
+                expect(checkpointOpenTranscriptTail).toHaveBeenCalledOnce(),
+            );
+            expect(checkpointOpenTranscriptTail).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    entries: expect.arrayContaining([
+                        expect.objectContaining({ id: "message:assistant-1" }),
+                    ]),
+                    sessionId: snapshot.sessionId,
+                    turnId: snapshot.activeTurnStartedAt,
+                }),
+            );
+        } finally {
+            service.close();
+        }
+    });
+
     it("throws when a transcript page is requested for a missing session", async () => {
         const service = createService({
             loadSessionTranscriptPage: vi.fn(() => null),
