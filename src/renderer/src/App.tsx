@@ -21,7 +21,9 @@ import type {
     ProjectTreeNode,
     SettingsWindowCategory,
     SettingsSnapshot,
-    WorkspaceSurfaceGitHubItemOpenRequest,
+    WorkspaceSurfaceActionEnvelope,
+    WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
 import { isActiveAiRuntimeId } from "@shared/ai-runtimes";
@@ -62,6 +64,7 @@ import {
     resolveWorkspaceContextRefreshPlan,
     runDeduplicatedContextRefresh,
 } from "./app/workspace/context-activation-refresh";
+import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
 import { shellLayoutConstraints } from "./app/layout/shell-layout";
 import {
     COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME,
@@ -292,6 +295,55 @@ export function App() {
     const activeProjectId =
         activeWorkspaceContext?.projectId ??
         (workspaceNavigationHydrated ? null : persistedActiveProjectId);
+    const [workspaceSurfaceActionError, setWorkspaceSurfaceActionError] =
+        useState<string | null>(null);
+    const workspaceSurfaceActionErrorTimerRef = useRef<number | null>(null);
+    const reportWorkspaceSurfaceActionError = useCallback((message: string) => {
+        if (workspaceSurfaceActionErrorTimerRef.current !== null) {
+            window.clearTimeout(workspaceSurfaceActionErrorTimerRef.current);
+        }
+        setWorkspaceSurfaceActionError(message);
+        workspaceSurfaceActionErrorTimerRef.current = window.setTimeout(() => {
+            workspaceSurfaceActionErrorTimerRef.current = null;
+            setWorkspaceSurfaceActionError(null);
+        }, 6_000);
+    }, []);
+    useEffect(
+        () => () => {
+            if (workspaceSurfaceActionErrorTimerRef.current !== null) {
+                window.clearTimeout(workspaceSurfaceActionErrorTimerRef.current);
+            }
+        },
+        [],
+    );
+    const dispatchWorkspaceSurfaceAction = useCallback(
+        async (request: WorkspaceSurfaceActionRequest): Promise<void> => {
+            const api = getComandoApi();
+            if (!api) {
+                throw new Error("The desktop bridge is unavailable.");
+            }
+            const result = await api.dispatchWorkspaceSurfaceAction(request);
+            if (!result.delivered) {
+                throw new Error(
+                    `The workspace action could not be delivered (${result.reason}).`,
+                );
+            }
+        },
+        [],
+    );
+    const requestWorkspaceSurfaceAction = useCallback(
+        (request: WorkspaceSurfaceActionRequest) => {
+            void dispatchWorkspaceSurfaceAction(request).catch((error) => {
+                console.error("[workspace-host] action delivery failed", error);
+                reportWorkspaceSurfaceActionError(
+                    error instanceof Error
+                        ? error.message
+                        : "The workspace action could not be delivered.",
+                );
+            });
+        },
+        [dispatchWorkspaceSurfaceAction, reportWorkspaceSurfaceActionError],
+    );
     const addProjects = useProjectsStore((state) => state.addProjects);
     const cloneRepository = useProjectsStore((state) => state.cloneRepository);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
@@ -813,27 +865,60 @@ export function App() {
         if (!isWorkspaceSurfaceRenderer) {
             return;
         }
-        return getComandoApi()?.onWorkspaceSurfaceGitHubItemOpenRequested(
-            (input) => {
-                const workspaceState = useWorkspaceStore.getState();
-                if (input.itemKind === "issue") {
-                    void workspaceState.openGitHubIssueTab({
-                        issueNumber: input.itemNumber,
-                        projectId: input.projectId,
-                        ref: input.ref,
-                        worktreeId: input.worktreeId,
-                    });
-                    return;
-                }
-                void workspaceState.openGitHubPullRequestTab({
-                    projectId: input.projectId,
-                    pullRequestNumber: input.itemNumber,
-                    ref: input.ref,
-                    worktreeId: input.worktreeId,
-                });
+        const api = getComandoApi();
+        if (!api) {
+            return;
+        }
+        const unsubscribe = api.onWorkspaceSurfaceActionRequested(
+            (envelope: WorkspaceSurfaceActionEnvelope) => {
+                void (async () => {
+                    if (
+                        !(await api.claimWorkspaceSurfaceAction(
+                            envelope.actionId,
+                        ))
+                    ) {
+                        return;
+                    }
+                    try {
+                        await executeWorkspaceSurfaceAction(envelope.request);
+                        await api.completeWorkspaceSurfaceAction({
+                            actionId: envelope.actionId,
+                            status: "completed",
+                        });
+                    } catch (error) {
+                        console.error(
+                            "[workspace-surface] action execution failed",
+                            error,
+                        );
+                        await api.completeWorkspaceSurfaceAction({
+                            actionId: envelope.actionId,
+                            error:
+                                error instanceof Error && error.message
+                                    ? error.message.slice(0, 1_000)
+                                    : "The workspace action failed.",
+                            status: "failed",
+                        });
+                    }
+                })();
             },
         );
+        void api.notifyWorkspaceSurfaceReady();
+        return unsubscribe;
     }, []);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceActionStatus((status) => {
+            if (status.status === "completed") {
+                return;
+            }
+            reportWorkspaceSurfaceActionError(
+                status.message ?? "The workspace action could not be completed.",
+            );
+        });
+    }, [reportWorkspaceSurfaceActionError]);
 
     useEffect(() => {
         if (!isWorkspaceSurfaceRenderer) {
@@ -1904,6 +1989,7 @@ export function App() {
         projectsError,
         workspaceError,
         activeGitError,
+        workspaceSurfaceActionError,
     ]
         .filter(Boolean)
         .join(" ");
@@ -2055,13 +2141,43 @@ export function App() {
                 if (kind === "file") {
                     await createWorkspaceQuickFile({
                         createEntry,
-                        openFileTab,
+                        openFileTab: async (
+                            projectId,
+                            relativePath,
+                            worktreeId,
+                        ) => {
+                            if (isWorkspaceHostRenderer) {
+                                if (!workspaceActiveContextKey) {
+                                    throw new Error(
+                                        "The active workspace surface is unavailable.",
+                                    );
+                                }
+                                await dispatchWorkspaceSurfaceAction({
+                                    contextKey: workspaceActiveContextKey,
+                                    kind: "file",
+                                    origin: "quick-create",
+                                    projectId,
+                                    relativePath,
+                                    worktreeId: worktreeId ?? null,
+                                });
+                                return;
+                            }
+                            await openFileTab(
+                                projectId,
+                                relativePath,
+                                worktreeId,
+                            );
+                        },
                         parentRelativePath,
                         projectId: activeProjectId,
                         reportError: (message) => {
                             window.alert(message);
                         },
-                        setLastQuickCreateAction,
+                        setLastQuickCreateAction: (action) => {
+                            if (!isWorkspaceHostRenderer) {
+                                setLastQuickCreateAction(action);
+                            }
+                        },
                         worktreeId: activeWorktreeId,
                     });
                     return;
@@ -2104,9 +2220,11 @@ export function App() {
             activeProjectId,
             activeWorktreeId,
             createEntry,
+            dispatchWorkspaceSurfaceAction,
             openFileTab,
             revealPathInTree,
             setLastQuickCreateAction,
+            workspaceActiveContextKey,
         ],
     );
 
@@ -2667,6 +2785,24 @@ export function App() {
                 return;
             }
 
+            if (isWorkspaceHostRenderer) {
+                if (!workspaceActiveContextKey) {
+                    return;
+                }
+                requestWorkspaceSurfaceAction({
+                    contextKey: workspaceActiveContextKey,
+                    files: fileNodes.map((node) => ({
+                        name: node.name,
+                        relativePath: node.path,
+                    })),
+                    forceNewChat: options.forceNewChat === true,
+                    kind: "add-files-to-chat",
+                    projectId: activeProjectId,
+                    worktreeId: activeWorktreeId ?? null,
+                });
+                return;
+            }
+
             const currentTabsById = useWorkspaceStore.getState().tabsById;
             const worktreeId = activeWorktreeId ?? null;
             const existingChatTab = Object.values(currentTabsById).find(
@@ -2743,6 +2879,8 @@ export function App() {
             addDraftFileContext,
             createChatTab,
             lastFocusedRuntimeId,
+            requestWorkspaceSurfaceAction,
+            workspaceActiveContextKey,
         ],
     );
 
@@ -2821,13 +2959,6 @@ export function App() {
             }
         },
         [createChatTab, lastFocusedRuntimeId, setDraftComposerParts],
-    );
-
-    const handleOpenSidebarGitHubItem = useCallback(
-        (input: WorkspaceSurfaceGitHubItemOpenRequest) => {
-            void getComandoApi()?.openWorkspaceSurfaceGitHubItem(input);
-        },
-        [],
     );
 
     const sidebarFileNodes = useMemo(
@@ -3031,6 +3162,20 @@ export function App() {
             }
 
             clearFileTreeSelection();
+            if (isWorkspaceHostRenderer) {
+                if (!workspaceActiveContextKey) {
+                    return;
+                }
+                requestWorkspaceSurfaceAction({
+                    contextKey: workspaceActiveContextKey,
+                    kind: "file",
+                    origin: "tree",
+                    projectId: activeProjectId,
+                    relativePath: node.path,
+                    worktreeId: activeWorktreeId ?? null,
+                });
+                return;
+            }
             void openFileTab(activeProjectId, node.path, activeWorktreeId);
         },
         [
@@ -3040,7 +3185,9 @@ export function App() {
             effectiveFileTreeSelectedPaths,
             effectiveFileTreeSelectionAnchorPath,
             openFileTab,
+            requestWorkspaceSurfaceAction,
             visibleSidebarNodePaths,
+            workspaceActiveContextKey,
         ],
     );
 
@@ -3334,11 +3481,22 @@ export function App() {
                     label: "Open",
                     action: () =>
                         activeProjectId
-                            ? void openFileTab(
-                                  activeProjectId,
-                                  node.path,
-                                  activeWorktreeId,
-                              )
+                            ? isWorkspaceHostRenderer
+                                ? workspaceActiveContextKey
+                                    ? requestWorkspaceSurfaceAction({
+                                          contextKey: workspaceActiveContextKey,
+                                          kind: "file",
+                                          origin: "tree",
+                                          projectId: activeProjectId,
+                                          relativePath: node.path,
+                                          worktreeId: activeWorktreeId ?? null,
+                                      })
+                                    : undefined
+                                : void openFileTab(
+                                      activeProjectId,
+                                      node.path,
+                                      activeWorktreeId,
+                                  )
                             : undefined,
                     disabled: !activeProjectId,
                 },
@@ -3527,6 +3685,8 @@ export function App() {
         openFileTab,
         openFileTreeMovePicker,
         refreshProjectTree,
+        requestWorkspaceSurfaceAction,
+        workspaceActiveContextKey,
     ]);
 
     const openNativeFileTreeContextMenu = useEffectEvent(
@@ -3576,20 +3736,12 @@ export function App() {
         enabled: stickyFoldersEnabled && !isFilteringFileTree,
     });
 
-    const handleRevealActiveFileInTree = useCallback(async () => {
-        if (
-            activeWorkspaceTab?.kind !== "file" ||
-            !activeWorkspaceTab.projectId
-        ) {
-            return;
-        }
-
-        const targetProjectId = activeWorkspaceTab.projectId;
-        const targetWorktreeId = activeWorkspaceTab.worktreeId ?? null;
-        const targetPath = activeWorkspaceTab.relativePath;
+    const revealFileInHostTree = useCallback(async (
+        request: WorkspaceSurfaceFileRevealRequest,
+    ) => {
         const targetProjectContextKey = getProjectContextKey(
-            targetProjectId,
-            targetWorktreeId,
+            request.projectId,
+            request.worktreeId,
         );
 
         setLeftCollapsed(false);
@@ -3603,20 +3755,73 @@ export function App() {
         if (workspaceActiveContextKey !== targetProjectContextKey) {
             await useWorkspaceStore
                 .getState()
-                .openContext(targetProjectId, targetWorktreeId);
+                .openContext(request.projectId, request.worktreeId);
         }
 
-        await revealPathInTree(targetProjectId, targetPath, targetWorktreeId);
+        await revealPathInTree(
+            request.projectId,
+            request.relativePath,
+            request.worktreeId,
+        );
         setFileTreeRevealSignal((currentSignal) =>
             currentSignal === null ? 0 : currentSignal + 1,
         );
     }, [
-        activeWorkspaceTab,
         revealPathInTree,
         setLeftCollapsed,
         setSidebarView,
         workspaceActiveContextKey,
     ]);
+
+    const handleRevealActiveFileInTree = useCallback(async () => {
+        if (
+            activeWorkspaceTab?.kind !== "file" ||
+            !activeWorkspaceTab.projectId
+        ) {
+            return;
+        }
+        const request: WorkspaceSurfaceFileRevealRequest = {
+            contextKey: getProjectContextKey(
+                activeWorkspaceTab.projectId,
+                activeWorkspaceTab.worktreeId ?? null,
+            ),
+            projectId: activeWorkspaceTab.projectId,
+            relativePath: activeWorkspaceTab.relativePath,
+            worktreeId: activeWorkspaceTab.worktreeId ?? null,
+        };
+
+        if (isWorkspaceSurfaceRenderer) {
+            const result =
+                await getComandoApi()?.revealWorkspaceSurfaceFileInHostTree(
+                    request,
+                );
+            if (result && !result.delivered) {
+                console.error(
+                    "[workspace-surface] file reveal delivery failed",
+                    result,
+                );
+            }
+            return;
+        }
+
+        await revealFileInHostTree(request);
+    }, [activeWorkspaceTab, revealFileInHostTree]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceFileRevealRequested(
+            (request) => {
+                void revealFileInHostTree(request).catch((error) => {
+                    console.error(
+                        "[workspace-host] file reveal execution failed",
+                        error,
+                    );
+                });
+            },
+        );
+    }, [revealFileInHostTree]);
 
     const handleSidebarViewChange = useCallback(
         (nextSidebarView: SidebarView) => {
@@ -4363,39 +4568,67 @@ export function App() {
                 {sidebarView === "git" && activeProjectId ? (
                     <SidebarGitPanel
                         filter={gitChangesFilter}
+                        onRequestWorkspaceAction={
+                            isWorkspaceHostRenderer
+                                ? requestWorkspaceSurfaceAction
+                                : undefined
+                        }
                         projectId={activeProjectId}
+                        workspaceContextKey={workspaceActiveContextKey}
                         worktreeId={activeWorktreeId}
                     />
                 ) : sidebarView === "issues" ? (
                     <SidebarGitHubPanel
                         filter={issuesFilter}
                         kind="issues"
-                        onAddToChat={(request) =>
-                            void handleAddGitHubItemsToChat(request)
+                        onAddToChat={
+                            isWorkspaceHostRenderer
+                                ? undefined
+                                : (request) =>
+                                      void handleAddGitHubItemsToChat(request)
                         }
                         onOpenSettings={openSettingsWindow}
-                        onOpenItem={handleOpenSidebarGitHubItem}
+                        onRequestWorkspaceAction={
+                            isWorkspaceHostRenderer
+                                ? requestWorkspaceSurfaceAction
+                                : undefined
+                        }
                         projectId={activeProjectId}
                         selectionResetSignal={gitHubSidebarSelectionResetSignal}
+                        workspaceContextKey={workspaceActiveContextKey}
                         worktreeId={activeWorktreeId}
                     />
                 ) : sidebarView === "pull_requests" ? (
                     <SidebarGitHubPanel
                         filter={pullRequestsFilter}
                         kind="pull_requests"
-                        onAddToChat={(request) =>
-                            void handleAddGitHubItemsToChat(request)
+                        onAddToChat={
+                            isWorkspaceHostRenderer
+                                ? undefined
+                                : (request) =>
+                                      void handleAddGitHubItemsToChat(request)
                         }
                         onOpenSettings={openSettingsWindow}
-                        onOpenItem={handleOpenSidebarGitHubItem}
+                        onRequestWorkspaceAction={
+                            isWorkspaceHostRenderer
+                                ? requestWorkspaceSurfaceAction
+                                : undefined
+                        }
                         projectId={activeProjectId}
                         selectionResetSignal={gitHubSidebarSelectionResetSignal}
+                        workspaceContextKey={workspaceActiveContextKey}
                         worktreeId={activeWorktreeId}
                     />
                 ) : sidebarView === "agents" ? (
                     <SidebarAgentsPanel
                         filter={agentsFilter}
+                        onRequestWorkspaceAction={
+                            isWorkspaceHostRenderer
+                                ? requestWorkspaceSurfaceAction
+                                : undefined
+                        }
                         projectId={activeProjectId}
+                        workspaceContextKey={workspaceActiveContextKey}
                         worktreeId={activeWorktreeId}
                     />
                 ) : (

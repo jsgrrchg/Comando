@@ -183,8 +183,11 @@ import {
     type WriteTerminalInput,
     type PersistedWorkspaceSnapshot,
     type WorkspaceNavigationSnapshot,
+    type WorkspaceSurfaceActionCompletion,
+    type WorkspaceSurfaceActionEnvelope,
+    type WorkspaceSurfaceFileRevealRequest,
+    type WorkspaceSurfaceActionStatus,
     type WorkspaceSurfaceDragEvent,
-    type WorkspaceSurfaceGitHubItemOpenRequest,
     type WorkspaceSurfaceContextRequest,
 } from "@shared/ipc";
 
@@ -922,18 +925,44 @@ const comandoApi: ComandoApi = {
             ipcRenderer.removeListener(IPC_EVENTS.workspaceSurfaceDrag, handleEvent);
         };
     },
-    onWorkspaceSurfaceGitHubItemOpenRequested: (listener) => {
+    onWorkspaceSurfaceActionRequested: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
-            input: WorkspaceSurfaceGitHubItemOpenRequest,
-        ) => listener(input);
+            envelope: WorkspaceSurfaceActionEnvelope,
+        ) => listener(envelope);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceActionRequested, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceActionRequested,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceActionStatus: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            status: WorkspaceSurfaceActionStatus,
+        ) => listener(status);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceActionStatus, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceActionStatus,
+                handleEvent,
+            );
+        };
+    },
+    onWorkspaceSurfaceFileRevealRequested: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            request: WorkspaceSurfaceFileRevealRequest,
+        ) => listener(request);
         ipcRenderer.on(
-            IPC_EVENTS.workspaceSurfaceGitHubItemOpenRequested,
+            IPC_EVENTS.workspaceSurfaceFileRevealRequested,
             handleEvent,
         );
         return () => {
             ipcRenderer.removeListener(
-                IPC_EVENTS.workspaceSurfaceGitHubItemOpenRequested,
+                IPC_EVENTS.workspaceSurfaceFileRevealRequested,
                 handleEvent,
             );
         };
@@ -1095,8 +1124,25 @@ const comandoApi: ComandoApi = {
         ),
     dispatchWorkspaceSurfaceDrag: (event) =>
         ipcRenderer.invoke(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag, event),
-    openWorkspaceSurfaceGitHubItem: (input) =>
-        ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceGitHubItem, input),
+    dispatchWorkspaceSurfaceAction: (request) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.dispatchWorkspaceSurfaceAction,
+            request,
+        ),
+    claimWorkspaceSurfaceAction: (actionId) =>
+        ipcRenderer.invoke(IPC_CHANNELS.claimWorkspaceSurfaceAction, actionId),
+    completeWorkspaceSurfaceAction: (completion: WorkspaceSurfaceActionCompletion) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.completeWorkspaceSurfaceAction,
+            completion,
+        ),
+    notifyWorkspaceSurfaceReady: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceReady),
+    revealWorkspaceSurfaceFileInHostTree: (request) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree,
+            request,
+        ),
     notifyWorkspaceSurfaceFocused: () =>
         ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceFocused),
     requestWorkspaceSurfaceContext: (input) =>

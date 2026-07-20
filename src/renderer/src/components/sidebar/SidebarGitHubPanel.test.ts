@@ -16,6 +16,7 @@ import type {
 
 import {
     buildSidebarGitHubComposerParts,
+    createSidebarGitHubAddToChatSurfaceAction,
     getSidebarGitHubAddToChatLabel,
     getSidebarGitHubContextNumbers,
     getSidebarGitHubDragItems,
@@ -552,6 +553,43 @@ describe("SidebarGitHubDraggableRow", () => {
 });
 
 describe("SidebarGitHubPanel chat helpers", () => {
+    it("normalizes multi-item surface actions without store objects", () => {
+        expect(
+            createSidebarGitHubAddToChatSurfaceAction({
+                contextKey: "project-1::__primary__",
+                forceNewChat: true,
+                itemKind: "issue",
+                items: [
+                    createIssue({ number: 7, title: "Crash on launch" }),
+                    createIssue({ number: 8, title: "Slow indexing" }),
+                ],
+                projectId: "project-1",
+                ref: repoRef,
+                worktreeId: null,
+            }),
+        ).toEqual({
+            contextKey: "project-1::__primary__",
+            forceNewChat: true,
+            itemKind: "issue",
+            items: [
+                {
+                    number: 7,
+                    title: "Crash on launch",
+                    url: "https://github.com/example/comando/issues/7",
+                },
+                {
+                    number: 8,
+                    title: "Slow indexing",
+                    url: "https://github.com/example/comando/issues/8",
+                },
+            ],
+            kind: "add-github-items-to-chat",
+            projectId: "project-1",
+            ref: repoRef,
+            worktreeId: null,
+        });
+    });
+
     it("pluralizes issue and pull request add-to-chat labels", () => {
         expect(
             getSidebarGitHubAddToChatLabel({
