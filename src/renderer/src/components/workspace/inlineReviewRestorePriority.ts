@@ -1,6 +1,5 @@
 export type InlineReviewRestoreCandidate<
     TPortableState,
-    TViewState,
     TScrollState,
 > =
     | { readonly kind: "openLocation" }
@@ -11,10 +10,6 @@ export type InlineReviewRestoreCandidate<
     | {
           readonly kind: "portableEditorState";
           readonly state: TPortableState;
-      }
-    | {
-          readonly kind: "viewState";
-          readonly state: TViewState;
       }
     | {
           readonly kind: "diffScrollState";
@@ -29,15 +24,13 @@ export type PendingEditorInlineReviewRestoreState<TPortableState> = {
 
 export function resolveInlineReviewRestoreCandidate<
     TPortableState,
-    TViewState,
     TScrollState,
 >(input: {
     readonly currentInlineReviewRestoreState: TPortableState | null;
     readonly didConsumePendingOpenLocation: boolean;
     readonly pendingEditorInlineReviewRestoreState: TPortableState | null;
-    readonly persistedInlineReviewViewState: TViewState | null;
     readonly scrollState: TScrollState;
-}): InlineReviewRestoreCandidate<TPortableState, TViewState, TScrollState> {
+}): InlineReviewRestoreCandidate<TPortableState, TScrollState> {
     if (input.didConsumePendingOpenLocation) {
         return { kind: "openLocation" };
     }
@@ -53,13 +46,6 @@ export function resolveInlineReviewRestoreCandidate<
         return {
             kind: "portableEditorState",
             state: input.pendingEditorInlineReviewRestoreState,
-        };
-    }
-
-    if (input.persistedInlineReviewViewState) {
-        return {
-            kind: "viewState",
-            state: input.persistedInlineReviewViewState,
         };
     }
 

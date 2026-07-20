@@ -7,7 +7,6 @@ import {
 
 describe("resolveInlineReviewRestoreCandidate", () => {
     const scrollState = { scrollTop: 10 };
-    const viewState = { cursor: "persisted" };
     const currentInlineState = { lineNumber: 20, source: "current-inline" };
     const portableEditorState = { lineNumber: 30, source: "editor" };
 
@@ -17,7 +16,6 @@ describe("resolveInlineReviewRestoreCandidate", () => {
                 currentInlineReviewRestoreState: currentInlineState,
                 didConsumePendingOpenLocation: true,
                 pendingEditorInlineReviewRestoreState: portableEditorState,
-                persistedInlineReviewViewState: viewState,
                 scrollState,
             }),
         ).toEqual({ kind: "openLocation" });
@@ -29,7 +27,6 @@ describe("resolveInlineReviewRestoreCandidate", () => {
                 currentInlineReviewRestoreState: currentInlineState,
                 didConsumePendingOpenLocation: false,
                 pendingEditorInlineReviewRestoreState: portableEditorState,
-                persistedInlineReviewViewState: viewState,
                 scrollState,
             }),
         ).toEqual({
@@ -44,27 +41,11 @@ describe("resolveInlineReviewRestoreCandidate", () => {
                 currentInlineReviewRestoreState: null,
                 didConsumePendingOpenLocation: false,
                 pendingEditorInlineReviewRestoreState: portableEditorState,
-                persistedInlineReviewViewState: viewState,
                 scrollState,
             }),
         ).toEqual({
             kind: "portableEditorState",
             state: portableEditorState,
-        });
-    });
-
-    it("falls back to persisted view state before diff scroll state", () => {
-        expect(
-            resolveInlineReviewRestoreCandidate({
-                currentInlineReviewRestoreState: null,
-                didConsumePendingOpenLocation: false,
-                pendingEditorInlineReviewRestoreState: null,
-                persistedInlineReviewViewState: viewState,
-                scrollState,
-            }),
-        ).toEqual({
-            kind: "viewState",
-            state: viewState,
         });
     });
 
@@ -74,7 +55,6 @@ describe("resolveInlineReviewRestoreCandidate", () => {
                 currentInlineReviewRestoreState: null,
                 didConsumePendingOpenLocation: false,
                 pendingEditorInlineReviewRestoreState: null,
-                persistedInlineReviewViewState: null,
                 scrollState,
             }),
         ).toEqual({

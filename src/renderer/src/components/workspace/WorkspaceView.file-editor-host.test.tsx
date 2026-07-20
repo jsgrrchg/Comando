@@ -2738,7 +2738,7 @@ describe("WorkspaceFileEditorHost", () => {
         });
     });
 
-    it("reinstalls inline review models when a hidden file tab resumes with shell models", async () => {
+    it("resynchronizes inline review content after an external model replacement", async () => {
         const fileTab = createFileTab("file-1");
         mockAiStoreState.current.sessions = {
             "session-1": {
@@ -2840,6 +2840,8 @@ describe("WorkspaceFileEditorHost", () => {
         }
 
         const modifiedEditor = diffEditor.getModifiedEditor();
+        const originalModel = diffEditor.originalModel;
+        const modifiedModel = diffEditor.modifiedModel;
         modifiedEditor.setPosition({ column: 7, lineNumber: 2 });
         modifiedEditor.setScrollLeft(11);
         modifiedEditor.setScrollTop(240);
@@ -2864,6 +2866,11 @@ describe("WorkspaceFileEditorHost", () => {
         await flushEffects();
 
         expect(diffEditor.disposed).toBe(false);
+        // Content updates must not replace worker-visible model identities.
+        expect(diffEditor.originalModel).toBe(originalModel);
+        expect(diffEditor.modifiedModel).toBe(modifiedModel);
+        expect(originalModel?.disposed).toBe(false);
+        expect(modifiedModel?.disposed).toBe(false);
         expect(diffEditor.modifiedModel?.getValue()).toBe(
             "const value = 2;\nconst nextValue = 3;\nconst finalValue = 4;\n",
         );
