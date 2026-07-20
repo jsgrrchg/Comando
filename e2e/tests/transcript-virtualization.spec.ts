@@ -53,6 +53,7 @@ test("virtualized history remains mounted while a new turn streams", async ({ pa
                 event.metric === "markdown_commit",
         ),
     ).toBe(true);
+    expect(diagnostic.violations.markdownLagFrames).toEqual([]);
     await expect(page.locator("[data-hot-transcript-tail]")).toHaveCount(1);
     await expect(
         page.locator(
@@ -70,7 +71,7 @@ test("streaming has no transient frame continuity violations", async ({
 }, testInfo) => {
     test.fail(
         true,
-        "The extracted hot tail still exposes Markdown/scroll continuity violations until Fases 2-3 land.",
+        "The extracted hot tail still exposes scroll continuity violations until Fase 3 lands.",
     );
 
     const diagnostic = await page.evaluate(async () => {
