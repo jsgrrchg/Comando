@@ -212,6 +212,63 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         });
     });
 
+    it("seals a recovered terminal tail without sealing a newer live turn", async () => {
+        const store = new AiLiveTranscriptTailStore();
+        const load = deferred<AiOpenTranscriptTail | null>();
+        const checkpoint = vi.fn((input: CheckpointInput) => {
+            void input;
+            return Promise.resolve();
+        });
+        const seal = vi.fn((input: SealInput) => {
+            void input;
+            return Promise.resolve([sealedMetadata()]);
+        });
+        const recovered = {
+            ...recoveredTail(),
+            terminalStatus: "completed" as const,
+            turnId: "2026-07-18T00:00:00.000Z",
+        };
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                checkpoint,
+                load: vi.fn(() => load.promise),
+                seal,
+            }),
+        );
+
+        const recovery = coordinator.recover(SESSION_ID);
+        store.applyEvent({
+            ...eventBase,
+            activeTurnStartedAt: TURN_ID,
+            kind: "status",
+            lastError: null,
+            status: "streaming",
+        });
+        store.applyEvent(messageStarted("new turn output"));
+        coordinator.scheduleCheckpoint(SESSION_ID);
+        await Promise.resolve();
+        expect(checkpoint).not.toHaveBeenCalled();
+
+        load.resolve(recovered);
+        await recovery;
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        expect(seal).toHaveBeenCalledOnce();
+        expect(seal).toHaveBeenCalledWith(
+            expect.objectContaining({ turnId: recovered.turnId }),
+        );
+        expect(checkpoint).toHaveBeenCalledWith(
+            expect.objectContaining({
+                terminalStatus: null,
+                turnId: TURN_ID,
+            }),
+        );
+        expect(store.getSnapshot(SESSION_ID)).toMatchObject({
+            turnId: TURN_ID,
+        });
+    });
+
     it("checkpoints terminal state before sealing and clears the live tail", async () => {
         const store = liveStore();
         const metadata = sealedMetadata();

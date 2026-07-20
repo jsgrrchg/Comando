@@ -48,6 +48,8 @@ interface SessionPersistenceQueue {
     attempt: number;
     checkpointedRevision: number;
     inFlight: Promise<void> | null;
+    isRecovering: boolean;
+    recoveredTerminalTail: AiOpenTranscriptTail | null;
     retryTimer: ReturnType<typeof setTimeout> | null;
     sealStatus: AiTranscriptTerminalStatus | null;
     readonly waiters: Set<() => void>;
@@ -98,16 +100,29 @@ export class AiTranscriptPersistenceCoordinator {
     }
 
     async recover(sessionId: string): Promise<AiOpenTranscriptTail | null> {
-        const recovered = await this.adapter.load(sessionId);
-        if (!recovered) {
-            return null;
-        }
-        this.store.restoreOpenTail(recovered);
         const queue = this.#queueFor(sessionId);
-        queue.checkpointedRevision = recovered.revision;
-        queue.sealStatus = recovered.terminalStatus;
-        this.scheduleCheckpoint(sessionId);
-        return recovered;
+        queue.isRecovering = true;
+        try {
+            const recovered = await this.adapter.load(sessionId);
+            if (!recovered) {
+                return null;
+            }
+            if (!this.store.restoreOpenTail(recovered)) {
+                // A newer turn reached memory before recovery completed. Seal
+                // the old terminal tail independently instead of applying its
+                // terminal status to the newer turn.
+                if (recovered.terminalStatus) {
+                    queue.recoveredTerminalTail = recovered;
+                }
+                return recovered;
+            }
+            queue.checkpointedRevision = recovered.revision;
+            queue.sealStatus = recovered.terminalStatus;
+            return recovered;
+        } finally {
+            queue.isRecovering = false;
+            this.#pump(sessionId);
+        }
     }
 
     async flushSession(sessionId: string, timeoutMs: number): Promise<boolean> {
@@ -165,7 +180,7 @@ export class AiTranscriptPersistenceCoordinator {
 
     #pump(sessionId: string): void {
         const queue = this.#queueFor(sessionId);
-        if (queue.inFlight || queue.retryTimer) {
+        if (queue.inFlight || queue.isRecovering || queue.retryTimer) {
             return;
         }
         const request = this.#persistAvailableWork(sessionId, queue);
@@ -186,6 +201,21 @@ export class AiTranscriptPersistenceCoordinator {
         queue: SessionPersistenceQueue,
     ): Promise<void> {
         try {
+            if (queue.recoveredTerminalTail) {
+                const tail = queue.recoveredTerminalTail;
+                this.#setStatus(sessionId, queue, "sealing", null);
+                const metadata = await this.adapter.seal({
+                    entries: tail.entries,
+                    payloads: tail.payloads,
+                    sessionId,
+                    turnId: tail.turnId,
+                });
+                queue.recoveredTerminalTail = null;
+                this.store.setStableBlocks(sessionId, metadata);
+                this.options.onSealed?.(sessionId, metadata);
+                queue.attempt = 0;
+                return;
+            }
             const pending = this.store.takePendingEntries(sessionId);
             const removedEntryIds = this.store.takePendingRemovedEntryIds(
                 sessionId,
@@ -288,6 +318,8 @@ export class AiTranscriptPersistenceCoordinator {
         queue: SessionPersistenceQueue,
     ): boolean {
         return (
+            queue.isRecovering ||
+            queue.recoveredTerminalTail !== null ||
             this.store.takePendingEntries(sessionId).length > 0 ||
             this.store.takePendingRemovedEntryIds(sessionId).length > 0 ||
             (this.store.getSnapshot(sessionId)?.revision ?? 0) >
@@ -302,6 +334,7 @@ export class AiTranscriptPersistenceCoordinator {
     ): boolean {
         return (
             !queue.inFlight &&
+            !queue.isRecovering &&
             !queue.retryTimer &&
             !this.#hasWork(sessionId, queue)
         );
@@ -314,6 +347,8 @@ export class AiTranscriptPersistenceCoordinator {
                 attempt: 0,
                 checkpointedRevision: 0,
                 inFlight: null,
+                isRecovering: false,
+                recoveredTerminalTail: null,
                 retryTimer: null,
                 sealStatus: null,
                 waiters: new Set(),
