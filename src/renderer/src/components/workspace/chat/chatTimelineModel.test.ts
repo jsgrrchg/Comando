@@ -169,9 +169,7 @@ describe("chatTimelineModel", () => {
         expect(incrementalModel.historyRows[0]).toBe(
             initialModel.historyRows[0],
         );
-        expect(incrementalModel.historyRows.at(-1)?.id).toBe(
-            "message:assistant-1",
-        );
+        expect(incrementalModel.historyRows).toBe(initialModel.historyRows);
         expect(incrementalModel.liveTailRow).toEqual(fullModel.liveTailRow);
         expect(incrementalModel.orderedRowIds).toEqual(fullModel.orderedRowIds);
         expect(getChatTimelineReconciliationDiagnostics()).toEqual({
@@ -180,7 +178,7 @@ describe("chatTimelineModel", () => {
         });
     });
 
-    it("appends a chronological assistant row to the virtual timeline", () => {
+    it("appends a chronological assistant row outside the virtual timeline", () => {
         const trackedFiles: AiTrackedFile[] = [];
         const initialTranscript = buildAiSessionTranscriptModel({
             messages: [
@@ -226,9 +224,7 @@ describe("chatTimelineModel", () => {
         expect(incrementalModel.historyRows[0]).toBe(
             initialModel.historyRows[0],
         );
-        expect(incrementalModel.historyRows.at(-1)?.id).toBe(
-            "message:assistant-1",
-        );
+        expect(incrementalModel.historyRows).toBe(initialModel.historyRows);
         expect(incrementalModel.liveTailRow?.id).toBe("message:assistant-1");
         expect(getChatTimelineReconciliationDiagnostics()).toEqual({
             fallbackCount: 0,
@@ -360,7 +356,7 @@ describe("chatTimelineModel", () => {
         }
 
         expect(timeline.historyRows[0]).toBe(initialHistoryRows[0]);
-        expect(timeline.historyRows.at(-1)?.id).toBe("message:assistant-1");
+        expect(timeline.historyRows).toBe(initialHistoryRows);
         expect(timeline.liveTailRow?.id).toBe("message:assistant-1");
         expect(getChatTimelineReconciliationDiagnostics()).toEqual({
             fallbackCount: 0,
@@ -465,14 +461,12 @@ describe("chatTimelineModel", () => {
         });
 
         expect(nextModel.historyRows[0]).toBe(initialModel.historyRows[0]);
-        expect(nextModel.historyRows.at(-1)).not.toBe(
-            initialModel.historyRows.at(-1),
-        );
+        expect(nextModel.historyRows).toBe(initialModel.historyRows);
         expect(nextModel.liveTailRow).not.toBe(initialModel.liveTailRow);
         expect(nextModel.liveTailRow?.id).toBe("message:message-2");
     });
 
-    it("keeps the active tail in virtual history once streaming finishes", () => {
+    it("retains the completed tail outside virtual history until the next turn", () => {
         const streamingModel = reconcileChatTimelineModel(null, {
             messages: [
                 createMessage({
@@ -512,9 +506,42 @@ describe("chatTimelineModel", () => {
         });
 
         expect(completedModel.liveTailRow).toBeNull();
-        expect(completedModel.historyRows).toHaveLength(2);
+        expect(completedModel.historyRows).toHaveLength(1);
         expect(completedModel.historyRows[0]).toBe(streamingModel.historyRows[0]);
-        expect(completedModel.historyRows[1]?.id).toBe("message:message-2");
+        expect(completedModel.retainedTailRow?.id).toBe("message:message-2");
+
+        const nextTurnModel = reconcileChatTimelineModel(completedModel, {
+            messages: [
+                createMessage({
+                    content: "hello",
+                    id: "message-1",
+                    kind: "user",
+                }),
+                createMessage({
+                    content: "done",
+                    createdAt: "2026-04-14T00:00:01.000Z",
+                    id: "message-2",
+                    status: "completed",
+                }),
+                createMessage({
+                    content: "continue",
+                    createdAt: "2026-04-14T00:00:02.000Z",
+                    id: "message-3",
+                    kind: "user",
+                    status: "streaming",
+                }),
+            ],
+            status: "starting",
+            toolActivity: [],
+            trackedFiles: [],
+        });
+
+        expect(nextTurnModel.retainedTailRow).toBeNull();
+        expect(nextTurnModel.historyRowIds).toEqual([
+            "message:message-1",
+            "message:message-2",
+            "message:message-3",
+        ]);
     });
 
     it("keeps the latest user message in history when agent activity starts", () => {
@@ -593,7 +620,6 @@ describe("chatTimelineModel", () => {
             "message:compact-message",
         ]);
         expect(model.historyRowIds).toEqual([
-            "tool:session-1:codex-acp:status:item:compact-1",
             "message:compact-message",
         ]);
         expect(model.liveTailRowId).toBe(
@@ -1744,7 +1770,6 @@ describe("chatTimelineModel activity segments", () => {
         );
         expect(model.historyRowIds).toEqual([
             "message:prompt-1",
-            "activity-segment:session-1:read-1",
         ]);
     });
 

@@ -114,6 +114,8 @@ export interface ChatTimelineModel {
     readonly historyRowIds: readonly string[];
     readonly liveTailRow: ChatTimelinePresentationRow | null;
     readonly liveTailRowId: string | null;
+    readonly retainedTailRow: ChatTimelinePresentationRow | null;
+    readonly retainedTailRowId: string | null;
     readonly orderedRowIds: readonly string[];
     readonly orderedAtomicRowIds: readonly string[];
     readonly orderedAtomicRows: readonly ChatTimelineAtomicRow[];
@@ -972,9 +974,9 @@ export function reconcileChatTimelineModel(
         snapshot.activeTurnStartedAt,
     );
     const atomicLiveTailRowId = atomicLiveTailRow?.id ?? null;
-    // The active row remains in the virtual data source. Its live-tail metadata
-    // is retained for incremental reconciliation and presentation only.
-    const nextAtomicHistoryRows = [...orderedAtomicRows];
+    const nextAtomicHistoryRows = atomicLiveTailRow
+        ? orderedAtomicRows.filter((row) => row !== atomicLiveTailRow)
+        : [...orderedAtomicRows];
     const atomicHistoryRows = reuseRows(
         previous?.atomicHistoryRows,
         nextAtomicHistoryRows,
@@ -1000,7 +1002,17 @@ export function reconcileChatTimelineModel(
         atomicLiveTailRow,
     );
     const liveTailRowId = liveTailRow?.id ?? null;
-    const nextHistoryRows = [...orderedRows];
+    const retainedTailRow = resolveRetainedTailRow(
+        previous,
+        orderedRows,
+        liveTailRow,
+        snapshot.status,
+    );
+    const retainedTailRowId = retainedTailRow?.id ?? null;
+    const hotTailRow = liveTailRow ?? retainedTailRow;
+    const nextHistoryRows = hotTailRow
+        ? orderedRows.filter((row) => row !== hotTailRow)
+        : [...orderedRows];
     const historyRows = reuseRows(previous?.historyRows, nextHistoryRows);
     const historyRowIds = reuseRowIds(previous?.historyRowIds, historyRows);
 
@@ -1019,7 +1031,31 @@ export function reconcileChatTimelineModel(
         orderedRowIds,
         orderedRows,
         presentationRowById: createPresentationRowById(orderedRows),
+        retainedTailRow,
+        retainedTailRowId,
     };
+}
+
+function resolveRetainedTailRow(
+    previous: ChatTimelineModel | null,
+    orderedRows: readonly ChatTimelinePresentationRow[],
+    liveTailRow: ChatTimelinePresentationRow | null,
+    status: AiSessionSnapshot["status"],
+): ChatTimelinePresentationRow | null {
+    if (liveTailRow || isStreamingStatus(status)) {
+        return null;
+    }
+
+    const previousTail = previous?.liveTailRow ?? previous?.retainedTailRow;
+    if (!previousTail) {
+        return null;
+    }
+
+    // Retain one completed tail under the same React owner until the next turn
+    // starts, avoiding a completion-time remount in the virtual list.
+    return (
+        orderedRows.find((row) => row.id === previousTail.id) ?? null
+    );
 }
 
 export interface ChatTimelineTranscriptInput {
@@ -1209,18 +1245,10 @@ function reconcileLiveTailPatch(
     atomicRowById.set(nextAtomicRow.id, nextAtomicRow);
     const presentationRowById = new Map(previous.presentationRowById);
     presentationRowById.set(presentation.liveTailRow.id, presentation.liveTailRow);
-    const nextAtomicHistoryRows = replaceLastTimelineRow(
-        previous.atomicHistoryRows,
-        nextAtomicRow,
-    );
-    const nextHistoryRows = presentation.orderedRows;
-
     return {
         ...previous,
-        atomicHistoryRows: nextAtomicHistoryRows,
         atomicLiveTailRow: nextAtomicRow,
         atomicRowById,
-        historyRows: nextHistoryRows,
         liveTailRow: presentation.liveTailRow,
         liveTailRowId: presentation.liveTailRow.id,
         orderedAtomicRows: replaceLastTimelineRow(
@@ -1229,6 +1257,8 @@ function reconcileLiveTailPatch(
         ),
         orderedRows: presentation.orderedRows,
         presentationRowById,
+        retainedTailRow: null,
+        retainedTailRowId: null,
     };
 }
 
@@ -1262,18 +1292,11 @@ function reconcileLiveTailAppend(
     atomicRowById.set(nextAtomicRow.id, nextAtomicRow);
     const presentationRowById = new Map(previous.presentationRowById);
     presentationRowById.set(nextAtomicRow.id, nextAtomicRow);
-    const atomicHistoryRows = [...previous.atomicHistoryRows, nextAtomicRow];
-    const historyRows = [...previous.historyRows, nextAtomicRow];
-
     return {
         ...previous,
-        atomicHistoryRowIds: [...previous.atomicHistoryRowIds, nextAtomicRow.id],
-        atomicHistoryRows,
         atomicLiveTailRow: nextAtomicRow,
         atomicLiveTailRowId: nextAtomicRow.id,
         atomicRowById,
-        historyRowIds: [...previous.historyRowIds, nextAtomicRow.id],
-        historyRows,
         liveTailRow: nextAtomicRow,
         liveTailRowId: nextAtomicRow.id,
         orderedAtomicRowIds: [...previous.orderedAtomicRowIds, nextAtomicRow.id],
@@ -1281,6 +1304,8 @@ function reconcileLiveTailAppend(
         orderedRowIds: [...previous.orderedRowIds, nextAtomicRow.id],
         orderedRows: [...previous.orderedRows, nextAtomicRow],
         presentationRowById,
+        retainedTailRow: null,
+        retainedTailRowId: null,
     };
 }
 

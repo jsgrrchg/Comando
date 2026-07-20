@@ -17,10 +17,6 @@ import {
 } from "@renderer/app/debug/chatPerformanceProbe";
 import { ChatTimelineHistory } from "@renderer/components/workspace/ChatTabView";
 import type { ChatTimelineRow } from "@renderer/components/workspace/chat/chatTimelineModel";
-import {
-    createTranscriptStreamingIndicatorItem,
-    type TranscriptTimelineItem,
-} from "@renderer/components/workspace/chat/transcriptBlockVirtualization";
 
 import "@renderer/styles.css";
 import "./transcript-harness.css";
@@ -219,21 +215,19 @@ function TranscriptHarness() {
     const [historyRows, setHistoryRows] = useState(createInitialHistory);
     const [streamingText, setStreamingText] = useState<string | null>(null);
 
-    const timelineItems = useMemo<readonly TranscriptTimelineItem[]>(() => {
-        if (streamingText === null) {
-            return historyRows;
-        }
-        return [
-            ...historyRows,
-            createMessageRow(
+    const timelineItems = historyRows;
+    const hotTailRow = useMemo<ChatTimelineRow | null>(
+        () =>
+            streamingText === null
+                ? null
+                : createMessageRow(
                 "assistant-live",
                 streamingText,
                 "assistant",
                 "streaming",
             ),
-            createTranscriptStreamingIndicatorItem("0s"),
-        ];
-    }, [historyRows, streamingText]);
+        [streamingText],
+    );
 
     const snapshot = useCallback((): TranscriptHarnessSnapshot => {
         const scrollElement = scrollRef.current;
@@ -289,7 +283,10 @@ function TranscriptHarness() {
                 ),
                 measurementKey: measured?.dataset.measurementKey ?? null,
                 phase,
-                rowKey: measured?.dataset.listKey ?? null,
+                rowKey:
+                    measured?.dataset.listKey ??
+                    tail?.dataset.hotTranscriptTail ??
+                    null,
             });
             previousFrameAt.current = frameAt;
         },
@@ -355,7 +352,7 @@ function TranscriptHarness() {
 
     useEffect(() => {
         scheduleBottomFollow();
-    }, [scheduleBottomFollow, timelineItems]);
+    }, [hotTailRow, scheduleBottomFollow, timelineItems]);
 
     useEffect(() => {
         const scrollElement = scrollRef.current;
@@ -513,6 +510,8 @@ function TranscriptHarness() {
                     <ChatTimelineHistory
                         active
                         historyRows={timelineItems}
+                        hotTailRowId={hotTailRow?.id ?? null}
+                        hotTailRows={hotTailRow ? [hotTailRow] : []}
                         liveTailRowId={
                             streamingText === null ? null : STREAMING_ROW_ID
                         }
@@ -528,6 +527,8 @@ function TranscriptHarness() {
                         resolveFileReference={() => null}
                         scrollRef={scrollRef}
                         sessionId="e2e-transcript"
+                        showStreamingIndicator={streamingText !== null}
+                        streamingStartedAt={null}
                         worktreeId={null}
                     />
                 </div>

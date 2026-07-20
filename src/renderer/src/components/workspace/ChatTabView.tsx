@@ -139,7 +139,6 @@ import { ToolActivityItem } from "./chat/ToolActivityItem";
 import {
     buildTranscriptTimelineItems,
     captureTranscriptSemanticAnchor,
-    createTranscriptStreamingIndicatorItem,
     flattenTranscriptTimelineItems,
     getTranscriptTimelineItemAnchorEntryId,
     isChatTimelineRowItem,
@@ -560,8 +559,6 @@ export const ChatTabView = memo(function ChatTabView({
         },
         [flushChatDraft, flushDraftComposerParts],
     );
-    const streamStartTimeRef = useRef<number | null>(null);
-    const [elapsed, setElapsed] = useState("");
     const [composerError, setComposerError] = useState<string | null>(null);
     const sessionTab = useMemo(
         () => ({
@@ -787,9 +784,6 @@ export const ChatTabView = memo(function ChatTabView({
         [releaseTranscriptPayload, tab.sessionId],
     );
     const isStreaming = isChatStreamingStatus(snapshot.status);
-    const activeTurnKey = isActiveChatTurnStatus(snapshot.status)
-        ? tab.sessionId
-        : null;
     const activeTurnStartedAt = getActiveTurnStartedAt(snapshot, transcript);
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const hasMissingHistoricalSnapshot =
@@ -1194,52 +1188,6 @@ export const ChatTabView = memo(function ChatTabView({
         composerError !== null ||
         pendingReviewCount > 0;
 
-    useEffect(() => {
-        if (!active || activeTurnKey === null || activeTurnStartedAt === null) {
-            streamStartTimeRef.current = null;
-            let cancelled = false;
-            queueMicrotask(() => {
-                if (!cancelled) {
-                    setElapsed("");
-                }
-            });
-            return () => {
-                cancelled = true;
-            };
-        }
-
-        let cancelled = false;
-        const startedAtMs = Date.parse(activeTurnStartedAt);
-        streamStartTimeRef.current = Number.isFinite(startedAtMs)
-            ? startedAtMs
-            : Date.now();
-        const updateElapsed = () => {
-            if (cancelled) {
-                return;
-            }
-
-            const startedAt = streamStartTimeRef.current;
-            if (startedAt === null) return;
-            const totalSec = Math.max(
-                0,
-                Math.floor((Date.now() - startedAt) / 1000),
-            );
-            const min = Math.floor(totalSec / 60);
-            const sec = totalSec % 60;
-            setElapsed(
-                min > 0
-                    ? `${min}m ${String(sec).padStart(2, "0")}s`
-                    : `${sec}s`,
-            );
-        };
-        queueMicrotask(updateElapsed);
-        const interval = window.setInterval(updateElapsed, 500);
-        return () => {
-            cancelled = true;
-            window.clearInterval(interval);
-        };
-    }, [active, activeTurnKey, activeTurnStartedAt]);
-
     const attentionToolCallIds = useMemo(() => {
         const toolCallIds = new Set<string>();
         if (pendingPermission?.toolCallId) {
@@ -1349,20 +1297,10 @@ export const ChatTabView = memo(function ChatTabView({
                               timelineModel.historyRows,
                           )
                         : timelineModel.historyRows;
-                    const itemsWithStreamingIndicator = isStreaming
-                        ? [
-                              ...sourceItems,
-                              createTranscriptStreamingIndicatorItem(elapsed),
-                          ]
-                        : sourceItems;
                     const flattenedItems = flattenTranscriptTimelineItems(
-                        itemsWithStreamingIndicator,
+                        sourceItems,
                         {
-                            activeGroupId:
-                                timelineModel.liveTailRow?.kind ===
-                                "activity-segment"
-                                    ? timelineModel.liveTailRow.id
-                                    : null,
+                            activeGroupId: null,
                             defaultExpanded:
                                 aiChatSettings.toolActivityDefaultExpansion ===
                                 "expanded",
@@ -1381,14 +1319,33 @@ export const ChatTabView = memo(function ChatTabView({
         [
             activityExpansionByGroupId,
             aiChatSettings.toolActivityDefaultExpansion,
-            elapsed,
-            isStreaming,
             timelineModel.historyRows,
-            timelineModel.liveTailRow,
             tab.sessionId,
             transcriptWindow?.blocksById,
             transcriptWindow?.capabilityVersion,
             transcriptWindow?.metadata,
+        ],
+    );
+    const hotTailRow =
+        timelineModel.liveTailRow ?? timelineModel.retainedTailRow;
+    const hotTailRows = useMemo(
+        () =>
+            hotTailRow
+                ? flattenTranscriptTimelineItems([hotTailRow], {
+                      activeGroupId:
+                          hotTailRow.kind === "activity-segment"
+                              ? hotTailRow.id
+                              : null,
+                      defaultExpanded:
+                          aiChatSettings.toolActivityDefaultExpansion ===
+                          "expanded",
+                      expansionByGroupId: activityExpansionByGroupId,
+                  }).filter(isChatTimelineRowItem)
+                : [],
+        [
+            activityExpansionByGroupId,
+            aiChatSettings.toolActivityDefaultExpansion,
+            hotTailRow,
         ],
     );
     const getPerformanceNavigationGeneration = useCallback(
@@ -2732,6 +2689,8 @@ export const ChatTabView = memo(function ChatTabView({
                     chatFontSize={aiChatSettings.chatFontSize}
                     covered={composerExpanded}
                     historyRows={transcriptTimelineItems}
+                    hotTailRowId={hotTailRow?.id ?? null}
+                    hotTailRows={hotTailRows}
                     liveTailRowId={timelineModel.liveTailRowId}
                     newTurnAnchorRowId={newTurnAnchorRowId}
                     onNewTurnScrollTarget={handleNewTurnScrollTarget}
@@ -2763,6 +2722,7 @@ export const ChatTabView = memo(function ChatTabView({
                     scrollRef={scrollRef}
                     sessionId={tab.sessionId}
                     showJumpToBottom={showJumpToBottom}
+                    showStreamingIndicator={isStreaming}
                     shouldPreserveVirtualMeasureAnchor={
                         shouldPreserveTimelineVirtualMeasureAnchor
                     }
@@ -2773,6 +2733,7 @@ export const ChatTabView = memo(function ChatTabView({
                         shouldPreserveTimelineVirtualResizeAnchor
                     }
                     timelineContentRef={timelineContentRef}
+                    streamingStartedAt={activeTurnStartedAt}
                     worktreeId={tab.worktreeId ?? null}
                 />
 
@@ -3249,6 +3210,8 @@ type ChatTimelineProps = {
     readonly chatFontSize?: number;
     readonly covered?: boolean;
     readonly historyRows: readonly TranscriptTimelineItem[];
+    readonly hotTailRowId: string | null;
+    readonly hotTailRows: readonly TranscriptTimelineVirtualRow[];
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
@@ -3298,10 +3261,12 @@ type ChatTimelineProps = {
     readonly scrollRef: RefObject<HTMLDivElement | null>;
     readonly sessionId: string;
     readonly showJumpToBottom: boolean;
+    readonly showStreamingIndicator: boolean;
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
+    readonly streamingStartedAt: string | null;
     readonly worktreeId: string | null;
 };
 
@@ -3328,6 +3293,8 @@ const ChatTimeline = memo(function ChatTimeline({
     chatFontSize,
     covered,
     historyRows,
+    hotTailRowId,
+    hotTailRows,
     liveTailRowId,
     newTurnAnchorRowId,
     onNewTurnScrollTarget,
@@ -3353,16 +3320,18 @@ const ChatTimeline = memo(function ChatTimeline({
     scrollRef,
     sessionId,
     showJumpToBottom,
+    showStreamingIndicator,
     shouldDeferTrailingUserMeasurementAnchor,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     timelineContentRef,
+    streamingStartedAt,
     worktreeId,
 }: ChatTimelineProps) {
     useRenderProbe("ChatTimeline", {
         active,
         historyRows: historyRows.length,
-        rows: historyRows.length,
+        rows: historyRows.length + hotTailRows.length,
     });
 
     const timelineContainerClassName = covered
@@ -3398,6 +3367,8 @@ const ChatTimeline = memo(function ChatTimeline({
                             chatFontFamily={chatFontFamily}
                             chatFontSize={chatFontSize}
                             historyRows={historyRows}
+                            hotTailRowId={hotTailRowId}
+                            hotTailRows={hotTailRows}
                             liveTailRowId={liveTailRowId}
                             newTurnAnchorRowId={newTurnAnchorRowId}
                             onNewTurnScrollTarget={onNewTurnScrollTarget}
@@ -3430,6 +3401,7 @@ const ChatTimeline = memo(function ChatTimeline({
                             resolveFileReference={resolveFileReference}
                             scrollRef={scrollRef}
                             sessionId={sessionId}
+                            showStreamingIndicator={showStreamingIndicator}
                             shouldDeferTrailingUserMeasurementAnchor={
                                 shouldDeferTrailingUserMeasurementAnchor
                             }
@@ -3439,6 +3411,7 @@ const ChatTimeline = memo(function ChatTimeline({
                             shouldPreserveVirtualResizeAnchor={
                                 shouldPreserveVirtualResizeAnchor
                             }
+                            streamingStartedAt={streamingStartedAt}
                             worktreeId={worktreeId}
                         />
                     </ChatContentColumn>
@@ -3507,6 +3480,8 @@ export type ChatTimelineHistoryProps = {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly historyRows: readonly TranscriptTimelineItem[];
+    readonly hotTailRowId: string | null;
+    readonly hotTailRows: readonly TranscriptTimelineVirtualRow[];
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
@@ -3551,9 +3526,11 @@ export type ChatTimelineHistoryProps = {
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
     readonly sessionId: string;
+    readonly showStreamingIndicator: boolean;
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
+    readonly streamingStartedAt: string | null;
     readonly worktreeId: string | null;
 };
 
@@ -3563,6 +3540,8 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
     chatFontFamily,
     chatFontSize,
     historyRows,
+    hotTailRowId,
+    hotTailRows,
     liveTailRowId,
     newTurnAnchorRowId,
     onNewTurnScrollTarget,
@@ -3583,9 +3562,11 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
     resolveFileReference,
     scrollRef,
     sessionId,
+    showStreamingIndicator,
     shouldDeferTrailingUserMeasurementAnchor,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
+    streamingStartedAt,
     worktreeId,
 }: ChatTimelineHistoryProps) {
     const renderRow = useCallback(
@@ -3640,10 +3621,13 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
         ],
     );
     const renderStreamingIndicator = useCallback(
-        (item: { readonly elapsed: string }) => (
-            <StreamingIndicator elapsed={item.elapsed} />
+        () => (
+            <StreamingIndicator
+                active={active}
+                startedAt={streamingStartedAt}
+            />
         ),
-        [],
+        [active, streamingStartedAt],
     );
 
     return (
@@ -3652,6 +3636,8 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             historyRows={historyRows}
+            hotTailRowId={hotTailRowId}
+            hotTailRows={hotTailRows}
             liveTailRowId={liveTailRowId}
             newTurnAnchorRowId={newTurnAnchorRowId}
             onNewTurnScrollTarget={onNewTurnScrollTarget}
@@ -3663,6 +3649,7 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
             renderStreamingIndicator={renderStreamingIndicator}
             scrollRef={scrollRef}
             sessionId={sessionId}
+            showStreamingIndicator={showStreamingIndicator}
             shouldDeferTrailingUserMeasurementAnchor={
                 shouldDeferTrailingUserMeasurementAnchor
             }
@@ -4255,7 +4242,54 @@ function UserInputRequestCard({
 
 /* ─── Streaming indicator ─── */
 
-function StreamingIndicator({ elapsed }: { readonly elapsed: string }) {
+function StreamingIndicator({
+    active,
+    startedAt,
+}: {
+    readonly active: boolean;
+    readonly startedAt: string | null;
+}) {
+    const fallbackStartedAtRef = useRef<number | null>(null);
+    const [elapsed, setElapsed] = useState("");
+
+    useEffect(() => {
+        if (!active) {
+            return;
+        }
+
+        let cancelled = false;
+        const parsedStartedAt = startedAt ? Date.parse(startedAt) : Number.NaN;
+        const startedAtMs = Number.isFinite(parsedStartedAt)
+            ? parsedStartedAt
+            : Date.now();
+        fallbackStartedAtRef.current = startedAtMs;
+        const updateElapsed = () => {
+            if (cancelled || fallbackStartedAtRef.current === null) {
+                return;
+            }
+            const totalSec = Math.max(
+                0,
+                Math.floor(
+                    (Date.now() - fallbackStartedAtRef.current) / 1000,
+                ),
+            );
+            const min = Math.floor(totalSec / 60);
+            const sec = totalSec % 60;
+            setElapsed(
+                min > 0
+                    ? `${min}m ${String(sec).padStart(2, "0")}s`
+                    : `${sec}s`,
+            );
+        };
+
+        queueMicrotask(updateElapsed);
+        const interval = window.setInterval(updateElapsed, 500);
+        return () => {
+            cancelled = true;
+            window.clearInterval(interval);
+        };
+    }, [active, startedAt]);
+
     return (
         <div
             className="flex items-baseline gap-2 py-1"

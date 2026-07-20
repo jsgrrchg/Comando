@@ -13,7 +13,6 @@ import {
     type ChatTimelineRow,
 } from "./chatTimelineModel";
 import {
-    createTranscriptStreamingIndicatorItem,
     type TranscriptTimelineItem,
     type TranscriptTimelineVirtualRow,
 } from "./transcriptBlockVirtualization";
@@ -254,11 +253,21 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
 function renderHistoryRows(
     historyRows: readonly TranscriptTimelineItem[],
     active = true,
+    options: {
+        readonly hotTailRow?: TranscriptTimelineVirtualRow | null;
+        readonly liveTailRowId?: string | null;
+        readonly showStreamingIndicator?: boolean;
+    } = {},
 ) {
     return renderToStaticMarkup(
         <ChatTimelineHistoryRows
             active={active}
             historyRows={historyRows}
+            hotTailRowId={options.hotTailRow?.id ?? null}
+            hotTailRows={
+                options.hotTailRow ? [options.hotTailRow] : []
+            }
+            liveTailRowId={options.liveTailRowId ?? null}
             onVirtualRangeChange={() => {}}
             renderRow={({ row }) => (
                 <div
@@ -270,6 +279,9 @@ function renderHistoryRows(
             )}
             renderStreamingIndicator={() => <div>Streaming</div>}
             scrollRef={{ current: null }}
+            showStreamingIndicator={
+                options.showStreamingIndicator ?? false
+            }
         />,
     );
 }
@@ -301,6 +313,8 @@ function mountHistoryRows(
         root.render(
             <ChatTimelineHistoryRows
                 historyRows={historyRows}
+                hotTailRowId={null}
+                hotTailRows={[]}
                 renderRow={({ row }) => (
                     <div data-row-id={row.id} key={row.id}>
                         {row.id}
@@ -308,6 +322,7 @@ function mountHistoryRows(
                 )}
                 renderStreamingIndicator={() => <div>Streaming</div>}
                 scrollRef={scrollRef}
+                showStreamingIndicator={false}
             />,
         );
     });
@@ -404,21 +419,42 @@ describe("ChatTimelineHistoryRows", () => {
         );
     });
 
-    it("renders the streaming indicator through the virtual list", () => {
+    it("renders the streaming indicator outside the virtual list", () => {
         const [row] = createRows(1);
         if (!row) {
             throw new Error("expected a timeline row");
         }
 
-        const markup = renderHistoryRows([
-            row,
-            createTranscriptStreamingIndicatorItem("12s"),
-        ]);
+        const markup = renderHistoryRows([row], true, {
+            showStreamingIndicator: true,
+        });
 
         expect(measuredVirtualListMock).toHaveBeenLastCalledWith(
-            expect.objectContaining({ itemCount: 2 }),
+            expect.objectContaining({ itemCount: 1 }),
         );
         expect(markup).toContain("Streaming");
+        expect(markup).toContain("data-streaming-indicator-host");
+    });
+
+    it("renders the hot tail as a normal sibling without virtualizing it", () => {
+        const [historyRow, hotTailRow] = createRows(2);
+        if (!historyRow || !hotTailRow) {
+            throw new Error("expected history and hot-tail rows");
+        }
+
+        const markup = renderHistoryRows([historyRow], true, {
+            hotTailRow,
+            liveTailRowId: hotTailRow.id,
+        });
+
+        expect(measuredVirtualListMock).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                firstKey: historyRow.id,
+                itemCount: 1,
+            }),
+        );
+        expect(markup).toContain(`data-hot-transcript-tail="${hotTailRow.id}"`);
+        expect(markup).toContain('data-current-turn-tail="true"');
     });
 
     it("keeps visible history mounted when block-native hydration starts", () => {
@@ -452,9 +488,12 @@ describe("ChatTimelineHistoryRows", () => {
             root.render(
                 <ChatTimelineHistoryRows
                     historyRows={historyRows}
+                    hotTailRowId={null}
+                    hotTailRows={[]}
                     renderRow={({ row }) => <InstrumentedRow row={row} />}
                     renderStreamingIndicator={() => <div>Streaming</div>}
                     scrollRef={{ current: scrollContainer }}
+                    showStreamingIndicator={false}
                 />,
             );
         };
@@ -476,6 +515,83 @@ describe("ChatTimelineHistoryRows", () => {
         act(() => {
             root.unmount();
         });
+    });
+
+    it("retains the completed hot tail without a remount and transfers it once", () => {
+        const [historyRow, tailTemplate] = createRows(2);
+        if (!historyRow || !tailTemplate || tailTemplate.kind !== "message") {
+            throw new Error("expected message rows");
+        }
+        const streamingTail = {
+            ...tailTemplate,
+            message: { ...tailTemplate.message, status: "streaming" as const },
+        };
+        const completedTail = {
+            ...tailTemplate,
+            message: { ...tailTemplate.message, status: "completed" as const },
+        };
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        let mounts = 0;
+        let unmounts = 0;
+
+        function InstrumentedRow({
+            row,
+        }: {
+            readonly row: TranscriptTimelineVirtualRow;
+        }) {
+            useEffect(() => {
+                mounts += 1;
+                return () => {
+                    unmounts += 1;
+                };
+            }, []);
+            return <div data-row-id={row.id}>{row.id}</div>;
+        }
+
+        const render = (
+            historyRows: readonly TranscriptTimelineItem[],
+            hotTailRow: TranscriptTimelineVirtualRow | null,
+            liveTailRowId: string | null,
+        ) => {
+            root.render(
+                <ChatTimelineHistoryRows
+                    historyRows={historyRows}
+                    hotTailRowId={hotTailRow?.id ?? null}
+                    hotTailRows={hotTailRow ? [hotTailRow] : []}
+                    liveTailRowId={liveTailRowId}
+                    renderRow={({ row }) => <InstrumentedRow row={row} />}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
+                    scrollRef={{ current: scrollContainer }}
+                    showStreamingIndicator={false}
+                />,
+            );
+        };
+
+        act(() => render([historyRow], streamingTail, streamingTail.id));
+        expect(mounts).toBe(2);
+        expect(unmounts).toBe(0);
+
+        act(() => render([historyRow], completedTail, null));
+        expect(mounts).toBe(2);
+        expect(unmounts).toBe(0);
+        expect(
+            mountNode.querySelectorAll(`[data-row-id="${completedTail.id}"]`),
+        ).toHaveLength(1);
+
+        act(() => render([historyRow, completedTail], null, null));
+        expect(mounts).toBe(3);
+        expect(unmounts).toBe(1);
+        expect(
+            mountNode.querySelectorAll(`[data-row-id="${completedTail.id}"]`),
+        ).toHaveLength(1);
+        expect(
+            mountNode.querySelector("[data-hot-transcript-tail]"),
+        ).toBeNull();
+
+        act(() => root.unmount());
     });
 
     it("keeps virtualized history mounted when a new turn starts and streams", () => {
@@ -521,9 +637,12 @@ describe("ChatTimelineHistoryRows", () => {
             root.render(
                 <ChatTimelineHistoryRows
                     historyRows={historyRows}
+                    hotTailRowId={null}
+                    hotTailRows={[]}
                     renderRow={({ row }) => <InstrumentedRow row={row} />}
                     renderStreamingIndicator={() => <div>Streaming</div>}
                     scrollRef={{ current: scrollContainer }}
+                    showStreamingIndicator={false}
                 />,
             );
         };
@@ -694,9 +813,9 @@ describe("ChatTimelineHistoryRows", () => {
             useShellStore.getState().setResizingPanel(true);
         });
 
-        const historyElement = mounted.mountNode.querySelector(
-            "[data-testid='mock-measured-virtual-list']",
-        )?.parentElement as HTMLElement | null;
+        const historyElement = mounted.mountNode.querySelector<HTMLElement>(
+            "[data-chat-timeline-history]",
+        );
         expect(historyElement?.style.width).toBe(
             `${CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX}px`,
         );
@@ -763,9 +882,9 @@ describe("ChatTimelineHistoryRows", () => {
             useShellStore.getState().setResizingPanel(true);
         });
 
-        const historyElement = mounted.mountNode.querySelector(
-            "[data-testid='mock-measured-virtual-list']",
-        )?.parentElement as HTMLElement | null;
+        const historyElement = mounted.mountNode.querySelector<HTMLElement>(
+            "[data-chat-timeline-history]",
+        );
         expect(historyElement?.style.width).toBe("620px");
 
         mounted.setContentWidth(CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX);
