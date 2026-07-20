@@ -558,7 +558,7 @@ describe("ai-store queue", () => {
                 sessionId: TAB.sessionId,
                 status: "sending",
                 title: TAB.title,
-                worktreeId: TAB.worktreeId,
+                worktreeId: TAB.worktreeId ?? null,
             },
             editingItem: null,
             items: [],
