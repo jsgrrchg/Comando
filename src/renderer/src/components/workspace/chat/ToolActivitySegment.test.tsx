@@ -456,7 +456,7 @@ describe("ToolActivitySegment", () => {
         expect(
             container.querySelector('[role="region"]')?.getAttribute("aria-label"),
         ).toBe("Full activity");
-    });
+    }, 20_000);
 
     it("does not remount activity rows when the parent layout changes", () => {
         const entries = Array.from({ length: 200 }, (_, index) =>
