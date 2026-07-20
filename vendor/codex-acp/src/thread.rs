@@ -37,6 +37,7 @@ use codex_login::auth::AuthManager;
 use codex_models_manager::manager::{ModelsManager, RefreshStrategy};
 use codex_protocol::review_format::format_review_findings_block;
 use codex_protocol::{
+    ThreadId,
     approvals::{
         ElicitationRequest, ElicitationRequestEvent, GuardianAssessmentAction,
         GuardianCommandSource,
@@ -85,6 +86,7 @@ use codex_protocol::{
     user_input::UserInput,
 };
 use codex_shell_command::parse_command::parse_command;
+use codex_thread_store::{ReadThreadParams, ThreadStore};
 use codex_utils_approval_presets::{ApprovalPreset, builtin_approval_presets};
 use heck::ToTitleCase;
 use itertools::Itertools;
@@ -94,6 +96,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use crate::session_title::stored_session_title;
 use crate::subagents::{self, SubagentProjection};
 
 /// Abstraction over the ACP connection for sending notifications and requests
@@ -657,6 +660,8 @@ impl Thread {
     pub fn new(
         session_id: SessionId,
         thread: Arc<dyn CodexThreadImpl>,
+        thread_store: Arc<dyn ThreadStore>,
+        thread_id: ThreadId,
         auth: Arc<AuthManager>,
         models_manager: Arc<dyn ModelsManagerImpl>,
         client_capabilities: Arc<Mutex<ClientCapabilities>>,
@@ -670,6 +675,8 @@ impl Thread {
             auth,
             SessionClient::new(session_id, cx, client_capabilities),
             thread.clone(),
+            thread_store,
+            thread_id,
             models_manager,
             config,
             message_rx,
@@ -3867,6 +3874,12 @@ impl SessionClient {
         ));
     }
 
+    fn send_session_title(&self, title: String, updated_at: String) {
+        self.send_notification(SessionUpdate::SessionInfoUpdate(
+            SessionInfoUpdate::new().title(title).updated_at(updated_at),
+        ));
+    }
+
     /// Send a completed tool call (used for replay and simple cases)
     fn send_completed_tool_call(
         &self,
@@ -3940,6 +3953,10 @@ struct ThreadActor<A> {
     client: SessionClient,
     /// The thread associated with this task.
     thread: Arc<dyn CodexThreadImpl>,
+    /// Store containing the durable metadata for this thread.
+    thread_store: Arc<dyn ThreadStore>,
+    /// Identifier used to look up the durable metadata.
+    thread_id: ThreadId,
     /// The configuration for the thread.
     config: Config,
     /// The models available for this thread.
@@ -3958,6 +3975,8 @@ struct ThreadActor<A> {
     resolution_rx: mpsc::UnboundedReceiver<ThreadMessage>,
     /// Last config options state we emitted to the client, used for deduping updates.
     last_sent_config_options: Option<Vec<SessionConfigOption>>,
+    /// Last persisted title sent during this ACP connection.
+    last_sent_title: Option<String>,
 }
 
 impl<A: Auth> ThreadActor<A> {
@@ -3966,6 +3985,8 @@ impl<A: Auth> ThreadActor<A> {
         auth: A,
         client: SessionClient,
         thread: Arc<dyn CodexThreadImpl>,
+        thread_store: Arc<dyn ThreadStore>,
+        thread_id: ThreadId,
         models_manager: Arc<dyn ModelsManagerImpl>,
         config: Config,
         message_rx: mpsc::UnboundedReceiver<ThreadMessage>,
@@ -3976,6 +3997,8 @@ impl<A: Auth> ThreadActor<A> {
             auth,
             client,
             thread,
+            thread_store,
+            thread_id,
             config,
             models_manager,
             resolution_tx,
@@ -3985,6 +4008,7 @@ impl<A: Auth> ThreadActor<A> {
             message_rx,
             resolution_rx,
             last_sent_config_options: None,
+            last_sent_title: None,
         }
     }
 
@@ -5097,6 +5121,7 @@ impl<A: Auth> ThreadActor<A> {
     }
 
     async fn handle_event(&mut self, Event { id, msg }: Event) {
+        let completed_turn = matches!(&msg, EventMsg::TurnComplete(..));
         if let Some(submission) = self.submissions.get_mut(&id) {
             self.pending_prompt_client_ids_by_submission_id.remove(&id);
             submission.handle_event(&self.client, msg).await;
@@ -5114,6 +5139,42 @@ impl<A: Auth> ThreadActor<A> {
                 self.event_projections.remove(&id);
             }
         }
+
+        if completed_turn {
+            self.maybe_emit_persisted_session_title().await;
+        }
+    }
+
+    async fn maybe_emit_persisted_session_title(&mut self) {
+        // Turn completion is the first point where Codex guarantees the thread metadata is durable.
+        let stored_thread = match self
+            .thread_store
+            .read_thread(ReadThreadParams {
+                thread_id: self.thread_id,
+                include_archived: false,
+                include_history: false,
+            })
+            .await
+        {
+            Ok(thread) => thread,
+            Err(error) => {
+                warn!(
+                    thread_id = %self.thread_id,
+                    "Failed to read persisted session title: {error}"
+                );
+                return;
+            }
+        };
+        let Some(title) = stored_session_title(&stored_thread) else {
+            return;
+        };
+        if self.last_sent_title.as_deref() == Some(title.as_str()) {
+            return;
+        }
+
+        self.client
+            .send_session_title(title.clone(), stored_thread.updated_at.to_rfc3339());
+        self.last_sent_title = Some(title);
     }
 
     fn rebind_raced_steering_prompt(&mut self, active_turn_id: &str, event: &EventMsg) {
@@ -5990,14 +6051,21 @@ mod tests {
     use std::time::Duration;
 
     use agent_client_protocol::schema::{
-        RequestPermissionResponse, SessionConfigKind, SessionConfigSelectOptions, TextContent,
+        MaybeUndefined, RequestPermissionResponse, SessionConfigKind, SessionConfigSelectOptions,
+        TextContent,
     };
     use codex_core::{config::ConfigOverrides, test_support::all_model_presets};
     use codex_protocol::config_types::ModeKind;
-    use codex_protocol::models::AgentMessageInputContent;
+    use codex_protocol::models::{AgentMessageInputContent, BaseInstructions};
     use codex_protocol::{
-        ThreadId,
-        protocol::{EnteredReviewModeEvent, ThreadGoal},
+        SessionId as CodexSessionId, ThreadId,
+        protocol::{
+            EnteredReviewModeEvent, SessionSource, ThreadGoal, ThreadHistoryMode, ThreadMemoryMode,
+        },
+    };
+    use codex_thread_store::{
+        CreateThreadParams, InMemoryThreadStore, ThreadMetadataPatch, ThreadPersistenceMetadata,
+        UpdateThreadMetadataParams,
     };
     use tokio::sync::{Mutex, Notify, mpsc::UnboundedSender};
 
@@ -8163,6 +8231,8 @@ mod tests {
             StubAuth,
             session_client,
             conversation.clone(),
+            Arc::new(InMemoryThreadStore::default()),
+            ThreadId::new(),
             models_manager,
             config,
             message_rx,
@@ -8172,6 +8242,103 @@ mod tests {
 
         let handle = tokio::spawn(actor.spawn());
         Ok((session_id, client, conversation, message_tx, handle))
+    }
+
+    async fn title_store(preview: &str) -> (Arc<InMemoryThreadStore>, ThreadId) {
+        let store = Arc::new(InMemoryThreadStore::default());
+        let thread_id = ThreadId::new();
+        store
+            .create_thread(CreateThreadParams {
+                session_id: CodexSessionId::from_string(&thread_id.to_string())
+                    .expect("valid session id"),
+                thread_id,
+                extra_config: None,
+                forked_from_id: None,
+                parent_thread_id: None,
+                source: SessionSource::Unknown,
+                thread_source: None,
+                originator: "test".to_string(),
+                base_instructions: BaseInstructions::default(),
+                dynamic_tools: Vec::new(),
+                selected_capability_roots: Vec::new(),
+                multi_agent_version: None,
+                history_mode: ThreadHistoryMode::Legacy,
+                initial_window_id: Uuid::now_v7().to_string(),
+                metadata: ThreadPersistenceMetadata {
+                    cwd: None,
+                    model_provider: "test".to_string(),
+                    memory_mode: ThreadMemoryMode::Enabled,
+                },
+            })
+            .await
+            .expect("create persisted thread");
+        store
+            .update_thread_metadata(UpdateThreadMetadataParams {
+                thread_id,
+                include_archived: false,
+                patch: ThreadMetadataPatch {
+                    preview: Some(preview.to_string()),
+                    ..Default::default()
+                },
+            })
+            .await
+            .expect("persist title preview");
+        (store, thread_id)
+    }
+
+    #[tokio::test]
+    async fn turn_completion_emits_each_persisted_title_once() -> anyhow::Result<()> {
+        let (store, thread_id) = title_store("Persisted title").await;
+        let client = Arc::new(StubClient::new());
+        let session_client =
+            SessionClient::with_client(SessionId::new("test"), client.clone(), Arc::default());
+        let config = Config::load_with_cli_overrides_and_harness_overrides(
+            vec![],
+            ConfigOverrides::default(),
+        )
+        .await?;
+        let (_message_tx, message_rx) = mpsc::unbounded_channel();
+        let (resolution_tx, resolution_rx) = mpsc::unbounded_channel();
+        let mut actor = ThreadActor::new(
+            StubAuth,
+            session_client,
+            Arc::new(StubCodexThread::new()),
+            store,
+            thread_id,
+            Arc::new(StubModelsManager),
+            config,
+            message_rx,
+            resolution_tx,
+            resolution_rx,
+        );
+        let completed_turn = || Event {
+            id: "turn-1".to_string(),
+            msg: EventMsg::TurnComplete(TurnCompleteEvent {
+                last_agent_message: None,
+                turn_id: "turn-1".to_string(),
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        };
+
+        actor.handle_event(completed_turn()).await;
+        actor.handle_event(completed_turn()).await;
+
+        let notifications = client.notifications.lock().unwrap();
+        let titles = notifications
+            .iter()
+            .filter_map(|notification| match &notification.update {
+                SessionUpdate::SessionInfoUpdate(update) => match update.title.clone() {
+                    MaybeUndefined::Value(title) => Some(title),
+                    MaybeUndefined::Null | MaybeUndefined::Undefined => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(titles, vec!["Persisted title"]);
+
+        Ok(())
     }
 
     struct StubAuth;
@@ -9240,6 +9407,8 @@ mod tests {
             StubAuth,
             session_client,
             conversation.clone(),
+            Arc::new(InMemoryThreadStore::default()),
+            ThreadId::new(),
             models_manager,
             config,
             message_rx,

@@ -388,6 +388,7 @@ impl CodexAgent {
             register_subagent_thread(
                 thread_id,
                 self.thread_manager.clone(),
+                self.thread_store.clone(),
                 self.sessions.clone(),
                 self.session_roots.clone(),
                 self.subagent_registration_states.clone(),
@@ -409,6 +410,7 @@ impl CodexAgent {
         }
 
         let thread_manager = self.thread_manager.clone();
+        let thread_store = self.thread_store.clone();
         let sessions = self.sessions.clone();
         let session_roots = self.session_roots.clone();
         let subagent_registration_states = self.subagent_registration_states.clone();
@@ -431,6 +433,7 @@ impl CodexAgent {
                             if let Err(error) = register_subagent_thread(
                                 thread_id,
                                 thread_manager.clone(),
+                                thread_store.clone(),
                                 sessions.clone(),
                                 session_roots.clone(),
                                 subagent_registration_states.clone(),
@@ -453,6 +456,7 @@ impl CodexAgent {
                                 if let Err(error) = register_subagent_thread(
                                     thread_id,
                                     thread_manager.clone(),
+                                    thread_store.clone(),
                                     sessions.clone(),
                                     session_roots.clone(),
                                     subagent_registration_states.clone(),
@@ -479,6 +483,7 @@ impl CodexAgent {
                             if let Err(error) = register_subagent_thread(
                                 thread_id,
                                 thread_manager.clone(),
+                                thread_store.clone(),
                                 sessions.clone(),
                                 session_roots.clone(),
                                 subagent_registration_states.clone(),
@@ -623,6 +628,7 @@ impl CodexAgent {
 async fn register_subagent_thread(
     child_thread_id: ThreadId,
     thread_manager: Arc<ThreadManager>,
+    thread_store: Arc<dyn ThreadStore>,
     sessions: Arc<Mutex<HashMap<SessionId, Arc<Thread>>>>,
     session_roots: Arc<Mutex<HashMap<SessionId, PathBuf>>>,
     subagent_registration_states: Arc<Mutex<HashMap<SessionId, SubagentRegistrationState>>>,
@@ -650,6 +656,8 @@ async fn register_subagent_thread(
             let thread = Arc::new(Thread::new(
                 registration.child_session_id.clone(),
                 child_thread,
+                thread_store,
+                child_thread_id,
                 auth_manager,
                 models_manager,
                 client_capabilities,
@@ -711,8 +719,9 @@ fn begin_subagent_notification(
 ) -> bool {
     let mut states = states.lock().unwrap();
     match states.get(child_session_id) {
-        Some(SubagentRegistrationState::Notified)
-        | Some(SubagentRegistrationState::Notifying) => false,
+        Some(SubagentRegistrationState::Notified) | Some(SubagentRegistrationState::Notifying) => {
+            false
+        }
         Some(SubagentRegistrationState::Registered) | None => {
             states.insert(
                 child_session_id.clone(),
@@ -904,6 +913,8 @@ impl CodexAgent {
         let thread = Arc::new(Thread::new(
             session_id.clone(),
             thread,
+            self.thread_store.clone(),
+            thread_id,
             self.auth_manager.clone(),
             Arc::new(self.thread_manager.get_models_manager()),
             self.client_capabilities.clone(),
@@ -1003,7 +1014,7 @@ impl CodexAgent {
         let mut config = self.build_session_config(&cwd, mcp_servers)?;
 
         let NewThread {
-            thread_id: _,
+            thread_id,
             thread,
             session_configured,
         } = Box::pin(self.thread_manager.resume_thread_from_rollout(
@@ -1021,6 +1032,8 @@ impl CodexAgent {
         let thread = Arc::new(Thread::new(
             session_id.clone(),
             thread,
+            self.thread_store.clone(),
+            thread_id,
             self.auth_manager.clone(),
             Arc::new(self.thread_manager.get_models_manager()),
             self.client_capabilities.clone(),
