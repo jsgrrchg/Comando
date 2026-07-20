@@ -3028,9 +3028,17 @@ async function executePassiveSessionHydration(
         });
         const api = getComandoApi();
         if (api.getAiPromptQueue) {
-            get().applyPromptQueueSnapshot(
-                await api.getAiPromptQueue(tab.sessionId),
-            );
+            // The queue augments a readable history; it must not invalidate it.
+            try {
+                get().applyPromptQueueSnapshot(
+                    await api.getAiPromptQueue(tab.sessionId),
+                );
+            } catch (error) {
+                console.warn(
+                    "[comando] Could not restore the AI prompt queue.",
+                    error,
+                );
+            }
         }
     } catch (error) {
         set((state) => {
