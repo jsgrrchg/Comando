@@ -20,6 +20,7 @@ import {
 } from "@shared/ai-review-action-log";
 
 import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
+import { reconcileChatTimelineModelFromTranscript } from "@renderer/components/workspace/chat/chatTimelineModel";
 import { useAppStore } from "./app-store";
 import {
     applyAiTranscriptMemoryPressure,
@@ -584,6 +585,130 @@ describe("ai-store queue", () => {
         await vi.waitFor(() =>
             expect(getAiTranscriptBlockMetadata).toHaveBeenCalledTimes(2),
         );
+    });
+
+    it("keeps unsealed tool activity visible when a follow-up turn starts before block metadata catches up", async () => {
+        const previousResponse = createMessage({
+            content: "Previous response waiting to be sealed.",
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "previous-unsealed-response",
+            status: "completed",
+        });
+        const previousTool = createToolActivity({
+            createdAt: "2026-04-14T00:01:01.000Z",
+            diffs: [
+                {
+                    hunks: [
+                        {
+                            id: "tool-hunk-1",
+                            lines: [
+                                {
+                                    id: "tool-line-1",
+                                    text: "before",
+                                    type: "remove",
+                                },
+                                {
+                                    id: "tool-line-2",
+                                    text: "after",
+                                    type: "add",
+                                },
+                            ],
+                            newCount: 1,
+                            newStart: 1,
+                            oldCount: 1,
+                            oldStart: 1,
+                        },
+                    ],
+                    isText: true,
+                    kind: "update",
+                    newText: "after\n",
+                    oldText: "before\n",
+                    path: "src/activity-rail.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            id: "previous-unsealed-tool",
+            kind: "edit",
+            status: "completed",
+            title: "Edit activity rail",
+            updatedAt: "2026-04-14T00:01:02.000Z",
+        });
+        const followUpMessage = createMessage({
+            content: "Continue this chat.",
+            createdAt: "2026-04-14T00:02:00.000Z",
+            id: "follow-up-live-tail",
+            kind: "user",
+            status: "streaming",
+        });
+        const getAiTranscriptBlockMetadata = vi.fn().mockResolvedValue({
+            blocks: [],
+            capabilityVersion: 1,
+            sessionId: TAB.sessionId,
+            transcriptRevision: 0,
+        });
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptBlockMetadata,
+                    getAiTranscriptCapability: vi.fn().mockResolvedValue({
+                        blockNativeVersion: 1,
+                        legacyFallbackAvailable: true,
+                    }),
+                },
+            },
+            writable: true,
+        });
+
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                messages: [previousResponse],
+                toolActivity: [previousTool],
+                updatedAt: previousTool.updatedAt,
+            }),
+        );
+        await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+
+        // The live snapshot only owns the new turn while the previous one is
+        // waiting for its persisted transcript block to become observable.
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                activeTurnStartedAt: followUpMessage.createdAt,
+                messages: [followUpMessage],
+                status: "streaming",
+                toolActivity: [],
+                updatedAt: followUpMessage.createdAt,
+            }),
+        );
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(
+            session?.transcript.toolActivity.map((activity) => activity.id),
+        ).toEqual([previousTool.id]);
+
+        const timeline = reconcileChatTimelineModelFromTranscript(null, {
+            activeTurnStartedAt: followUpMessage.createdAt,
+            status: "streaming",
+            trackedFiles: session?.snapshot?.trackedFiles ?? [],
+            transcript: session.transcript,
+        });
+        const activitySegment = timeline.historyRows.find(
+            (row) => row.kind === "activity-segment",
+        );
+        expect(activitySegment).toMatchObject({
+            changeStats: {
+                additions: 1,
+                approximate: false,
+                deletions: 1,
+            },
+            kind: "activity-segment",
+            summary: {
+                actionCount: 1,
+                changeCount: 1,
+                latestActivityId: previousTool.id,
+            },
+        });
     });
 
     it("evicts transcript payloads from both the cache and UI state", async () => {
