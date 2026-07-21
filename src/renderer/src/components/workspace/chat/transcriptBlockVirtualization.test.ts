@@ -17,6 +17,7 @@ import {
     isTranscriptStreamingIndicatorItem,
     resolveAnchorBlockId,
     resolveTranscriptBlockIdsInRange,
+    resolveTranscriptEntryBlockId,
     resolveUnloadedTranscriptBlockIdsInRange,
     transcriptBlockEstimate,
 } from "./transcriptBlockVirtualization";
@@ -214,7 +215,14 @@ describe("transcriptBlockVirtualization", () => {
         const loadedRows = buildTranscriptTimelineItems(
             blockMetadata,
             new Map([["block-1", loadedBlock]]),
-            [{ id: "message:message-1", kind: "message", message }],
+            [
+                {
+                    blockId: "block-1",
+                    id: "message:message-1",
+                    kind: "message",
+                    message,
+                },
+            ],
         );
 
         expect(loadedRows.map((row) => row.id)).toEqual([
@@ -287,6 +295,12 @@ describe("transcriptBlockVirtualization", () => {
                 blocks,
             ),
         ).toBe("block-1");
+        expect(
+            resolveTranscriptEntryBlockId(
+                new Map([[block.blockId, block]]),
+                "entry-1",
+            ),
+        ).toBe("block-1");
     });
 
     it("captures a recoverable anchor and prefetches toward history", () => {
@@ -336,6 +350,7 @@ function createActivitySegment(
     );
 
     return {
+        blockId: null,
         changeStats: {
             additions: 0,
             approximate: false,

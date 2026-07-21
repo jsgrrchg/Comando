@@ -33,7 +33,9 @@ import {
     type AiTranscriptBlockMetadataOutput,
     type AiTranscriptCapability,
     type AiLoadTranscriptPayloadInput,
+    type AiLoadTranscriptPayloadsInput,
     type AiTranscriptPayload,
+    type AiTranscriptPayloadsOutput,
     type AiTrackedFileHunkMutationInput,
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
@@ -1607,6 +1609,11 @@ const comandoApi: ComandoApi = {
         assertIpcObjectOrNull<AiTranscriptPayload>(
             IPC_CHANNELS.getAiTranscriptPayload,
             await ipcRenderer.invoke(IPC_CHANNELS.getAiTranscriptPayload, input),
+        ),
+    getAiTranscriptPayloads: async (input: AiLoadTranscriptPayloadsInput) =>
+        assertIpcObjectOrNull<AiTranscriptPayloadsOutput>(
+            IPC_CHANNELS.getAiTranscriptPayloads,
+            await ipcRenderer.invoke(IPC_CHANNELS.getAiTranscriptPayloads, input),
         ),
     getAiPromptQueue: (sessionId: string) =>
         ipcRenderer.invoke(

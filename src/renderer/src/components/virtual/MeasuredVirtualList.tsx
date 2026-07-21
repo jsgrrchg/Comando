@@ -9,6 +9,7 @@ import {
     type RefObject,
 } from "react";
 import { MAX_CACHED_CHAT_VIEW_ARTIFACTS } from "@renderer/components/workspace/chatViewResourceBudget";
+import { recordChatScrollWrite } from "@renderer/app/debug/chatPerformanceProbe";
 
 const DEFAULT_OVERSCAN = 4;
 const DEFAULT_VIEWPORT_HEIGHT = 720;
@@ -107,11 +108,17 @@ export interface MeasuredVirtualListHandle {
         options?: {
             readonly align?: "center" | "end" | "start";
             readonly offset?: number;
+            readonly reason?: MeasuredVirtualScrollRequest["reason"];
         },
     ) => void;
     readonly scrollToViewportAnchor?: (
         anchor: MeasuredVirtualViewportAnchor,
     ) => void;
+}
+
+export interface MeasuredVirtualScrollRequest {
+    readonly reason: "measure-anchor" | "restore" | "scroll-to-index";
+    readonly target: number;
 }
 
 export interface MeasuredVirtualListProps<T> {
@@ -146,6 +153,11 @@ export interface MeasuredVirtualListProps<T> {
     readonly geometryCacheSignature?: string | null;
     readonly onRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onReady?: (handle: MeasuredVirtualListHandle | null) => void;
+    /**
+     * Lets a host with richer navigation policy own DOM scroll writes. The list
+     * still calculates its exact target, but reports it as a correction request.
+     */
+    readonly onScrollRequest?: (request: MeasuredVirtualScrollRequest) => void;
     readonly preserveScrollAnchorOnItemsChange?: boolean;
     readonly preserveScrollAnchorOnMeasure?: boolean;
     readonly shouldPreserveScrollAnchorOnItemsChange?: () => boolean;
@@ -526,6 +538,7 @@ export function MeasuredVirtualList<T>({
     geometryCacheSignature = null,
     onRangeChange,
     onReady,
+    onScrollRequest,
     preserveScrollAnchorOnItemsChange = false,
     preserveScrollAnchorOnMeasure = false,
     shouldPreserveScrollAnchorOnItemsChange,
@@ -1234,10 +1247,27 @@ export function MeasuredVirtualList<T>({
             return;
         }
 
-        container.scrollTop = Math.max(0, container.scrollTop + adjustment);
+        const before = container.scrollTop;
+        const after = Math.max(0, before + adjustment);
+        if (onScrollRequest) {
+            onScrollRequest({ reason: "measure-anchor", target: after });
+            return;
+        }
+
+        container.scrollTop = after;
+        recordChatScrollWrite({
+            after,
+            before,
+            clientHeight: container.clientHeight,
+            reason: "measure-anchor",
+            scrollHeight: container.scrollHeight,
+            sessionId: measurementCacheKey,
+        });
     }, [
         measuredSizes,
+        measurementCacheKey,
         preserveScrollAnchorOnMeasure,
+        onScrollRequest,
         shouldPreserveScrollAnchorOnMeasureNow,
         scrollContainerRef,
         virtualizationEnabled,
@@ -1334,6 +1364,7 @@ export function MeasuredVirtualList<T>({
             options?: {
                 readonly align?: "center" | "end" | "start";
                 readonly offset?: number;
+                readonly reason?: MeasuredVirtualScrollRequest["reason"];
             },
         ) => {
             const container = scrollContainerRef.current;
@@ -1344,7 +1375,9 @@ export function MeasuredVirtualList<T>({
 
             const align = options?.align ?? "start";
             const offset = options?.offset ?? 0;
-            container.scrollTop = calculateMeasuredVirtualScrollTop({
+            const reason = options?.reason ?? "scroll-to-index";
+            const before = container.scrollTop;
+            const after = calculateMeasuredVirtualScrollTop({
                 align,
                 itemSize: getItemSize(index),
                 itemStart: getItemStart(index),
@@ -1353,13 +1386,29 @@ export function MeasuredVirtualList<T>({
                 totalSize: layout.totalSize,
                 viewportHeight: container.clientHeight,
             });
+            if (onScrollRequest) {
+                onScrollRequest({ reason, target: after });
+                return;
+            }
+
+            container.scrollTop = after;
+            recordChatScrollWrite({
+                after,
+                before,
+                clientHeight: container.clientHeight,
+                reason,
+                scrollHeight: container.scrollHeight,
+                sessionId: measurementCacheKey,
+            });
         },
         [
             getItemSize,
             getItemStart,
             items,
             layout.totalSize,
+            measurementCacheKey,
             normalizedScrollMarginTop,
+            onScrollRequest,
             scrollContainerRef,
         ],
     );
@@ -1511,6 +1560,7 @@ export function MeasuredVirtualList<T>({
                 <div
                     key={virtualItem.key}
                     data-list-key={virtualItem.key}
+                    data-measurement-key={virtualItem.measurementKey}
                     ref={registerMeasuredElement}
                     style={{
                         left: 0,

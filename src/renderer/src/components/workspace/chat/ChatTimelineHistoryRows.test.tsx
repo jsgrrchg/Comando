@@ -13,7 +13,6 @@ import {
     type ChatTimelineRow,
 } from "./chatTimelineModel";
 import {
-    createTranscriptStreamingIndicatorItem,
     type TranscriptTimelineItem,
     type TranscriptTimelineVirtualRow,
 } from "./transcriptBlockVirtualization";
@@ -47,6 +46,7 @@ type MeasuredVirtualListMock = (
 const measuredVirtualListMock = vi.hoisted(() =>
     vi.fn<MeasuredVirtualListMock>(),
 );
+const mockScrollToIndex = vi.hoisted(() => vi.fn());
 const virtualListMockOptions = vi.hoisted(() => ({
     renderSecondItem: false,
 }));
@@ -55,7 +55,7 @@ let rectWidthsByElement = new WeakMap<Element, number>();
 let rectWidthFallback = 0;
 
 vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
-    const { createElement } =
+    const { createElement, useEffect } =
         await vi.importActual<typeof import("react")>("react");
 
     return {
@@ -81,7 +81,9 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             readonly getItemKey: (item: T, index: number) => string;
             readonly items: readonly T[];
             readonly onRangeChange?: () => void;
-            readonly onReady?: () => void;
+            readonly onReady?: (handle: {
+                readonly scrollToIndex: typeof mockScrollToIndex;
+            } | null) => void;
             readonly observeMeasurements?: boolean;
             readonly overscan?: number;
             readonly preserveScrollAnchorOnItemsChange?: boolean;
@@ -93,6 +95,10 @@ vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
             }) => ReactNode;
             readonly scrollMarginTop?: number;
         }) => {
+            useEffect(() => {
+                onReady?.({ scrollToIndex: mockScrollToIndex });
+                return () => onReady?.(null);
+            }, [onReady]);
             measuredVirtualListMock({
                 firstEstimate:
                     items.length > 0 ? estimateSize(items[0], 0) : null,
@@ -163,6 +169,7 @@ function createRows(count: number): ChatTimelineRow[] {
         });
 
         return {
+            blockId: null,
             id: `message:${message.id}`,
             kind: "message",
             message,
@@ -226,6 +233,7 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
     }));
 
     return {
+        blockId: null,
         changeStats: { additions: 0, approximate: false, deletions: 0 },
         entries,
         id: "activity-segment:session-1:read-1",
@@ -252,11 +260,21 @@ function createSegmentRow(entryCount = 1): ChatTimelineRow {
 function renderHistoryRows(
     historyRows: readonly TranscriptTimelineItem[],
     active = true,
+    options: {
+        readonly hotTailRow?: TranscriptTimelineVirtualRow | null;
+        readonly liveTailRowId?: string | null;
+        readonly showStreamingIndicator?: boolean;
+    } = {},
 ) {
     return renderToStaticMarkup(
         <ChatTimelineHistoryRows
             active={active}
             historyRows={historyRows}
+            hotTailRowId={options.hotTailRow?.id ?? null}
+            hotTailRows={
+                options.hotTailRow ? [options.hotTailRow] : []
+            }
+            liveTailRowId={options.liveTailRowId ?? null}
             onVirtualRangeChange={() => {}}
             renderRow={({ row }) => (
                 <div
@@ -268,6 +286,9 @@ function renderHistoryRows(
             )}
             renderStreamingIndicator={() => <div>Streaming</div>}
             scrollRef={{ current: null }}
+            showStreamingIndicator={
+                options.showStreamingIndicator ?? false
+            }
         />,
     );
 }
@@ -299,6 +320,8 @@ function mountHistoryRows(
         root.render(
             <ChatTimelineHistoryRows
                 historyRows={historyRows}
+                hotTailRowId={null}
+                hotTailRows={[]}
                 renderRow={({ row }) => (
                     <div data-row-id={row.id} key={row.id}>
                         {row.id}
@@ -306,6 +329,7 @@ function mountHistoryRows(
                 )}
                 renderStreamingIndicator={() => <div>Streaming</div>}
                 scrollRef={scrollRef}
+                showStreamingIndicator={false}
             />,
         );
     });
@@ -342,6 +366,115 @@ function latestFirstMeasurementKey(): string {
 }
 
 describe("ChatTimelineHistoryRows", () => {
+    it("restores a semantic anchor only after its real row is mounted", () => {
+        const rows = createRows(3);
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        const onSemanticAnchorRestored = vi.fn();
+
+        act(() => {
+            root.render(
+                <ChatTimelineHistoryRows
+                    historyRows={rows}
+                    hotTailRowId={null}
+                    hotTailRows={[]}
+                    onSemanticAnchorRestored={onSemanticAnchorRestored}
+                    renderRow={({ row }) => <div>{row.id}</div>}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
+                    scrollRef={{ current: scrollContainer }}
+                    semanticAnchorBlockLoaded
+                    semanticRestoreAnchor={{
+                        entryId: rows[1]?.id ?? "",
+                        offsetWithinEntry: 14,
+                    }}
+                    showStreamingIndicator={false}
+                />,
+            );
+        });
+
+        expect(mockScrollToIndex).toHaveBeenCalledWith(1, {
+            align: "start",
+            offset: 14,
+            reason: "restore",
+        });
+        expect(onSemanticAnchorRestored).toHaveBeenCalledTimes(1);
+
+        root.unmount();
+    });
+
+    it("restores the same semantic anchor after a retained tab is reactivated", () => {
+        const rows = createRows(3);
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        const anchor = {
+            entryId: rows[1]?.id ?? "",
+            offsetWithinEntry: 14,
+        };
+        const render = (semanticRestoreAnchor: typeof anchor | null) => (
+            <ChatTimelineHistoryRows
+                historyRows={rows}
+                hotTailRowId={null}
+                hotTailRows={[]}
+                renderRow={({ row }) => <div>{row.id}</div>}
+                renderStreamingIndicator={() => <div>Streaming</div>}
+                scrollRef={{ current: scrollContainer }}
+                semanticAnchorBlockLoaded
+                semanticRestoreAnchor={semanticRestoreAnchor}
+                showStreamingIndicator={false}
+            />
+        );
+
+        act(() => {
+            root.render(render(anchor));
+        });
+        act(() => {
+            root.render(render(null));
+        });
+        act(() => {
+            root.render(render(anchor));
+        });
+
+        expect(mockScrollToIndex).toHaveBeenCalledTimes(2);
+        root.unmount();
+    });
+
+    it("falls back only after the anchor block is resident without its entry", () => {
+        const rows = createRows(2);
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        const onSemanticAnchorUnavailable = vi.fn();
+
+        act(() => {
+            root.render(
+                <ChatTimelineHistoryRows
+                    historyRows={rows}
+                    hotTailRowId={null}
+                    hotTailRows={[]}
+                    onSemanticAnchorUnavailable={onSemanticAnchorUnavailable}
+                    renderRow={({ row }) => <div>{row.id}</div>}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
+                    scrollRef={{ current: scrollContainer }}
+                    semanticAnchorBlockLoaded
+                    semanticRestoreAnchor={{
+                        entryId: "missing-entry",
+                        offsetWithinEntry: 0,
+                    }}
+                    showStreamingIndicator={false}
+                />,
+            );
+        });
+
+        expect(onSemanticAnchorUnavailable).toHaveBeenCalledTimes(1);
+        expect(mockScrollToIndex).not.toHaveBeenCalled();
+
+        root.unmount();
+    });
     beforeEach(() => {
         (
             globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -349,6 +482,7 @@ describe("ChatTimelineHistoryRows", () => {
         rectWidthsByElement = new WeakMap<Element, number>();
         rectWidthFallback = 0;
         measuredVirtualListMock.mockClear();
+        mockScrollToIndex.mockClear();
         virtualListMockOptions.renderSecondItem = false;
         useShellStore.setState({ isResizingPanel: false });
         vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
@@ -402,21 +536,42 @@ describe("ChatTimelineHistoryRows", () => {
         );
     });
 
-    it("renders the streaming indicator through the virtual list", () => {
+    it("renders the streaming indicator outside the virtual list", () => {
         const [row] = createRows(1);
         if (!row) {
             throw new Error("expected a timeline row");
         }
 
-        const markup = renderHistoryRows([
-            row,
-            createTranscriptStreamingIndicatorItem("12s"),
-        ]);
+        const markup = renderHistoryRows([row], true, {
+            showStreamingIndicator: true,
+        });
 
         expect(measuredVirtualListMock).toHaveBeenLastCalledWith(
-            expect.objectContaining({ itemCount: 2 }),
+            expect.objectContaining({ itemCount: 1 }),
         );
         expect(markup).toContain("Streaming");
+        expect(markup).toContain("data-streaming-indicator-host");
+    });
+
+    it("renders the hot tail as a normal sibling without virtualizing it", () => {
+        const [historyRow, hotTailRow] = createRows(2);
+        if (!historyRow || !hotTailRow) {
+            throw new Error("expected history and hot-tail rows");
+        }
+
+        const markup = renderHistoryRows([historyRow], true, {
+            hotTailRow,
+            liveTailRowId: hotTailRow.id,
+        });
+
+        expect(measuredVirtualListMock).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                firstKey: historyRow.id,
+                itemCount: 1,
+            }),
+        );
+        expect(markup).toContain(`data-hot-transcript-tail="${hotTailRow.id}"`);
+        expect(markup).toContain('data-current-turn-tail="true"');
     });
 
     it("keeps visible history mounted when block-native hydration starts", () => {
@@ -450,9 +605,12 @@ describe("ChatTimelineHistoryRows", () => {
             root.render(
                 <ChatTimelineHistoryRows
                     historyRows={historyRows}
+                    hotTailRowId={null}
+                    hotTailRows={[]}
                     renderRow={({ row }) => <InstrumentedRow row={row} />}
                     renderStreamingIndicator={() => <div>Streaming</div>}
                     scrollRef={{ current: scrollContainer }}
+                    showStreamingIndicator={false}
                 />,
             );
         };
@@ -476,12 +634,90 @@ describe("ChatTimelineHistoryRows", () => {
         });
     });
 
+    it("retains the completed hot tail without a remount and transfers it once", () => {
+        const [historyRow, tailTemplate] = createRows(2);
+        if (!historyRow || !tailTemplate || tailTemplate.kind !== "message") {
+            throw new Error("expected message rows");
+        }
+        const streamingTail = {
+            ...tailTemplate,
+            message: { ...tailTemplate.message, status: "streaming" as const },
+        };
+        const completedTail = {
+            ...tailTemplate,
+            message: { ...tailTemplate.message, status: "completed" as const },
+        };
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        let mounts = 0;
+        let unmounts = 0;
+
+        function InstrumentedRow({
+            row,
+        }: {
+            readonly row: TranscriptTimelineVirtualRow;
+        }) {
+            useEffect(() => {
+                mounts += 1;
+                return () => {
+                    unmounts += 1;
+                };
+            }, []);
+            return <div data-row-id={row.id}>{row.id}</div>;
+        }
+
+        const render = (
+            historyRows: readonly TranscriptTimelineItem[],
+            hotTailRow: TranscriptTimelineVirtualRow | null,
+            liveTailRowId: string | null,
+        ) => {
+            root.render(
+                <ChatTimelineHistoryRows
+                    historyRows={historyRows}
+                    hotTailRowId={hotTailRow?.id ?? null}
+                    hotTailRows={hotTailRow ? [hotTailRow] : []}
+                    liveTailRowId={liveTailRowId}
+                    renderRow={({ row }) => <InstrumentedRow row={row} />}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
+                    scrollRef={{ current: scrollContainer }}
+                    showStreamingIndicator={false}
+                />,
+            );
+        };
+
+        act(() => render([historyRow], streamingTail, streamingTail.id));
+        expect(mounts).toBe(2);
+        expect(unmounts).toBe(0);
+
+        act(() => render([historyRow], completedTail, null));
+        expect(mounts).toBe(2);
+        expect(unmounts).toBe(0);
+        expect(
+            mountNode.querySelectorAll(`[data-row-id="${completedTail.id}"]`),
+        ).toHaveLength(1);
+
+        act(() => render([historyRow, completedTail], null, null));
+        expect(mounts).toBe(3);
+        expect(unmounts).toBe(1);
+        expect(
+            mountNode.querySelectorAll(`[data-row-id="${completedTail.id}"]`),
+        ).toHaveLength(1);
+        expect(
+            mountNode.querySelector("[data-hot-transcript-tail]"),
+        ).toBeNull();
+
+        act(() => root.unmount());
+    });
+
     it("keeps virtualized history mounted when a new turn starts and streams", () => {
         const [historyRow] = createRows(1);
         if (!historyRow) {
             throw new Error("expected a historical row");
         }
         const userRow: ChatTimelineRow = {
+            blockId: null,
             id: "message:user-next-turn",
             kind: "message",
             message: createMessage({
@@ -518,9 +754,12 @@ describe("ChatTimelineHistoryRows", () => {
             root.render(
                 <ChatTimelineHistoryRows
                     historyRows={historyRows}
+                    hotTailRowId={null}
+                    hotTailRows={[]}
                     renderRow={({ row }) => <InstrumentedRow row={row} />}
                     renderStreamingIndicator={() => <div>Streaming</div>}
                     scrollRef={{ current: scrollContainer }}
+                    showStreamingIndicator={false}
                 />,
             );
         };
@@ -691,9 +930,9 @@ describe("ChatTimelineHistoryRows", () => {
             useShellStore.getState().setResizingPanel(true);
         });
 
-        const historyElement = mounted.mountNode.querySelector(
-            "[data-testid='mock-measured-virtual-list']",
-        )?.parentElement as HTMLElement | null;
+        const historyElement = mounted.mountNode.querySelector<HTMLElement>(
+            "[data-chat-timeline-history]",
+        );
         expect(historyElement?.style.width).toBe(
             `${CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX}px`,
         );
@@ -760,9 +999,9 @@ describe("ChatTimelineHistoryRows", () => {
             useShellStore.getState().setResizingPanel(true);
         });
 
-        const historyElement = mounted.mountNode.querySelector(
-            "[data-testid='mock-measured-virtual-list']",
-        )?.parentElement as HTMLElement | null;
+        const historyElement = mounted.mountNode.querySelector<HTMLElement>(
+            "[data-chat-timeline-history]",
+        );
         expect(historyElement?.style.width).toBe("620px");
 
         mounted.setContentWidth(CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX);

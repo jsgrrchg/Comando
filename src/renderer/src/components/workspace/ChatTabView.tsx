@@ -44,13 +44,15 @@ import {
     type AiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
 import {
-    buildBlockNativeTranscript,
+    buildBlockNativeTranscriptProjection,
     buildTranscriptToolPayloadRefs,
+    type BlockNativeTranscriptProjection,
 } from "@renderer/app/ai/transcriptWindowProjection";
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
+import { TranscriptReviewPayloadRetention } from "@renderer/app/ai/transcriptReviewPayloadRetention";
 import { chatActivationScheduler } from "@renderer/app/workspace/chatActivationScheduler";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
@@ -62,24 +64,31 @@ import {
     isChatPerformanceProbeEnabled,
     measureChatPerformance,
     recordChatPerformanceMetric,
+    type ChatScrollWriteReason,
 } from "@renderer/app/debug/chatPerformanceProbe";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceFileOpenLocation,
     RuntimeWorkspaceFileReviewContext,
 } from "@renderer/app/workspace/tree";
-import type { MeasuredVirtualRange } from "@renderer/components/virtual/MeasuredVirtualList";
+import type {
+    MeasuredVirtualRange,
+    MeasuredVirtualScrollRequest,
+} from "@renderer/components/virtual/MeasuredVirtualList";
 
 import { AIChatAgentControls } from "./AIChatAgentControls";
 import { LanguageIcon } from "./LanguageIcon";
 import { AIChatComposer } from "./chat/AIChatComposer";
 import { AIChatContextUsageBar } from "./chat/AIChatContextUsageBar";
+import { ChatHeader } from "./chat/ChatHeader";
+import { ChatTranscriptSurface } from "./chat/ChatTranscriptSurface";
 import { ChatContentColumn } from "./chat/ChatContentColumn";
+import { ChatComposerShell } from "./chat/ChatComposerShell";
 import { ChatTimelineHistoryRows } from "./chat/ChatTimelineHistoryRows";
-import { ToolExpansionStoreProvider } from "./chat/toolExpansionStore";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
+    reconcileChatTimelineModelFromProjection,
     reconcileChatTimelineModelIncrementallyFromTranscript,
     type ChatTimelineModel,
 } from "./chat/chatTimelineModel";
@@ -99,13 +108,17 @@ import {
 } from "./chat/chatScroll";
 import {
     anchorNewChatTurn,
-    canApplyChatScrollOperation,
     createChatScrollIntent,
     followChatScrollEnd,
     isAnchoringNewChatTurn,
     isFollowingChatScrollEnd,
     readChatScroll,
 } from "./chat/chatScrollIntent";
+import {
+    createChatScrollCoordinator,
+    type ChatScrollCoordinator,
+    type ChatScrollTarget,
+} from "./chat/chatScrollCoordinator";
 import type { AIComposerPart } from "./chat/composerParts";
 import {
     appendSelectionMentionPart,
@@ -117,8 +130,9 @@ import { registerComposerSelectionMentionHandler } from "./chat/composerSelectio
 import {
     persistChatViewState,
     readPersistedChatViewState,
+    type PersistedChatViewState,
 } from "./chat/chatViewPersistence";
-import { EditedFilesBufferPanel } from "./chat/EditedFilesBufferPanel";
+import { ReviewSurface } from "./chat/ReviewSurface";
 import { PlanMessage } from "./chat/PlanMessage";
 import { shouldShowPlanBanner } from "./chat/planBannerState";
 import {
@@ -135,7 +149,6 @@ import { ToolActivityItem } from "./chat/ToolActivityItem";
 import {
     buildTranscriptTimelineItems,
     captureTranscriptSemanticAnchor,
-    createTranscriptStreamingIndicatorItem,
     flattenTranscriptTimelineItems,
     getTranscriptTimelineItemAnchorEntryId,
     isChatTimelineRowItem,
@@ -143,12 +156,14 @@ import {
     isTranscriptActivityRangeItem,
     isTranscriptActivitySummaryItem,
     resolveTranscriptBlockIdsInRange,
+    resolveTranscriptEntryBlockId,
     resolveUnloadedTranscriptBlockIdsInRange,
     type TranscriptActivityGroupExpansionById,
     type TranscriptTimelineItem,
     type TranscriptTimelineVirtualRow,
 } from "./chat/transcriptBlockVirtualization";
 import { splitLongContentRows } from "./chat/longContentVirtualization";
+import { useChatStreamingFrameProbe } from "./chat/useChatStreamingFrameProbe";
 import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
@@ -234,6 +249,10 @@ type ChatSessionViewState = Pick<
     | "transcriptWindow"
 >;
 
+type ChatSemanticRestoreAnchor = NonNullable<
+    PersistedChatViewState["anchor"]
+>;
+
 function selectChatSessionViewState(
     state: ReturnType<typeof useAiStore.getState>,
     sessionId: string,
@@ -271,13 +290,13 @@ const FALLBACK_COMMANDS: readonly AiAvailableCommand[] = [
 ];
 
 const NEAR_BOTTOM_THRESHOLD = 80;
-const BOTTOM_FOLLOW_SETTLE_FRAMES = 3;
 const SCROLL_PERSIST_DELAY_MS = 80;
 const EMPTY_DRAFT_ATTACHMENTS: readonly AiImageAttachment[] = [];
 const EMPTY_COMPOSER_PARTS: readonly AIComposerPart[] =
     createEmptyComposerParts();
 const EMPTY_DRAFT_FILE_CONTEXTS: readonly AiFileContextAttachment[] = [];
 const EMPTY_TRANSCRIPT_MODEL = createEmptyAiSessionTranscriptModel();
+const EMPTY_ACTIVITY_EXPANSION: TranscriptActivityGroupExpansionById = {};
 const CLOSED_SUBAGENT_MESSAGE =
     "This subagent was closed by its parent thread and can’t receive new messages.";
 const PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
@@ -422,19 +441,19 @@ export const ChatTabView = memo(function ChatTabView({
         undefined,
     );
     const shouldAutoFollowRef = useRef(true);
-    const pendingScrollFrameRef = useRef<number | null>(null);
-    const bottomFollowSettleFrameRef = useRef<number | null>(null);
-    const bottomFollowSettleActiveRef = useRef(false);
+    const [scrollCoordinator] = useState<ChatScrollCoordinator>(
+        createChatScrollCoordinator,
+    );
     const resizeBottomLockRef = useRef(false);
     const resizeStartedNearBottomRef = useRef(false);
     const scrollPersistTimerRef = useRef<number | null>(null);
     const pendingPersistedScrollTopRef = useRef<number | null>(null);
     const pendingPersistedNearBottomRef = useRef<boolean | null>(null);
-    const hasActivatedViewRef = useRef(false);
     const stableTimelineRef = useRef<{
         readonly activeTurnStartedAt: string | null;
         readonly attentionToolCallIds: ReadonlySet<string>;
         readonly model: ChatTimelineModel | null;
+        readonly projection: BlockNativeTranscriptProjection | null;
         readonly sessionId: string;
         readonly status: AiSessionSnapshot["status"] | null;
         readonly trackedFiles: AiSessionSnapshot["trackedFiles"] | null;
@@ -443,16 +462,16 @@ export const ChatTabView = memo(function ChatTabView({
         activeTurnStartedAt: null,
         attentionToolCallIds: new Set(),
         model: null,
+        projection: null,
         sessionId: tab.sessionId,
         status: null,
         trackedFiles: null,
         transcript: null,
     });
-    const semanticAnchorRef = useRef<{
-        readonly alignment: "center" | "end" | "start";
-        readonly entryId: string;
-        readonly offsetWithinEntry: number;
-    } | null>(null);
+    const semanticAnchorRef = useRef<PersistedChatViewState["anchor"]>(
+        null,
+    );
+    const semanticRestoreFallbackScrollTopRef = useRef<number | null>(null);
     const initialComposerParts = readInitialComposerPartsForTab(tab);
     const composerPartsRef = useRef<AIComposerPart[]>(initialComposerParts);
     const persistedDraftRef = useRef(tab.draft);
@@ -461,6 +480,9 @@ export const ChatTabView = memo(function ChatTabView({
     const [isEditingTitle, setIsEditingTitle] = useState(false);
     const [newTurnAnchorRowId, setNewTurnAnchorRowId] = useState<
         string | null
+    >(null);
+    const [semanticRestoreAnchor, setSemanticRestoreAnchor] = useState<
+        PersistedChatViewState["anchor"]
     >(null);
     const [titleDraft, setTitleDraft] = useState("");
     const titleInputRef = useRef<HTMLInputElement | null>(null);
@@ -552,8 +574,6 @@ export const ChatTabView = memo(function ChatTabView({
         },
         [flushChatDraft, flushDraftComposerParts],
     );
-    const streamStartTimeRef = useRef<number | null>(null);
-    const [elapsed, setElapsed] = useState("");
     const [composerError, setComposerError] = useState<string | null>(null);
     const sessionTab = useMemo(
         () => ({
@@ -696,26 +716,30 @@ export const ChatTabView = memo(function ChatTabView({
     const storedTranscript =
         sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;
     const transcriptWindow = sessionState?.transcriptWindow ?? null;
-    const transcript = useMemo(
+    /* eslint-disable react-hooks/refs -- Projection and timeline reconciliation read the last committed identities without publishing speculative renders. */
+    const transcriptProjection = useMemo(
         () =>
             transcriptWindow?.capabilityVersion
-                ? buildBlockNativeTranscript(
+                ? buildBlockNativeTranscriptProjection(
                       storedTranscript,
                       transcriptWindow.blocksById,
                       transcriptWindow.metadata,
                       transcriptWindow.payloadsByRef,
-                      snapshot,
+                      stableTimelineRef.current.sessionId === tab.sessionId
+                          ? stableTimelineRef.current.projection
+                          : null,
                   )
-                : storedTranscript,
+                : null,
         [
-            snapshot,
             storedTranscript,
+            tab.sessionId,
             transcriptWindow?.blocksById,
             transcriptWindow?.capabilityVersion,
             transcriptWindow?.metadata,
             transcriptWindow?.payloadsByRef,
         ],
     );
+    const transcript = transcriptProjection?.hot.transcript ?? storedTranscript;
     const toolPayloadRefByActivityId = useMemo(
         () =>
             buildTranscriptToolPayloadRefs(
@@ -723,37 +747,22 @@ export const ChatTabView = memo(function ChatTabView({
             ),
         [transcriptWindow?.blocksById],
     );
-    const visibleToolPayloadRefCounts = useRef(new Map<string, number>());
+    const reviewPayloadRetentionRef = useRef(
+        new TranscriptReviewPayloadRetention(),
+    );
     const handleToolPayloadVisibilityChange = useCallback(
         (activityId: string, visible: boolean) => {
             const payloadRef = toolPayloadRefByActivityId.get(activityId);
             if (!payloadRef) return;
             if (!visible) {
-                const nextCount = Math.max(
-                    0,
-                    (visibleToolPayloadRefCounts.current.get(payloadRef) ?? 1) -
-                        1,
-                );
-                if (nextCount > 0) {
-                    visibleToolPayloadRefCounts.current.set(
-                        payloadRef,
-                        nextCount,
-                    );
-                    return;
+                if (reviewPayloadRetentionRef.current.release(payloadRef)) {
+                    releaseTranscriptPayload(tab.sessionId, payloadRef);
                 }
-                visibleToolPayloadRefCounts.current.delete(payloadRef);
-                releaseTranscriptPayload(tab.sessionId, payloadRef);
                 return;
             }
-            const currentCount =
-                visibleToolPayloadRefCounts.current.get(payloadRef) ?? 0;
-            visibleToolPayloadRefCounts.current.set(
-                payloadRef,
-                currentCount + 1,
-            );
-            if (currentCount > 0) return;
+            if (!reviewPayloadRetentionRef.current.retain(payloadRef)) return;
             void loadTranscriptPayload(tab.sessionId, payloadRef).then(() => {
-                if (!visibleToolPayloadRefCounts.current.has(payloadRef)) {
+                if (!reviewPayloadRetentionRef.current.has(payloadRef)) {
                     releaseTranscriptPayload(tab.sessionId, payloadRef);
                 }
             });
@@ -767,17 +776,13 @@ export const ChatTabView = memo(function ChatTabView({
     );
     useEffect(
         () => () => {
-            for (const payloadRef of visibleToolPayloadRefCounts.current.keys()) {
+            for (const payloadRef of reviewPayloadRetentionRef.current.releaseAll()) {
                 releaseTranscriptPayload(tab.sessionId, payloadRef);
             }
-            visibleToolPayloadRefCounts.current.clear();
         },
         [releaseTranscriptPayload, tab.sessionId],
     );
     const isStreaming = isChatStreamingStatus(snapshot.status);
-    const activeTurnKey = isActiveChatTurnStatus(snapshot.status)
-        ? tab.sessionId
-        : null;
     const activeTurnStartedAt = getActiveTurnStartedAt(snapshot, transcript);
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const hasMissingHistoricalSnapshot =
@@ -1182,53 +1187,6 @@ export const ChatTabView = memo(function ChatTabView({
         composerError !== null ||
         pendingReviewCount > 0;
 
-    useEffect(() => {
-        if (!active || activeTurnKey === null || activeTurnStartedAt === null) {
-            streamStartTimeRef.current = null;
-            let cancelled = false;
-            queueMicrotask(() => {
-                if (!cancelled) {
-                    setElapsed("");
-                }
-            });
-            return () => {
-                cancelled = true;
-            };
-        }
-
-        let cancelled = false;
-        const startedAtMs = Date.parse(activeTurnStartedAt);
-        streamStartTimeRef.current = Number.isFinite(startedAtMs)
-            ? startedAtMs
-            : Date.now();
-        const updateElapsed = () => {
-            if (cancelled) {
-                return;
-            }
-
-            const startedAt = streamStartTimeRef.current;
-            if (startedAt === null) return;
-            const totalSec = Math.max(
-                0,
-                Math.floor((Date.now() - startedAt) / 1000),
-            );
-            const min = Math.floor(totalSec / 60);
-            const sec = totalSec % 60;
-            setElapsed(
-                min > 0
-                    ? `${min}m ${String(sec).padStart(2, "0")}s`
-                    : `${sec}s`,
-            );
-        };
-        queueMicrotask(updateElapsed);
-        const interval = window.setInterval(updateElapsed, 500);
-        return () => {
-            cancelled = true;
-            window.clearInterval(interval);
-        };
-    }, [active, activeTurnKey, activeTurnStartedAt]);
-
-    /* eslint-disable react-hooks/refs -- The timeline reconciler needs the last committed model to preserve row identity during render. */
     const attentionToolCallIds = useMemo(() => {
         const toolCallIds = new Set<string>();
         if (pendingPermission?.toolCallId) {
@@ -1243,6 +1201,7 @@ export const ChatTabView = memo(function ChatTabView({
         const cachedTimeline = getCachedChatTimeline({
             activeTurnStartedAt,
             attentionToolCallIds,
+            projection: transcriptProjection,
             sessionId: tab.sessionId,
             status: snapshot.status,
             trackedFiles: canonicalTrackedFiles,
@@ -1272,8 +1231,24 @@ export const ChatTabView = memo(function ChatTabView({
                     transcriptRows: transcript.orderedEntryIds.length,
                 },
             },
-            () =>
-                reconcileChatTimelineModelIncrementallyFromTranscript(
+            () => {
+                if (transcriptProjection) {
+                    return reconcileChatTimelineModelFromProjection(
+                        previousTimelineModel,
+                        canReconcileIncrementally
+                            ? previousTimelineState.projection
+                            : null,
+                        {
+                            activeTurnStartedAt,
+                            attentionToolCallIds,
+                            projection: transcriptProjection,
+                            status: snapshot.status,
+                            trackedFiles: canonicalTrackedFiles,
+                            updatedAt: snapshot.updatedAt,
+                        },
+                    );
+                }
+                return reconcileChatTimelineModelIncrementallyFromTranscript(
                     previousTimelineModel,
                     canReconcileIncrementally
                         ? previousTimelineState.transcript
@@ -1285,66 +1260,105 @@ export const ChatTabView = memo(function ChatTabView({
                         trackedFiles: canonicalTrackedFiles,
                         transcript,
                     },
-                ),
+                );
+            },
         );
     }, [
         activeTurnStartedAt,
         attentionToolCallIds,
         canonicalTrackedFiles,
         snapshot.status,
+        snapshot.updatedAt,
         tab.sessionId,
         transcript,
+        transcriptProjection,
     ]);
     const [activityExpansionBySessionId, setActivityExpansionBySessionId] =
         useState<Record<string, TranscriptActivityGroupExpansionById>>({});
     const activityExpansionByGroupId =
-        activityExpansionBySessionId[tab.sessionId] ?? {};
+        activityExpansionBySessionId[tab.sessionId] ?? EMPTY_ACTIVITY_EXPANSION;
     const transcriptTimelineItems = useMemo(
-        () => {
-            const sourceItems = transcriptWindow?.capabilityVersion
-                ? buildTranscriptTimelineItems(
-                      transcriptWindow.metadata,
-                      transcriptWindow.blocksById,
-                      timelineModel.historyRows,
-                  )
-                : timelineModel.historyRows;
-            const itemsWithStreamingIndicator = isStreaming
-                ? [
-                      ...sourceItems,
-                      createTranscriptStreamingIndicatorItem(elapsed),
-                  ]
-                : sourceItems;
-            const flattenedItems = flattenTranscriptTimelineItems(
-                itemsWithStreamingIndicator,
+        () =>
+            measureChatPerformance(
+                "presentation_build_ms",
                 {
-                    activeGroupId:
-                        timelineModel.liveTailRow?.kind === "activity-segment"
-                            ? timelineModel.liveTailRow.id
-                            : null,
-                    defaultExpanded:
-                        aiChatSettings.toolActivityDefaultExpansion ===
-                        "expanded",
-                    expansionByGroupId: activityExpansionByGroupId,
+                    sessionId: tab.sessionId,
+                    values: {
+                        metadataBlocks: transcriptWindow?.metadata.length ?? 0,
+                        timelineRows: timelineModel.historyRows.length,
+                    },
                 },
-            );
-            return splitLongContentRows(
-                flattenedItems,
-                (item): item is typeof item & { readonly kind: "message" } =>
-                    item.kind === "message",
-            );
-        },
+                () => {
+                    const sourceItems = transcriptWindow?.capabilityVersion
+                        ? buildTranscriptTimelineItems(
+                              transcriptWindow.metadata,
+                              transcriptWindow.blocksById,
+                              timelineModel.historyRows,
+                          )
+                        : timelineModel.historyRows;
+                    const flattenedItems = flattenTranscriptTimelineItems(
+                        sourceItems,
+                        {
+                            activeGroupId: null,
+                            defaultExpanded:
+                                aiChatSettings.toolActivityDefaultExpansion ===
+                                "expanded",
+                            expansionByGroupId: activityExpansionByGroupId,
+                        },
+                    );
+                    return splitLongContentRows(
+                        flattenedItems,
+                        (item): item is typeof item & {
+                            readonly kind: "message";
+                        } =>
+                            item.kind === "message",
+                    );
+                },
+            ),
         [
             activityExpansionByGroupId,
             aiChatSettings.toolActivityDefaultExpansion,
-            elapsed,
-            isStreaming,
             timelineModel.historyRows,
-            timelineModel.liveTailRow,
+            tab.sessionId,
             transcriptWindow?.blocksById,
             transcriptWindow?.capabilityVersion,
             transcriptWindow?.metadata,
         ],
     );
+    const hotTailRow =
+        timelineModel.liveTailRow ?? timelineModel.retainedTailRow;
+    const hotTailRows = useMemo(
+        () =>
+            hotTailRow
+                ? flattenTranscriptTimelineItems([hotTailRow], {
+                      activeGroupId:
+                          hotTailRow.kind === "activity-segment"
+                              ? hotTailRow.id
+                              : null,
+                      defaultExpanded:
+                          aiChatSettings.toolActivityDefaultExpansion ===
+                          "expanded",
+                      expansionByGroupId: activityExpansionByGroupId,
+                  }).filter(isChatTimelineRowItem)
+                : [],
+        [
+            activityExpansionByGroupId,
+            aiChatSettings.toolActivityDefaultExpansion,
+            hotTailRow,
+        ],
+    );
+    const getPerformanceNavigationGeneration = useCallback(
+        () => scrollIntentRef.current.navigationGeneration,
+        [],
+    );
+    useChatStreamingFrameProbe({
+        active,
+        getNavigationGeneration: getPerformanceNavigationGeneration,
+        isStreaming,
+        scrollRef,
+        sessionId: tab.sessionId,
+        timelineContentRef,
+    });
 
     const beginNewTurnAnchor = useCallback(() => {
         if (!shouldAutoFollowRef.current) {
@@ -1440,6 +1454,7 @@ export const ChatTabView = memo(function ChatTabView({
             activeTurnStartedAt,
             attentionToolCallIds,
             model: timelineModel,
+            projection: transcriptProjection,
             sessionId: tab.sessionId,
             status: snapshot.status,
             trackedFiles: canonicalTrackedFiles,
@@ -1449,6 +1464,7 @@ export const ChatTabView = memo(function ChatTabView({
             activeTurnStartedAt,
             attentionToolCallIds,
             model: timelineModel,
+            projection: transcriptProjection,
             sessionId: tab.sessionId,
             status: snapshot.status,
             trackedFiles: canonicalTrackedFiles,
@@ -1462,6 +1478,7 @@ export const ChatTabView = memo(function ChatTabView({
         tab.sessionId,
         timelineModel,
         transcript,
+        transcriptProjection,
     ]);
     const persistedViewState = useMemo(
         () =>
@@ -1472,10 +1489,10 @@ export const ChatTabView = memo(function ChatTabView({
             ),
         [tab.projectId, tab.sessionId, tab.worktreeId],
     );
-    const persistedViewStateRef = useRef<{
-        readonly isNearBottom: boolean;
-        readonly scrollTop: number;
-    } | null>(persistedViewState);
+    const persistedViewStateRef = useRef<Pick<
+        PersistedChatViewState,
+        "anchor" | "isNearBottom" | "scrollTop"
+    > | null>(persistedViewState);
 
     useEffect(() => {
         persistedViewStateRef.current = persistedViewState;
@@ -1499,119 +1516,108 @@ export const ChatTabView = memo(function ChatTabView({
         );
     }, []);
 
-    const writeProgrammaticScroll = useCallback((target: number) => {
-        const el = scrollRef.current;
-        if (!el) {
-            return;
-        }
+    const requestChatScroll = useCallback(
+        (request: {
+            readonly reason: Exclude<ChatScrollWriteReason, "settle">;
+            readonly target: ChatScrollTarget;
+        }) => {
+            scrollCoordinator.request(request, {
+                element: scrollRef.current,
+                navigationGeneration:
+                    scrollIntentRef.current.navigationGeneration,
+                sessionId: tab.sessionId,
+            });
+        },
+        [scrollCoordinator, tab.sessionId],
+    );
 
-        const nextScrollTop = Math.max(
-            0,
-            Math.min(target, el.scrollHeight - el.clientHeight),
-        );
-        if (Math.abs(el.scrollTop - nextScrollTop) < 1) {
-            return;
-        }
+    const writeProgrammaticScroll = useCallback(
+        (target: ChatScrollTarget, reason: Exclude<ChatScrollWriteReason, "settle">) => {
+            requestChatScroll({ reason, target });
+            // Layout effects need the followed edge before paint. Requests from
+            // the virtualizer stay microtask-coalesced so one commit picks one
+            // highest-priority movement instead of competing scroll writes.
+            scrollCoordinator.flush();
+        },
+        [requestChatScroll, scrollCoordinator],
+    );
 
-        // Centralizing writes prevents concurrent layout paths from fighting.
-        el.scrollTop = nextScrollTop;
-    }, []);
-
-    const scrollToBottom = useCallback(() => {
-        const el = scrollRef.current;
-        if (el) {
-            writeProgrammaticScroll(el.scrollHeight);
-        }
-    }, [writeProgrammaticScroll]);
+    const scrollToBottom = useCallback(
+        (reason: "follow-end" = "follow-end") => {
+            writeProgrammaticScroll("end", reason);
+        },
+        [writeProgrammaticScroll],
+    );
 
     const cancelPendingScrollToBottom = useCallback(() => {
-        if (pendingScrollFrameRef.current === null) {
-            return;
-        }
-
-        window.cancelAnimationFrame(pendingScrollFrameRef.current);
-        pendingScrollFrameRef.current = null;
-    }, []);
-
-    const cancelBottomFollowSettle = useCallback(() => {
-        bottomFollowSettleActiveRef.current = false;
-
-        if (bottomFollowSettleFrameRef.current === null) {
-            return;
-        }
-
-        window.cancelAnimationFrame(bottomFollowSettleFrameRef.current);
-        bottomFollowSettleFrameRef.current = null;
-    }, []);
-
-    const scheduleBottomFollowSettle = useCallback(() => {
-        const generation = scrollIntentRef.current.navigationGeneration;
-        cancelBottomFollowSettle();
-        bottomFollowSettleActiveRef.current = true;
-
-        const runSettleFrame = (remainingFrames: number) => {
-            bottomFollowSettleFrameRef.current = window.requestAnimationFrame(
-                () => {
-                    bottomFollowSettleFrameRef.current = null;
-
-                    if (
-                        !bottomFollowSettleActiveRef.current ||
-                        !canApplyChatScrollOperation(
-                            scrollIntentRef.current,
-                            generation,
-                        )
-                    ) {
-                        bottomFollowSettleActiveRef.current = false;
-                        return;
-                    }
-
-                    // Virtual rows can finish measuring after the first restore.
-                    scrollToBottom();
-
-                    if (remainingFrames > 1) {
-                        runSettleFrame(remainingFrames - 1);
-                        return;
-                    }
-
-                    bottomFollowSettleActiveRef.current = false;
-                },
-            );
-        };
-
-        runSettleFrame(BOTTOM_FOLLOW_SETTLE_FRAMES);
-    }, [cancelBottomFollowSettle, scrollToBottom]);
+        // A direct user gesture invalidates queued corrections before they can
+        // override the reader's position in the next microtask.
+        scrollCoordinator.cancelPending();
+    }, [scrollCoordinator]);
 
     const scheduleScrollToBottom = useCallback(() => {
         if (!isFollowingChatScrollEnd(scrollIntentRef.current)) {
             return;
         }
 
-        // One frame coalesces the layout changes that happened before paint.
-        if (
-            pendingScrollFrameRef.current !== null ||
-            bottomFollowSettleActiveRef.current
-        ) {
+        requestChatScroll({
+            reason: "follow-end",
+            target: "end",
+        });
+    }, [requestChatScroll]);
+
+    const handleTimelineVirtualScrollRequest = useCallback(
+        (request: MeasuredVirtualScrollRequest) => {
+            requestChatScroll(request);
+        },
+        [requestChatScroll],
+    );
+
+    const handleSemanticAnchorRestored = useCallback(() => {
+        semanticRestoreFallbackScrollTopRef.current = null;
+        setSemanticRestoreAnchor(null);
+        setShowJumpToBottom(true);
+    }, []);
+
+    const handleSemanticAnchorUnavailable = useCallback(() => {
+        const fallbackScrollTop = semanticRestoreFallbackScrollTopRef.current;
+        semanticRestoreFallbackScrollTopRef.current = null;
+        setSemanticRestoreAnchor(null);
+        if (fallbackScrollTop !== null) {
+            writeProgrammaticScroll(fallbackScrollTop, "restore");
+        }
+        setShowJumpToBottom(true);
+    }, [writeProgrammaticScroll]);
+
+    useEffect(() => {
+        if (!active || !semanticRestoreAnchor?.blockId) {
+            return;
+        }
+        if (!transcriptWindow?.capabilityVersion) {
             return;
         }
 
-        const generation = scrollIntentRef.current.navigationGeneration;
-        bottomFollowSettleActiveRef.current = true;
+        const blockId = semanticRestoreAnchor.blockId;
+        setTranscriptWindowAnchor(tab.sessionId, blockId, false);
+        if (transcriptWindow.blocksById.has(blockId)) {
+            return;
+        }
 
-        pendingScrollFrameRef.current = window.requestAnimationFrame(() => {
-            pendingScrollFrameRef.current = null;
-            if (
-                !canApplyChatScrollOperation(
-                    scrollIntentRef.current,
-                    generation,
-                )
-            ) {
-                bottomFollowSettleActiveRef.current = false;
-                return;
+        void loadTranscriptWindowBlock(tab.sessionId, blockId).then((block) => {
+            if (!block) {
+                handleSemanticAnchorUnavailable();
             }
-            scrollToBottom();
-            scheduleBottomFollowSettle();
         });
-    }, [scheduleBottomFollowSettle, scrollToBottom]);
+    }, [
+        active,
+        handleSemanticAnchorUnavailable,
+        loadTranscriptWindowBlock,
+        semanticRestoreAnchor?.blockId,
+        setTranscriptWindowAnchor,
+        tab.sessionId,
+        transcriptWindow?.blocksById,
+        transcriptWindow?.capabilityVersion,
+    ]);
 
     const handleNewTurnScrollTarget = useCallback(
         (target: number) => {
@@ -1619,7 +1625,7 @@ export const ChatTabView = memo(function ChatTabView({
                 return;
             }
 
-            writeProgrammaticScroll(target);
+            writeProgrammaticScroll(target, "new-turn");
         },
         [writeProgrammaticScroll],
     );
@@ -1646,12 +1652,21 @@ export const ChatTabView = memo(function ChatTabView({
                               scrollElement.getBoundingClientRect().top),
                   )
                 : 0;
-        semanticAnchorRef.current = captureTranscriptSemanticAnchor({
+        const nextAnchor = captureTranscriptSemanticAnchor({
             entryId: firstVisibleTimelineRow
                 ? getTranscriptTimelineItemAnchorEntryId(firstVisibleTimelineRow)
                 : null,
             offsetWithinEntry,
         });
+        semanticAnchorRef.current = nextAnchor
+            ? {
+                  ...nextAnchor,
+                  blockId: resolveTranscriptEntryBlockId(
+                      transcriptWindow?.blocksById ?? new Map(),
+                      nextAnchor.entryId,
+                  ),
+              }
+            : null;
         const visibleBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
             transcriptTimelineItems,
             range.visibleStartIndex,
@@ -1684,6 +1699,7 @@ export const ChatTabView = memo(function ChatTabView({
         loadTranscriptWindowBlock,
         setTranscriptWindowAnchor,
         tab.sessionId,
+        transcriptWindow?.blocksById,
         transcriptTimelineItems,
     ]);
 
@@ -1732,6 +1748,7 @@ export const ChatTabView = memo(function ChatTabView({
             // Retained chat views do not remount between tab switches, so keep
             // the latest persisted position in memory for the next activation.
             persistedViewStateRef.current = {
+                anchor: semanticAnchorRef.current,
                 isNearBottom: nextIsNearBottom,
                 scrollTop,
             };
@@ -1860,7 +1877,6 @@ export const ChatTabView = memo(function ChatTabView({
             }
 
             cancelPendingScrollToBottom();
-            cancelBottomFollowSettle();
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
             pendingNewTurnAnchorRef.current = undefined;
@@ -1868,7 +1884,7 @@ export const ChatTabView = memo(function ChatTabView({
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
-        [cancelBottomFollowSettle, cancelPendingScrollToBottom],
+        [cancelPendingScrollToBottom],
     );
 
     const handleTimelineTouchStart = useCallback(
@@ -1879,7 +1895,6 @@ export const ChatTabView = memo(function ChatTabView({
 
             // Touch scrolling has no wheel event, so invalidate follow eagerly.
             cancelPendingScrollToBottom();
-            cancelBottomFollowSettle();
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
             pendingNewTurnAnchorRef.current = undefined;
@@ -1887,20 +1902,18 @@ export const ChatTabView = memo(function ChatTabView({
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
-        [cancelBottomFollowSettle, cancelPendingScrollToBottom],
+        [cancelPendingScrollToBottom],
     );
 
     useEffect(() => {
         return () => {
             cancelPendingScrollToBottom();
-            cancelBottomFollowSettle();
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
             flushScheduledScrollPersist();
         };
     }, [
         cancelPendingScrollToBottom,
-        cancelBottomFollowSettle,
         flushScheduledScrollPersist,
     ]);
 
@@ -1930,13 +1943,9 @@ export const ChatTabView = memo(function ChatTabView({
             };
         }
 
-        const wasPreviouslyActivated = hasActivatedViewRef.current;
-        hasActivatedViewRef.current = true;
-
         const persistViewStateOnDeactivate = () => {
             cancelled = true;
             cancelPendingScrollToBottom();
-            cancelBottomFollowSettle();
             const flushedState = flushScheduledScrollPersist();
             persistCurrentViewState(
                 resolveChatScrollPersistenceState({
@@ -1949,45 +1958,59 @@ export const ChatTabView = memo(function ChatTabView({
             );
         };
 
-        // A retained view already owns the correct DOM scroll position. Avoid
-        // forcing layout and scheduling follow-up frames on every tab switch.
-        if (wasPreviouslyActivated) {
-            return persistViewStateOnDeactivate;
-        }
-
         if (shouldRestoreBottom) {
             shouldAutoFollowRef.current = true;
             scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
-            scheduleScrollToBottom();
+            scrollToBottom();
             setJumpToBottomVisibility(false);
         } else {
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
-            writeProgrammaticScroll(restoreScrollTop);
+            const persistedAnchor = persistedViewStateRef.current?.anchor ?? null;
+            const semanticBlockId =
+                persistedAnchor?.blockId ??
+                (persistedAnchor
+                    ? resolveTranscriptEntryBlockId(
+                          transcriptWindow?.blocksById ?? new Map(),
+                          persistedAnchor.entryId,
+                      )
+                    : null);
+            if (persistedAnchor && semanticBlockId) {
+                const restoreAnchor = {
+                    ...persistedAnchor,
+                    blockId: semanticBlockId,
+                };
+                semanticAnchorRef.current = restoreAnchor;
+                semanticRestoreFallbackScrollTopRef.current = restoreScrollTop;
+                setSemanticRestoreAnchor(restoreAnchor);
+            } else {
+                semanticRestoreFallbackScrollTopRef.current = null;
+                setSemanticRestoreAnchor(null);
+                writeProgrammaticScroll(restoreScrollTop, "restore");
+            }
             setJumpToBottomVisibility(!isNearBottom(scrollEl));
         }
 
         return persistViewStateOnDeactivate;
     }, [
         cancelPendingScrollToBottom,
-        cancelBottomFollowSettle,
         flushScheduledScrollPersist,
         isNearBottom,
         persistCurrentViewState,
-        scheduleScrollToBottom,
         scrollToBottom,
         writeProgrammaticScroll,
         active,
         tab.sessionId,
+        transcriptWindow?.blocksById,
     ]);
 
     useLayoutEffect(() => {
         if (active && shouldAutoFollowRef.current) {
             // The composer can collapse when a turn starts, changing the viewport
             // height before the new timeline entry has been measured.
-            scheduleScrollToBottom();
+            scrollToBottom();
         }
-    }, [active, composerExpanded, scheduleScrollToBottom, snapshot.updatedAt]);
+    }, [active, composerExpanded, scrollToBottom, snapshot.updatedAt]);
 
     useEffect(() => {
         const scrollEl = scrollRef.current;
@@ -2038,8 +2061,7 @@ export const ChatTabView = memo(function ChatTabView({
         if (
             shouldHoldChatScrollFollowIntent({
                 composerExpanded,
-                programmaticFollowSettling:
-                    bottomFollowSettleActiveRef.current,
+                programmaticFollowSettling: false,
                 shouldAutoFollow: shouldAutoFollowRef.current,
             })
         ) {
@@ -2054,16 +2076,23 @@ export const ChatTabView = memo(function ChatTabView({
             ? followChatScrollEnd(scrollIntentRef.current)
             : readChatScroll(scrollIntentRef.current);
         if (!nextIsNearBottom) {
+            // Scrollbar drags and keyboard navigation do not pass through the
+            // wheel/touch handlers, so they cancel queued writes here as well.
+            cancelPendingScrollToBottom();
             pendingNewTurnAnchorRef.current = undefined;
             setNewTurnAnchorRowId(null);
         }
         setShowJumpToBottom(!nextIsNearBottom);
         scheduleScrollPersist(el.scrollTop, nextIsNearBottom);
-    }, [composerExpanded, isNearBottom, scheduleScrollPersist]);
+    }, [
+        cancelPendingScrollToBottom,
+        composerExpanded,
+        isNearBottom,
+        scheduleScrollPersist,
+    ]);
 
     const handleJumpToBottom = useCallback(() => {
         cancelPendingScrollToBottom();
-        cancelBottomFollowSettle();
         shouldAutoFollowRef.current = true;
         scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
         pendingNewTurnAnchorRef.current = undefined;
@@ -2071,15 +2100,12 @@ export const ChatTabView = memo(function ChatTabView({
         resizeBottomLockRef.current = false;
         resizeStartedNearBottomRef.current = false;
         scrollToBottom();
-        scheduleBottomFollowSettle();
         setShowJumpToBottom(false);
 
         const scrollEl = scrollRef.current;
         scheduleScrollPersist(scrollEl?.scrollTop ?? 0, true);
     }, [
-        cancelBottomFollowSettle,
         cancelPendingScrollToBottom,
-        scheduleBottomFollowSettle,
         scheduleScrollPersist,
         scrollToBottom,
     ]);
@@ -2549,82 +2575,28 @@ export const ChatTabView = memo(function ChatTabView({
             style={{ backgroundColor: "var(--color-bg-secondary)" }}
         >
             <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-                <div
-                    className="flex h-6 shrink-0 items-center gap-2 px-3 text-[10.5px] leading-none text-text-secondary"
-                    style={{
-                        backgroundColor: "var(--color-bg-secondary)",
-                        borderBottom:
-                            "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                        boxSizing: "border-box",
-                        fontFamily: "var(--font-mono)",
+                <ChatHeader
+                    displayTitle={chatDisplayTitle}
+                    editing={isEditingTitle}
+                    onBeginEdit={() => {
+                        skipTitleCommitRef.current = false;
+                        setTitleDraft(chatDisplayTitle);
+                        setIsEditingTitle(true);
                     }}
-                >
-                    {isEditingTitle && !parentSessionId ? (
-                        <input
-                            ref={titleInputRef}
-                            className="min-w-0 flex-1 rounded bg-transparent outline-none"
-                            style={{
-                                border: "none",
-                                borderBottom:
-                                    "1px solid var(--color-accent, var(--color-text-secondary))",
-                                color: "var(--color-text-primary)",
-                                fontFamily: "var(--font-mono)",
-                                fontSize: "10.5px",
-                                padding: 0,
-                            }}
-                            value={titleDraft}
-                            onChange={(e) => setTitleDraft(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                    commitTitleEdit();
-                                } else if (e.key === "Escape") {
-                                    skipTitleCommitRef.current = true;
-                                    setIsEditingTitle(false);
-                                }
-                            }}
-                            onBlur={() => commitTitleEdit()}
-                        />
-                    ) : (
-                        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                            <span
-                                className="min-w-0 cursor-default truncate"
-                                style={{
-                                    color: "var(--color-text-primary)",
-                                }}
-                                onDoubleClick={() => {
-                                    if (parentSessionId) {
-                                        return;
-                                    }
-
-                                    skipTitleCommitRef.current = false;
-                                    setTitleDraft(chatDisplayTitle);
-                                    setIsEditingTitle(true);
-                                }}
-                                title={
-                                    parentSessionId
-                                        ? "Subagent names are managed by Codex"
-                                        : "Double-click to rename"
-                                }
-                            >
-                                {chatDisplayTitle}
-                            </span>
-                            {parentSessionId ? (
-                                <button
-                                    className="app-no-drag min-w-0 shrink truncate rounded px-1 text-[10px] text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
-                                    onClick={() =>
-                                        void openAiSessionById(parentSessionId)
-                                    }
-                                    title={`Open parent ${parentSessionContext?.title ?? "thread"}`}
-                                    type="button"
-                                >
-                                    Subagent of{" "}
-                                    {parentSessionContext?.title ??
-                                        "parent thread"}
-                                </button>
-                            ) : null}
-                        </div>
-                    )}
-                </div>
+                    onCancelEdit={() => {
+                        skipTitleCommitRef.current = true;
+                        setIsEditingTitle(false);
+                    }}
+                    onCommitEdit={commitTitleEdit}
+                    onOpenParent={() => {
+                        if (parentSessionId) void openAiSessionById(parentSessionId);
+                    }}
+                    onTitleDraftChange={setTitleDraft}
+                    parentSessionId={parentSessionId}
+                    parentTitle={parentSessionContext?.title ?? null}
+                    titleDraft={titleDraft}
+                    titleInputRef={titleInputRef}
+                />
                 {visiblePlan ? (
                     <div
                         className="shrink-0 px-3 pb-1 pt-2"
@@ -2654,9 +2626,14 @@ export const ChatTabView = memo(function ChatTabView({
                     chatFontSize={aiChatSettings.chatFontSize}
                     covered={composerExpanded}
                     historyRows={transcriptTimelineItems}
+                    hotTailRowId={hotTailRow?.id ?? null}
+                    hotTailRows={hotTailRows}
                     liveTailRowId={timelineModel.liveTailRowId}
                     newTurnAnchorRowId={newTurnAnchorRowId}
                     onNewTurnScrollTarget={handleNewTurnScrollTarget}
+                    onSemanticAnchorRestored={handleSemanticAnchorRestored}
+                    onSemanticAnchorUnavailable={handleSemanticAnchorUnavailable}
+                    onVirtualScrollRequest={handleTimelineVirtualScrollRequest}
                     onSetActivityGroupExpanded={setActivityGroupExpanded}
                     onSetActivityRangeExpanded={setActivityRangeExpanded}
                     onAddFileReferenceToChat={
@@ -2683,8 +2660,17 @@ export const ChatTabView = memo(function ChatTabView({
                     projectId={tab.projectId}
                     resolveFileReference={resolveChatFileReference}
                     scrollRef={scrollRef}
+                    semanticAnchorBlockLoaded={
+                        semanticRestoreAnchor?.blockId
+                            ? (transcriptWindow?.blocksById.has(
+                                  semanticRestoreAnchor.blockId,
+                              ) ?? false)
+                            : false
+                    }
+                    semanticRestoreAnchor={semanticRestoreAnchor}
                     sessionId={tab.sessionId}
                     showJumpToBottom={showJumpToBottom}
+                    showStreamingIndicator={isStreaming}
                     shouldPreserveVirtualMeasureAnchor={
                         shouldPreserveTimelineVirtualMeasureAnchor
                     }
@@ -2695,6 +2681,7 @@ export const ChatTabView = memo(function ChatTabView({
                         shouldPreserveTimelineVirtualResizeAnchor
                     }
                     timelineContentRef={timelineContentRef}
+                    streamingStartedAt={activeTurnStartedAt}
                     worktreeId={tab.worktreeId ?? null}
                 />
 
@@ -2743,8 +2730,7 @@ export const ChatTabView = memo(function ChatTabView({
                             {composerError ? renderError(composerError) : null}
 
                             {pendingReviewCount > 0 ? (
-                                <EditedFilesBufferPanel
-                                    defaultCollapsed
+                                <ReviewSurface
                                     diffZoom={diffZoom}
                                     items={pendingReviewItems}
                                     onKeepAll={handleKeepAllPendingReview}
@@ -2763,26 +2749,7 @@ export const ChatTabView = memo(function ChatTabView({
                 ) : null}
 
                 {/* Composer area */}
-                <div
-                    className={
-                        composerExpanded
-                            ? "flex min-h-0 flex-1 flex-col border-t"
-                            : "flex shrink-0 flex-col border-t"
-                    }
-                    style={{
-                        backgroundColor:
-                            "color-mix(in srgb, var(--color-accent) 4%, var(--color-bg-panel))",
-                        borderTopColor:
-                            "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
-                    }}
-                >
-                    <ChatContentColumn
-                        className={
-                            composerExpanded
-                                ? "flex min-h-0 flex-1 flex-col"
-                                : undefined
-                        }
-                    >
+                <ChatComposerShell expanded={composerExpanded}>
                         <AIChatComposer
                             autoFocusKey={tab.id}
                             composerFontFamily={composerFontFamily}
@@ -2895,8 +2862,7 @@ export const ChatTabView = memo(function ChatTabView({
                             runtimeName={runtimeDisplayName}
                             status={snapshot.status}
                         />
-                    </ChatContentColumn>
-                </div>
+                </ChatComposerShell>
             </div>
         </div>
         </ChatPerformanceProfiler>
@@ -3171,9 +3137,16 @@ type ChatTimelineProps = {
     readonly chatFontSize?: number;
     readonly covered?: boolean;
     readonly historyRows: readonly TranscriptTimelineItem[];
+    readonly hotTailRowId: string | null;
+    readonly hotTailRows: readonly TranscriptTimelineVirtualRow[];
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSemanticAnchorRestored?: () => void;
+    readonly onSemanticAnchorUnavailable?: () => void;
+    readonly onVirtualScrollRequest?: (
+        request: MeasuredVirtualScrollRequest,
+    ) => void;
     readonly onSetActivityGroupExpanded: (
         groupId: string,
         expanded: boolean,
@@ -3218,12 +3191,16 @@ type ChatTimelineProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly semanticAnchorBlockLoaded?: boolean;
+    readonly semanticRestoreAnchor?: ChatSemanticRestoreAnchor | null;
     readonly sessionId: string;
     readonly showJumpToBottom: boolean;
+    readonly showStreamingIndicator: boolean;
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
+    readonly streamingStartedAt: string | null;
     readonly worktreeId: string | null;
 };
 
@@ -3250,9 +3227,14 @@ const ChatTimeline = memo(function ChatTimeline({
     chatFontSize,
     covered,
     historyRows,
+    hotTailRowId,
+    hotTailRows,
     liveTailRowId,
     newTurnAnchorRowId,
     onNewTurnScrollTarget,
+    onSemanticAnchorRestored,
+    onSemanticAnchorUnavailable,
+    onVirtualScrollRequest,
     onSetActivityGroupExpanded,
     onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
@@ -3273,45 +3255,41 @@ const ChatTimeline = memo(function ChatTimeline({
     projectId,
     resolveFileReference,
     scrollRef,
+    semanticAnchorBlockLoaded,
+    semanticRestoreAnchor,
     sessionId,
     showJumpToBottom,
+    showStreamingIndicator,
     shouldDeferTrailingUserMeasurementAnchor,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
     timelineContentRef,
+    streamingStartedAt,
     worktreeId,
 }: ChatTimelineProps) {
     useRenderProbe("ChatTimeline", {
         active,
         historyRows: historyRows.length,
-        rows: historyRows.length,
+        rows: historyRows.length + hotTailRows.length,
     });
 
-    const timelineContainerClassName = covered
-        ? "pointer-events-none invisible absolute inset-0 min-h-0 min-w-0"
-        : "relative min-h-0 min-w-0 flex-1";
-
     return (
-        <ToolExpansionStoreProvider scopeKey={sessionId}>
-            <div
-                aria-hidden={covered}
-                className={timelineContainerClassName}
-                inert={covered ? true : undefined}
-            >
-                <div
-                    ref={scrollRef}
-                    className="chat-scroll h-full min-h-0 min-w-0 overflow-y-auto px-3 py-3"
-                    onScroll={onScroll}
-                    onTouchStart={onTouchStart}
-                    onWheelCapture={onWheelCapture}
-                >
-                    <ChatContentColumn
-                        ref={timelineContentRef}
-                        className="min-w-0 space-y-2"
-                        style={{
-                            fontFamily: chatFontFamily,
-                        }}
-                    >
+        <ChatTranscriptSurface
+            chatFontFamily={chatFontFamily}
+            covered={covered ?? false}
+            jumpToBottom={
+                <ChatJumpToBottomButton
+                    onClick={onJumpToBottom}
+                    visible={showJumpToBottom}
+                />
+            }
+            onScroll={onScroll}
+            onTouchStart={onTouchStart}
+            onWheelCapture={onWheelCapture}
+            scopeKey={sessionId}
+            scrollRef={scrollRef}
+            timelineContentRef={timelineContentRef}
+        >
                         <ChatTimelineHistory
                             active={active}
                             canRenderFileReference={
@@ -3320,9 +3298,16 @@ const ChatTimeline = memo(function ChatTimeline({
                             chatFontFamily={chatFontFamily}
                             chatFontSize={chatFontSize}
                             historyRows={historyRows}
+                            hotTailRowId={hotTailRowId}
+                            hotTailRows={hotTailRows}
                             liveTailRowId={liveTailRowId}
                             newTurnAnchorRowId={newTurnAnchorRowId}
                             onNewTurnScrollTarget={onNewTurnScrollTarget}
+                            onSemanticAnchorRestored={onSemanticAnchorRestored}
+                            onSemanticAnchorUnavailable={
+                                onSemanticAnchorUnavailable
+                            }
+                            onVirtualScrollRequest={onVirtualScrollRequest}
                             onSetActivityGroupExpanded={
                                 onSetActivityGroupExpanded
                             }
@@ -3351,7 +3336,12 @@ const ChatTimeline = memo(function ChatTimeline({
                             projectId={projectId}
                             resolveFileReference={resolveFileReference}
                             scrollRef={scrollRef}
+                            semanticAnchorBlockLoaded={
+                                semanticAnchorBlockLoaded
+                            }
+                            semanticRestoreAnchor={semanticRestoreAnchor}
                             sessionId={sessionId}
+                            showStreamingIndicator={showStreamingIndicator}
                             shouldDeferTrailingUserMeasurementAnchor={
                                 shouldDeferTrailingUserMeasurementAnchor
                             }
@@ -3361,16 +3351,10 @@ const ChatTimeline = memo(function ChatTimeline({
                             shouldPreserveVirtualResizeAnchor={
                                 shouldPreserveVirtualResizeAnchor
                             }
+                            streamingStartedAt={streamingStartedAt}
                             worktreeId={worktreeId}
                         />
-                    </ChatContentColumn>
-                </div>
-                <ChatJumpToBottomButton
-                    onClick={onJumpToBottom}
-                    visible={showJumpToBottom}
-                />
-            </div>
-        </ToolExpansionStoreProvider>
+        </ChatTranscriptSurface>
     );
 }, areChatTimelinePropsEqual);
 
@@ -3420,7 +3404,7 @@ function ChatJumpToBottomButton(props: {
     );
 }
 
-type ChatTimelineHistoryProps = {
+export type ChatTimelineHistoryProps = {
     readonly active: boolean;
     readonly canRenderFileReference?: (
         rawReference: string,
@@ -3429,9 +3413,16 @@ type ChatTimelineHistoryProps = {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly historyRows: readonly TranscriptTimelineItem[];
+    readonly hotTailRowId: string | null;
+    readonly hotTailRows: readonly TranscriptTimelineVirtualRow[];
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSemanticAnchorRestored?: () => void;
+    readonly onSemanticAnchorUnavailable?: () => void;
+    readonly onVirtualScrollRequest?: (
+        request: MeasuredVirtualScrollRequest,
+    ) => void;
     readonly onSetActivityGroupExpanded: (
         groupId: string,
         expanded: boolean,
@@ -3472,22 +3463,31 @@ type ChatTimelineHistoryProps = {
         reference: string,
     ) => ResolvedProjectFileReference | null;
     readonly scrollRef: RefObject<HTMLDivElement | null>;
+    readonly semanticAnchorBlockLoaded?: boolean;
+    readonly semanticRestoreAnchor?: ChatSemanticRestoreAnchor | null;
     readonly sessionId: string;
+    readonly showStreamingIndicator: boolean;
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
+    readonly streamingStartedAt: string | null;
     readonly worktreeId: string | null;
 };
 
-const ChatTimelineHistory = memo(function ChatTimelineHistory({
+export const ChatTimelineHistory = memo(function ChatTimelineHistory({
     active,
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
     historyRows,
+    hotTailRowId,
+    hotTailRows,
     liveTailRowId,
     newTurnAnchorRowId,
     onNewTurnScrollTarget,
+    onSemanticAnchorRestored,
+    onSemanticAnchorUnavailable,
+    onVirtualScrollRequest,
     onSetActivityGroupExpanded,
     onSetActivityRangeExpanded,
     onAddFileReferenceToChat,
@@ -3504,10 +3504,14 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
     projectId,
     resolveFileReference,
     scrollRef,
+    semanticAnchorBlockLoaded,
+    semanticRestoreAnchor,
     sessionId,
+    showStreamingIndicator,
     shouldDeferTrailingUserMeasurementAnchor,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
+    streamingStartedAt,
     worktreeId,
 }: ChatTimelineHistoryProps) {
     const renderRow = useCallback(
@@ -3562,10 +3566,13 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
         ],
     );
     const renderStreamingIndicator = useCallback(
-        (item: { readonly elapsed: string }) => (
-            <StreamingIndicator elapsed={item.elapsed} />
+        () => (
+            <StreamingIndicator
+                active={active}
+                startedAt={streamingStartedAt}
+            />
         ),
-        [],
+        [active, streamingStartedAt],
     );
 
     return (
@@ -3574,9 +3581,14 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             chatFontFamily={chatFontFamily}
             chatFontSize={chatFontSize}
             historyRows={historyRows}
+            hotTailRowId={hotTailRowId}
+            hotTailRows={hotTailRows}
             liveTailRowId={liveTailRowId}
             newTurnAnchorRowId={newTurnAnchorRowId}
             onNewTurnScrollTarget={onNewTurnScrollTarget}
+            onSemanticAnchorRestored={onSemanticAnchorRestored}
+            onSemanticAnchorUnavailable={onSemanticAnchorUnavailable}
+            onVirtualScrollRequest={onVirtualScrollRequest}
             onVirtualRangeChange={onVirtualRangeChange}
             onVirtualResizeEnd={onVirtualResizeEnd}
             onVirtualResizeAutoFollow={onVirtualResizeAutoFollow}
@@ -3584,7 +3596,10 @@ const ChatTimelineHistory = memo(function ChatTimelineHistory({
             renderRow={renderRow}
             renderStreamingIndicator={renderStreamingIndicator}
             scrollRef={scrollRef}
+            semanticAnchorBlockLoaded={semanticAnchorBlockLoaded}
+            semanticRestoreAnchor={semanticRestoreAnchor}
             sessionId={sessionId}
+            showStreamingIndicator={showStreamingIndicator}
             shouldDeferTrailingUserMeasurementAnchor={
                 shouldDeferTrailingUserMeasurementAnchor
             }
@@ -4177,7 +4192,54 @@ function UserInputRequestCard({
 
 /* ─── Streaming indicator ─── */
 
-function StreamingIndicator({ elapsed }: { readonly elapsed: string }) {
+function StreamingIndicator({
+    active,
+    startedAt,
+}: {
+    readonly active: boolean;
+    readonly startedAt: string | null;
+}) {
+    const fallbackStartedAtRef = useRef<number | null>(null);
+    const [elapsed, setElapsed] = useState("");
+
+    useEffect(() => {
+        if (!active) {
+            return;
+        }
+
+        let cancelled = false;
+        const parsedStartedAt = startedAt ? Date.parse(startedAt) : Number.NaN;
+        const startedAtMs = Number.isFinite(parsedStartedAt)
+            ? parsedStartedAt
+            : Date.now();
+        fallbackStartedAtRef.current = startedAtMs;
+        const updateElapsed = () => {
+            if (cancelled || fallbackStartedAtRef.current === null) {
+                return;
+            }
+            const totalSec = Math.max(
+                0,
+                Math.floor(
+                    (Date.now() - fallbackStartedAtRef.current) / 1000,
+                ),
+            );
+            const min = Math.floor(totalSec / 60);
+            const sec = totalSec % 60;
+            setElapsed(
+                min > 0
+                    ? `${min}m ${String(sec).padStart(2, "0")}s`
+                    : `${sec}s`,
+            );
+        };
+
+        queueMicrotask(updateElapsed);
+        const interval = window.setInterval(updateElapsed, 500);
+        return () => {
+            cancelled = true;
+            window.clearInterval(interval);
+        };
+    }, [active, startedAt]);
+
     return (
         <div
             className="flex items-baseline gap-2 py-1"

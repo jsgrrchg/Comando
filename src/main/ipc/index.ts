@@ -18,6 +18,7 @@ import {
     type AiSessionConfigOptionMutationInput,
     type GetAiSessionTranscriptPageInput,
     type AiLoadTranscriptPayloadInput,
+    type AiLoadTranscriptPayloadsInput,
     type AiSessionModeMutationInput,
     type AiSessionModelMutationInput,
     type AiSessionRenameMutationInput,
@@ -399,6 +400,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getAiTranscriptBlockMetadata);
     ipcMain.removeHandler(IPC_CHANNELS.getAiTranscriptBlock);
     ipcMain.removeHandler(IPC_CHANNELS.getAiTranscriptPayload);
+    ipcMain.removeHandler(IPC_CHANNELS.getAiTranscriptPayloads);
     ipcMain.removeHandler(IPC_CHANNELS.getAiPromptQueue);
     ipcMain.removeHandler(IPC_CHANNELS.enqueueAiPrompt);
     ipcMain.removeHandler(IPC_CHANNELS.removeAiQueuedPrompt);
@@ -2292,6 +2294,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(IPC_CHANNELS.getAiTranscriptPayload, (_event, input: AiLoadTranscriptPayloadInput) =>
         options.aiService.getTranscriptPayload(input),
+    );
+    ipcMain.handle(IPC_CHANNELS.getAiTranscriptPayloads, (_event, input: AiLoadTranscriptPayloadsInput) =>
+        options.aiService.getTranscriptPayloads(input),
     );
     ipcMain.handle(IPC_CHANNELS.getAiPromptQueue, (event, sessionId: string) => {
         const context = requireWindowContext(event.sender, "main");

@@ -55,6 +55,12 @@ describe("chatViewPersistence", () => {
             "worktree-1",
             "session-1",
             {
+                anchor: {
+                    alignment: "start",
+                    blockId: "block-7",
+                    entryId: "entry-7",
+                    offsetWithinEntry: 12,
+                },
                 isNearBottom: false,
                 scrollTop: 256,
             },
@@ -68,6 +74,10 @@ describe("chatViewPersistence", () => {
                 "session-1",
             ),
         ).toEqual(persisted);
+        expect(persisted?.anchor).toMatchObject({
+            blockId: "block-7",
+            entryId: "entry-7",
+        });
     });
 
     it("clamps negative scroll offsets when persisting", () => {
@@ -83,5 +93,28 @@ describe("chatViewPersistence", () => {
             isNearBottom: false,
             scrollTop: 0,
         });
+    });
+
+    it("reads legacy anchors without a block hint", () => {
+        const key = getChatViewStorageKey("project-1", null, "session-legacy");
+        globalThis.localStorage.setItem(
+            key,
+            JSON.stringify({
+                anchor: {
+                    alignment: "start",
+                    entryId: "entry-legacy",
+                    offsetWithinEntry: 8,
+                },
+                isNearBottom: false,
+                scrollTop: 320,
+                updatedAt: 1,
+                version: 2,
+            }),
+        );
+
+        expect(
+            readPersistedChatViewState("project-1", null, "session-legacy")
+                ?.anchor,
+        ).toMatchObject({ blockId: null, entryId: "entry-legacy" });
     });
 });

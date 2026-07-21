@@ -586,6 +586,7 @@ pub struct NativeAiTranscriptBlock {
 pub const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION: u32 = 1;
 pub const AI_TRANSCRIPT_BLOCK_CAPABILITY_FEATURE: &str = "native-ai-transcript-block-v1";
 pub const AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX: usize = 64 * 1024 * 1024;
+pub const AI_TRANSCRIPT_PAYLOAD_BATCH_MAX_REFS: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -605,6 +606,15 @@ pub struct NativeAiLoadTranscriptPayloadInput {
     pub max_bytes: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiLoadTranscriptPayloadsInput {
+    pub session_id: SessionId,
+    pub payload_refs: Vec<String>,
+    #[serde(default = "default_transcript_payload_limit")]
+    pub max_bytes: usize,
+}
+
 fn default_transcript_payload_limit() -> usize {
     AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX
 }
@@ -619,6 +629,15 @@ pub struct NativeAiTranscriptPayload {
     pub content_hash: String,
     pub byte_length: usize,
     pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptPayloadsOutput {
+    pub capability_version: u32,
+    pub session_id: SessionId,
+    pub payloads: Vec<NativeAiTranscriptPayload>,
+    pub transcript_revision: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

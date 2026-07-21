@@ -130,6 +130,19 @@ export function isAiSessionTranscriptMutationFrom(
     );
 }
 
+export function getAiSessionTranscriptMutationChainFrom(
+    transcript: AiSessionTranscriptModel,
+    ancestor: AiSessionTranscriptModel,
+): readonly AiSessionTranscriptModel[] | null {
+    const chain: AiSessionTranscriptModel[] = [];
+    let current: AiSessionTranscriptModel | undefined = transcript;
+    while (current && current !== ancestor) {
+        chain.push(current);
+        current = transcriptMutationParentByModel.get(current);
+    }
+    return current === ancestor ? chain.reverse() : null;
+}
+
 export function createEmptyAiSessionTranscriptModel(): AiSessionTranscriptModel {
     return buildAiSessionTranscriptModel({
         messages: [],
@@ -585,10 +598,38 @@ function removeAiSessionTranscriptEntry(
 
     const entriesById = { ...transcript.entriesById };
     delete entriesById[entryId];
-    return buildAiSessionTranscriptModelFromOrderedEntries(
+    const nextTranscript = buildAiSessionTranscriptModelFromOrderedEntries(
         transcript.orderedEntryIds.filter((candidateId) => candidateId !== entryId),
         entriesById,
     );
+    return markAiSessionTranscriptMutation(
+        nextTranscript,
+        { entryId, kind: "remove" },
+        transcript,
+    );
+}
+
+export function applyAiSessionTranscriptMutationToProjection(
+    projection: AiSessionTranscriptModel,
+    source: AiSessionTranscriptModel,
+): AiSessionTranscriptModel | null {
+    const mutation = getAiSessionTranscriptMutation(source);
+    if (mutation.kind === "rebuild") {
+        return null;
+    }
+
+    if (mutation.kind === "remove") {
+        return removeAiSessionTranscriptEntry(projection, mutation.entryId);
+    }
+
+    const entry = source.entriesById[mutation.entryId];
+    if (!entry) {
+        return null;
+    }
+
+    // Reusing the regular mutation path preserves the projected model's own
+    // parent chain instead of coupling it to the larger source transcript.
+    return upsertAiSessionTranscriptEntry(projection, entry);
 }
 
 export function removeAiSessionTranscriptEntries(

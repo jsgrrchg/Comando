@@ -1,6 +1,7 @@
 import type { AiSessionSnapshot } from "@shared/ipc";
 
 import type { ChatTimelineMessageRow } from "./chatTimelineModel";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 
 // Keep every virtual item comfortably smaller than an entire agent transcript.
 // Both limits apply because minified output can have few newlines, while prose
@@ -20,6 +21,11 @@ export interface LongContentChunkRow {
     readonly sourceRowId: string;
 }
 
+const presentationChunksByMessage = new WeakMap<
+    AiSessionSnapshot["messages"][number],
+    { readonly content: string; readonly chunks: readonly string[] }
+>();
+
 /**
  * Replaces an exceptionally long, completed assistant message with stable
  * presentation rows. The original message remains the source of truth in the
@@ -29,6 +35,10 @@ export function splitLongContentRows<T>(
     rows: readonly T[],
     isMessageRow: (row: T) => row is T & ChatTimelineMessageRow,
 ): readonly (T | LongContentChunkRow)[] {
+    incrementChatPerformanceCounter(
+        "presentation_items_visited",
+        rows.length,
+    );
     const result: (T | LongContentChunkRow)[] = [];
 
     for (const row of rows) {
@@ -37,7 +47,17 @@ export function splitLongContentRows<T>(
             continue;
         }
 
-        const chunks = splitMarkdownIntoPresentationChunks(row.message.content);
+        const cached = presentationChunksByMessage.get(row.message);
+        const chunks = cached?.content === row.message.content
+            ? cached.chunks
+            : splitMarkdownIntoPresentationChunks(row.message.content);
+        if (cached?.content !== row.message.content) {
+            // Keep fragmentation tied to the canonical message, not to mounted rows.
+            presentationChunksByMessage.set(row.message, {
+                chunks,
+                content: row.message.content,
+            });
+        }
         if (chunks.length < 2) {
             result.push(row);
             continue;

@@ -83,6 +83,226 @@ describe("MarkdownContent", () => {
         );
     });
 
+    it("seals a completed list without revisiting its stable prefix", () => {
+        const initial = "Introduction.\n\n- first item\n- second item\n\n";
+        const first = parseMarkdownBlocksProgressively(null, initial);
+        const completed = parseMarkdownBlocksProgressively(
+            first,
+            `${initial}Follow-up paragraph.`,
+        );
+        const next = parseMarkdownBlocksProgressively(
+            completed,
+            `${initial}Follow-up paragraph. grows.`,
+        );
+
+        expect(first.stableBlocks[0]).toBe(completed.stableBlocks[0]);
+        expect(completed.stableContentLength).toBe(initial.length);
+        expect(completed.stableBlocks.at(-1)?.content).toContain(
+            "second item",
+        );
+        expect(next.stableBlocks).toEqual(completed.stableBlocks);
+        expect(next.stableBlocks.at(-1)).toBe(completed.stableBlocks.at(-1));
+    });
+
+    it("keeps an indented list continuation mutable across a blank line", () => {
+        const projection = parseMarkdownBlocksProgressively(
+            null,
+            "- parent item\n\n  continuation that can still belong to the list",
+        );
+
+        expect(projection.stableContentLength).toBe(0);
+        expect(projection.blocks).toHaveLength(1);
+        expect(projection.blocks[0]?.isMutable).toBe(true);
+    });
+
+    it("preserves the existing list rendering across a sealed boundary", () => {
+        const content = "- first item\n\n- second item\n\nParagraph after the list.";
+        const staticMarkup = renderToStaticMarkup(
+            createElement(MarkdownContent, { content }),
+        );
+        const liveMarkup = renderToStaticMarkup(
+            createElement(MarkdownContent, { content, live: true }),
+        );
+
+        expect(liveMarkup.match(/<ul/g)?.length).toBe(
+            staticMarkup.match(/<ul/g)?.length,
+        );
+        expect(liveMarkup).toContain("Paragraph after the list.");
+    });
+
+    it("seals a completed table before the following paragraph", () => {
+        const initial = "Heading.\n\nname | value\n--- | ---\nfirst | 1\n\n";
+        const first = parseMarkdownBlocksProgressively(null, initial);
+        const completed = parseMarkdownBlocksProgressively(
+            first,
+            `${initial}Paragraph after the table.`,
+        );
+        const next = parseMarkdownBlocksProgressively(
+            completed,
+            `${initial}Paragraph after the table. grows.`,
+        );
+
+        expect(completed.stableContentLength).toBe(initial.length);
+        expect(completed.stableBlocks.at(-1)?.content).toContain("first | 1");
+        expect(next.stableBlocks.at(-1)).toBe(completed.stableBlocks.at(-1));
+    });
+
+    it("seals a closed fence and defers highlighting only while it is open", () => {
+        const openFence = "Before the fence.\n\n```ts\nconst answer = 42;";
+        const streamingMarkup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: openFence,
+                live: true,
+            }),
+        );
+        const closedFence = `${openFence}\n\`\`\`\n\nAfter the fence.`;
+        const first = parseMarkdownBlocksProgressively(null, openFence);
+        const completed = parseMarkdownBlocksProgressively(first, closedFence);
+        const next = parseMarkdownBlocksProgressively(
+            completed,
+            `${closedFence} More text.`,
+        );
+        const completedFence = completed.stableBlocks.find(
+            (block) => block.type === "code",
+        );
+
+        expect(streamingMarkup).toContain(
+            'data-code-highlight-deferred="true"',
+        );
+        expect(completedFence?.isMutable).toBe(false);
+        expect(next.stableBlocks.find((block) => block.type === "code")).toBe(
+            completedFence,
+        );
+    });
+
+    it("does not close a fence with four leading spaces", () => {
+        const content = [
+            "```ts",
+            "const value = true;",
+            "    ```",
+            "still part of the code fence",
+        ].join("\n");
+        const projection = parseMarkdownBlocksProgressively(null, content);
+        const codeBlock = projection.blocks.find(
+            (block) => block.type === "code",
+        );
+
+        expect(codeBlock?.isMutable).toBe(true);
+        expect(codeBlock?.content).toContain("    ```");
+        expect(codeBlock?.content).toContain("still part of the code fence");
+    });
+
+    it("preserves terminal whitespace for static Markdown and avoids a split gap", () => {
+        const staticMarkup = renderToStaticMarkup(
+            createElement(MarkdownContent, { content: "Last line\n" }),
+        );
+        const liveMarkup = renderToStaticMarkup(
+            createElement(MarkdownContent, {
+                content: "First block.\n\nSecond block.",
+                live: true,
+            }),
+        );
+
+        expect(staticMarkup).toContain("height:8px");
+        expect(liveMarkup.match(/height:8px/g)).toHaveLength(1);
+    });
+
+    it("keeps sealed blocks referentially stable across 1,000 live deltas", () => {
+        let projection = parseMarkdownBlocksProgressively(
+            null,
+            "Stable introduction.\n\n```ts\nconst stable = true;\n```\n\nLive",
+        );
+        const sealedBlocks = projection.stableBlocks;
+
+        for (let index = 0; index < 1_000; index++) {
+            projection = parseMarkdownBlocksProgressively(
+                projection,
+                `${projection.content} ${index}`,
+            );
+        }
+
+        expect(projection.stableBlocks).toEqual(sealedBlocks);
+        expect(projection.stableBlocks[0]).toBe(sealedBlocks[0]);
+        expect(projection.stableBlocks[1]).toBe(sealedBlocks[1]);
+        expect(projection.blocks.at(-1)?.isMutable).toBe(true);
+    });
+
+    it("renders the published live revision without scheduling another frame", () => {
+        const requestAnimationFrame = vi.fn(() => 1);
+        const cancelAnimationFrame = vi.fn();
+        vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
+        vi.stubGlobal("cancelAnimationFrame", cancelAnimationFrame);
+
+        const container = document.createElement("div");
+        document.body.appendChild(container);
+        const root = createRoot(container);
+        mountedRoots.push(root);
+        mountedContainers.push(container);
+
+        act(() => {
+            root.render(
+                createElement(MarkdownContent, {
+                    content: "First revision.",
+                    live: true,
+                }),
+            );
+        });
+        act(() => {
+            root.render(
+                createElement(MarkdownContent, {
+                    content: "Second revision is visible immediately.",
+                    live: true,
+                }),
+            );
+        });
+
+        const content = container.querySelector("[data-markdown-live='true']");
+        expect(content?.getAttribute("data-markdown-content-chars")).toBe(
+            String("Second revision is visible immediately.".length),
+        );
+        expect(content?.getAttribute("data-markdown-rendered-chars")).toBe(
+            String("Second revision is visible immediately.".length),
+        );
+        expect(content?.textContent).toContain("Second revision is visible immediately.");
+        expect(requestAnimationFrame).not.toHaveBeenCalled();
+    });
+
+    it("keeps simultaneous live panels on their current Markdown revision", () => {
+        const container = document.createElement("div");
+        document.body.appendChild(container);
+        const root = createRoot(container);
+        mountedRoots.push(root);
+        mountedContainers.push(container);
+
+        const renderPanels = (content: string) =>
+            createElement(
+                "div",
+                null,
+                createElement(MarkdownContent, { content, live: true }),
+                createElement(MarkdownContent, { content, live: true }),
+            );
+
+        act(() => {
+            root.render(renderPanels("Initial revision."));
+        });
+        act(() => {
+            root.render(renderPanels("Current revision in both panels."));
+        });
+
+        const panels = [
+            ...container.querySelectorAll<HTMLElement>(
+                "[data-markdown-live='true']",
+            ),
+        ];
+        expect(panels).toHaveLength(2);
+        expect(panels.map((panel) => panel.dataset.markdownRenderedChars)).toEqual(
+            Array(2).fill(String("Current revision in both panels.".length)),
+        );
+        expect(panels.map((panel) => panel.textContent)).toEqual(
+            Array(2).fill("Current revision in both panels."),
+        );
+    });
+
     it("renders serialized folder mentions as Catppuccin links", () => {
         const markup = renderToStaticMarkup(
             createElement(MarkdownContent, {

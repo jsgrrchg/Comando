@@ -163,6 +163,7 @@ export const IPC_CHANNELS = {
     getAiTranscriptBlockMetadata: "ai:get-transcript-block-metadata",
     getAiTranscriptBlock: "ai:get-transcript-block",
     getAiTranscriptPayload: "ai:get-transcript-payload",
+    getAiTranscriptPayloads: "ai:get-transcript-payloads",
     getAiPromptQueue: "ai:get-prompt-queue",
     enqueueAiPrompt: "ai:enqueue-prompt",
     removeAiQueuedPrompt: "ai:remove-queued-prompt",
@@ -2774,6 +2775,12 @@ export interface AiLoadTranscriptPayloadInput {
     readonly sessionId: string;
 }
 
+export interface AiLoadTranscriptPayloadsInput {
+    readonly maxBytes?: number;
+    readonly payloadRefs: readonly string[];
+    readonly sessionId: string;
+}
+
 export interface AiTranscriptPayload {
     readonly byteLength: number;
     readonly capabilityVersion: number;
@@ -2782,6 +2789,11 @@ export interface AiTranscriptPayload {
     readonly sessionId: string;
     readonly transcriptRevision: number;
     readonly value: unknown;
+}
+
+export interface AiTranscriptPayloadsOutput {
+    readonly payloads: readonly AiTranscriptPayload[];
+    readonly sessionId: string;
 }
 
 export type AiTranscriptStorageMode =
@@ -3641,6 +3653,9 @@ export interface ComandoApi {
     getAiTranscriptPayload: (
         input: AiLoadTranscriptPayloadInput,
     ) => Promise<AiTranscriptPayload | null>;
+    getAiTranscriptPayloads: (
+        input: AiLoadTranscriptPayloadsInput,
+    ) => Promise<AiTranscriptPayloadsOutput | null>;
     getAiPromptQueue: (sessionId: string) => Promise<AiPromptQueueSnapshot>;
     enqueueAiPrompt: (
         input: EnqueueAiPromptInput,

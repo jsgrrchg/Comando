@@ -25,6 +25,7 @@ describe("chatTimelineCache", () => {
             activeTurnStartedAt: null,
             attentionToolCallIds,
             model,
+            projection: null,
             sessionId: "session-1",
             status: "idle" as const,
             trackedFiles,

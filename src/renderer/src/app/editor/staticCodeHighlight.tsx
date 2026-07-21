@@ -1,6 +1,8 @@
 import { LanguageSupport, type Language } from "@codemirror/language";
 import { highlightTree, tagHighlighter, tags } from "@lezer/highlight";
 import { useMemo, type ReactNode } from "react";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
+import { measureChatPerformance } from "@renderer/app/debug/chatPerformanceProbe";
 
 type HighlightSegment = {
     readonly text: string;
@@ -149,6 +151,21 @@ function buildHighlightSegments(
         return [{ text, className: null }];
     }
 
+    return measureChatPerformance(
+        "code_highlight_ms",
+        { values: { contentChars: text.length } },
+        () => buildLanguageHighlightSegments(text, language),
+    );
+}
+
+function buildLanguageHighlightSegments(
+    text: string,
+    language: Language,
+): HighlightSegment[] {
+    incrementChatPerformanceCounter(
+        "code_highlight_chars_reparsed",
+        text.length,
+    );
     const tree = language.parser.parse(text);
     const segments: HighlightSegment[] = [];
     let cursor = 0;
@@ -195,21 +212,30 @@ function renderHighlightSegments(
 }
 
 export function HighlightedCodeText({
+    deferHighlighting = false,
     text,
     language,
     segmentKeyPrefix = "cm-static",
 }: {
+    /** Keeps an open streaming fence responsive until its syntax is sealed. */
+    readonly deferHighlighting?: boolean;
     readonly text: string;
     readonly language: LanguageSupport | Language | null;
     readonly segmentKeyPrefix?: string;
 }) {
     const segments = useMemo(
-        () => buildHighlightSegments(text, toLanguage(language)),
-        [language, text],
+        () =>
+            deferHighlighting
+                ? [{ className: null, text }]
+                : buildHighlightSegments(text, toLanguage(language)),
+        [deferHighlighting, language, text],
     );
 
     return (
-        <span className="cm-static-code">
+        <span
+            className="cm-static-code"
+            data-code-highlight-deferred={deferHighlighting ? "true" : undefined}
+        >
             {renderHighlightSegments(segments, segmentKeyPrefix)}
         </span>
     );

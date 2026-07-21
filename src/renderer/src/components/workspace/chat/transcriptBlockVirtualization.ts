@@ -10,6 +10,7 @@ import type {
     ChatTimelineRow,
 } from "./chatTimelineModel";
 import type { LongContentChunkRow } from "./longContentVirtualization";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 
 export const ACTIVITY_GROUP_WINDOW_SIZE = 200;
 
@@ -142,25 +143,18 @@ export function buildTranscriptTimelineItems(
     loaded: ReadonlyMap<string, AiTranscriptBlock>,
     timelineRows: readonly ChatTimelineRow[],
 ): readonly TranscriptTimelineSourceItem[] {
+    incrementChatPerformanceCounter(
+        "presentation_items_visited",
+        metadata.length + timelineRows.length,
+    );
     if (metadata.length === 0) {
         return timelineRows;
-    }
-
-    const blockIdByEntryId = new Map<string, string>();
-    for (const item of metadata) {
-        const block = loaded.get(item.blockId);
-        if (!block) continue;
-        for (const entry of block.entries) {
-            blockIdByEntryId.set(entry.id, item.blockId);
-        }
     }
 
     const rowsByBlockId = new Map<string, ChatTimelineRow[]>();
     const unassignedRows: ChatTimelineRow[] = [];
     for (const row of timelineRows) {
-        const blockId = timelineEntryIds(row)
-            .map((entryId) => blockIdByEntryId.get(entryId) ?? null)
-            .find((candidate): candidate is string => candidate !== null);
+        const blockId = row.blockId;
         if (!blockId) {
             unassignedRows.push(row);
             continue;
@@ -230,6 +224,10 @@ export function flattenTranscriptTimelineItems(
     sourceItems: readonly TranscriptTimelineSourceItem[],
     options: FlattenTranscriptTimelineItemsOptions,
 ): readonly TranscriptTimelineItem[] {
+    incrementChatPerformanceCounter(
+        "presentation_items_visited",
+        sourceItems.length,
+    );
     const timelineItems: TranscriptTimelineItem[] = [];
 
     for (const sourceItem of sourceItems) {
@@ -427,6 +425,19 @@ export function resolveAnchorBlockId(
     return null;
 }
 
+export function resolveTranscriptEntryBlockId(
+    blocksById: ReadonlyMap<string, AiTranscriptBlock>,
+    entryId: string,
+): string | null {
+    for (const [blockId, block] of blocksById) {
+        if (block.entries.some((entry) => entry.id === entryId)) {
+            return blockId;
+        }
+    }
+
+    return null;
+}
+
 export function transcriptBlockEstimate(block: TranscriptVirtualBlock): number {
     return block.kind === "loaded"
         ? block.block.estimatedHeight
@@ -444,24 +455,4 @@ export function captureTranscriptSemanticAnchor(input: {
         entryId: input.entryId,
         offsetWithinEntry: Math.max(0, input.offsetWithinEntry ?? 0),
     };
-}
-
-function timelineEntryIds(row: ChatTimelineRow): readonly string[] {
-    if (row.kind === "message") {
-        return [messageTranscriptEntryId(row.message.id)];
-    }
-    if (row.kind === "tool") {
-        return [row.id];
-    }
-    return row.items.map((item) =>
-        item.kind === "thinking"
-            ? messageTranscriptEntryId(item.message.id)
-            : `tool:${item.entry.reviewEntry.activity.sessionId}:${item.entry.reviewEntry.activity.id}`,
-    );
-}
-
-function messageTranscriptEntryId(messageId: string): string {
-    return messageId.startsWith("summary:")
-        ? messageId.slice("summary:".length)
-        : `message:${messageId}`;
 }

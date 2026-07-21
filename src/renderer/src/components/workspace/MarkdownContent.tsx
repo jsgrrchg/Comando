@@ -17,7 +17,7 @@ import {
 } from "@shared/composer-display-markers";
 
 import { extractFenceLanguageToken } from "../../app/editor/codeLanguage";
-import { measureChatPerformance } from "@renderer/app/debug/chatPerformanceProbe";
+import { recordChatPerformanceMetric } from "@renderer/app/debug/chatPerformanceProbe";
 import { openExternalUrl } from "../../app/utils/external-url";
 import {
     parseMarkdownListItem,
@@ -47,6 +47,13 @@ import {
     parseProjectFileReference,
     type ResolvedProjectFileReference,
 } from "./projectFileReferences";
+import {
+    parseMarkdownBlocksProgressively,
+    type MarkdownBlock,
+    type ParsedMarkdownBlocks,
+} from "./streamingMarkdownProjection";
+
+export { parseMarkdownBlocksProgressively } from "./streamingMarkdownProjection";
 
 interface MarkdownContentProps {
     readonly canRenderFileReference?: (
@@ -54,7 +61,6 @@ interface MarkdownContentProps {
         reference: ResolvedProjectFileReference,
     ) => boolean;
     readonly content: string;
-    /** Coalesces live output and reuses only Markdown prefixes known to be safe. */
     readonly live?: boolean;
     readonly chatFontSize?: number;
     readonly chatFontFamily?: string;
@@ -70,28 +76,10 @@ interface MarkdownContentProps {
     ) => ResolvedProjectFileReference | null;
 }
 
-interface Block {
-    readonly content: string;
-    readonly info: string;
-    readonly type: "code" | "text";
-}
-
-interface ParsedMarkdownBlocks {
-    readonly blocks: readonly Block[];
-    readonly content: string;
-    readonly stableBlocks: readonly Block[];
-    readonly stableContentLength: number;
-}
-
 interface MarkdownFenceOpening {
     readonly char: "`" | "~";
     readonly info: string;
     readonly length: number;
-}
-
-interface TextRange {
-    readonly from: number;
-    readonly to: number;
 }
 
 /* ─── Table parsing ─── */
@@ -133,156 +121,6 @@ function tryParseTable(lines: string[]): ParsedTable | null {
 
 /* ─── Block parsing ─── */
 
-const PARSED_BLOCK_CACHE_LIMIT = 250;
-const parsedBlockCache = new Map<string, Block[]>();
-
-function rememberParsedBlocks(text: string, blocks: Block[]): Block[] {
-    if (parsedBlockCache.has(text)) {
-        parsedBlockCache.delete(text);
-    }
-    parsedBlockCache.set(text, blocks);
-    if (parsedBlockCache.size > PARSED_BLOCK_CACHE_LIMIT) {
-        const oldestKey = parsedBlockCache.keys().next().value;
-        if (oldestKey !== undefined) {
-            parsedBlockCache.delete(oldestKey);
-        }
-    }
-    return blocks;
-}
-
-function parseBlocks(text: string): Block[] {
-    return measureChatPerformance(
-        "markdown_parse_ms",
-        { values: { contentChars: text.length } },
-        () => parseBlocksUnmeasured(text),
-    );
-}
-
-function parseBlocksUnmeasured(text: string): Block[] {
-    const cached = parsedBlockCache.get(text);
-    if (cached) return cached;
-    const blocks: Block[] = [];
-    let cursor = 0;
-    let lastIndex = 0;
-
-    while (cursor < text.length) {
-        const lineEnd = text.indexOf("\n", cursor);
-        const lineTo = lineEnd === -1 ? text.length : lineEnd;
-        const lineText = text.slice(cursor, lineTo);
-        const opening = parseMarkdownFenceOpening(lineText);
-
-        if (!opening) {
-            cursor = lineEnd === -1 ? text.length : lineEnd + 1;
-            continue;
-        }
-
-        const before = text.slice(lastIndex, cursor);
-        if (before) blocks.push({ content: before, info: "", type: "text" });
-
-        const contentStart = lineEnd === -1 ? lineTo : lineEnd + 1;
-        const closing = findMarkdownFenceClosing(text, contentStart, opening);
-        const contentEnd = closing?.from ?? text.length;
-        const content = text.slice(contentStart, contentEnd).replace(/\n$/, "");
-
-        blocks.push({
-            content,
-            info: opening.info.toLowerCase(),
-            type: "code",
-        });
-        lastIndex = closing?.to ?? text.length;
-        cursor = lastIndex;
-    }
-
-    const tail = text.slice(lastIndex);
-    if (tail) {
-        blocks.push({ content: tail, info: "", type: "text" });
-    }
-
-    return rememberParsedBlocks(text, blocks);
-}
-
-function hasUnsafeProgressiveMarkdownStructure(text: string): boolean {
-    return /^(?: {0,3}(?:`{3,}|~{3,})|\s*(?:[-+*]|\d+[.)])\s+.*|.*\|.*)$/m.test(
-        text,
-    );
-}
-
-function getProgressiveMarkdownStableContentLength(text: string): number {
-    if (hasUnsafeProgressiveMarkdownStructure(text)) {
-        return 0;
-    }
-
-    const boundary = text.lastIndexOf("\n\n");
-    return boundary === -1 ? 0 : boundary + 2;
-}
-
-export function parseMarkdownBlocksProgressively(
-    previous: ParsedMarkdownBlocks | null,
-    content: string,
-): ParsedMarkdownBlocks {
-    const stableContentLength = getProgressiveMarkdownStableContentLength(content);
-    if (!previous || !content.startsWith(previous.content)) {
-        const stableBlocks =
-            stableContentLength > 0
-                ? parseBlocks(content.slice(0, stableContentLength))
-                : [];
-        const mutableBlocks = parseBlocks(content.slice(stableContentLength));
-        return {
-            blocks: [...stableBlocks, ...mutableBlocks],
-            content,
-            stableBlocks,
-            stableContentLength,
-        };
-    }
-
-    const stableBlocks =
-        stableContentLength === previous.stableContentLength
-            ? previous.stableBlocks
-            : stableContentLength > 0
-              ? parseBlocks(content.slice(0, stableContentLength))
-              : [];
-    const mutableBlocks = parseBlocks(content.slice(stableContentLength));
-
-    return {
-        blocks: [...stableBlocks, ...mutableBlocks],
-        content,
-        stableBlocks,
-        stableContentLength,
-    };
-}
-
-function useFrameCoalescedMarkdownContent(
-    content: string,
-    live: boolean,
-): string {
-    const [coalescedContent, setCoalescedContent] = useState(content);
-
-    useEffect(() => {
-        if (!live || coalescedContent === content) {
-            return;
-        }
-
-        if (typeof window.requestAnimationFrame !== "function") {
-            const timeoutId = window.setTimeout(
-                () => setCoalescedContent(content),
-                0,
-            );
-            return () => {
-                window.clearTimeout(timeoutId);
-            };
-        }
-
-        const frameId = window.requestAnimationFrame(() => {
-            setCoalescedContent(content);
-        });
-        return () => {
-            window.cancelAnimationFrame(frameId);
-        };
-    }, [coalescedContent, content, live]);
-
-    return live ? coalescedContent : content;
-}
-
 function parseMarkdownFenceOpening(lineText: string): MarkdownFenceOpening | null {
     const match = lineText.match(/^(?: {0,3})(`{3,}|~{3,})(.*)$/);
     if (!match) {
@@ -304,54 +142,6 @@ function parseMarkdownFenceOpening(lineText: string): MarkdownFenceOpening | nul
         info,
         length: marker.length,
     };
-}
-
-function findMarkdownFenceClosing(
-    text: string,
-    startOffset: number,
-    opening: MarkdownFenceOpening,
-): TextRange | null {
-    let cursor = startOffset;
-
-    while (cursor < text.length) {
-        const lineEnd = text.indexOf("\n", cursor);
-        const lineTo = lineEnd === -1 ? text.length : lineEnd;
-        const lineText = text.slice(cursor, lineTo);
-
-        if (isMarkdownFenceClosingLine(lineText, opening)) {
-            return {
-                from: cursor,
-                to: lineEnd === -1 ? lineTo : lineEnd + 1,
-            };
-        }
-
-        if (lineEnd === -1) {
-            break;
-        }
-        cursor = lineEnd + 1;
-    }
-
-    return null;
-}
-
-function isMarkdownFenceClosingLine(
-    lineText: string,
-    opening: MarkdownFenceOpening,
-): boolean {
-    let cursor = 0;
-    while (cursor < lineText.length && lineText[cursor] === " " && cursor < 3) {
-        cursor += 1;
-    }
-
-    let markerLength = 0;
-    while (lineText[cursor + markerLength] === opening.char) {
-        markerLength += 1;
-    }
-    if (markerLength < opening.length) {
-        return false;
-    }
-
-    return lineText.slice(cursor + markerLength).trim().length === 0;
 }
 
 /* ─── Inline rendering ─── */
@@ -1885,9 +1675,11 @@ function parseList(
 const CodeBlock = memo(function CodeBlock({
     block,
     chatFontSize = 14,
+    live,
 }: {
-    readonly block: Block;
+    readonly block: MarkdownBlock;
     readonly chatFontSize?: number;
+    readonly live: boolean;
 }) {
     const languageSupport = useMarkdownCodeLanguageSupport(block.info);
     const languageToken = extractFenceLanguageToken(block.info ?? "");
@@ -1949,9 +1741,10 @@ const CodeBlock = memo(function CodeBlock({
                         }}
                     >
                         <HighlightedCodeText
+                            deferHighlighting={live && block.isMutable}
                             text={block.content}
                             language={languageSupport}
-                            segmentKeyPrefix={`chat-code:${languageToken ?? "plain"}:${block.content.length}`}
+                            segmentKeyPrefix={`chat-code:${block.id}`}
                         />
                     </code>
                 )}
@@ -2031,10 +1824,19 @@ const TextBlock = memo(function TextBlock({
     block,
     inlineOptions,
 }: {
-    readonly block: Block;
+    readonly block: MarkdownBlock;
     readonly inlineOptions?: InlineOptions;
 }) {
     const lines = block.content.split("\n");
+    // Only an explicitly split live prefix owns this separator. Static Markdown
+    // retains its terminal whitespace exactly as before.
+    if (
+        block.suppressTerminalEmptyLine &&
+        lines.length > 1 &&
+        lines.at(-1) === ""
+    ) {
+        lines.pop();
+    }
     const elements: ReactElement[] = [];
     let i = 0;
 
@@ -2185,23 +1987,30 @@ export const MarkdownContent = memo(function MarkdownContent({
     onRevealFileReference,
     resolveFileReference,
 }: MarkdownContentProps) {
-    const renderedContent = useFrameCoalescedMarkdownContent(content, live);
     const previousParsedBlocksRef = useRef<ParsedMarkdownBlocks | null>(null);
     /* eslint-disable react-hooks/refs -- The previous parse is committed after render to avoid writing refs during a discarded StrictMode render. */
     const parsedBlocks = useMemo(
         () =>
-            live
-                ? parseMarkdownBlocksProgressively(
-                      previousParsedBlocksRef.current,
-                      renderedContent,
-                  )
-                : parseMarkdownBlocksProgressively(null, renderedContent),
-        [live, renderedContent],
+            parseMarkdownBlocksProgressively(
+                previousParsedBlocksRef.current,
+                content,
+                { sealAll: !live },
+            ),
+        [content, live],
     );
     /* eslint-enable react-hooks/refs */
     useEffect(() => {
         previousParsedBlocksRef.current = parsedBlocks;
-    }, [parsedBlocks]);
+        recordChatPerformanceMetric("markdown_commit", {
+            values: {
+                blockCount: parsedBlocks.blocks.length,
+                contentChars: content.length,
+                live: live ? 1 : 0,
+                renderedChars: content.length,
+                stableContentChars: parsedBlocks.stableContentLength,
+            },
+        });
+    }, [content.length, live, parsedBlocks]);
     const blocks = parsedBlocks.blocks;
     const contentRef = useRef<HTMLDivElement | null>(null);
     const [fileReferenceContextMenu, setFileReferenceContextMenu] =
@@ -2303,6 +2112,10 @@ export const MarkdownContent = memo(function MarkdownContent({
     return (
         <div
             className="chat-assistant-content min-w-0 w-full max-w-full"
+            data-markdown-content-chars={content.length}
+            data-markdown-live={live ? "true" : "false"}
+            data-markdown-rendered-chars={content.length}
+            data-markdown-stable-chars={parsedBlocks.stableContentLength}
             onContextMenu={handleContextMenu}
             ref={contentRef}
             style={{
@@ -2312,18 +2125,19 @@ export const MarkdownContent = memo(function MarkdownContent({
                 wordBreak: "break-word",
             }}
         >
-            {blocks.map((block, index) =>
+            {blocks.map((block) =>
                 block.type === "code" ? (
                     <CodeBlock
                         block={block}
                         chatFontSize={chatFontSize}
-                        key={index}
+                        key={block.id}
+                        live={live}
                     />
                 ) : (
                     <TextBlock
                         block={block}
                         inlineOptions={inlineOptions}
-                        key={index}
+                        key={block.id}
                     />
                 ),
             )}

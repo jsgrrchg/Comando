@@ -10,6 +10,7 @@ const CHAT_VIEW_STATE_PREFIX = "comando.ai.chat.view";
 export interface PersistedChatViewState {
     readonly anchor: {
         readonly alignment: "center" | "end" | "start";
+        readonly blockId: string | null;
         readonly entryId: string;
         readonly offsetWithinEntry: number;
     } | null;
@@ -54,6 +55,11 @@ function normalizePersistedState(raw: unknown): PersistedChatViewState | null {
                   alignment: (anchor as {
                       alignment: "center" | "end" | "start";
                   }).alignment,
+                  blockId:
+                      typeof (anchor as { blockId?: unknown }).blockId ===
+                      "string"
+                          ? (anchor as { blockId: string }).blockId
+                          : null,
                   entryId: (anchor as { entryId: string }).entryId,
                   offsetWithinEntry: Math.max(
                       0,
@@ -81,6 +87,7 @@ function statesEqual(
         left.isNearBottom === right.isNearBottom &&
         left.scrollTop === right.scrollTop &&
         left.anchor?.entryId === right.anchor?.entryId &&
+        left.anchor?.blockId === right.anchor?.blockId &&
         left.anchor?.offsetWithinEntry === right.anchor?.offsetWithinEntry &&
         left.anchor?.alignment === right.anchor?.alignment
     );

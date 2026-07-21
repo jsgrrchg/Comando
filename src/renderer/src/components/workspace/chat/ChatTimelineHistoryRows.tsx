@@ -12,21 +12,27 @@ import {
 import { useSettingsStore } from "@renderer/app/store/settings-store";
 import { useShellStore } from "@renderer/app/store/shell-store";
 import {
+    hashChatPerformanceLabel,
+    isChatPerformanceProbeEnabled,
+    recordChatPerformanceMetric,
+} from "@renderer/app/debug/chatPerformanceProbe";
+import {
     MeasuredVirtualList,
     type MeasuredVirtualListHandle,
     type MeasuredVirtualRange,
+    type MeasuredVirtualScrollRequest,
     type MeasuredVirtualViewportAnchor,
 } from "@renderer/components/virtual/MeasuredVirtualList";
 
 import { ChatPresentationErrorBoundary } from "./ChatPresentationErrorBoundary";
 import {
+    getTranscriptTimelineItemAnchorEntryId,
     isChatTimelineRowItem,
     isTranscriptActivitySummaryItem,
     isTranscriptBlockSpacerItem,
     isTranscriptStreamingIndicatorItem,
     type TranscriptTimelineItem,
     type TranscriptTimelineVirtualRow,
-    type TranscriptStreamingIndicatorItem,
 } from "./transcriptBlockVirtualization";
 import {
     CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
@@ -55,22 +61,33 @@ interface ChatTimelineHistoryRowsProps {
     readonly chatFontFamily?: string;
     readonly chatFontSize?: number;
     readonly historyRows: readonly TranscriptTimelineItem[];
+    readonly hotTailRowId: string | null;
+    readonly hotTailRows: readonly TranscriptTimelineVirtualRow[];
     readonly sessionId?: string;
     readonly onVirtualRangeChange?: (range: MeasuredVirtualRange) => void;
     readonly onVirtualResizeEnd?: () => void;
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSemanticAnchorRestored?: () => void;
+    readonly onSemanticAnchorUnavailable?: () => void;
+    readonly onVirtualScrollRequest?: (
+        request: MeasuredVirtualScrollRequest,
+    ) => void;
     readonly liveTailRowId?: string | null;
     readonly newTurnAnchorRowId?: string | null;
     readonly renderRow: (params: {
         readonly isCurrentTurnTail: boolean;
         readonly row: TranscriptTimelineVirtualRow;
     }) => ReactNode;
-    readonly renderStreamingIndicator: (
-        item: TranscriptStreamingIndicatorItem,
-    ) => ReactNode;
+    readonly renderStreamingIndicator: () => ReactNode;
     readonly scrollRef: RefObject<HTMLElement | null>;
+    readonly semanticAnchorBlockLoaded?: boolean;
+    readonly semanticRestoreAnchor?: {
+        readonly entryId: string;
+        readonly offsetWithinEntry: number;
+    } | null;
+    readonly showStreamingIndicator: boolean;
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
@@ -118,22 +135,31 @@ export const ChatTimelineHistoryRows = memo(
         chatFontFamily,
         chatFontSize,
         historyRows,
+        hotTailRowId,
+        hotTailRows,
         sessionId,
         onVirtualRangeChange,
         onVirtualResizeEnd,
         onVirtualResizeAutoFollow,
         onVirtualResizeStart,
         onNewTurnScrollTarget,
+        onSemanticAnchorRestored,
+        onSemanticAnchorUnavailable,
+        onVirtualScrollRequest,
         liveTailRowId,
         newTurnAnchorRowId,
         renderRow,
         renderStreamingIndicator,
         scrollRef,
+        semanticAnchorBlockLoaded = false,
+        semanticRestoreAnchor,
+        showStreamingIndicator,
         shouldDeferTrailingUserMeasurementAnchor,
         shouldPreserveVirtualMeasureAnchor,
         shouldPreserveVirtualResizeAnchor,
     }: ChatTimelineHistoryRowsProps) {
         const historyRef = useRef<HTMLDivElement | null>(null);
+        const hotTailRef = useRef<HTMLDivElement | null>(null);
         const toolActivityDefaultExpansion = useSettingsStore(
             (state) => state.aiChat.toolActivityDefaultExpansion,
         );
@@ -146,13 +172,22 @@ export const ChatTimelineHistoryRows = memo(
             null,
         );
         const virtualResizeActiveRef = useRef(false);
+        const restoredSemanticAnchorKeyRef = useRef<string | null>(null);
         const handledTrailingUserMeasurementRef = useRef<string | null>(null);
         // This is intentionally local to the mounted timeline: measurements are
         // only a rendering hint and must never become persisted chat state.
         const estimateCalibrationRef = useRef(new Map<string, number>());
         const [scrollMarginTop, setScrollMarginTop] = useState(0);
+        const [virtualListVersion, setVirtualListVersion] = useState(0);
         const [contentMeasurementWidth, setContentMeasurementWidth] =
             useState(0);
+        useEffect(() => {
+            if (!semanticRestoreAnchor) {
+                // The same entry may be restored after reactivating a retained
+                // tab whose virtual geometry changed while it was hidden.
+                restoredSemanticAnchorKeyRef.current = null;
+            }
+        }, [semanticRestoreAnchor]);
         const trailingUserRowId = getTrailingUserRowId(historyRows);
         const shouldPreserveVirtualMeasureAnchorForItem = useCallback(
             (row: TranscriptTimelineItem) => {
@@ -269,9 +304,58 @@ export const ChatTimelineHistoryRows = memo(
         const handleVirtualListReady = useCallback(
             (handle: MeasuredVirtualListHandle | null) => {
                 virtualListHandleRef.current = handle;
+                setVirtualListVersion((version) => version + 1);
             },
             [],
         );
+
+        useLayoutEffect(() => {
+            if (!active || !semanticRestoreAnchor) {
+                return;
+            }
+
+            const restoreKey = `${semanticRestoreAnchor.entryId}:${semanticRestoreAnchor.offsetWithinEntry}`;
+            if (restoredSemanticAnchorKeyRef.current === restoreKey) {
+                return;
+            }
+
+            const anchorIndex = historyRows.findIndex(
+                (row) =>
+                    isChatTimelineRowItem(row) &&
+                    getTranscriptTimelineItemAnchorEntryId(row) ===
+                        semanticRestoreAnchor.entryId,
+            );
+            if (anchorIndex < 0) {
+                if (semanticAnchorBlockLoaded) {
+                    restoredSemanticAnchorKeyRef.current = restoreKey;
+                    onSemanticAnchorUnavailable?.();
+                }
+                return;
+            }
+
+            const handle = virtualListHandleRef.current;
+            if (!handle) {
+                return;
+            }
+
+            // The target row is real, not a spacer, so the semantic offset is
+            // meaningful even after estimates have changed around the viewport.
+            handle.scrollToIndex(anchorIndex, {
+                align: "start",
+                offset: semanticRestoreAnchor.offsetWithinEntry,
+                reason: "restore",
+            });
+            restoredSemanticAnchorKeyRef.current = restoreKey;
+            onSemanticAnchorRestored?.();
+        }, [
+            active,
+            historyRows,
+            onSemanticAnchorRestored,
+            onSemanticAnchorUnavailable,
+            semanticAnchorBlockLoaded,
+            semanticRestoreAnchor,
+            virtualListVersion,
+        ]);
 
         useLayoutEffect(() => {
             if (!active || !newTurnAnchorRowId) {
@@ -292,21 +376,24 @@ export const ChatTimelineHistoryRows = memo(
                 return;
             }
 
-            const tailIndex = liveTailRowId
-                ? historyRows.findIndex((row) => row.id === liveTailRowId)
-                : historyRows.length - 1;
             const tail = handle.getItemGeometry?.(
-                tailIndex >= anchorIndex ? tailIndex : anchorIndex,
+                Math.max(anchorIndex, historyRows.length - 1),
             );
-            if (!tail) {
-                return;
-            }
+            const hotTailElement = hotTailRowId ? hotTailRef.current : null;
+            const scrollRect = scrollContainer.getBoundingClientRect();
+            const hotTailEnd = hotTailElement
+                ? scrollContainer.scrollTop +
+                  hotTailElement.getBoundingClientRect().bottom -
+                  scrollRect.top
+                : null;
+            const virtualTailEnd = tail ? tail.start + tail.size : anchor.start;
+            const tailEnd = hotTailEnd ?? virtualTailEnd;
 
             // The composer already reduces the scroll viewport in this flex layout.
             // Keep the prompt visible until the active turn needs more room below it.
             const requiredEnd = Math.max(
                 0,
-                tail.start + tail.size -
+                tailEnd -
                     (anchor.start + scrollContainer.clientHeight),
             );
             // The parent serializes every scroll write against navigation intent.
@@ -320,7 +407,7 @@ export const ChatTimelineHistoryRows = memo(
         }, [
             active,
             historyRows,
-            liveTailRowId,
+            hotTailRowId,
             newTurnAnchorRowId,
             onNewTurnScrollTarget,
             scrollMarginTop,
@@ -495,6 +582,23 @@ export const ChatTimelineHistoryRows = memo(
                 if (!isChatTimelineRowItem(item)) {
                     return;
                 }
+                const context = buildRowContext(item, index);
+                if (isChatPerformanceProbeEnabled()) {
+                    recordChatPerformanceMetric("virtual_measure", {
+                        sessionId,
+                        values: {
+                            height: measurement.height,
+                            index,
+                            measurementKeyRevision: hashChatPerformanceLabel(
+                                getChatTimelineRowMeasurementKey(item, context),
+                            ),
+                            previousHeight: measurement.previousHeight,
+                            rowRevision: hashChatPerformanceLabel(
+                                getChatTimelineRowIdentityKey(item, context),
+                            ),
+                        },
+                    });
+                }
                 if (
                     item.kind === "message" &&
                     item.message.status === "streaming"
@@ -504,7 +608,6 @@ export const ChatTimelineHistoryRows = memo(
                     return;
                 }
 
-                const context = buildRowContext(item, index);
                 const baseHeight = estimateChatTimelineRowBaseHeight(
                     item,
                     context,
@@ -546,7 +649,7 @@ export const ChatTimelineHistoryRows = memo(
                     }
                 }
             },
-            [buildRowContext],
+            [buildRowContext, sessionId],
         );
 
         const estimateSize = useCallback(
@@ -609,17 +712,7 @@ export const ChatTimelineHistoryRows = memo(
                 const gapPx = resolveRowGapPx(index);
 
                 if (isTranscriptStreamingIndicatorItem(item)) {
-                    return (
-                        <div
-                            style={
-                                gapPx > 0
-                                    ? { paddingBottom: `${gapPx}px` }
-                                    : undefined
-                            }
-                        >
-                            {renderStreamingIndicator(item)}
-                        </div>
-                    );
+                    return null;
                 }
 
                 return (
@@ -638,10 +731,7 @@ export const ChatTimelineHistoryRows = memo(
                             )}
                         >
                             {renderRow({
-                                isCurrentTurnTail:
-                                    item.id === liveTailRowId ||
-                                    (isTranscriptActivitySummaryItem(item) &&
-                                        item.groupId === liveTailRowId),
+                                isCurrentTurnTail: false,
                                 row: item,
                             })}
                         </ChatPresentationErrorBoundary>
@@ -650,8 +740,6 @@ export const ChatTimelineHistoryRows = memo(
             },
             [
                 renderRow,
-                renderStreamingIndicator,
-                liveTailRowId,
                 resolveRowGapPx,
                 buildRowContext,
             ],
@@ -659,8 +747,8 @@ export const ChatTimelineHistoryRows = memo(
 
         return (
             <div
-                ref={historyRef}
                 className="relative w-full"
+                data-chat-timeline-history="true"
                 // Pin the content width while dragging the splitter so rows keep
                 // their pre-drag layout (no reflow); clip any overhang instead of
                 // letting it spill. Released to fluid width on drag end.
@@ -670,48 +758,96 @@ export const ChatTimelineHistoryRows = memo(
                         : undefined
                 }
             >
-                <MeasuredVirtualList
-                    defaultViewportHeight={
-                        CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
-                    }
-                    estimateSize={estimateSize}
-                    getItemKey={getTranscriptTimelineItemKey}
-                    getItemIdentityKey={getItemIdentityKey}
-                    getItemMeasurementKey={getItemMeasurementKey}
-                    geometryCacheSignature={
-                        contentMeasurementWidth > 0
-                            ? [
-                                  chatFontFamily ?? "default",
-                                  chatFontSize ?? "default",
-                                  toolActivityDefaultExpansion,
-                                  contentMeasurementWidth,
-                              ].join(":")
-                            : null
-                    }
-                    items={historyRows}
-                    observeMeasurements={active}
-                    measurementCacheKey={
-                        sessionId ? `chat-timeline:${sessionId}` : undefined
-                    }
-                    onRangeChange={onVirtualRangeChange}
-                    onItemMeasured={handleVirtualItemMeasured}
-                    onReady={handleVirtualListReady}
-                    overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
-                    preserveScrollAnchorOnItemsChange
-                    preserveScrollAnchorOnMeasure
-                    shouldPreserveScrollAnchorOnItemsChange={
-                        shouldPreserveVirtualResizeAnchor
-                    }
-                    shouldPreserveScrollAnchorOnMeasure={
-                        shouldPreserveVirtualMeasureAnchor
-                    }
-                    shouldPreserveScrollAnchorForItemMeasurement={
-                        shouldPreserveVirtualMeasureAnchorForItem
-                    }
-                    scrollContainerRef={scrollRef}
-                    scrollMarginTop={scrollMarginTop}
-                    renderItem={renderVirtualItem}
-                />
+                <div ref={historyRef} className="relative w-full">
+                    <MeasuredVirtualList
+                        defaultViewportHeight={
+                            CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT
+                        }
+                        estimateSize={estimateSize}
+                        getItemKey={getTranscriptTimelineItemKey}
+                        getItemIdentityKey={getItemIdentityKey}
+                        getItemMeasurementKey={getItemMeasurementKey}
+                        geometryCacheSignature={
+                            contentMeasurementWidth > 0
+                                ? [
+                                      chatFontFamily ?? "default",
+                                      chatFontSize ?? "default",
+                                      toolActivityDefaultExpansion,
+                                      contentMeasurementWidth,
+                                  ].join(":")
+                                : null
+                        }
+                        items={historyRows}
+                        observeMeasurements={active}
+                        measurementCacheKey={
+                            sessionId ? `chat-timeline:${sessionId}` : undefined
+                        }
+                        onRangeChange={onVirtualRangeChange}
+                        onItemMeasured={handleVirtualItemMeasured}
+                        onReady={handleVirtualListReady}
+                        onScrollRequest={onVirtualScrollRequest}
+                        overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
+                        preserveScrollAnchorOnItemsChange
+                        preserveScrollAnchorOnMeasure
+                        shouldPreserveScrollAnchorOnItemsChange={
+                            shouldPreserveVirtualResizeAnchor
+                        }
+                        shouldPreserveScrollAnchorOnMeasure={
+                            shouldPreserveVirtualMeasureAnchor
+                        }
+                        shouldPreserveScrollAnchorForItemMeasurement={
+                            shouldPreserveVirtualMeasureAnchorForItem
+                        }
+                        scrollContainerRef={scrollRef}
+                        scrollMarginTop={scrollMarginTop}
+                        renderItem={renderVirtualItem}
+                    />
+                </div>
+                {hotTailRows.length > 0 ? (
+                    <div
+                        className={historyRows.length > 0 ? "mt-2" : undefined}
+                        data-current-turn-tail={
+                            hotTailRowId === liveTailRowId ? "true" : undefined
+                        }
+                        data-hot-transcript-tail={hotTailRowId ?? undefined}
+                        data-retained-transcript-tail={
+                            hotTailRowId !== liveTailRowId ? "true" : undefined
+                        }
+                        ref={hotTailRef}
+                    >
+                        <div className="flex min-w-0 flex-col gap-2">
+                            {hotTailRows.map((row) => (
+                                <ChatPresentationErrorBoundary
+                                    fallbackKind="row"
+                                    identity={`hot-tail:${row.id}`}
+                                    key={row.id}
+                                >
+                                    {renderRow({
+                                        isCurrentTurnTail:
+                                            row.id === liveTailRowId ||
+                                            (isTranscriptActivitySummaryItem(
+                                                row,
+                                            ) &&
+                                                row.groupId === liveTailRowId),
+                                        row,
+                                    })}
+                                </ChatPresentationErrorBoundary>
+                            ))}
+                        </div>
+                    </div>
+                ) : null}
+                {showStreamingIndicator ? (
+                    <div
+                        className={
+                            historyRows.length > 0 || hotTailRows.length > 0
+                                ? "mt-2"
+                                : undefined
+                        }
+                        data-streaming-indicator-host="true"
+                    >
+                        {renderStreamingIndicator()}
+                    </div>
+                ) : null}
             </div>
         );
     },

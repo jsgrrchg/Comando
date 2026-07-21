@@ -162,6 +162,7 @@ pub const AI_COMMANDS: &[&str] = &[
     "ai_load_transcript_block_metadata",
     "ai_load_transcript_block",
     "ai_load_transcript_payload",
+    "ai_load_transcript_payloads",
     "ai_get_transcript_storage_state",
     "ai_load_session_snapshot",
     "ai_list_session_runtime_mappings",

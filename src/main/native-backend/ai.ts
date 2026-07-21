@@ -28,7 +28,9 @@ import type {
     AiTranscriptCapability,
     AiTranscriptEntryEnvelope,
     AiLoadTranscriptPayloadInput,
+    AiLoadTranscriptPayloadsInput,
     AiTranscriptPayload,
+    AiTranscriptPayloadsOutput,
     AiTranscriptStorageState,
     AiSealTranscriptTurnInput,
     AiTrackedFile,
@@ -63,6 +65,7 @@ import {
     type NativeAiTranscriptBlockMetadata,
     type NativeAiTranscriptBlockMetadataOutput,
     type NativeAiTranscriptPayload,
+    type NativeAiTranscriptPayloadsOutput,
     type NativeAiTranscriptStorageState,
     type NativeCapabilitySet,
     type NativeAiRuntimeConnectionPayload,
@@ -123,6 +126,7 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     readonly #enabledRuntimeIds: ReadonlySet<AiRuntimeId>;
     readonly #historyEnabled: boolean;
     readonly #transcriptBlockCapabilityVersion: number | null;
+    readonly #transcriptPayloadBatchEnabled: boolean;
     readonly #onDiagnostic?: (message: string) => void;
     readonly #onRuntimeStatus: (status: AiRuntimeStatus) => void;
     readonly #onSessionEvent: (
@@ -147,6 +151,11 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         this.#historyEnabled = true;
         this.#transcriptBlockCapabilityVersion =
             getNativeAiTranscriptBlockCapabilityVersion(options.capabilities);
+        this.#transcriptPayloadBatchEnabled = Boolean(
+            options.capabilities?.commands.includes(
+                "ai_load_transcript_payloads",
+            ),
+        );
         this.#reviewEnabled = true;
         this.#onDiagnostic = options.onDiagnostic;
         this.#onRuntimeStatus = options.onRuntimeStatus;
@@ -489,6 +498,40 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             output,
             input.sessionId,
             "payload",
+        );
+    }
+
+    async loadTranscriptPayloads(
+        input: AiLoadTranscriptPayloadsInput,
+    ): Promise<AiTranscriptPayloadsOutput> {
+        if (!this.#transcriptPayloadBatchEnabled) {
+            const payloads = await Promise.all(
+                [...new Set(input.payloadRefs)].map((payloadRef) =>
+                    this.loadTranscriptPayload({
+                        maxBytes: input.maxBytes,
+                        payloadRef,
+                        sessionId: input.sessionId,
+                    }),
+                ),
+            );
+            return {
+                payloads,
+                sessionId: input.sessionId,
+            };
+        }
+        const output = await this.#client.request<unknown>(
+            "ai_load_transcript_payloads",
+            {
+                maxBytes:
+                    input.maxBytes ?? AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX,
+                payloadRefs: [...new Set(input.payloadRefs)],
+                sessionId: input.sessionId,
+            },
+        );
+        return requireTranscriptResponse<NativeAiTranscriptPayloadsOutput>(
+            output,
+            input.sessionId,
+            "payload batch",
         );
     }
 

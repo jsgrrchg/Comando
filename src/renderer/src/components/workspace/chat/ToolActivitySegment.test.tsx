@@ -107,6 +107,7 @@ function createSegment(
     }
 
     return {
+        blockId: null,
         changeStats: deriveActivitySegmentChangeStats(entries),
         entries,
         id: `activity-segment:session-1:${first.id}`,
@@ -156,6 +157,7 @@ function createThinkingSegment(
         status,
     };
     return {
+        blockId: null,
         changeStats: { additions: 0, approximate: false, deletions: 0 },
         entries: [],
         id: "activity-segment:thinking:thinking-1",

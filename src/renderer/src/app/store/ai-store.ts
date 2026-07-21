@@ -97,8 +97,10 @@ import { matchesTrackedFilePath } from "@renderer/app/ai/trackedFilePath";
 import {
     getChatPerformanceTimestamp,
     measureChatPerformance,
+    measureChatPerformanceAsync,
     recordChatPerformanceMetric,
 } from "@renderer/app/debug/chatPerformanceProbe";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceReviewTab,
@@ -112,6 +114,7 @@ const ensureSessionInFlight = new Map<string, Promise<void>>();
 const transcriptWindowHydrations = new Map<string, Promise<void>>();
 const transcriptWindowRefreshRequests = new Set<string>();
 const TRANSCRIPT_PAYLOAD_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const TRANSCRIPT_PAYLOAD_BATCH_MAX_REFS = 8;
 // Sharing this cache keeps the payload budget fixed as users open more sessions.
 let transcriptPayloadCache = createTranscriptPayloadCache();
 const transcriptWindowStore = new TranscriptWindowStore(
@@ -385,7 +388,13 @@ interface AiStore {
     loadTranscriptPayload: (
         sessionId: string,
         payloadRef: string,
+        options?: { readonly protect?: boolean; readonly publish?: boolean },
     ) => Promise<AiTranscriptPayload | null>;
+    loadTranscriptPayloads: (
+        sessionId: string,
+        payloadRefs: readonly string[],
+        options?: { readonly protect?: boolean; readonly publish?: boolean },
+    ) => Promise<ReadonlyMap<string, AiTranscriptPayload>>;
     releaseTranscriptPayload: (sessionId: string, payloadRef: string) => void;
     setSessionMode: (
         input: AiSessionModeMutationInput,
@@ -777,14 +786,77 @@ function createTranscriptPayloadCache(): TranscriptPayloadCache<AiTranscriptPayl
                 if (!identity) {
                     throw new Error("The transcript payload cache key is invalid.");
                 }
-                const payload = await getComandoApi().getAiTranscriptPayload({
-                    payloadRef: identity.payloadRef,
-                    sessionId: identity.sessionId,
-                });
+                const startedAt = getChatPerformanceTimestamp();
+                incrementChatPerformanceCounter(
+                    "transcript_payload_ipc_count",
+                );
+                const payload = await getComandoApi().getAiTranscriptPayload(
+                    {
+                        payloadRef: identity.payloadRef,
+                        sessionId: identity.sessionId,
+                    },
+                );
                 if (!payload) {
                     throw new Error("The transcript payload could not be found.");
                 }
+                incrementChatPerformanceCounter(
+                    "transcript_payload_bytes",
+                    payload.byteLength,
+                );
+                if (startedAt !== null) {
+                    recordChatPerformanceMetric(
+                        "transcript_payload_load_ms",
+                        {
+                            durationMs: performance.now() - startedAt,
+                            sessionId: identity.sessionId,
+                            values: { byteLength: payload.byteLength },
+                        },
+                    );
+                }
                 return payload;
+            },
+            loadMany: async (keys) => {
+                const identities = keys.map(parseTranscriptPayloadCacheKey);
+                if (identities.some((identity) => !identity)) {
+                    throw new Error("The transcript payload cache key is invalid.");
+                }
+                const validIdentities = identities as {
+                    readonly payloadRef: string;
+                    readonly sessionId: string;
+                }[];
+                const sessionId = validIdentities[0]?.sessionId;
+                const loadIndividually = async () => {
+                    return new Map(
+                        await Promise.all(keys.map(async (key) => {
+                            const identity = parseTranscriptPayloadCacheKey(key)!;
+                            const payload = await getComandoApi().getAiTranscriptPayload(identity);
+                            if (!payload) throw new Error("The transcript payload could not be found.");
+                            return [key, payload] as const;
+                        })),
+                    );
+                };
+                const loadBatch = getComandoApi().getAiTranscriptPayloads;
+                if (
+                    !sessionId ||
+                    validIdentities.some((identity) => identity.sessionId !== sessionId) ||
+                    typeof loadBatch !== "function"
+                ) {
+                    return loadIndividually();
+                }
+                incrementChatPerformanceCounter("transcript_payload_ipc_count");
+                const output = await loadBatch({
+                    payloadRefs: validIdentities.map((identity) => identity.payloadRef),
+                    sessionId,
+                });
+                if (!output) {
+                    throw new Error("The transcript payload batch could not be found.");
+                }
+                const payloads = new Map<string, AiTranscriptPayload>();
+                for (const payload of output.payloads) {
+                    incrementChatPerformanceCounter("transcript_payload_bytes", payload.byteLength);
+                    payloads.set(transcriptPayloadCacheKey(sessionId, payload.payloadRef), payload);
+                }
+                return payloads;
             },
         },
         TRANSCRIPT_PAYLOAD_CACHE_MAX_BYTES,
@@ -1699,6 +1771,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     loadTranscriptWindowBlock: async (sessionId, blockId) => {
         const block = await transcriptWindowStore.load(sessionId, blockId);
+        let hydratedPayloads: ReadonlyMap<string, AiTranscriptPayload> = new Map();
         if (block) {
             // A sealed turn replaces the live tail with this visible block.
             // Hydrate its tool payloads too so review diffs remain inspectable
@@ -1713,10 +1786,18 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         : [],
                 ),
             );
-            await Promise.all(
-                [...visiblePayloadRefs].map((payloadRef) =>
-                    get().loadTranscriptPayload(sessionId, payloadRef),
-                ),
+            hydratedPayloads = await measureChatPerformanceAsync(
+                "transcript_payload_batch_ms",
+                {
+                    sessionId,
+                    values: { payloadRefs: visiblePayloadRefs.size },
+                },
+                () =>
+                    get().loadTranscriptPayloads(
+                        sessionId,
+                        [...visiblePayloadRefs],
+                        { protect: false, publish: false },
+                    ),
             );
         }
         const current = get().sessions[sessionId]?.transcriptWindow;
@@ -1749,7 +1830,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         payloadsByRef: retainResidentTranscriptPayloads(
                             sessionId,
                             windowSnapshot.blocksById,
-                            latest.payloadsByRef,
+                            new Map([
+                                ...latest.payloadsByRef,
+                                ...hydratedPayloads,
+                            ]),
                         ),
                     },
                 },
@@ -1764,47 +1848,72 @@ export const useAiStore = create<AiStore>((set, get) => ({
         return block;
     },
 
-    loadTranscriptPayload: async (sessionId, payloadRef) => {
-        const cacheKey = transcriptPayloadCacheKey(sessionId, payloadRef);
+    loadTranscriptPayloads: async (sessionId, payloadRefs, options = {}) => {
+        const refs = [...new Set(payloadRefs)];
+        if (refs.length === 0) return new Map();
         try {
-            const payload = await transcriptPayloadCache.load(cacheKey, {
-                protect: true,
-            });
+            const result = new Map<string, AiTranscriptPayload>();
+            for (
+                let start = 0;
+                start < refs.length;
+                start += TRANSCRIPT_PAYLOAD_BATCH_MAX_REFS
+            ) {
+                const batchRefs = refs.slice(
+                    start,
+                    start + TRANSCRIPT_PAYLOAD_BATCH_MAX_REFS,
+                );
+                const payloads = await transcriptPayloadCache.loadMany(
+                    batchRefs.map((payloadRef) =>
+                        transcriptPayloadCacheKey(sessionId, payloadRef),
+                    ),
+                    { protect: options.protect ?? true },
+                );
+                for (const payloadRef of batchRefs) {
+                    const cacheKey = transcriptPayloadCacheKey(
+                        sessionId,
+                        payloadRef,
+                    );
+                    const payload = payloads.get(cacheKey);
+                    if (payload && transcriptPayloadCache.has(cacheKey)) {
+                        result.set(payloadRef, payload);
+                    }
+                }
+            }
             const evictedPayloadRefsBySession =
                 takeEvictedTranscriptPayloadRefs();
-            const isResident = transcriptPayloadCache.has(cacheKey);
-            set((state) => {
-                const sessions = removeEvictedTranscriptPayloads(
-                    state.sessions,
-                    evictedPayloadRefsBySession,
-                );
+            if (options.publish !== false) set((state) => {
+                const sessions = removeEvictedTranscriptPayloads(state.sessions, evictedPayloadRefsBySession);
                 const current = sessions[sessionId]?.transcriptWindow;
-                if (!current) {
-                    return sessions === state.sessions ? state : { sessions };
-                }
+                if (!current) return sessions === state.sessions ? state : { sessions };
                 const payloadsByRef = new Map(current.payloadsByRef);
-                if (isResident) {
-                    payloadsByRef.set(payloadRef, payload);
-                } else {
-                    payloadsByRef.delete(payloadRef);
+                for (const payloadRef of refs) {
+                    const payload = result.get(payloadRef);
+                    if (payload) payloadsByRef.set(payloadRef, payload);
+                    else payloadsByRef.delete(payloadRef);
                 }
                 return {
                     sessions: {
                         ...sessions,
                         [sessionId]: {
                             ...sessions[sessionId],
-                            transcriptWindow: {
-                                ...current,
-                                payloadsByRef,
-                            },
+                            transcriptWindow: { ...current, payloadsByRef },
                         },
                     },
                 };
             });
-            return isResident ? payload : null;
+            return result;
         } catch {
-            return null;
+            return new Map();
         }
+    },
+
+    loadTranscriptPayload: async (sessionId, payloadRef, options) => {
+        const payloads = await get().loadTranscriptPayloads(
+            sessionId,
+            [payloadRef],
+            options,
+        );
+        return payloads.get(payloadRef) ?? null;
     },
 
     releaseTranscriptPayload: (sessionId, payloadRef) => {

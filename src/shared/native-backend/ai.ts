@@ -423,6 +423,13 @@ export type NativeAiTranscriptPayload = {
     readonly value: unknown;
 };
 
+export type NativeAiTranscriptPayloadsOutput = {
+    readonly capabilityVersion: number;
+    readonly sessionId: NativeSessionId;
+    readonly payloads: readonly NativeAiTranscriptPayload[];
+    readonly transcriptRevision: number;
+};
+
 export type NativeAiTranscriptStorageState = {
     readonly capabilityVersion: number;
     readonly legacyFallbackAvailable: boolean;
