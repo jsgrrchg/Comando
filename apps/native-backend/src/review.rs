@@ -94,11 +94,13 @@ impl NativeReviewWorkerHandle {
         if !is_terminal_review_activity(&payload) {
             return None;
         }
-        let diffs = payload
-            .diffs
-            .into_iter()
-            .filter_map(|diff| serde_json::from_value::<NativeReviewRuntimeDiff>(diff).ok())
-            .collect::<Vec<_>>();
+        let diffs = Arc::<[NativeReviewRuntimeDiff]>::from(
+            payload
+                .diffs
+                .into_iter()
+                .filter_map(|diff| serde_json::from_value::<NativeReviewRuntimeDiff>(diff).ok())
+                .collect::<Vec<_>>(),
+        );
         if diffs.is_empty() {
             return None;
         }
@@ -142,22 +144,35 @@ impl NativeReviewWorkerHandle {
                 .collect(),
             updated_at: now(),
         };
+        // Keep the raw payload in the cycle until the worker finishes so the
+        // placeholder remains addressable without putting text on the event stream.
+        cycle.pending_deltas.insert(
+            delta_id.clone(),
+            PendingReviewDelta {
+                delta: provisional.clone(),
+                diffs: Arc::clone(&diffs),
+            },
+        );
         let task = NativeReviewWorkerTask {
             base: payload.base.clone(),
-            delta_id,
-            diffs,
+            delta_id: delta_id.clone(),
             epoch: cycle.epoch,
             input_revision,
             revision,
             tool_call_id,
-            work_cycle_id,
+            work_cycle_id: work_cycle_id.clone(),
         };
         drop(registry);
 
         // The unbounded handoff keeps the event bridge non-blocking without losing review work.
-        self.sender
+        if self
+            .sender
             .send(NativeReviewWorkerCommand::Materialize(task))
-            .ok()?;
+            .is_err()
+        {
+            self.remove_pending_delta(&payload.base.session_id, &work_cycle_id, &delta_id);
+            return None;
+        }
         Some(NativeAiReviewDeltaReadyPayload {
             base: payload.base,
             delta: provisional,
@@ -183,6 +198,7 @@ impl NativeReviewWorkerHandle {
                 ReviewWorkerCycle {
                     epoch: 0,
                     next_revision: context.revision.0,
+                    pending_deltas: HashMap::new(),
                     context,
                 },
             );
@@ -200,7 +216,7 @@ impl NativeReviewWorkerHandle {
                 // baseline. Retain the relationship so the later baseline propagates to it.
                 cycles: parent
                     .as_ref()
-                    .map(|parent| parent.cycles.clone())
+                    .map(|parent| review_worker_cycles_for_child(&parent.cycles))
                     .unwrap_or_default(),
                 current_work_cycle_id: parent.and_then(|parent| parent.current_work_cycle_id),
                 parent_session_id: Some(parent_session_id.clone()),
@@ -229,7 +245,7 @@ impl NativeReviewWorkerHandle {
                 .collect::<Vec<_>>();
             for child_id in child_ids {
                 if let Some(child) = registry.sessions.get_mut(&child_id) {
-                    child.cycles = parent.cycles.clone();
+                    child.cycles = review_worker_cycles_for_child(&parent.cycles);
                     child.current_work_cycle_id = parent.current_work_cycle_id.clone();
                 }
                 pending.push(child_id);
@@ -269,6 +285,43 @@ impl NativeReviewWorkerHandle {
         };
         for cycle in session.cycles.values_mut() {
             cycle.epoch = cycle.epoch.saturating_add(1);
+            cycle.pending_deltas.clear();
+        }
+    }
+
+    fn pending_delta(
+        &self,
+        reference: &NativeReviewDeltaReference,
+    ) -> Option<NativeReviewDeltaSummary> {
+        let registry = self.registry.lock().expect("review worker registry lock");
+        let delta = registry
+            .sessions
+            .get(&reference.session_id)
+            .and_then(|session| session.cycles.get(&reference.work_cycle_id))
+            .and_then(|cycle| cycle.pending_deltas.get(&reference.delta_id))?
+            .delta
+            .clone();
+        (delta.session_id == reference.session_id
+            && delta.work_cycle_id == reference.work_cycle_id
+            && delta.tool_call_id == reference.tool_call_id
+            && delta.input_revision == reference.input_revision
+            && delta.revision == reference.expected_revision)
+            .then_some(delta)
+    }
+
+    fn remove_pending_delta(
+        &self,
+        session_id: &SessionId,
+        work_cycle_id: &str,
+        delta_id: &ReviewDeltaId,
+    ) {
+        let mut registry = self.registry.lock().expect("review worker registry lock");
+        if let Some(cycle) = registry
+            .sessions
+            .get_mut(session_id)
+            .and_then(|session| session.cycles.get_mut(work_cycle_id))
+        {
+            cycle.pending_deltas.remove(delta_id);
         }
     }
 
@@ -330,9 +383,18 @@ fn materialize_review_worker_task(
             .filter(|cycle| cycle.epoch == task.epoch)
             .map(|cycle| cycle.context.clone())?
     };
+    let diffs = {
+        let registry = registry.lock().expect("review worker registry lock");
+        registry
+            .sessions
+            .get(&task.base.session_id)
+            .and_then(|session| session.cycles.get(&task.work_cycle_id))
+            .filter(|cycle| cycle.epoch == task.epoch)
+            .and_then(|cycle| cycle.pending_deltas.get(&task.delta_id))
+            .map(|pending| Arc::clone(&pending.diffs))?
+    };
     let updated_at = now();
-    let materialized_files = task
-        .diffs
+    let materialized_files = diffs
         .iter()
         .map(|diff| materialize_review_file(&context, diff, &task.base.session_id, &updated_at))
         .collect::<Vec<_>>();
@@ -523,6 +585,27 @@ struct ReviewWorkerCycle {
     context: ReviewBaselineContext,
     epoch: u64,
     next_revision: u64,
+    pending_deltas: HashMap<ReviewDeltaId, PendingReviewDelta>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingReviewDelta {
+    delta: NativeReviewDeltaSummary,
+    diffs: Arc<[NativeReviewRuntimeDiff]>,
+}
+
+fn review_worker_cycles_for_child(
+    cycles: &HashMap<String, ReviewWorkerCycle>,
+) -> HashMap<String, ReviewWorkerCycle> {
+    cycles
+        .iter()
+        .map(|(work_cycle_id, cycle)| {
+            let mut inherited = cycle.clone();
+            // A child inherits the baseline, not another session's queued payloads.
+            inherited.pending_deltas.clear();
+            (work_cycle_id.clone(), inherited)
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -535,7 +618,6 @@ enum NativeReviewWorkerCommand {
 struct NativeReviewWorkerTask {
     base: NativeAiEventBase,
     delta_id: ReviewDeltaId,
-    diffs: Vec<NativeReviewRuntimeDiff>,
     epoch: u64,
     input_revision: ReviewRevision,
     revision: ReviewRevision,
@@ -697,6 +779,11 @@ impl NativeReviewService {
             if !self.worker.handle.result_is_current(&result) {
                 continue;
             }
+            self.worker.handle.remove_pending_delta(
+                &result.delta.session_id,
+                &result.delta.work_cycle_id,
+                &result.delta.delta_id,
+            );
             let needs_inherited_cycle = self
                 .work_states
                 .get(&result.delta.session_id)
@@ -844,6 +931,12 @@ impl NativeReviewService {
         &self,
         input: NativeReviewLoadDeltaInput,
     ) -> Result<NativeReviewLoadDeltaOutput, NativeError> {
+        if let Some(delta) = self.worker.handle.pending_delta(&input.reference) {
+            return Ok(NativeReviewLoadDeltaOutput {
+                delta,
+                tracked_files: Vec::new(),
+            });
+        }
         let delta = self.resolve_reference(&input.reference)?;
         let tracked_files = self
             .work_states
@@ -1814,6 +1907,21 @@ mod tests {
             NativeReviewDeltaState::Preparing
         );
         assert_eq!(preparing.delta.files[0].observed_hash, None);
+        let pending = service
+            .load_delta(NativeReviewLoadDeltaInput {
+                reference: NativeReviewDeltaReference {
+                    delta_id: preparing.delta.delta_id.clone(),
+                    expected_revision: preparing.delta.revision,
+                    input_revision: preparing.delta.input_revision,
+                    observed_hashes: preparing.delta.files.clone(),
+                    session_id: preparing.delta.session_id.clone(),
+                    tool_call_id: preparing.delta.tool_call_id.clone(),
+                    work_cycle_id: preparing.delta.work_cycle_id.clone(),
+                },
+            })
+            .expect("load pending delta");
+        assert_eq!(pending.delta, preparing.delta);
+        assert!(pending.tracked_files.is_empty());
 
         let materialized = wait_for_worker_events(&mut service)
             .into_iter()
