@@ -409,7 +409,7 @@ describe("ChatTimelineHistoryRows", () => {
         root.unmount();
     });
 
-    it("restores the same semantic anchor after a retained tab is reactivated", () => {
+    it("restores the same semantic anchor after a chat remount", () => {
         const rows = createRows(3);
         const scrollContainer = document.createElement("div");
         const mountNode = document.createElement("div");
@@ -580,6 +580,7 @@ describe("ChatTimelineHistoryRows", () => {
         remountedRoot.unmount();
     });
     beforeEach(() => {
+        window.localStorage.clear();
         (
             globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
         ).IS_REACT_ACT_ENVIRONMENT = true;
@@ -618,6 +619,7 @@ describe("ChatTimelineHistoryRows", () => {
     });
 
     afterEach(() => {
+        window.localStorage.clear();
         useShellStore.setState({ isResizingPanel: false });
         vi.unstubAllGlobals();
         vi.restoreAllMocks();
@@ -963,7 +965,7 @@ describe("ChatTimelineHistoryRows", () => {
         expect(markup.match(/data-row-id=/g)).toHaveLength(2);
     });
 
-    it("keeps virtual layout but stops row measurements while retained and hidden", () => {
+    it("keeps virtual layout but stops row measurements while inactive", () => {
         const rows = createRows(SMALL_HISTORY_ROW_COUNT);
 
         const markup = renderHistoryRows(rows, false);

@@ -183,8 +183,8 @@ export const ChatTimelineHistoryRows = memo(
             useState(0);
         useEffect(() => {
             if (!semanticRestoreAnchor) {
-                // The same entry may be restored after reactivating a retained
-                // tab whose virtual geometry changed while it was hidden.
+                // A remounted timeline may need the same entry after its
+                // virtual geometry was discarded with the inactive view.
                 restoredSemanticAnchorKeyRef.current = null;
             }
         }, [semanticRestoreAnchor]);

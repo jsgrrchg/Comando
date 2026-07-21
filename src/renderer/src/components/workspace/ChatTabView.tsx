@@ -9,6 +9,8 @@ import {
     useState,
     type ReactNode,
     type RefObject,
+    type KeyboardEvent,
+    type PointerEvent,
     type TouchEvent,
     type WheelEvent,
 } from "react";
@@ -2076,6 +2078,33 @@ export const ChatTabView = memo(function ChatTabView({
         [cancelPendingChatViewRestore, cancelPendingScrollToBottom],
     );
 
+    const handleTimelinePointerDown = useCallback(() => {
+        // Scrollbar drags bypass wheel and touch handlers.
+        cancelPendingChatViewRestore();
+    }, [cancelPendingChatViewRestore]);
+
+    const handleTimelineKeyDown = useCallback(
+        (event: KeyboardEvent<HTMLDivElement>) => {
+            if (
+                ![
+                    "ArrowDown",
+                    "ArrowUp",
+                    "End",
+                    "Home",
+                    "PageDown",
+                    "PageUp",
+                    " ",
+                ].includes(event.key)
+            ) {
+                return;
+            }
+
+            // Keyboard navigation must beat an asynchronous anchor restore.
+            cancelPendingChatViewRestore();
+        },
+        [cancelPendingChatViewRestore],
+    );
+
     useEffect(() => {
         return () => {
             cancelPendingScrollToBottom();
@@ -2818,8 +2847,10 @@ export const ChatTabView = memo(function ChatTabView({
                     }
                     onRevealFileReference={handleRevealResolvedFileReference}
                     onScroll={handleScroll}
+                    onPointerDown={handleTimelinePointerDown}
                     onTouchStart={handleTimelineTouchStart}
                     onWheelCapture={handleTimelineWheelCapture}
+                    onKeyDown={handleTimelineKeyDown}
                     onJumpToBottom={handleJumpToBottom}
                     onVirtualRangeChange={handleTimelineVirtualRangeChange}
                     onVirtualResizeEnd={handleTimelineVirtualResizeEnd}
@@ -3346,6 +3377,8 @@ type ChatTimelineProps = {
     ) => void;
     readonly onOpenSession?: (sessionId: string) => Promise<void> | void;
     readonly onJumpToBottom: () => void;
+    readonly onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
+    readonly onPointerDown?: (event: PointerEvent<HTMLDivElement>) => void;
     readonly onRevealFileReference?: (
         reference: ResolvedProjectFileReference,
     ) => void;
@@ -3378,8 +3411,8 @@ function areChatTimelinePropsEqual(
     previous: Readonly<ChatTimelineProps>,
     next: Readonly<ChatTimelineProps>,
 ): boolean {
-    // Hidden warm views should retain their last committed DOM until they are
-    // activated again. The next active render receives the latest timeline.
+    // Inactive views normally unmount under the workspace budget. If teardown
+    // is deferred for one render, avoid reconciling an invisible timeline.
     if (!previous.active && !next.active) {
         return true;
     }
@@ -3414,6 +3447,8 @@ const ChatTimeline = memo(function ChatTimeline({
     onOpenResolvedFileReference,
     onOpenSession,
     onJumpToBottom,
+    onKeyDown,
+    onPointerDown,
     onRevealFileReference,
     onScroll,
     onTouchStart,
@@ -3453,6 +3488,8 @@ const ChatTimeline = memo(function ChatTimeline({
                     visible={showJumpToBottom}
                 />
             }
+            onKeyDown={onKeyDown}
+            onPointerDown={onPointerDown}
             onScroll={onScroll}
             onTouchStart={onTouchStart}
             onWheelCapture={onWheelCapture}
