@@ -706,22 +706,21 @@ export const ChatTabView = memo(function ChatTabView({
     useEffect(() => {
         if (
             active &&
-            focused &&
             latestSessionTabRef.current.sessionOpenMode === "history"
         ) {
             void ensureSession(latestSessionTabRef.current);
         }
-    }, [active, ensureSession, focused, sessionPreparationKey]);
+    }, [active, ensureSession, sessionPreparationKey]);
 
     useEffect(() => {
-        if (!active || !focused) return;
-        // A visible secondary pane keeps its current shell, but its transcript
-        // hydration must not compete with the pane the user is navigating.
+        if (!active) return;
+        // Every visible chat must hydrate its persisted transcript. Focus only
+        // controls speculative prefetch so split panes cannot show stale history.
         return chatActivationScheduler.activate(tab.id, async (phase) => {
             if (phase === "window") {
                 await hydrateTranscriptWindow(tab.sessionId);
             }
-            if (phase === "prefetch") {
+            if (phase === "prefetch" && focused) {
                 await prefetchTranscriptWindow(tab.sessionId, "backward");
             }
         });
