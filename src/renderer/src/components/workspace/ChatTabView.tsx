@@ -1590,14 +1590,39 @@ export const ChatTabView = memo(function ChatTabView({
     }, [writeProgrammaticScroll]);
 
     useEffect(() => {
-        if (!active || !semanticRestoreAnchor?.blockId) {
+        if (!active || !semanticRestoreAnchor) {
             return;
         }
         if (!transcriptWindow?.capabilityVersion) {
+            handleSemanticAnchorUnavailable();
             return;
         }
 
-        const blockId = semanticRestoreAnchor.blockId;
+        const blockId =
+            semanticRestoreAnchor.blockId ??
+            resolveTranscriptEntryBlockId(
+                transcriptWindow.blocksById,
+                semanticRestoreAnchor.entryId,
+            );
+        if (!blockId) {
+            handleSemanticAnchorUnavailable();
+            return;
+        }
+
+        // Hydration may discover a legacy anchor's block after activation.
+        semanticAnchorRef.current = {
+            ...semanticRestoreAnchor,
+            blockId,
+        };
+        if (semanticRestoreAnchor.blockId !== blockId) {
+            setSemanticRestoreAnchor((current) =>
+                current?.blockId === blockId
+                    ? current
+                    : current
+                      ? { ...current, blockId }
+                      : null,
+            );
+        }
         setTranscriptWindowAnchor(tab.sessionId, blockId, false);
         if (transcriptWindow.blocksById.has(blockId)) {
             return;
@@ -1745,8 +1770,8 @@ export const ChatTabView = memo(function ChatTabView({
                     ? isNearBottom(scrollEl)
                     : previousViewState?.isNearBottom ?? true);
 
-            // Retained chat views do not remount between tab switches, so keep
-            // the latest persisted position in memory for the next activation.
+            // Inactive chat views can unmount, so keep the last confirmed
+            // viewport available for the next activation.
             persistedViewStateRef.current = {
                 anchor: semanticAnchorRef.current,
                 isNearBottom: nextIsNearBottom,
@@ -1772,7 +1797,7 @@ export const ChatTabView = memo(function ChatTabView({
         ],
     );
 
-    const flushScheduledScrollPersist = useCallback((): {
+    const takeScheduledScrollPersist = useCallback((): {
         readonly isNearBottom: boolean | null;
         readonly scrollTop: number | null;
     } | null => {
@@ -1790,18 +1815,22 @@ export const ChatTabView = memo(function ChatTabView({
                   }
                 : null;
 
+        pendingPersistedNearBottomRef.current = null;
+        pendingPersistedScrollTopRef.current = null;
+
+        return pendingState;
+    }, []);
+
+    const flushScheduledScrollPersist = useCallback(() => {
+        const pendingState = takeScheduledScrollPersist();
         if (pendingState) {
             persistCurrentViewState({
                 isNearBottom: pendingState.isNearBottom ?? undefined,
                 scrollTop: pendingState.scrollTop ?? undefined,
             });
         }
-
-        pendingPersistedNearBottomRef.current = null;
-        pendingPersistedScrollTopRef.current = null;
-
         return pendingState;
-    }, [persistCurrentViewState]);
+    }, [persistCurrentViewState, takeScheduledScrollPersist]);
 
     const scheduleScrollPersist = useCallback(
         (scrollTop: number, nextIsNearBottom: boolean) => {
@@ -1946,7 +1975,7 @@ export const ChatTabView = memo(function ChatTabView({
         const persistViewStateOnDeactivate = () => {
             cancelled = true;
             cancelPendingScrollToBottom();
-            const flushedState = flushScheduledScrollPersist();
+            const flushedState = takeScheduledScrollPersist();
             persistCurrentViewState(
                 resolveChatScrollPersistenceState({
                     currentScrollTop: scrollEl.scrollTop,
@@ -1967,22 +1996,10 @@ export const ChatTabView = memo(function ChatTabView({
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
             const persistedAnchor = persistedViewStateRef.current?.anchor ?? null;
-            const semanticBlockId =
-                persistedAnchor?.blockId ??
-                (persistedAnchor
-                    ? resolveTranscriptEntryBlockId(
-                          transcriptWindow?.blocksById ?? new Map(),
-                          persistedAnchor.entryId,
-                      )
-                    : null);
-            if (persistedAnchor && semanticBlockId) {
-                const restoreAnchor = {
-                    ...persistedAnchor,
-                    blockId: semanticBlockId,
-                };
-                semanticAnchorRef.current = restoreAnchor;
+            if (persistedAnchor) {
+                semanticAnchorRef.current = persistedAnchor;
                 semanticRestoreFallbackScrollTopRef.current = restoreScrollTop;
-                setSemanticRestoreAnchor(restoreAnchor);
+                setSemanticRestoreAnchor(persistedAnchor);
             } else {
                 semanticRestoreFallbackScrollTopRef.current = null;
                 setSemanticRestoreAnchor(null);
@@ -1994,14 +2011,13 @@ export const ChatTabView = memo(function ChatTabView({
         return persistViewStateOnDeactivate;
     }, [
         cancelPendingScrollToBottom,
-        flushScheduledScrollPersist,
         isNearBottom,
         persistCurrentViewState,
         scrollToBottom,
+        takeScheduledScrollPersist,
         writeProgrammaticScroll,
         active,
         tab.sessionId,
-        transcriptWindow?.blocksById,
     ]);
 
     useLayoutEffect(() => {
