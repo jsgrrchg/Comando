@@ -4514,7 +4514,7 @@ fn prepare_ai_runtime_event_for_forwarding(
     preserve_diffs: bool,
 ) -> AiRuntimeEvent {
     if !history_persisted {
-        // The renderer needs the complete payload until the history record is durable.
+        // The renderer needs the original payload when its addressable detail was not stored.
         return event;
     }
     compact_tool_activity_event(event, preserve_diffs)
@@ -4988,6 +4988,24 @@ mod tests {
 
         assert_eq!(compacted.payload["diffs"], diffs);
         assert!(compacted.payload.get("rawInput").is_none());
+    }
+
+    #[test]
+    fn forwards_the_original_tool_payload_when_history_persistence_fails() {
+        let payload = json!({
+            "sessionId": "session-1",
+            "toolCallId": "edit-1",
+            "diffs": [{ "path": "src/app.ts", "newText": "after", "oldText": "before" }],
+            "rawInput": { "path": "src/app.ts" },
+            "rawOutput": { "updated": true },
+            "terminalOutput": "done"
+        });
+        let event = AiRuntimeEvent::new(AI_TOOL_ACTIVITY_EVENT, &payload);
+
+        let forwarded = prepare_ai_runtime_event_for_forwarding(event, false, false);
+
+        assert_eq!(forwarded.payload, payload);
+        assert!(forwarded.payload.get("toolActivityDetailId").is_none());
     }
 
     #[test]
