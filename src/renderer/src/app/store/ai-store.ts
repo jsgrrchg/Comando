@@ -43,6 +43,10 @@ import type {
     SecretValuePatch,
 } from "@shared/ipc";
 import { serializeComposerMessagePartsForDisplay } from "@shared/composer-display-markers";
+import {
+    attachNativeReviewDeltaToTrackedFile,
+} from "@shared/ai-review-delta";
+import { normalizeAiSessionStatusTitle } from "@shared/ai-session-events";
 import { getAiTranscriptToolEntryId } from "@shared/ai-transcript";
 import {
     deriveTrackedFilesFromActionLog,
@@ -3572,7 +3576,7 @@ function createSessionSnapshotFromEvent(
         event.kind === "session-info" || event.kind === "subagent-created"
             ? event.title
             : event.kind === "status"
-              ? (normalizeSessionStatusTitle(event.title) ?? "AI Session")
+              ? (normalizeAiSessionStatusTitle(event.title) ?? "AI Session")
             : "AI Session";
     const modelId =
         event.kind === "subagent-created"
@@ -3615,16 +3619,6 @@ function createSessionSnapshotFromEvent(
         updatedAt: event.updatedAt,
         worktreeId: event.kind === "session-info" ? event.worktreeId : null,
     };
-}
-
-function normalizeSessionStatusTitle(
-    title: string | null | undefined,
-): string | null {
-    if (typeof title !== "string") {
-        return null;
-    }
-    const trimmed = title.trim();
-    return trimmed.length > 0 ? trimmed : null;
 }
 
 function applySessionDomainEventToSnapshot(
@@ -3703,7 +3697,7 @@ function applySessionDomainEventToSnapshot(
                 updatedAt: event.updatedAt,
             };
         case "status": {
-            const title = normalizeSessionStatusTitle(event.title);
+            const title = normalizeAiSessionStatusTitle(event.title);
             return {
                 ...snapshot,
                 activeTurnStartedAt: event.activeTurnStartedAt,
@@ -4066,15 +4060,9 @@ function applyHydratedReviewDelta(
     if (!session || !snapshot || currentDelta?.revision !== delta.revision) {
         return state;
     }
-    const hydrated = trackedFiles.map((file) => ({
-        ...file,
-        nativeReviewDeltaId: delta.deltaId,
-        nativeReviewInputRevision: delta.inputRevision,
-        nativeReviewState: delta.state,
-        nativeReviewWorkCycleId: delta.workCycleId,
-        toolCallId: delta.toolCallId,
-        version: delta.revision,
-    }));
+    const hydrated = trackedFiles.map((file) =>
+        attachNativeReviewDeltaToTrackedFile(file, delta),
+    );
     const hydratedPaths = new Set(
         hydrated.flatMap((file) => [
             file.path,

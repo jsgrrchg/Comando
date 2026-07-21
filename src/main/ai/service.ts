@@ -59,7 +59,6 @@ import {
     nativeAiToolActivityDetailToIpc,
     nativeReviewTrackedFileToIpc,
 } from "@shared/native-backend/adapters";
-import type { NativeReviewDeltaReference } from "@shared/native-backend";
 import {
     computeDiffHunks,
     getTrackedFileCurrentText,
@@ -68,6 +67,11 @@ import {
     resolveTrackedFileHunks,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
+import {
+    attachNativeReviewDeltaToTrackedFile,
+    toNativeReviewDeltaReference,
+} from "@shared/ai-review-delta";
+import { normalizeAiSessionStatusTitle } from "@shared/ai-session-events";
 import {
     beginReviewWorkCycle,
     consolidateReviewDiffs,
@@ -3548,7 +3552,7 @@ export class AiService {
         }
 
         if (event.kind === "status") {
-            const title = normalizeSessionStatusTitle(event.title);
+            const title = normalizeAiSessionStatusTitle(event.title);
             return {
                 ...base,
                 activeTurnStartedAt: event.activeTurnStartedAt,
@@ -4037,7 +4041,7 @@ export class AiService {
         }
         const nativeAi = this.#requireNativeReviewGateway("loadReviewDelta");
         const output = await nativeAi.loadReviewDelta(
-            nativeReviewDeltaReference(delta),
+            toNativeReviewDeltaReference(delta),
         );
         if (
             output.delta.deltaId !== reviewDeltaId ||
@@ -4520,7 +4524,7 @@ export class AiService {
             );
             if (details) {
                 const hydrated = details.trackedFiles.map((file) =>
-                    attachNativeReviewReference(file, delta),
+                    attachNativeReviewDeltaToTrackedFile(file, delta),
                 );
                 const hydratedPaths = new Set(
                     hydrated.flatMap((file) => [
@@ -4602,7 +4606,7 @@ export class AiService {
                 }
 
                 const hydrated = details.trackedFiles.map((file) =>
-                    attachNativeReviewReference(file, details.delta),
+                    attachNativeReviewDeltaToTrackedFile(file, details.delta),
                 );
                 const hydratedPaths = new Set(
                     hydrated.flatMap((file) => [
@@ -6038,16 +6042,6 @@ export class AiService {
     }
 }
 
-function normalizeSessionStatusTitle(
-    title: string | null | undefined,
-): string | null {
-    if (typeof title !== "string") {
-        return null;
-    }
-    const trimmed = title.trim();
-    return trimmed.length > 0 ? trimmed : null;
-}
-
 function isTerminalNativeReviewActivityStatus(
     status: AiToolActivity["status"],
 ): boolean {
@@ -6865,20 +6859,6 @@ function createReviewWorkCycleId(sessionId: string, messageId: string): string {
     return `review-cycle:${sessionId}:${messageId}`;
 }
 
-function nativeReviewDeltaReference(
-    delta: AiReviewDeltaSummary,
-): NativeReviewDeltaReference {
-    return {
-        deltaId: delta.deltaId,
-        expectedRevision: delta.revision,
-        inputRevision: delta.inputRevision,
-        observedHashes: delta.files,
-        sessionId: delta.sessionId,
-        toolCallId: delta.toolCallId,
-        workCycleId: delta.workCycleId,
-    };
-}
-
 function nativeReviewFileIdentity(path: string): string {
     return `native-review:${path}`;
 }
@@ -7027,7 +7007,7 @@ function applyNativeReviewDeltaSnapshot(
                 (previous.oldText !== null || previous.newText !== null)
             ) {
                 // Keep the provisional content on screen until the newer revision hydrates.
-                return attachNativeReviewReference(
+                return attachNativeReviewDeltaToTrackedFile(
                     {
                         ...previous,
                         nativeReviewState: file.state,
@@ -7118,21 +7098,6 @@ function filterNativeReviewDeltaTrackedFiles(
             activePaths.has(file.path) ||
             (file.previousPath !== null && activePaths.has(file.previousPath)),
     );
-}
-
-function attachNativeReviewReference(
-    file: AiTrackedFile,
-    delta: AiReviewDeltaSummary,
-): AiTrackedFile {
-    return {
-        ...file,
-        nativeReviewDeltaId: delta.deltaId,
-        nativeReviewInputRevision: delta.inputRevision,
-        nativeReviewState: delta.state,
-        nativeReviewWorkCycleId: delta.workCycleId,
-        toolCallId: delta.toolCallId,
-        version: delta.revision,
-    };
 }
 
 function nativeReviewSummaryToTrackedFile(

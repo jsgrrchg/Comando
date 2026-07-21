@@ -43,6 +43,7 @@ import type {
     ListAiSessionHistoryInput,
 } from "@shared/ipc";
 import { AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX } from "@shared/ipc";
+import { toNativeReviewDeltaReference } from "@shared/ai-review-delta";
 import {
     getNativeAiTranscriptBlockCapabilityVersion,
     NATIVE_AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
@@ -1305,21 +1306,7 @@ function nativeReviewReferenceForTrackedFile(
     const delta = snapshot.reviewDeltas?.find(
         (candidate) => candidate.deltaId === deltaId,
     );
-    return delta ? nativeReviewDeltaReference(delta) : null;
-}
-
-function nativeReviewDeltaReference(
-    delta: NonNullable<AiSessionSnapshot["reviewDeltas"]>[number],
-): NativeReviewDeltaReference {
-    return {
-        deltaId: delta.deltaId,
-        expectedRevision: delta.revision,
-        inputRevision: delta.inputRevision,
-        observedHashes: delta.files,
-        sessionId: delta.sessionId,
-        toolCallId: delta.toolCallId,
-        workCycleId: delta.workCycleId,
-    };
+    return delta ? toNativeReviewDeltaReference(delta) : null;
 }
 
 function reviewMutationResultFromContext<TInput>(
