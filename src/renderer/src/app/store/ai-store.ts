@@ -43,6 +43,7 @@ import type {
     SecretValuePatch,
 } from "@shared/ipc";
 import { serializeComposerMessagePartsForDisplay } from "@shared/composer-display-markers";
+import { getAiTranscriptToolEntryId } from "@shared/ai-transcript";
 import {
     deriveTrackedFilesFromActionLog,
     isReviewTargetVersionCurrent,
@@ -324,6 +325,7 @@ interface AiStore {
     hydrateToolActivityDetail: (
         sessionId: string,
         activityId: string,
+        activity?: AiToolActivity,
     ) => Promise<void>;
     keepAllTrackedFiles: (sessionId: string) => Promise<void>;
     keepTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
@@ -1002,13 +1004,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
         );
     },
 
-    hydrateToolActivityDetail: async (sessionId, activityId) => {
-        const snapshot = get().sessions[sessionId]?.snapshot;
-        const activity = snapshot?.toolActivity.find(
-            (candidate) => candidate.id === activityId,
-        );
+    hydrateToolActivityDetail: async (sessionId, activityId, activityHint) => {
+        const session = get().sessions[sessionId];
+        const snapshot = session?.snapshot;
+        const activity =
+            snapshot?.toolActivity.find(
+                (candidate) => candidate.id === activityId,
+            ) ?? activityHint;
         if (
-            !snapshot ||
             !activity?.toolActivityDetailId ||
             (activity.status !== "completed" && activity.status !== "failed") ||
             hasToolActivityDetail(activity)
@@ -1035,6 +1038,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                         state,
                         sessionId,
                         activityId,
+                        activity,
                         detail,
                     ),
                 );
@@ -2005,7 +2009,15 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 const payloadsByRef = new Map(current.payloadsByRef);
                 for (const payloadRef of refs) {
                     const payload = result.get(payloadRef);
-                    if (payload) payloadsByRef.set(payloadRef, payload);
+                    if (payload) {
+                        payloadsByRef.set(
+                            payloadRef,
+                            preserveHydratedToolPayload(
+                                payloadsByRef.get(payloadRef),
+                                payload,
+                            ),
+                        );
+                    }
                     else payloadsByRef.delete(payloadRef);
                 }
                 return {
@@ -3918,14 +3930,16 @@ function applyHydratedToolActivityDetail(
     state: AiStore,
     sessionId: string,
     activityId: string,
+    activityHint: AiToolActivity,
     detail: AiToolActivityDetail,
 ): AiStore | Pick<AiStore, "sessions"> {
     const session = state.sessions[sessionId];
     const snapshot = session?.snapshot;
-    const activity = snapshot?.toolActivity.find(
+    const snapshotActivity = snapshot?.toolActivity.find(
         (candidate) => candidate.id === activityId,
     );
-    if (!session || !snapshot || !activity) {
+    const activity = snapshotActivity ?? activityHint;
+    if (!session) {
         return state;
     }
     const hydratedActivity: AiToolActivity = {
@@ -3935,24 +3949,33 @@ function applyHydratedToolActivityDetail(
         rawOutputJson: detail.rawOutputJson ?? activity.rawOutputJson,
         terminalOutput: detail.terminalOutput ?? activity.terminalOutput,
     };
-    const nextSnapshot = {
-        ...snapshot,
-        toolActivity: snapshot.toolActivity.map((candidate) =>
-            candidate.id === activityId ? hydratedActivity : candidate,
-        ),
-    };
-    const nextTranscript = applyAiSessionDomainEventToTranscript(
-        session.transcript,
-        {
-            activity: hydratedActivity,
-            kind: "tool-activity",
-            origin: "restore",
-            parentSessionId: snapshot.parentSessionId ?? null,
-            runtimeId: snapshot.runtimeId,
-            runtimeSessionId: snapshot.runtimeSessionId,
-            sessionId,
-            updatedAt: hydratedActivity.updatedAt,
-        },
+    const nextSnapshot =
+        snapshot && snapshotActivity
+            ? {
+                  ...snapshot,
+                  toolActivity: snapshot.toolActivity.map((candidate) =>
+                      candidate.id === activityId ? hydratedActivity : candidate,
+                  ),
+              }
+            : snapshot;
+    const nextTranscript =
+        snapshot && snapshotActivity
+            ? applyAiSessionDomainEventToTranscript(session.transcript, {
+                  activity: hydratedActivity,
+                  kind: "tool-activity",
+                  origin: "restore",
+                  parentSessionId: snapshot.parentSessionId ?? null,
+                  runtimeId: snapshot.runtimeId,
+                  runtimeSessionId: snapshot.runtimeSessionId,
+                  sessionId,
+                  updatedAt: hydratedActivity.updatedAt,
+              })
+            : session.transcript;
+    const transcriptWindow = applyHydratedToolActivityPayload(
+        session.transcriptWindow,
+        sessionId,
+        activityId,
+        hydratedActivity,
     );
     return {
         sessions: {
@@ -3961,9 +3984,72 @@ function applyHydratedToolActivityDetail(
                 ...session,
                 snapshot: nextSnapshot,
                 transcript: nextTranscript,
+                transcriptWindow,
             },
         },
     };
+}
+
+function applyHydratedToolActivityPayload(
+    window: AiTranscriptWindowClientState,
+    sessionId: string,
+    activityId: string,
+    activity: AiToolActivity,
+): AiTranscriptWindowClientState {
+    const entryId = getAiTranscriptToolEntryId(sessionId, activityId);
+    const payloadRef = [...window.blocksById.values()]
+        .flatMap((block) => block.entries)
+        .find((entry) => entry.id === entryId)?.payloadRef;
+    if (!payloadRef) {
+        return window;
+    }
+
+    const existing = window.payloadsByRef.get(payloadRef);
+    const payload: AiTranscriptPayload = {
+        byteLength: existing?.byteLength ?? 0,
+        capabilityVersion:
+            existing?.capabilityVersion ?? window.capabilityVersion ?? 0,
+        contentHash: existing?.contentHash ?? `hydrated:${payloadRef}`,
+        payloadRef,
+        sessionId,
+        transcriptRevision:
+            existing?.transcriptRevision ?? window.transcriptRevision ?? 0,
+        // Detail records are canonical for compact tool events. Keep them in the
+        // resident block projection so an Edit remains reviewable after eviction.
+        value: { activity, kind: "tool" },
+    };
+    const payloadsByRef = new Map(window.payloadsByRef);
+    payloadsByRef.set(payloadRef, payload);
+    return { ...window, payloadsByRef };
+}
+
+function preserveHydratedToolPayload(
+    existing: AiTranscriptPayload | undefined,
+    incoming: AiTranscriptPayload,
+): AiTranscriptPayload {
+    if (
+        !existing ||
+        !isTranscriptToolActivityPayload(existing.value) ||
+        !isTranscriptToolActivityPayload(incoming.value) ||
+        !hasToolActivityDetail(existing.value.activity)
+    ) {
+        return incoming;
+    }
+
+    // Transcript payloads may be compact while their separately stored detail
+    // was already restored. Never let that compact reread erase an open review.
+    return existing;
+}
+
+function isTranscriptToolActivityPayload(
+    value: unknown,
+): value is { readonly activity: AiToolActivity; readonly kind: "tool" } {
+    return (
+        typeof value === "object" &&
+        value !== null &&
+        (value as { readonly kind?: unknown }).kind === "tool" &&
+        "activity" in value
+    );
 }
 
 function applyHydratedReviewDelta(

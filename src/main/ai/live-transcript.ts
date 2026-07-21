@@ -940,6 +940,8 @@ function createToolEntry(
                 label: activity.title,
                 preview: activity.summary,
                 status: activity.status,
+                toolActivityDetailId: activity.toolActivityDetailId,
+                toolKind: activity.kind,
             },
             updatedAt,
         },

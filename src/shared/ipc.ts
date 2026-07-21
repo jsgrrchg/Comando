@@ -2750,6 +2750,10 @@ export interface AiTranscriptEntrySummary {
     readonly label: string | null;
     readonly preview: string | null;
     readonly status: string | null;
+    // Tool entries retain this lightweight identity so an evicted payload can
+    // still be classified and reloaded as an editable change.
+    readonly toolActivityDetailId?: string | null;
+    readonly toolKind?: string | null;
 }
 
 export interface AiTranscriptEntryEnvelope {

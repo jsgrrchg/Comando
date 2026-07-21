@@ -26,8 +26,17 @@ export class ChatPresentationErrorBoundary extends Component<
         return { error };
     }
 
-    componentDidCatch(_error: Error, info: ErrorInfo): void {
+    componentDidCatch(error: Error, info: ErrorInfo): void {
+        // Keep the original exception available in production consoles; the
+        // fallback must isolate a broken view without making it opaque.
+        console.error("[comando] Chat presentation failed to render.", error, {
+            componentStack: info.componentStack,
+            fallbackKind: this.props.fallbackKind,
+            identity: this.props.identity,
+        });
         recordProbeLifecycleEvent("ChatPresentationError", "mount", {
+            errorMessage: error.message.slice(0, 240),
+            errorName: error.name,
             fallbackKind: this.props.fallbackKind,
             hasComponentStack: Boolean(info.componentStack),
         });

@@ -385,6 +385,8 @@ export type NativeAiTranscriptEntryEnvelope = {
         readonly label: string | null;
         readonly preview: string | null;
         readonly status: string | null;
+        readonly toolActivityDetailId?: string | null;
+        readonly toolKind?: string | null;
     };
     readonly payloadRef: string | null;
 };

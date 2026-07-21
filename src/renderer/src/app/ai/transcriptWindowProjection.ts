@@ -346,7 +346,7 @@ function createTranscriptToolSummary(
         diffs: [],
         exitCode: null,
         id: toolActivityIdForTranscriptEntry(entry),
-        kind: "tool",
+        kind: entry.summary.toolKind ?? "tool",
         locations: [],
         rawInputJson: null,
         rawOutputJson: null,
@@ -358,6 +358,12 @@ function createTranscriptToolSummary(
         summary: entry.summary.preview,
         terminalOutput: null,
         title: entry.summary.label ?? "Tool activity",
+        // Older sealed blocks predate the summary fields. The backend has used
+        // this stable key for detail records, so retain backwards-compatible
+        // recovery without inflating the transcript payload.
+        toolActivityDetailId:
+            entry.summary.toolActivityDetailId ??
+            `tool-detail:${entry.sessionId}:${toolActivityIdForTranscriptEntry(entry)}`,
         updatedAt: entry.updatedAt,
     };
 }

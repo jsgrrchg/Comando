@@ -291,6 +291,110 @@ describe("ai-store queue", () => {
         expect(session?.transcript.toolActivity[0]).toMatchObject(detail);
     });
 
+    it("hydrates a sealed editable tool into its resident transcript payload", async () => {
+        const activity = createToolActivity({
+            diffs: [],
+            id: "sealed-edit",
+            kind: "edit",
+            locations: [],
+            status: "completed",
+            toolActivityDetailId: "detail:sealed-edit",
+        });
+        const payloadRef = "payload:sealed-edit";
+        const detail = {
+            diffs: [
+                {
+                    hunks: createTrackedFile().hunks,
+                    isText: true,
+                    kind: "update" as const,
+                    newText: "after\n",
+                    oldText: "before\n",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            rawInputJson: null,
+            rawOutputJson: null,
+            terminalOutput: null,
+        };
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    loadAiToolActivityDetail: vi.fn().mockResolvedValue(detail),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(createSnapshot());
+        const metadata: AiTranscriptBlockMetadata = {
+            blockId: "block-sealed-edit",
+            endSequence: 1,
+            entryCount: 1,
+            estimatedHeight: 80,
+            estimatedRowCount: 1,
+            firstCreatedAt: activity.createdAt,
+            lastCreatedAt: activity.updatedAt,
+            revision: 1,
+            sessionId: TAB.sessionId,
+            startSequence: 1,
+        };
+        const block: AiTranscriptBlock = {
+            ...metadata,
+            capabilityVersion: 1,
+            entries: [
+                {
+                    createdAt: activity.createdAt,
+                    id: `tool:${TAB.sessionId}:${activity.id}`,
+                    kind: "tool",
+                    payloadRef,
+                    sequence: 1,
+                    sessionId: TAB.sessionId,
+                    summary: {
+                        label: activity.title,
+                        preview: activity.summary,
+                        status: activity.status,
+                        toolActivityDetailId: activity.toolActivityDetailId,
+                        toolKind: activity.kind,
+                    },
+                    updatedAt: activity.updatedAt,
+                },
+            ],
+            transcriptRevision: 1,
+        };
+        useAiStore.setState((state) => {
+            const session = state.sessions[TAB.sessionId];
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [TAB.sessionId]: {
+                        ...session,
+                        transcriptWindow: {
+                            ...session.transcriptWindow,
+                            blocksById: new Map([[metadata.blockId, block]]),
+                            capabilityVersion: 1,
+                            metadata: [metadata],
+                            transcriptRevision: 1,
+                        },
+                    },
+                },
+            };
+        });
+
+        await useAiStore
+            .getState()
+            .hydrateToolActivityDetail(TAB.sessionId, activity.id, activity);
+
+        const payload = useAiStore
+            .getState()
+            .sessions[TAB.sessionId]?.transcriptWindow.payloadsByRef.get(payloadRef);
+        expect(payload?.value).toMatchObject({
+            activity: detail,
+            kind: "tool",
+        });
+    });
+
     it("replaces native review placeholders with hydrated tracked files", async () => {
         const delta = {
             deltaId: "delta-1",

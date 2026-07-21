@@ -2177,14 +2177,12 @@ export const ToolActivityItem = memo(function ToolActivityItem({
         if (!activity.toolActivityDetailId) {
             return;
         }
-        void hydrateToolActivityDetail(activity.sessionId, activity.id);
-    }, [
-        activity.id,
-        activity.sessionId,
-        activity.status,
-        activity.toolActivityDetailId,
-        hydrateToolActivityDetail,
-    ]);
+        void hydrateToolActivityDetail(
+            activity.sessionId,
+            activity.id,
+            activity,
+        );
+    }, [activity, hydrateToolActivityDetail]);
     const pendingTrackedFiles = trackedFiles.filter(
         isAiTrackedFileUnresolved,
     );

@@ -543,6 +543,10 @@ pub struct NativeAiTranscriptEntrySummary {
     pub label: Option<String>,
     pub preview: Option<String>,
     pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_activity_detail_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
