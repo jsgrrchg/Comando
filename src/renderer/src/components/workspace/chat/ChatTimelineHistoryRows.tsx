@@ -181,6 +181,13 @@ export const ChatTimelineHistoryRows = memo(
         const [virtualListVersion, setVirtualListVersion] = useState(0);
         const [contentMeasurementWidth, setContentMeasurementWidth] =
             useState(0);
+        useEffect(() => {
+            if (!semanticRestoreAnchor) {
+                // The same entry may be restored after reactivating a retained
+                // tab whose virtual geometry changed while it was hidden.
+                restoredSemanticAnchorKeyRef.current = null;
+            }
+        }, [semanticRestoreAnchor]);
         const trailingUserRowId = getTrailingUserRowId(historyRows);
         const shouldPreserveVirtualMeasureAnchorForItem = useCallback(
             (row: TranscriptTimelineItem) => {

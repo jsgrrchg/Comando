@@ -404,6 +404,44 @@ describe("ChatTimelineHistoryRows", () => {
         root.unmount();
     });
 
+    it("restores the same semantic anchor after a retained tab is reactivated", () => {
+        const rows = createRows(3);
+        const scrollContainer = document.createElement("div");
+        const mountNode = document.createElement("div");
+        document.body.append(scrollContainer, mountNode);
+        const root = createRoot(mountNode);
+        const anchor = {
+            entryId: rows[1]?.id ?? "",
+            offsetWithinEntry: 14,
+        };
+        const render = (semanticRestoreAnchor: typeof anchor | null) => (
+            <ChatTimelineHistoryRows
+                historyRows={rows}
+                hotTailRowId={null}
+                hotTailRows={[]}
+                renderRow={({ row }) => <div>{row.id}</div>}
+                renderStreamingIndicator={() => <div>Streaming</div>}
+                scrollRef={{ current: scrollContainer }}
+                semanticAnchorBlockLoaded
+                semanticRestoreAnchor={semanticRestoreAnchor}
+                showStreamingIndicator={false}
+            />
+        );
+
+        act(() => {
+            root.render(render(anchor));
+        });
+        act(() => {
+            root.render(render(null));
+        });
+        act(() => {
+            root.render(render(anchor));
+        });
+
+        expect(mockScrollToIndex).toHaveBeenCalledTimes(2);
+        root.unmount();
+    });
+
     it("falls back only after the anchor block is resident without its entry", () => {
         const rows = createRows(2);
         const scrollContainer = document.createElement("div");

@@ -449,7 +449,6 @@ export const ChatTabView = memo(function ChatTabView({
     const scrollPersistTimerRef = useRef<number | null>(null);
     const pendingPersistedScrollTopRef = useRef<number | null>(null);
     const pendingPersistedNearBottomRef = useRef<boolean | null>(null);
-    const hasActivatedViewRef = useRef(false);
     const stableTimelineRef = useRef<{
         readonly activeTurnStartedAt: string | null;
         readonly attentionToolCallIds: ReadonlySet<string>;
@@ -1944,9 +1943,6 @@ export const ChatTabView = memo(function ChatTabView({
             };
         }
 
-        const wasPreviouslyActivated = hasActivatedViewRef.current;
-        hasActivatedViewRef.current = true;
-
         const persistViewStateOnDeactivate = () => {
             cancelled = true;
             cancelPendingScrollToBottom();
@@ -1961,12 +1957,6 @@ export const ChatTabView = memo(function ChatTabView({
                 }),
             );
         };
-
-        // A retained view already owns the correct DOM scroll position. Avoid
-        // forcing layout and scheduling follow-up frames on every tab switch.
-        if (wasPreviouslyActivated) {
-            return persistViewStateOnDeactivate;
-        }
 
         if (shouldRestoreBottom) {
             shouldAutoFollowRef.current = true;
