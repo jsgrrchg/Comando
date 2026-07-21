@@ -6,7 +6,6 @@ use comando_types::git::{
 
 use crate::branches::{GitBranchListScope, list_branches};
 use crate::error::GitResult;
-use crate::remotes::list_remotes;
 use crate::repository::{repository_id, resolve_repository};
 use crate::runner::GitRunner;
 use crate::status::{empty_status_snapshot, get_status};
@@ -47,13 +46,6 @@ pub fn get_repository_snapshot(
     let status = get_status(runner, &root_path, scope.worktree_id.clone())?;
     let sync = status.sync.as_ref();
     let branches = list_branches(runner, &root_path, GitBranchListScope::All, sync)?;
-    let remotes = list_remotes(
-        runner,
-        &root_path,
-        sync.and_then(|sync| sync.tracking_branch_name.as_deref()),
-        sync.map(|sync| sync.ahead).unwrap_or(0),
-        sync.map(|sync| sync.behind).unwrap_or(0),
-    );
     let worktrees = list_worktrees(
         runner,
         &root_path,
@@ -75,7 +67,8 @@ pub fn get_repository_snapshot(
         resolution,
         branch,
         branches,
-        remotes,
+        // The main IPC adapter enriches remotes, so avoid duplicate subprocesses here.
+        remotes: Vec::new(),
         changes: status.entries.clone(),
         status,
         worktrees,
