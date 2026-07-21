@@ -2633,6 +2633,7 @@ export interface AiTrackedFile {
     readonly kind: "create" | "delete" | "move" | "update";
     readonly nativeReviewDeltaId?: string;
     readonly nativeReviewInputRevision?: number;
+    readonly nativeReviewState?: AiReviewDeltaState;
     readonly nativeReviewWorkCycleId?: string;
     readonly newText: string | null;
     readonly oldText: string | null;

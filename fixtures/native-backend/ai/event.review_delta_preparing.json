@@ -1,0 +1,30 @@
+{
+  "type": "event",
+  "eventName": "ai://review-delta-ready",
+  "payload": {
+    "sessionId": "session_1",
+    "runtimeId": "opencode",
+    "runtimeSessionId": "runtime_session_1",
+    "updatedAt": "2026-07-20T00:00:00.000Z",
+    "delta": {
+      "deltaId": "delta_preparing_1",
+      "sessionId": "session_1",
+      "workCycleId": "cycle_1",
+      "toolCallId": "tool_1",
+      "inputRevision": 3,
+      "revision": 3,
+      "state": "preparing",
+      "files": [
+        {
+          "path": "src/main.ts",
+          "state": "preparing"
+        }
+      ],
+      "updatedAt": "2026-07-20T00:00:00.000Z"
+    }
+  },
+  "meta": {
+    "protocolVersion": 1,
+    "emittedAt": "2026-07-20T00:00:00.000Z"
+  }
+}

@@ -359,6 +359,75 @@ describe("ai-store queue", () => {
         expect(releaseAiReviewDelta).toHaveBeenCalledWith(delta.deltaId);
     });
 
+    it("hydrates bounded provisional review diffs before materialization completes", async () => {
+        const delta = {
+            deltaId: "delta-preparing",
+            files: [{ path: "src/app.ts", state: "preparing" as const }],
+            inputRevision: 4,
+            revision: 4,
+            sessionId: TAB.sessionId,
+            state: "preparing" as const,
+            toolCallId: "tool-review",
+            updatedAt: "2026-04-14T00:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+        const provisionalFile = createTrackedFile({
+            hunks: [],
+            identityKey: "native:src/app.ts",
+            newText: "after\n",
+            oldText: "before\n",
+            toolCallId: "tool-review",
+        });
+        const loadAiReviewDelta = vi.fn().mockResolvedValue({
+            delta,
+            trackedFiles: [provisionalFile],
+        });
+        const releaseAiReviewDelta = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: { loadAiReviewDelta, releaseAiReviewDelta },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                reviewDeltas: [delta],
+                trackedFiles: [
+                    createTrackedFile({
+                        hunks: [],
+                        identityKey: "native-review:src/app.ts",
+                        nativeReviewDeltaId: delta.deltaId,
+                        nativeReviewInputRevision: delta.inputRevision,
+                        nativeReviewState: "preparing",
+                        nativeReviewWorkCycleId: delta.workCycleId,
+                        newText: null,
+                        oldText: null,
+                        toolCallId: delta.toolCallId,
+                        version: delta.revision,
+                    }),
+                ],
+            }),
+        );
+
+        await useAiStore.getState().hydrateReviewDeltas(TAB.sessionId);
+
+        expect(loadAiReviewDelta).toHaveBeenCalledWith({
+            expectedRevision: delta.revision,
+            reviewDeltaId: delta.deltaId,
+            sessionId: TAB.sessionId,
+        });
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.snapshot
+                ?.trackedFiles[0],
+        ).toMatchObject({
+            hunks: [],
+            newText: "after\n",
+            oldText: "before\n",
+            nativeReviewState: "preparing",
+        });
+    });
+
     it("hydrates complete payloads for visible block-native transcript windows", async () => {
         const metadata = [1, 2, 3].map((index) => ({
             blockId: `block-${index}`,

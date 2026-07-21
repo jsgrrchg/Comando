@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::Instant;
 
 use comando_ai::session::NativeAiSession;
 use comando_diff::{
@@ -23,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const MAX_REVIEW_TEXT_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_PENDING_REVIEW_TEXT_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct NativeReviewService {
@@ -89,34 +91,70 @@ impl Drop for NativeReviewWorker {
 impl NativeReviewWorkerHandle {
     pub fn ingest_tool_activity(
         &self,
-        payload: NativeAiToolActivityPayload,
-    ) -> Option<NativeAiReviewDeltaReadyPayload> {
+        mut payload: NativeAiToolActivityPayload,
+    ) -> Vec<NativeAiReviewDeltaReadyPayload> {
+        let received_at = Instant::now();
         if !is_terminal_review_activity(&payload) {
-            return None;
+            return Vec::new();
         }
-        let diffs = Arc::<[NativeReviewRuntimeDiff]>::from(
+        let diffs = Arc::<[NativeReviewRuntimeDiff]>::from(bound_review_runtime_diffs(
             payload
                 .diffs
-                .into_iter()
-                .filter_map(|diff| serde_json::from_value::<NativeReviewRuntimeDiff>(diff).ok())
-                .map(bound_review_runtime_diff)
-                .collect::<Vec<_>>(),
-        );
+                .drain(..)
+                .filter_map(|diff| serde_json::from_value::<NativeReviewRuntimeDiff>(diff).ok()),
+        ));
         if diffs.is_empty() {
-            return None;
+            return Vec::new();
         }
         let tool_call_id = payload.tool_call_id.clone();
 
         let mut registry = self.registry.lock().expect("review worker registry lock");
         let Some(session) = registry.sessions.get_mut(&payload.base.session_id) else {
-            return None;
+            let unavailable = unavailable_activity_delta(
+                &payload,
+                &diffs,
+                ReviewUnavailableReason::BaselineUnavailable,
+            );
+            record_review_delta(
+                "sidecar.review-placeholder",
+                received_at,
+                &unavailable.delta,
+            );
+            return vec![unavailable];
         };
         let Some(work_cycle_id) = session.current_work_cycle_id.clone() else {
-            return None;
+            let unavailable = unavailable_activity_delta(
+                &payload,
+                &diffs,
+                ReviewUnavailableReason::BaselineUnavailable,
+            );
+            record_review_delta(
+                "sidecar.review-placeholder",
+                received_at,
+                &unavailable.delta,
+            );
+            return vec![unavailable];
         };
         let Some(cycle) = session.cycles.get_mut(&work_cycle_id) else {
-            return None;
+            let unavailable = unavailable_activity_delta(
+                &payload,
+                &diffs,
+                ReviewUnavailableReason::BaselineUnavailable,
+            );
+            record_review_delta(
+                "sidecar.review-placeholder",
+                received_at,
+                &unavailable.delta,
+            );
+            return vec![unavailable];
         };
+        let mut outputs = supersede_fully_replaced_pending_deltas(cycle, &diffs)
+            .into_iter()
+            .map(|delta| NativeAiReviewDeltaReadyPayload {
+                base: payload.base.clone(),
+                delta,
+            })
+            .collect::<Vec<_>>();
         let input_revision = ReviewRevision(cycle.next_revision.saturating_add(1));
         // Reserve a newer revision for materialization so the renderer can replace
         // this lightweight placeholder without changing its delta identity.
@@ -148,6 +186,7 @@ impl NativeReviewWorkerHandle {
         };
         // Keep the raw payload in the cycle until the worker finishes so the
         // placeholder remains addressable without putting text on the event stream.
+        cycle.deltas.insert(delta_id.clone(), provisional.clone());
         cycle.pending_deltas.insert(
             delta_id.clone(),
             PendingReviewDelta {
@@ -163,6 +202,7 @@ impl NativeReviewWorkerHandle {
             revision,
             tool_call_id,
             work_cycle_id: work_cycle_id.clone(),
+            queued_at: Instant::now(),
         };
         drop(registry);
 
@@ -173,12 +213,27 @@ impl NativeReviewWorkerHandle {
             .is_err()
         {
             self.remove_pending_delta(&payload.base.session_id, &work_cycle_id, &delta_id);
-            return None;
+            self.record_delta(unavailable_delta(
+                provisional.clone(),
+                ReviewUnavailableReason::WorkerUnavailable,
+            ));
+            outputs.push(NativeAiReviewDeltaReadyPayload {
+                base: payload.base,
+                delta: unavailable_delta(provisional, ReviewUnavailableReason::WorkerUnavailable),
+            });
+            record_review_delta(
+                "sidecar.review-placeholder",
+                received_at,
+                &outputs.last().expect("unavailable delta output").delta,
+            );
+            return outputs;
         }
-        Some(NativeAiReviewDeltaReadyPayload {
+        record_review_delta("sidecar.review-placeholder", received_at, &provisional);
+        outputs.push(NativeAiReviewDeltaReadyPayload {
             base: payload.base,
             delta: provisional,
-        })
+        });
+        outputs
     }
 
     pub fn enqueue_tool_activity(&self, payload: NativeAiToolActivityPayload) {
@@ -198,6 +253,7 @@ impl NativeReviewWorkerHandle {
             session.cycles.insert(
                 work_cycle_id,
                 ReviewWorkerCycle {
+                    deltas: HashMap::new(),
                     epoch: 0,
                     next_revision: context.revision.0,
                     pending_deltas: HashMap::new(),
@@ -324,6 +380,17 @@ impl NativeReviewWorkerHandle {
         }
     }
 
+    fn record_delta(&self, delta: NativeReviewDeltaSummary) {
+        let mut registry = self.registry.lock().expect("review worker registry lock");
+        if let Some(cycle) = registry
+            .sessions
+            .get_mut(&delta.session_id)
+            .and_then(|session| session.cycles.get_mut(&delta.work_cycle_id))
+        {
+            cycle.deltas.insert(delta.delta_id.clone(), delta);
+        }
+    }
+
     pub fn cancel_session(&self, session_id: &SessionId) {
         self.registry
             .lock()
@@ -346,7 +413,10 @@ impl NativeReviewWorkerHandle {
             .sessions
             .get(&result.delta.session_id)
             .and_then(|session| session.cycles.get(&result.delta.work_cycle_id))
-            .is_some_and(|cycle| cycle.epoch == result.epoch)
+            .is_some_and(|cycle| {
+                cycle.epoch == result.epoch
+                    && cycle.pending_deltas.contains_key(&result.delta.delta_id)
+            })
     }
 }
 
@@ -354,14 +424,35 @@ fn is_terminal_review_activity(payload: &NativeAiToolActivityPayload) -> bool {
     matches!(payload.status.as_str(), "completed" | "failed") && !payload.diffs.is_empty()
 }
 
-fn bound_review_runtime_diff(mut diff: NativeReviewRuntimeDiff) -> NativeReviewRuntimeDiff {
-    if review_text_is_too_large(&diff) {
-        // Keep the file identity but drop oversized text before it reaches the queued worker state.
-        diff.old_text = None;
-        diff.new_text = None;
-        diff.unavailable_reason = Some(ReviewUnavailableReason::TooLarge);
-    }
-    diff
+fn bound_review_runtime_diffs(
+    diffs: impl IntoIterator<Item = NativeReviewRuntimeDiff>,
+) -> Vec<NativeReviewRuntimeDiff> {
+    let mut retained_bytes = 0_u64;
+    diffs
+        .into_iter()
+        .map(|mut diff| {
+            let text_bytes = review_text_bytes(&diff);
+            if review_text_is_too_large(&diff)
+                || retained_bytes.saturating_add(text_bytes) > MAX_PENDING_REVIEW_TEXT_BYTES
+            {
+                // Keep the file identity but drop text that would exceed the bounded queue budget.
+                diff.old_text = None;
+                diff.new_text = None;
+                diff.unavailable_reason = Some(ReviewUnavailableReason::TooLarge);
+            } else {
+                retained_bytes = retained_bytes.saturating_add(text_bytes);
+            }
+            diff
+        })
+        .collect()
+}
+
+fn review_text_bytes(diff: &NativeReviewRuntimeDiff) -> u64 {
+    [diff.old_text.as_ref(), diff.new_text.as_ref()]
+        .into_iter()
+        .flatten()
+        .map(|text| text.len() as u64)
+        .sum()
 }
 
 fn review_text_is_too_large(diff: &NativeReviewRuntimeDiff) -> bool {
@@ -369,6 +460,113 @@ fn review_text_is_too_large(diff: &NativeReviewRuntimeDiff) -> bool {
         .into_iter()
         .flatten()
         .any(|text| text.len() as u64 > MAX_REVIEW_TEXT_BYTES)
+}
+
+fn unavailable_activity_delta(
+    payload: &NativeAiToolActivityPayload,
+    diffs: &[NativeReviewRuntimeDiff],
+    reason: ReviewUnavailableReason,
+) -> NativeAiReviewDeltaReadyPayload {
+    let delta = NativeReviewDeltaSummary {
+        delta_id: ReviewDeltaId(format!(
+            "review:{}:unavailable:{}",
+            payload.base.session_id.0, payload.tool_call_id.0
+        )),
+        session_id: payload.base.session_id.clone(),
+        work_cycle_id: format!("review-unavailable:{}", payload.tool_call_id.0),
+        tool_call_id: payload.tool_call_id.clone(),
+        input_revision: ReviewRevision(0),
+        revision: ReviewRevision(0),
+        state: NativeReviewDeltaState::Unavailable,
+        files: diffs
+            .iter()
+            .map(|diff| NativeReviewFileSummary {
+                path: diff.path.clone(),
+                previous_path: diff.previous_path.clone(),
+                state: NativeReviewDeltaState::Unavailable,
+                observed_hash: None,
+                reason: Some(reason.as_str().to_string()),
+            })
+            .collect(),
+        updated_at: payload.base.updated_at.clone(),
+    };
+    NativeAiReviewDeltaReadyPayload {
+        base: payload.base.clone(),
+        delta,
+    }
+}
+
+fn unavailable_delta(
+    delta: NativeReviewDeltaSummary,
+    reason: ReviewUnavailableReason,
+) -> NativeReviewDeltaSummary {
+    NativeReviewDeltaSummary {
+        state: NativeReviewDeltaState::Unavailable,
+        files: delta
+            .files
+            .into_iter()
+            .map(|file| NativeReviewFileSummary {
+                state: NativeReviewDeltaState::Unavailable,
+                reason: Some(reason.as_str().to_string()),
+                ..file
+            })
+            .collect(),
+        ..delta
+    }
+}
+
+fn supersede_fully_replaced_pending_deltas(
+    cycle: &mut ReviewWorkerCycle,
+    incoming_diffs: &[NativeReviewRuntimeDiff],
+) -> Vec<NativeReviewDeltaSummary> {
+    let incoming_paths = incoming_diffs
+        .iter()
+        .flat_map(review_diff_paths)
+        .collect::<HashSet<_>>();
+    let replaced_ids = cycle
+        .deltas
+        .iter()
+        .filter_map(|(delta_id, delta)| {
+            (delta.state != NativeReviewDeltaState::Superseded
+                && delta
+                    .files
+                    .iter()
+                    .flat_map(review_file_paths)
+                    .all(|path| incoming_paths.contains(path)))
+            .then_some(delta_id.clone())
+        })
+        .collect::<Vec<_>>();
+    let superseded = replaced_ids
+        .into_iter()
+        .filter_map(|delta_id| {
+            cycle.pending_deltas.remove(&delta_id);
+            cycle.deltas.get(&delta_id).cloned()
+        })
+        .map(|delta| NativeReviewDeltaSummary {
+            state: NativeReviewDeltaState::Superseded,
+            files: delta
+                .files
+                .into_iter()
+                .map(|file| NativeReviewFileSummary {
+                    state: NativeReviewDeltaState::Superseded,
+                    ..file
+                })
+                .collect(),
+            ..delta
+        })
+        .collect::<Vec<_>>();
+    for delta in &superseded {
+        cycle.deltas.insert(delta.delta_id.clone(), delta.clone());
+    }
+    superseded
+}
+
+fn review_diff_paths(diff: &NativeReviewRuntimeDiff) -> impl Iterator<Item = &str> {
+    std::iter::once(diff.path.as_str()).chain(diff.previous_path.as_deref())
+}
+
+fn review_file_paths(file: &NativeReviewFileSummary) -> impl Iterator<Item = &str> {
+    std::iter::once(file.path.as_str()).chain(file.previous_path.as_deref())
 }
 
 fn provisional_review_tracked_files(pending: &PendingReviewDelta) -> Vec<serde_json::Value> {
@@ -396,6 +594,15 @@ fn provisional_review_tracked_files(pending: &PendingReviewDelta) -> Vec<serde_j
         .collect()
 }
 
+fn record_review_delta(name: &'static str, started_at: Instant, delta: &NativeReviewDeltaSummary) {
+    crate::performance::record(name, started_at.elapsed(), || {
+        format!(
+            "deltaId={} sessionId={} toolCallId={} state={:?}",
+            delta.delta_id.0, delta.session_id.0, delta.tool_call_id.0, delta.state
+        )
+    });
+}
+
 fn review_worker_task_is_current(
     registry: &Arc<Mutex<ReviewWorkerRegistry>>,
     task: &NativeReviewWorkerTask,
@@ -415,6 +622,17 @@ fn materialize_review_worker_task(
     registry: &Arc<Mutex<ReviewWorkerRegistry>>,
     task: NativeReviewWorkerTask,
 ) -> Option<NativeReviewWorkerResult> {
+    let materialization_started_at = Instant::now();
+    crate::performance::record(
+        "sidecar.review-worker-queue",
+        materialization_started_at.duration_since(task.queued_at),
+        || {
+            format!(
+                "deltaId={} sessionId={} toolCallId={}",
+                task.delta_id.0, task.base.session_id.0, task.tool_call_id.0
+            )
+        },
+    );
     let context = {
         let registry = registry.lock().expect("review worker registry lock");
         registry
@@ -452,6 +670,11 @@ fn materialize_review_worker_task(
         .all(|file| file.state == NativeReviewDeltaState::Ready)
     {
         NativeReviewDeltaState::Ready
+    } else if files
+        .iter()
+        .all(|file| file.state == NativeReviewDeltaState::Unavailable)
+    {
+        NativeReviewDeltaState::Unavailable
     } else {
         NativeReviewDeltaState::Partial
     };
@@ -469,6 +692,11 @@ fn materialize_review_worker_task(
     if !review_worker_task_is_current(registry, &task) {
         return None;
     }
+    record_review_delta(
+        "sidecar.review-worker-materialize",
+        materialization_started_at,
+        &delta,
+    );
     Some(NativeReviewWorkerResult {
         base: task.base,
         delta,
@@ -532,19 +760,23 @@ fn materialize_review_file(
 
 #[derive(Debug, Clone, Copy)]
 enum ReviewUnavailableReason {
+    BaselineUnavailable,
     MissingText,
     TooLarge,
     NotText,
     ContentUnavailable,
+    WorkerUnavailable,
 }
 
 impl ReviewUnavailableReason {
     fn as_str(self) -> &'static str {
         match self {
+            Self::BaselineUnavailable => "baseline_unavailable",
             Self::MissingText => "missing_text",
             Self::TooLarge => "too_large",
             Self::NotText => "not_text",
             Self::ContentUnavailable => "content_unavailable",
+            Self::WorkerUnavailable => "worker_unavailable",
         }
     }
 }
@@ -643,6 +875,7 @@ struct ReviewWorkerSession {
 #[derive(Debug, Clone)]
 struct ReviewWorkerCycle {
     context: ReviewBaselineContext,
+    deltas: HashMap<ReviewDeltaId, NativeReviewDeltaSummary>,
     epoch: u64,
     next_revision: u64,
     pending_deltas: HashMap<ReviewDeltaId, PendingReviewDelta>,
@@ -662,6 +895,7 @@ fn review_worker_cycles_for_child(
         .map(|(work_cycle_id, cycle)| {
             let mut inherited = cycle.clone();
             // A child inherits the baseline, not another session's queued payloads.
+            inherited.deltas.clear();
             inherited.pending_deltas.clear();
             (work_cycle_id.clone(), inherited)
         })
@@ -683,6 +917,7 @@ struct NativeReviewWorkerTask {
     revision: ReviewRevision,
     tool_call_id: ToolCallId,
     work_cycle_id: String,
+    queued_at: Instant,
 }
 
 #[derive(Debug)]
@@ -841,6 +1076,7 @@ impl NativeReviewService {
             if !self.worker.handle.result_is_current(&result) {
                 continue;
             }
+            self.worker.handle.record_delta(result.delta.clone());
             self.worker.handle.remove_pending_delta(
                 &result.delta.session_id,
                 &result.delta.work_cycle_id,
@@ -993,11 +1229,14 @@ impl NativeReviewService {
         &self,
         input: NativeReviewLoadDeltaInput,
     ) -> Result<NativeReviewLoadDeltaOutput, NativeError> {
+        let started_at = Instant::now();
         if let Some(pending) = self.worker.handle.pending_delta(&input.reference) {
-            return Ok(NativeReviewLoadDeltaOutput {
+            let output = NativeReviewLoadDeltaOutput {
                 tracked_files: provisional_review_tracked_files(&pending),
                 delta: pending.delta,
-            });
+            };
+            record_review_delta("sidecar.review-delta-load", started_at, &output.delta);
+            return Ok(output);
         }
         let delta = self.resolve_reference(&input.reference)?;
         let tracked_files = self
@@ -1010,10 +1249,12 @@ impl NativeReviewService {
             .into_iter()
             .map(|file| serde_json::to_value(file).expect("tracked file serializes"))
             .collect();
-        Ok(NativeReviewLoadDeltaOutput {
+        let output = NativeReviewLoadDeltaOutput {
             delta,
             tracked_files,
-        })
+        };
+        record_review_delta("sidecar.review-delta-load", started_at, &output.delta);
+        Ok(output)
     }
 
     fn resolve_reference(
@@ -1961,6 +2202,8 @@ mod tests {
                     "newText": "after\n"
                 })],
             ))
+            .into_iter()
+            .next()
             .expect("preparing delta");
 
         assert_eq!(preparing.delta.state, NativeReviewDeltaState::Preparing);
@@ -1999,6 +2242,144 @@ mod tests {
         );
         assert!(materialized.delta.revision > preparing.delta.revision);
         assert_eq!(materialized.delta.state, NativeReviewDeltaState::Ready);
+    }
+
+    #[test]
+    fn worker_reports_a_terminal_delta_when_the_baseline_is_missing() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let session = test_session(repo.path(), "s-worker-no-baseline");
+        let service = NativeReviewService::default();
+
+        let deltas = service.worker_handle().ingest_tool_activity(tool_activity(
+            &session,
+            "tool-without-baseline",
+            vec![serde_json::json!({
+                "path": "a.txt",
+                "oldText": "before\n",
+                "newText": "after\n"
+            })],
+        ));
+
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].delta.state, NativeReviewDeltaState::Unavailable);
+        assert_eq!(
+            deltas[0].delta.files[0].reason.as_deref(),
+            Some("baseline_unavailable")
+        );
+    }
+
+    #[test]
+    fn worker_supersedes_a_pending_delta_when_a_newer_edit_replaces_its_files() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join("a.txt"), "second\n").expect("write file");
+        let session = test_session(repo.path(), "s-worker-supersede");
+        let mut service = NativeReviewService::default();
+        capture_worker_baseline(&mut service, &session, "cycle-1");
+        let worker = service.worker_handle();
+
+        let first = worker
+            .ingest_tool_activity(tool_activity(
+                &session,
+                "tool-first",
+                vec![serde_json::json!({
+                    "path": "a.txt",
+                    "oldText": "before\n",
+                    "newText": "first\n"
+                })],
+            ))
+            .into_iter()
+            .next()
+            .expect("first placeholder");
+        // Reinsert the pending payload while the test drives the second ingestion, avoiding a
+        // race with the asynchronous worker and exercising the supersedence contract directly.
+        {
+            let mut registry = worker.registry.lock().expect("review worker registry lock");
+            let cycle = registry
+                .sessions
+                .get_mut(&session.session_id)
+                .and_then(|entry| entry.cycles.get_mut("cycle-1"))
+                .expect("review cycle");
+            cycle.pending_deltas.insert(
+                first.delta.delta_id.clone(),
+                PendingReviewDelta {
+                    delta: first.delta.clone(),
+                    diffs: Arc::from(vec![NativeReviewRuntimeDiff {
+                        path: "a.txt".into(),
+                        previous_path: None,
+                        old_text: Some("before\n".into()),
+                        new_text: Some("first\n".into()),
+                        unavailable_reason: None,
+                    }]),
+                },
+            );
+        }
+
+        let outputs = worker.ingest_tool_activity(tool_activity(
+            &session,
+            "tool-second",
+            vec![serde_json::json!({
+                "path": "a.txt",
+                "oldText": "first\n",
+                "newText": "second\n"
+            })],
+        ));
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].delta.state, NativeReviewDeltaState::Superseded);
+        assert_eq!(outputs[0].delta.delta_id, first.delta.delta_id);
+        assert_eq!(outputs[1].delta.state, NativeReviewDeltaState::Preparing);
+        assert_ne!(outputs[1].delta.delta_id, first.delta.delta_id);
+
+        let final_delta = wait_for_worker_events(&mut service)
+            .into_iter()
+            .next()
+            .expect("second materialized delta");
+        assert_eq!(final_delta.delta.tool_call_id.0, "tool-second");
+    }
+
+    #[test]
+    fn worker_supersedes_a_materialized_delta_when_a_newer_edit_replaces_its_files() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join("a.txt"), "first\n").expect("write first");
+        let session = test_session(repo.path(), "s-worker-supersede-ready");
+        let mut service = NativeReviewService::default();
+        capture_worker_baseline(&mut service, &session, "cycle-1");
+        let worker = service.worker_handle();
+
+        let first = worker
+            .ingest_tool_activity(tool_activity(
+                &session,
+                "tool-first",
+                vec![serde_json::json!({
+                    "path": "a.txt",
+                    "oldText": "before\n",
+                    "newText": "first\n"
+                })],
+            ))
+            .into_iter()
+            .next()
+            .expect("first placeholder");
+        let materialized = wait_for_worker_events(&mut service)
+            .into_iter()
+            .next()
+            .expect("first materialized delta");
+        assert_eq!(materialized.delta.delta_id, first.delta.delta_id);
+
+        fs::write(repo.path().join("a.txt"), "second\n").expect("write second");
+        let outputs = worker.ingest_tool_activity(tool_activity(
+            &session,
+            "tool-second",
+            vec![serde_json::json!({
+                "path": "a.txt",
+                "oldText": "first\n",
+                "newText": "second\n"
+            })],
+        ));
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].delta.state, NativeReviewDeltaState::Superseded);
+        assert_eq!(outputs[0].delta.delta_id, materialized.delta.delta_id);
+        assert_eq!(outputs[1].delta.state, NativeReviewDeltaState::Preparing);
     }
 
     #[test]
@@ -2138,6 +2519,8 @@ mod tests {
                     "newText": "x".repeat((MAX_REVIEW_TEXT_BYTES + 1) as usize)
                 })],
             ))
+            .into_iter()
+            .next()
             .expect("preparing large delta");
         let pending = service
             .load_delta(NativeReviewLoadDeltaInput {
@@ -2155,7 +2538,7 @@ mod tests {
         assert!(pending.tracked_files.is_empty());
 
         let events = wait_for_worker_events(&mut service);
-        assert_eq!(events[0].delta.state, NativeReviewDeltaState::Partial);
+        assert_eq!(events[0].delta.state, NativeReviewDeltaState::Unavailable);
         assert_eq!(
             events[0].delta.files[0].state,
             NativeReviewDeltaState::Unavailable

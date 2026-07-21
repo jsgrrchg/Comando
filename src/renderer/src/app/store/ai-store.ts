@@ -947,10 +947,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     hydrateReviewDeltas: async (sessionId) => {
         const snapshot = get().sessions[sessionId]?.snapshot;
-        // A provisional delta has no materialized detail yet. Waiting for its
-        // terminal update avoids reporting a predictable load failure.
+        // Preparing deltas have bounded provisional text, so hydrate them immediately
+        // instead of leaving Monaco with an empty review surface.
         const deltas = (snapshot?.reviewDeltas ?? []).filter(
-            (delta) => delta.state !== "preparing",
+            (delta) => delta.state !== "unavailable",
         );
         await Promise.all(
             deltas.map(async (delta) => {
@@ -3984,6 +3984,7 @@ function applyHydratedReviewDelta(
         ...file,
         nativeReviewDeltaId: delta.deltaId,
         nativeReviewInputRevision: delta.inputRevision,
+        nativeReviewState: delta.state,
         nativeReviewWorkCycleId: delta.workCycleId,
         toolCallId: delta.toolCallId,
         version: delta.revision,

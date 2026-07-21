@@ -3096,7 +3096,7 @@ impl NativeBackend {
                         native_ai::NativeAiToolActivityPayload,
                     >(ai_event.payload.clone())
                     {
-                        if let Some(payload) = review_worker.ingest_tool_activity(activity) {
+                        for payload in review_worker.ingest_tool_activity(activity) {
                             // Publish the lightweight placeholder before the worker has
                             // materialized hunks so review surfaces never lose the edit.
                             review_outputs.push(event(

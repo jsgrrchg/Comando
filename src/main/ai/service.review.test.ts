@@ -236,6 +236,105 @@ describe("AiService tracked file review merging", () => {
         ]);
     });
 
+    it("removes an explicitly superseded native review placeholder", () => {
+        const preparing: AiReviewDeltaSummary = {
+            deltaId: "delta-1",
+            files: [{ path: "a.ts", state: "preparing" }],
+            inputRevision: 2,
+            revision: 2,
+            sessionId: "session-1",
+            state: "preparing",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+        const superseded: AiReviewDeltaSummary = {
+            ...preparing,
+            files: [{ path: "a.ts", state: "superseded" }],
+            state: "superseded",
+        };
+
+        const withPlaceholder = __testing.applyNativeReviewDeltaSnapshot(
+            createSnapshot(),
+            preparing,
+        );
+        const updated = __testing.applyNativeReviewDeltaSnapshot(
+            withPlaceholder,
+            superseded,
+        );
+
+        expect(updated.reviewDeltas).toEqual([]);
+        expect(updated.trackedFiles).toEqual([]);
+    });
+
+    it("keeps unavailable native review files visible with their safe reason", () => {
+        const unavailable: AiReviewDeltaSummary = {
+            deltaId: "delta-unavailable",
+            files: [
+                {
+                    path: "large.lock",
+                    reason: "too_large",
+                    state: "unavailable",
+                },
+            ],
+            inputRevision: 2,
+            revision: 2,
+            sessionId: "session-1",
+            state: "unavailable",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+
+        const updated = __testing.applyNativeReviewDeltaSnapshot(
+            createSnapshot(),
+            unavailable,
+        );
+
+        expect(updated.trackedFiles).toEqual([
+            expect.objectContaining({
+                conflict: "too_large",
+                isText: false,
+                reviewState: "conflict",
+            }),
+        ]);
+    });
+
+    it("replaces a local review fallback when its native delta arrives", () => {
+        const nativeDelta: AiReviewDeltaSummary = {
+            deltaId: "delta-1",
+            files: [{ path: "a.ts", state: "preparing" }],
+            inputRevision: 2,
+            revision: 2,
+            sessionId: "session-1",
+            state: "preparing",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+        const snapshot = {
+            ...createSnapshot(),
+            trackedFiles: [
+                createTrackedFile({
+                    identityKey: "review:session-1:a.ts",
+                    path: "a.ts",
+                }),
+            ],
+        };
+
+        const updated = __testing.applyNativeReviewDeltaSnapshot(
+            snapshot,
+            nativeDelta,
+        );
+
+        expect(updated.trackedFiles).toEqual([
+            expect.objectContaining({
+                nativeReviewDeltaId: nativeDelta.deltaId,
+                path: "a.ts",
+            }),
+        ]);
+    });
+
     it("accumulates consecutive updates for the same file", () => {
         const firstTrackedFile = createTrackedFile({
             newText: "line 1\nline 2",
