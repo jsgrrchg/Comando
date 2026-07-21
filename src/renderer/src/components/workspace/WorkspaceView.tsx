@@ -3009,7 +3009,14 @@ function WorkspacePaneView({
                                             identity={`${tab.id}:${tab.sessionId}`}
                                         >
                                             <ChatTabView
-                                                active={isActiveChat}
+                                                // A selected tab in an unfocused pane can be
+                                                // retained in the DOM, but its scroll surface is
+                                                // no longer live. Treat that transition like a
+                                                // tab switch so its viewport is captured before
+                                                // the pane is deferred or remeasured.
+                                                active={
+                                                    isActivePane && isActiveChat
+                                                }
                                                 focused={
                                                     isActivePane && isActiveChat
                                                 }

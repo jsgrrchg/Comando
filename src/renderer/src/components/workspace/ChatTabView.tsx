@@ -754,6 +754,15 @@ export const ChatTabView = memo(function ChatTabView({
     const storedTranscript =
         sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;
     const transcriptWindow = sessionState?.transcriptWindow ?? null;
+    // Keep persistence callbacks stable while they still resolve the latest
+    // loaded block for a captured viewport anchor.
+    /* eslint-disable react-hooks/refs */
+    const transcriptBlocksByIdRef = useRef(
+        transcriptWindow?.blocksById ?? new Map(),
+    );
+    transcriptBlocksByIdRef.current =
+        transcriptWindow?.blocksById ?? new Map();
+    /* eslint-enable react-hooks/refs */
     /* eslint-disable react-hooks/refs -- Projection and timeline reconciliation read the last committed identities without publishing speculative renders. */
     const transcriptProjection = useMemo(
         () =>
@@ -2016,7 +2025,7 @@ export const ChatTabView = memo(function ChatTabView({
                           ...capturedAnchor,
                           alignment: "start" as const,
                           blockId: resolveTranscriptEntryBlockId(
-                              transcriptWindow?.blocksById ?? new Map(),
+                              transcriptBlocksByIdRef.current,
                               capturedAnchor.entryId,
                           ),
                       }
@@ -2047,7 +2056,6 @@ export const ChatTabView = memo(function ChatTabView({
             tab.projectId,
             tab.sessionId,
             tab.worktreeId,
-            transcriptWindow?.blocksById,
         ],
     );
 
