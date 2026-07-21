@@ -2983,6 +2983,7 @@ mod tests {
             raw_output: None,
             status: "completed".into(),
             summary: None,
+            tool_activity_detail_id: None,
             terminal_output: None,
             title: "Edit file".into(),
             tool_call_id: ToolCallId(tool_call_id.into()),

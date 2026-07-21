@@ -1060,6 +1060,8 @@ pub struct NativeAiToolActivityPayload {
     pub status: String,
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_activity_detail_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_input: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_output: Option<serde_json::Value>,
@@ -1069,6 +1071,13 @@ pub struct NativeAiToolActivityPayload {
     pub terminal_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiLoadToolActivityDetailInput {
+    pub session_id: SessionId,
+    pub tool_activity_detail_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

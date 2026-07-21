@@ -676,12 +676,18 @@ export type NativeAiToolActivityPayload = NativeAiEventBase & {
     readonly kind: string;
     readonly status: string;
     readonly summary: string | null;
+    readonly toolActivityDetailId?: string | null;
     readonly rawInput?: unknown;
     readonly rawOutput?: unknown;
     readonly diffs?: readonly unknown[];
     readonly toolActivityDetailId?: string | null;
     readonly terminalOutput?: string | null;
     readonly exitCode?: number | null;
+};
+
+export type NativeAiLoadToolActivityDetailInput = {
+    readonly sessionId: NativeSessionId;
+    readonly toolActivityDetailId: string;
 };
 
 export type NativeAiPlanEntryPayload = {

@@ -554,6 +554,17 @@ impl AiEngine {
         }
     }
 
+    pub fn load_tool_activity_detail(
+        &self,
+        session_id: &comando_types::ids::SessionId,
+        detail_id: &str,
+    ) -> AiResult<Option<Value>> {
+        self.history_store()?
+            .map(|store| store.load_tool_activity_detail(session_id, detail_id))
+            .transpose()
+            .map(|detail| detail.flatten())
+    }
+
     pub fn close_owned_by_window(
         &self,
         owner_window_id: &str,
@@ -1045,22 +1056,32 @@ impl AiEngine {
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .unwrap_or_else(now_iso8601);
-            let raw_input_json = serialize_activity_json_field(payload.get("rawInput"));
-            let raw_output_json = serialize_activity_json_field(payload.get("rawOutput"));
+            let detail_id = tool_activity_detail_id(&session_id.0, tool_call_id);
+            let detail = json!({
+                "diffs": payload.get("diffs").cloned().unwrap_or_else(|| json!([])),
+                "rawInput": payload.get("rawInput").cloned().unwrap_or(Value::Null),
+                "rawOutput": payload.get("rawOutput").cloned().unwrap_or(Value::Null),
+                "terminalOutput": payload.get("terminalOutput").cloned().unwrap_or(Value::Null),
+            });
+            if let Some(store) = self.history_store()? {
+                // The content hash prevents repeated streaming updates from rewriting a blob.
+                store.store_tool_activity_detail(&session_id, &detail_id, detail)?;
+            }
             json!({
                 "action": null,
                 "createdAt": updated_at,
-                "diffs": payload.get("diffs").cloned().unwrap_or_else(|| json!([])),
+                "diffs": [],
                 "exitCode": payload.get("exitCode").filter(|value| value.is_number()).cloned().unwrap_or(Value::Null),
                 "id": tool_call_id,
                 "kind": payload.get("kind").and_then(Value::as_str).unwrap_or("tool"),
                 "locations": [],
-                "rawInputJson": raw_input_json,
-                "rawOutputJson": raw_output_json,
+                "rawInputJson": null,
+                "rawOutputJson": null,
                 "sessionId": session_id.0,
                 "status": payload.get("status").and_then(Value::as_str).unwrap_or("pending"),
                 "summary": payload.get("summary").cloned().unwrap_or(Value::Null),
-                "terminalOutput": payload.get("terminalOutput").filter(|value| value.is_string()).cloned().unwrap_or(Value::Null),
+                "terminalOutput": null,
+                "toolActivityDetailId": detail_id,
                 "title": payload.get("title").and_then(Value::as_str).unwrap_or("Tool"),
                 "updatedAt": updated_at
             })
@@ -1554,12 +1575,8 @@ fn payload_session_id(payload: &Value) -> Option<comando_types::ids::SessionId> 
         .map(|value| comando_types::ids::SessionId(value.to_string()))
 }
 
-fn serialize_activity_json_field(value: Option<&Value>) -> Value {
-    value
-        .filter(|value| !value.is_null())
-        .and_then(|value| serde_json::to_string(value).ok())
-        .map(Value::String)
-        .unwrap_or(Value::Null)
+pub fn tool_activity_detail_id(session_id: &str, tool_call_id: &str) -> String {
+    format!("tool-detail:{session_id}:{tool_call_id}")
 }
 
 fn upsert_history_message(messages: &mut Vec<Value>, next: Value) {
@@ -1590,13 +1607,10 @@ fn upsert_state_activity(activities: &mut Vec<Value>, next: Value) {
             .or_else(|| next.get("createdAt").cloned());
         let preserved_fields = [
             "action",
-            "diffs",
             "exitCode",
             "locations",
-            "rawInputJson",
-            "rawOutputJson",
             "summary",
-            "terminalOutput",
+            "toolActivityDetailId",
         ]
         .into_iter()
         .filter_map(|key| {
@@ -2592,10 +2606,17 @@ mod tests {
         assert_eq!(activity["createdAt"], "2026-06-20T00:00:00.000Z");
         assert_eq!(activity["updatedAt"], "2026-06-20T00:00:01.000Z");
         assert_eq!(activity["exitCode"], 0);
-        assert_eq!(activity["rawInputJson"], r#"{"command":"pnpm test"}"#);
-        assert_eq!(activity["rawOutputJson"], r#""done""#);
+        assert_eq!(activity["rawInputJson"], Value::Null);
+        assert_eq!(activity["rawOutputJson"], Value::Null);
         assert_eq!(activity["summary"], "Running tests");
-        assert_eq!(activity["terminalOutput"], "All tests passed");
+        assert_eq!(activity["terminalOutput"], Value::Null);
+        let detail = engine
+            .load_tool_activity_detail(&session_id, "tool-detail:s-history:tool-1")
+            .expect("load detail")
+            .expect("stored detail");
+        assert_eq!(detail["rawInput"]["command"], "pnpm test");
+        assert_eq!(detail["rawOutput"], "done");
+        assert_eq!(detail["terminalOutput"], "All tests passed");
     }
 
     #[test]

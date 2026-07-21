@@ -4510,8 +4510,31 @@ fn prepare_ai_runtime_event_for_forwarding(
     preserve_diffs: bool,
 ) -> AiRuntimeEvent {
     if !history_persisted || preserve_diffs {
-        // Keep complete tool evidence available until the lightweight payload path is enabled.
+        // The renderer needs the complete payload until the history record is durable.
         return event;
+    }
+    compact_tool_activity_event(event)
+}
+
+fn compact_tool_activity_event(mut event: AiRuntimeEvent) -> AiRuntimeEvent {
+    if event.event_name != AI_TOOL_ACTIVITY_EVENT {
+        return event;
+    }
+    let Some(payload) = event.payload.as_object_mut() else {
+        return event;
+    };
+    let (Some(session_id), Some(tool_call_id)) = (
+        payload.get("sessionId").and_then(Value::as_str),
+        payload.get("toolCallId").and_then(Value::as_str),
+    ) else {
+        return event;
+    };
+    payload.insert(
+        "toolActivityDetailId".to_string(),
+        Value::String(format!("tool-detail:{session_id}:{tool_call_id}")),
+    );
+    for key in ["diffs", "rawInput", "rawOutput", "terminalOutput"] {
+        payload.remove(key);
     }
     event
 }
