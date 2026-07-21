@@ -47,8 +47,11 @@ interface TranscriptDiagnosticSample extends TranscriptHarnessSnapshot {
     readonly markdownRenderedChars: number;
     readonly markdownStableChars: number;
     readonly measurementKey: string | null;
+    readonly mountedRows: number;
+    readonly pendingBlockPlaceholders: number;
     readonly phase: string;
     readonly rowKey: string | null;
+    readonly viewportCovered: boolean;
 }
 
 interface TranscriptVirtualRangeEvent {
@@ -86,7 +89,20 @@ interface TranscriptStreamingDiagnostic {
     readonly virtualRanges: readonly TranscriptVirtualRangeEvent[];
 }
 
+interface TranscriptFastScrollViolations {
+    readonly longTaskCount: number;
+    readonly uncoveredViewportFrames: readonly number[];
+}
+
+interface TranscriptFastScrollDiagnostic {
+    readonly longTasks: readonly TranscriptDiagnosticEvent[];
+    readonly samples: readonly TranscriptDiagnosticSample[];
+    readonly virtualRanges: readonly TranscriptVirtualRangeEvent[];
+    readonly violations: TranscriptFastScrollViolations;
+}
+
 interface MutableTranscriptStreamingDiagnostic {
+    longTasks: TranscriptDiagnosticEvent[];
     mutations: TranscriptDiagnosticEvent[];
     resizeEvents: TranscriptDiagnosticEvent[];
     samples: TranscriptDiagnosticSample[];
@@ -96,6 +112,7 @@ interface MutableTranscriptStreamingDiagnostic {
 
 interface ComandoTranscriptHarness {
     appendDelta(delta: string): Promise<void>;
+    runFastScrollDiagnostic(): Promise<TranscriptFastScrollDiagnostic>;
     runStreamingDiagnostic(): Promise<TranscriptStreamingDiagnostic>;
     snapshot(): TranscriptHarnessSnapshot;
     startTurn(): Promise<void>;
@@ -129,12 +146,74 @@ function waitForAnimationFrames(count: number): Promise<void> {
 
 function createEmptyDiagnostic(): MutableTranscriptStreamingDiagnostic {
     return {
+        longTasks: [],
         mutations: [],
         resizeEvents: [],
         samples: [],
         scrollWrites: [],
         virtualRanges: [],
     };
+}
+
+function isTranscriptViewportCovered(scrollElement: HTMLElement | null): boolean {
+    if (!scrollElement) return false;
+
+    const scrollRect = scrollElement.getBoundingClientRect();
+    const historyElement = scrollElement.querySelector<HTMLElement>(
+        "[data-chat-timeline-history]",
+    );
+    const historyRect = historyElement?.getBoundingClientRect();
+    const scrollMarginTop = historyRect
+        ? Math.max(
+              0,
+              historyRect.top - scrollRect.top + scrollElement.scrollTop,
+          )
+        : 0;
+    const viewportTop = Math.max(0, scrollElement.scrollTop - scrollMarginTop);
+    // The scroller reserves 24px at its trailing edge by design.
+    const viewportBottom = viewportTop + scrollElement.clientHeight - 24;
+    const intervals = [
+        ...scrollElement.querySelectorAll<HTMLElement>(
+            "[data-list-key]",
+        ),
+    ]
+        .map((element) => {
+            const match = /translateY\(([-\d.]+)px\)/.exec(
+                element.style.transform,
+            );
+            if (!match) return null;
+            const top = Number(match[1]);
+            return {
+                bottom: top + element.getBoundingClientRect().height,
+                top,
+            };
+        })
+        .filter(
+            (interval): interval is { readonly bottom: number; readonly top: number } =>
+                interval !== null &&
+                interval.bottom > viewportTop &&
+                interval.top < viewportBottom,
+        )
+        .map((interval) => ({
+            bottom: Math.min(viewportBottom, interval.bottom),
+            top: Math.max(viewportTop, interval.top),
+        }))
+        .sort((left, right) => left.top - right.top);
+
+    let coveredBottom = viewportTop;
+    for (const interval of intervals) {
+        // Timeline rows intentionally reserve an 8px visual gap between cards.
+        // Anything wider than that is an actual virtualized-content hole.
+        if (interval.top > coveredBottom + 12) {
+            return false;
+        }
+        coveredBottom = Math.max(coveredBottom, interval.bottom);
+        if (coveredBottom >= viewportBottom - 12) {
+            return true;
+        }
+    }
+
+    return coveredBottom >= viewportBottom - 12;
 }
 
 function createMessageRow(
@@ -215,6 +294,7 @@ function TranscriptHarness() {
     );
     const diagnosticFrame = useRef(0);
     const diagnosticPhase = useRef("idle");
+    const fastScrollActiveRef = useRef(false);
     const previousFrameAt = useRef(0);
     const [scrollCoordinator] = useState<ChatScrollCoordinator>(
         createChatScrollCoordinator,
@@ -289,11 +369,16 @@ function TranscriptHarness() {
                     "markdownStableChars",
                 ),
                 measurementKey: measured?.dataset.measurementKey ?? null,
+                mountedRows: document.querySelectorAll("[data-list-key]").length,
+                pendingBlockPlaceholders: document.querySelectorAll(
+                    "[data-transcript-block-placeholder]",
+                ).length,
                 phase,
                 rowKey:
                     measured?.dataset.listKey ??
                     tail?.dataset.hotTranscriptTail ??
                     null,
+                viewportCovered: isTranscriptViewportCovered(scrollRef.current),
             });
             previousFrameAt.current = frameAt;
         },
@@ -341,6 +426,11 @@ function TranscriptHarness() {
         requestScroll({ reason: "follow-end", target: "end" });
     }, [requestScroll]);
 
+    const shouldSynchronizeVirtualScrollState = useCallback(
+        () => fastScrollActiveRef.current,
+        [],
+    );
+
     const followEndNow = useCallback(() => {
         requestScroll({ reason: "follow-end", target: "end" });
         scrollCoordinator.flush();
@@ -354,7 +444,10 @@ function TranscriptHarness() {
         // Initial virtual geometry is asynchronous in this isolated harness.
         // Keep its bounded startup reconciliation separate from normal stream
         // updates, which are resolved synchronously in the layout effect above.
-        let remainingFrames = 4;
+        // Pixel overscan can mount a wider first band than the old row-count
+        // policy, so allow its asynchronous measurements to settle before the
+        // harness starts a continuity scenario.
+        let remainingFrames = 12;
         let followFrame: number | null = null;
         const followInitialGeometry = () => {
             followEndNow();
@@ -460,7 +553,71 @@ function TranscriptHarness() {
                 });
                 await waitForAnimationFrames(3);
             },
+            runFastScrollDiagnostic: async () => {
+                const scrollElement = scrollRef.current;
+                if (!scrollElement) {
+                    throw new Error("Transcript scroll container is unavailable.");
+                }
+
+                // Do not race the harness's bounded initial bottom-follow loop.
+                // The diagnostic must observe user scrolls, not startup writes.
+                await waitForAnimationFrames(14);
+                diagnostic.current = createEmptyDiagnostic();
+                diagnosticFrame.current = 0;
+                previousFrameAt.current = 0;
+                fastScrollActiveRef.current = true;
+                const maximum = Math.max(
+                    0,
+                    scrollElement.scrollHeight - scrollElement.clientHeight,
+                );
+
+                try {
+                    for (const [index, progress] of [
+                        0.12,
+                        0.62,
+                        0.28,
+                        0.78,
+                        0.18,
+                        0.55,
+                        0.36,
+                        0.7,
+                    ].entries()) {
+                        diagnosticPhase.current = `fast-scroll-${index + 1}`;
+                        scrollElement.scrollTop = Math.round(maximum * progress);
+                        scrollElement.dispatchEvent(new Event("scroll"));
+                        await new Promise<void>((resolve) => {
+                            requestAnimationFrame((frameAt) => {
+                                recordSample(diagnosticPhase.current, frameAt);
+                                resolve();
+                            });
+                        });
+                    }
+                    await waitForAnimationFrames(2);
+
+                    const samples = diagnostic.current.samples;
+                    return {
+                        longTasks: diagnostic.current.longTasks,
+                        samples,
+                        virtualRanges: diagnostic.current.virtualRanges,
+                        violations: {
+                            longTaskCount: diagnostic.current.longTasks.length,
+                            uncoveredViewportFrames: samples
+                                .filter(
+                                    (sample) =>
+                                        sample.phase.startsWith("fast-scroll-") &&
+                                        !sample.viewportCovered,
+                                )
+                                .map((sample) => sample.frame),
+                        },
+                    };
+                } finally {
+                    fastScrollActiveRef.current = false;
+                }
+            },
             runStreamingDiagnostic: async () => {
+                // The virtualizer needs a short bounded pass to settle the initial
+                // bottom-follow geometry. Do not attribute those writes to streaming.
+                await waitForAnimationFrames(14);
                 const probeRoot = globalThis as PerformanceProbeRoot;
                 probeRoot.__comandoChatPerformanceProbeReset?.();
                 diagnostic.current = createEmptyDiagnostic();
@@ -521,6 +678,25 @@ function TranscriptHarness() {
         };
     }, [recordSample, snapshot]);
 
+    useEffect(() => {
+        if (
+            typeof PerformanceObserver === "undefined" ||
+            !PerformanceObserver.supportedEntryTypes?.includes("longtask")
+        ) {
+            return;
+        }
+
+        const observer = new PerformanceObserver(() => {
+            diagnostic.current.longTasks.push({
+                frame: diagnosticFrame.current,
+                phase: diagnosticPhase.current,
+            });
+        });
+        observer.observe({ entryTypes: ["longtask"] });
+
+        return () => observer.disconnect();
+    }, []);
+
     return (
         <main className="transcript-harness">
             <div className="transcript-scroll chat-scroll" ref={scrollRef}>
@@ -547,6 +723,9 @@ function TranscriptHarness() {
                         scrollRef={scrollRef}
                         sessionId="e2e-transcript"
                         showStreamingIndicator={streamingText !== null}
+                        shouldSynchronizeVirtualScrollState={
+                            shouldSynchronizeVirtualScrollState
+                        }
                         streamingStartedAt={null}
                         worktreeId={null}
                     />

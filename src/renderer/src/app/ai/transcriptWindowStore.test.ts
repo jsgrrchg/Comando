@@ -41,6 +41,23 @@ describe("TranscriptWindowStore", () => {
         expect(store.snapshot("session-1").residentEntries).toBeLessThanOrEqual(512);
     });
 
+    it("retains a protected scroll window while newer blocks are loaded", async () => {
+        const loadBlock = vi.fn((_sessionId: string, blockId: string) =>
+            Promise.resolve(block(blockId, 256)),
+        );
+        const store = new TranscriptWindowStore({ loadBlock }, 512);
+
+        await store.load("session-1", "block-1");
+        await store.load("session-1", "block-2");
+        store.protect("session-1", new Set(["block-1", "block-2"]));
+        await store.load("session-1", "block-3");
+
+        const snapshot = store.snapshot("session-1");
+        expect(snapshot.blocksById.has("block-1")).toBe(true);
+        expect(snapshot.blocksById.has("block-2")).toBe(true);
+        expect(snapshot.blocksById.has("block-3")).toBe(false);
+    });
+
     it("shares the resident-entry budget across cold sessions", async () => {
         const loadBlock = vi.fn((_sessionId: string, blockId: string) =>
             Promise.resolve(block(blockId, 256)),

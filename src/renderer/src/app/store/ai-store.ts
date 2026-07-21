@@ -390,6 +390,7 @@ interface AiStore {
         sessionId: string,
         anchorBlockId: string | null,
         followTail: boolean,
+        additionalProtectedBlockIds?: ReadonlySet<string>,
     ) => void;
     loadTranscriptWindowBlock: (
         sessionId: string,
@@ -2094,7 +2095,12 @@ export const useAiStore = create<AiStore>((set, get) => ({
         await get().loadTranscriptWindowBlock(sessionId, targetBlockId);
     },
 
-    setTranscriptWindowAnchor: (sessionId, anchorBlockId, followTail) => {
+    setTranscriptWindowAnchor: (
+        sessionId,
+        anchorBlockId,
+        followTail,
+        additionalProtectedBlockIds,
+    ) => {
         const session = get().sessions[sessionId];
         if (!session) return;
         const protectedBlockIds = new Set<string>();
@@ -2104,6 +2110,9 @@ export const useAiStore = create<AiStore>((set, get) => ({
             }
         }
         if (anchorBlockId) protectedBlockIds.add(anchorBlockId);
+        for (const blockId of additionalProtectedBlockIds ?? []) {
+            protectedBlockIds.add(blockId);
+        }
         if (
             session.transcriptWindow.anchorBlockId === anchorBlockId &&
             session.transcriptWindow.followTail === followTail &&

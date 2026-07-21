@@ -353,6 +353,31 @@ describe("pruneMeasuredSizesToKeys", () => {
         );
     });
 
+    it("uses a pixel overscan budget for uneven row heights", () => {
+        const sizes = [20, 20, 400, 20, 20, 20];
+        const offsets = [0, 20, 40, 440, 460, 480];
+
+        expect(
+            calculateMeasuredVirtualRange({
+                itemCount: sizes.length,
+                offsets,
+                overscan: 0,
+                overscanAfterPx: 120,
+                overscanBeforePx: 120,
+                scrollMarginTop: 0,
+                scrollTop: 440,
+                sizes,
+                viewportHeight: 40,
+                virtualizationEnabled: true,
+            }),
+        ).toEqual({
+            endIndex: 5,
+            startIndex: 2,
+            visibleEndIndex: 4,
+            visibleStartIndex: 3,
+        });
+    });
+
     it("never mutates the input map", () => {
         const sizes = new Map([
             ["a", 10],

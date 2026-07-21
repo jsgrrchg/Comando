@@ -309,6 +309,8 @@ const EMPTY_ACTIVITY_EXPANSION: TranscriptActivityGroupExpansionById = {};
 const CLOSED_SUBAGENT_MESSAGE =
     "This subagent was closed by its parent thread and can’t receive new messages.";
 const PROJECT_MENTION_SEARCH_FOLLOWUP_DEBOUNCE_MS = 50;
+const MAX_TRANSCRIPT_SCROLL_PREFETCH_BLOCKS = 4;
+const MAX_TRANSCRIPT_SCROLL_PROTECTED_BLOCKS = 8;
 
 type AiRuntimeCatalog = Pick<
     AiSessionSnapshot,
@@ -445,10 +447,19 @@ export const ChatTabView = memo(function ChatTabView({
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     const scrollRef = useRef<HTMLDivElement | null>(null);
     const timelineContentRef = useRef<HTMLDivElement | null>(null);
+    const previousTranscriptVirtualRangeRef = useRef<MeasuredVirtualRange | null>(
+        null,
+    );
     const scrollIntentRef = useRef(createChatScrollIntent());
     const pendingNewTurnAnchorRef = useRef<string | null | undefined>(
         undefined,
     );
+
+    useEffect(() => {
+        // Range direction is session-local; a retained tab must not prefetch
+        // the opposite edge when it becomes active for another transcript.
+        previousTranscriptVirtualRangeRef.current = null;
+    }, [tab.sessionId]);
     const shouldAutoFollowRef = useRef(true);
     const [scrollCoordinator] = useState<ChatScrollCoordinator>(
         createChatScrollCoordinator,
@@ -1716,6 +1727,11 @@ export const ChatTabView = memo(function ChatTabView({
     );
 
     const handleTimelineVirtualRangeChange = useCallback((range: MeasuredVirtualRange) => {
+        const previousRange = previousTranscriptVirtualRangeRef.current;
+        const isScrollingForward =
+            previousRange !== null &&
+            range.visibleStartIndex > previousRange.visibleStartIndex;
+        previousTranscriptVirtualRangeRef.current = range;
         const visibleTimelineRows = transcriptTimelineItems.slice(
             range.visibleStartIndex,
             range.visibleEndIndex + 1,
@@ -1725,15 +1741,29 @@ export const ChatTabView = memo(function ChatTabView({
         );
         const scrollElement = scrollRef.current;
         const pendingRestore = pendingChatViewRestoreRef.current;
-        const visibleBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
+        const prefetchBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
             transcriptTimelineItems,
-            range.visibleStartIndex,
-            range.visibleEndIndex,
+            range.startIndex,
+            range.endIndex,
         );
         const residentBlockIds = resolveTranscriptBlockIdsInRange(
             transcriptTimelineItems,
             range.visibleStartIndex,
             range.visibleEndIndex,
+        );
+        const rangeBlockIds = resolveTranscriptBlockIdsInRange(
+            transcriptTimelineItems,
+            range.startIndex,
+            range.endIndex,
+        );
+        const directionFirstBlockIds = isScrollingForward
+            ? [...rangeBlockIds].reverse()
+            : rangeBlockIds;
+        const protectedBlockIds = new Set(
+            [...residentBlockIds, ...directionFirstBlockIds].slice(
+                0,
+                MAX_TRANSCRIPT_SCROLL_PROTECTED_BLOCKS,
+            ),
         );
         setTranscriptWindowAnchor(
             tab.sessionId,
@@ -1743,8 +1773,17 @@ export const ChatTabView = memo(function ChatTabView({
                   null)
                 : (residentBlockIds[0] ?? null),
             shouldAutoFollowRef.current,
+            protectedBlockIds,
         );
-        for (const blockId of visibleBlockIds) {
+        const directionFirstPrefetchBlockIds = isScrollingForward
+            ? [...prefetchBlockIds].reverse()
+            : prefetchBlockIds;
+        // Keep the leading virtual band warm before it reaches the viewport.
+        // The cap bounds IPC work during a high-velocity trackpad fling.
+        for (const blockId of directionFirstPrefetchBlockIds.slice(
+            0,
+            MAX_TRANSCRIPT_SCROLL_PREFETCH_BLOCKS,
+        )) {
             void loadTranscriptWindowBlock(tab.sessionId, blockId);
         }
 
@@ -1880,6 +1919,11 @@ export const ChatTabView = memo(function ChatTabView({
     const shouldPreserveTimelineVirtualMeasureAnchor = useCallback(() => {
         return !resizeBottomLockRef.current;
     }, []);
+
+    const shouldSynchronizeTimelineVirtualScrollState = useCallback(
+        () => scrollIntentRef.current.mode === "reader",
+        [],
+    );
 
     const shouldDeferTimelineTrailingUserMeasurementAnchor = useCallback(() => {
         return (
@@ -2875,6 +2919,9 @@ export const ChatTabView = memo(function ChatTabView({
                     shouldPreserveVirtualMeasureAnchor={
                         shouldPreserveTimelineVirtualMeasureAnchor
                     }
+                    shouldSynchronizeVirtualScrollState={
+                        shouldSynchronizeTimelineVirtualScrollState
+                    }
                     shouldDeferTrailingUserMeasurementAnchor={
                         shouldDeferTimelineTrailingUserMeasurementAnchor
                     }
@@ -3402,6 +3449,7 @@ type ChatTimelineProps = {
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
+    readonly shouldSynchronizeVirtualScrollState?: () => boolean;
     readonly timelineContentRef: RefObject<HTMLDivElement | null>;
     readonly streamingStartedAt: string | null;
     readonly worktreeId: string | null;
@@ -3468,6 +3516,7 @@ const ChatTimeline = memo(function ChatTimeline({
     shouldDeferTrailingUserMeasurementAnchor,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
+    shouldSynchronizeVirtualScrollState,
     timelineContentRef,
     streamingStartedAt,
     worktreeId,
@@ -3557,6 +3606,9 @@ const ChatTimeline = memo(function ChatTimeline({
                             }
                             shouldPreserveVirtualResizeAnchor={
                                 shouldPreserveVirtualResizeAnchor
+                            }
+                            shouldSynchronizeVirtualScrollState={
+                                shouldSynchronizeVirtualScrollState
                             }
                             streamingStartedAt={streamingStartedAt}
                             worktreeId={worktreeId}
@@ -3677,6 +3729,7 @@ export type ChatTimelineHistoryProps = {
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
+    readonly shouldSynchronizeVirtualScrollState?: () => boolean;
     readonly streamingStartedAt: string | null;
     readonly worktreeId: string | null;
 };
@@ -3718,6 +3771,7 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
     shouldDeferTrailingUserMeasurementAnchor,
     shouldPreserveVirtualMeasureAnchor,
     shouldPreserveVirtualResizeAnchor,
+    shouldSynchronizeVirtualScrollState,
     streamingStartedAt,
     worktreeId,
 }: ChatTimelineHistoryProps) {
@@ -3815,6 +3869,9 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
             }
             shouldPreserveVirtualResizeAnchor={
                 shouldPreserveVirtualResizeAnchor
+            }
+            shouldSynchronizeVirtualScrollState={
+                shouldSynchronizeVirtualScrollState
             }
         />
     );
