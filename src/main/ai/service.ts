@@ -4076,18 +4076,12 @@ export class AiService {
         snapshot: AiSessionSnapshot,
         delta: AiReviewDeltaSummary,
     ): AiSessionSnapshot {
-        const resolvedVersions = this.#resolvedReviewVersions.get(
-            snapshot.sessionId,
-        );
-        const nextSnapshot = applyNativeReviewDeltaSnapshot(
+        return applyNativeReviewDelta(
             snapshot,
             delta,
-            resolvedVersions,
+            this.#resolvedReviewVersions.get(snapshot.sessionId),
+            this.#isNativeAiSession(snapshot.sessionId),
         );
-        return this.#isNativeAiSession(snapshot.sessionId) &&
-            snapshot.reviewActionLog !== null
-            ? { ...nextSnapshot, reviewActionLog: null }
-            : nextSnapshot;
     }
 
     #preservePassiveNativeSnapshotTrackedFiles(
@@ -7033,6 +7027,22 @@ function applyNativeReviewDeltaSnapshot(
     return { ...snapshot, reviewDeltas, trackedFiles };
 }
 
+function applyNativeReviewDelta(
+    snapshot: AiSessionSnapshot,
+    delta: AiReviewDeltaSummary,
+    resolvedVersions: ReadonlyMap<string, number> | undefined,
+    isNativeSession: boolean,
+): AiSessionSnapshot {
+    const nextSnapshot = applyNativeReviewDeltaSnapshot(
+        snapshot,
+        delta,
+        resolvedVersions,
+    );
+    return isNativeSession && snapshot.reviewActionLog !== null
+        ? { ...nextSnapshot, reviewActionLog: null }
+        : nextSnapshot;
+}
+
 function nativeReviewDeltaStateForFiles(
     files: AiReviewDeltaSummary["files"],
 ): AiReviewDeltaSummary["state"] {
@@ -7249,6 +7259,7 @@ function nativeSetSecretPatch(
 }
 
 export const __testing = {
+    applyNativeReviewDelta,
     applyNativeReviewDeltaSnapshot,
     computeDiffHunks,
     diffToAiFileDiff,
