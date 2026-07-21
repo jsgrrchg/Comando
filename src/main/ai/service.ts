@@ -6974,6 +6974,40 @@ function applyNativeReviewDeltaSnapshot(
                             (candidate.path === file.previousPath ||
                                 candidate.previousPath === file.previousPath))),
             );
+            const fallback = previousTrackedFiles.find(
+                (candidate) =>
+                    candidate.nativeReviewDeltaId === undefined &&
+                    isFallbackTrackedFile(candidate) &&
+                    candidate.toolCallId === delta.toolCallId &&
+                    (candidate.path === file.path ||
+                        candidate.previousPath === file.path ||
+                        (file.previousPath !== undefined &&
+                            (candidate.path === file.previousPath ||
+                                candidate.previousPath === file.previousPath))),
+            );
+            if (file.state === "unavailable") {
+                if (fallback) {
+                    return fallback;
+                }
+                if (
+                    previous &&
+                    (previous.oldText !== null || previous.newText !== null)
+                ) {
+                    // Native materialization can fail after exposing provisional text.
+                    // Detach that text from the unusable native reference so fallback
+                    // review mutations continue to validate the working tree.
+                    return {
+                        ...previous,
+                        identityKey: `review:${delta.sessionId}:${file.path}`,
+                        nativeReviewDeltaId: undefined,
+                        nativeReviewInputRevision: undefined,
+                        nativeReviewState: undefined,
+                        nativeReviewWorkCycleId: undefined,
+                        reviewState: "pending" as const,
+                        version: undefined,
+                    };
+                }
+            }
             if (
                 previous &&
                 file.state !== "unavailable" &&

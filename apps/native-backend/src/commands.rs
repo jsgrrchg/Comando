@@ -3097,7 +3097,11 @@ impl NativeBackend {
                         native_ai::NativeAiToolActivityPayload,
                     >(ai_event.payload.clone())
                     {
-                        for payload in review_worker.ingest_tool_activity(activity) {
+                        let review_payloads = review_worker.ingest_tool_activity(activity);
+                        preserve_tool_activity_diffs = review_payloads.iter().any(|payload| {
+                            payload.delta.state == native_ai::NativeReviewDeltaState::Unavailable
+                        });
+                        for payload in review_payloads {
                             // Publish the lightweight placeholder before the worker has
                             // materialized hunks so review surfaces never lose the edit.
                             review_outputs.push(event(
@@ -4509,14 +4513,14 @@ fn prepare_ai_runtime_event_for_forwarding(
     history_persisted: bool,
     preserve_diffs: bool,
 ) -> AiRuntimeEvent {
-    if !history_persisted || preserve_diffs {
+    if !history_persisted {
         // The renderer needs the complete payload until the history record is durable.
         return event;
     }
-    compact_tool_activity_event(event)
+    compact_tool_activity_event(event, preserve_diffs)
 }
 
-fn compact_tool_activity_event(mut event: AiRuntimeEvent) -> AiRuntimeEvent {
+fn compact_tool_activity_event(mut event: AiRuntimeEvent, preserve_diffs: bool) -> AiRuntimeEvent {
     if event.event_name != AI_TOOL_ACTIVITY_EVENT {
         return event;
     }
@@ -4538,8 +4542,13 @@ fn compact_tool_activity_event(mut event: AiRuntimeEvent) -> AiRuntimeEvent {
         // The detail record remains authoritative when the review is opened.
         payload.insert("changeStats".to_string(), change_stats);
     }
-    for key in ["diffs", "rawInput", "rawOutput", "terminalOutput"] {
-        payload.remove(key);
+    let compacted_fields = if preserve_diffs {
+        &["rawInput", "rawOutput", "terminalOutput"][..]
+    } else {
+        &["diffs", "rawInput", "rawOutput", "terminalOutput"][..]
+    };
+    for key in compacted_fields {
+        payload.remove(*key);
     }
     event
 }
@@ -4938,7 +4947,7 @@ mod tests {
             }),
         );
 
-        let compacted = compact_tool_activity_event(event);
+        let compacted = compact_tool_activity_event(event, false);
 
         assert_eq!(
             compacted.payload["changeStats"],
@@ -4954,6 +4963,31 @@ mod tests {
             compacted.payload["toolActivityDetailId"],
             "tool-detail:session-1:edit-1"
         );
+    }
+
+    #[test]
+    fn preserves_tool_diffs_when_native_review_is_unavailable() {
+        let diffs = json!([{
+            "isText": true,
+            "kind": "update",
+            "newText": "after",
+            "oldText": "before",
+            "path": "src/app.ts",
+            "reversible": true
+        }]);
+        let event = AiRuntimeEvent::new(
+            AI_TOOL_ACTIVITY_EVENT,
+            &json!({
+                "sessionId": "session-1",
+                "toolCallId": "edit-1",
+                "diffs": diffs
+            }),
+        );
+
+        let compacted = compact_tool_activity_event(event, true);
+
+        assert_eq!(compacted.payload["diffs"], diffs);
+        assert!(compacted.payload.get("rawInput").is_none());
     }
 
     #[test]

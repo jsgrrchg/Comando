@@ -338,6 +338,94 @@ describe("AiService tracked file review merging", () => {
         ]);
     });
 
+    it("keeps a reversible fallback when native review is unavailable", () => {
+        const unavailable: AiReviewDeltaSummary = {
+            deltaId: "delta-unavailable",
+            files: [
+                {
+                    path: "src/app.ts",
+                    reason: "baseline_unavailable",
+                    state: "unavailable",
+                },
+            ],
+            inputRevision: 2,
+            revision: 2,
+            sessionId: "session-1",
+            state: "unavailable",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+        const fallback = createTrackedFile({
+            identityKey: "review:session-1:src/app.ts",
+            path: "src/app.ts",
+            toolCallId: "tool-1",
+        });
+
+        const updated = __testing.applyNativeReviewDeltaSnapshot(
+            { ...createSnapshot(), trackedFiles: [fallback] },
+            unavailable,
+        );
+
+        expect(updated.trackedFiles).toEqual([fallback]);
+        expect(updated.reviewDeltas).toEqual([unavailable]);
+    });
+
+    it("detaches provisional text when native materialization becomes unavailable", () => {
+        const preparing: AiReviewDeltaSummary = {
+            deltaId: "delta-1",
+            files: [{ path: "src/app.ts", state: "preparing" }],
+            inputRevision: 2,
+            revision: 2,
+            sessionId: "session-1",
+            state: "preparing",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+        const provisional = createTrackedFile({
+            identityKey: "native-review:src/app.ts",
+            nativeReviewDeltaId: preparing.deltaId,
+            nativeReviewInputRevision: preparing.inputRevision,
+            nativeReviewState: "preparing",
+            nativeReviewWorkCycleId: preparing.workCycleId,
+            path: "src/app.ts",
+            toolCallId: preparing.toolCallId,
+            version: preparing.revision,
+        });
+        const unavailable: AiReviewDeltaSummary = {
+            ...preparing,
+            files: [
+                {
+                    path: "src/app.ts",
+                    reason: "content_unavailable",
+                    state: "unavailable",
+                },
+            ],
+            revision: 3,
+            state: "unavailable",
+        };
+
+        const updated = __testing.applyNativeReviewDeltaSnapshot(
+            {
+                ...createSnapshot(),
+                reviewDeltas: [preparing],
+                trackedFiles: [provisional],
+            },
+            unavailable,
+        );
+
+        expect(updated.trackedFiles).toEqual([
+            expect.objectContaining({
+                identityKey: "review:session-1:src/app.ts",
+                nativeReviewDeltaId: undefined,
+                newText: provisional.newText,
+                oldText: provisional.oldText,
+                reviewState: "pending",
+            }),
+        ]);
+    });
+
     it("replaces a local review fallback when its native delta arrives", () => {
         const nativeDelta: AiReviewDeltaSummary = {
             deltaId: "delta-1",
