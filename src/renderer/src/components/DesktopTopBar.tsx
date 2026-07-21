@@ -3,7 +3,6 @@ import {
     useRef,
     useState,
     type KeyboardEvent as ReactKeyboardEvent,
-    type WheelEvent as ReactWheelEvent,
 } from "react";
 
 import {
@@ -109,13 +108,26 @@ export function DesktopTopBar({
         };
     }, [menuOpen]);
 
-    const handleTabsWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-        if (!tabsRef.current || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {
+    useEffect(() => {
+        const tabs = tabsRef.current;
+        if (!tabs) {
             return;
         }
-        tabsRef.current.scrollLeft += event.deltaY;
-        event.preventDefault();
-    };
+
+        const handleTabsWheel = (event: WheelEvent) => {
+            if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {
+                return;
+            }
+
+            tabs.scrollLeft += event.deltaY;
+            event.preventDefault();
+        };
+
+        // React delegates wheel events as passive, but this strip must cancel
+        // vertical scrolling after translating it into horizontal movement.
+        tabs.addEventListener("wheel", handleTabsWheel, { passive: false });
+        return () => tabs.removeEventListener("wheel", handleTabsWheel);
+    }, []);
 
     const handleTabKeyDown = (
         event: ReactKeyboardEvent<HTMLButtonElement>,
@@ -192,7 +204,6 @@ export function DesktopTopBar({
             <div
                 aria-label="Open project workspaces"
                 className="project-context-tabs app-no-drag"
-                onWheel={handleTabsWheel}
                 ref={tabsRef}
                 role="tablist"
             >

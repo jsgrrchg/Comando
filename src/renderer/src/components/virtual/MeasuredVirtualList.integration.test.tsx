@@ -304,6 +304,24 @@ afterEach(() => {
 });
 
 describe("MeasuredVirtualList scroll anchoring (integration)", () => {
+    it("bounds a retained scroll range when the list shrinks", () => {
+        const list = mountList({
+            items: createItems(200),
+            overscan: 10,
+            preserveScrollAnchorOnMeasure: true,
+        });
+
+        scrollTo(list, 1_800);
+        list.rerender({ items: createItems(3) });
+
+        // The old range is retained until the scroll-idle frames run. Rendering
+        // only current rows prevents a transient reconciliation from producing
+        // an undefined item for callers that inspect their row's discriminant.
+        expect(renderedIndexes(list.mountNode)).toEqual([0, 1, 2]);
+
+        list.root.unmount();
+    });
+
     it("expands the rendered buffer after a large scroll jump", () => {
         const list = mountList({
             items: createItems(500),
