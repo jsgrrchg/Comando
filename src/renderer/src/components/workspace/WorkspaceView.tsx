@@ -3016,14 +3016,9 @@ function WorkspacePaneView({
                                             identity={`${tab.id}:${tab.sessionId}`}
                                         >
                                             <ChatTabView
-                                                // A selected tab in an unfocused pane can be
-                                                // retained in the DOM, but its scroll surface is
-                                                // no longer live. Treat that transition like a
-                                                // tab switch so its viewport is captured before
-                                                // the pane is deferred or remeasured.
-                                                active={
-                                                    isActivePane && isActiveChat
-                                                }
+                                                // Each visible chat owns an independent viewport. Keep
+                                                // its follow state live while its agent is streaming,
+                                                // even when another pane has keyboard focus.
                                                 focused={
                                                     isActivePane && isActiveChat
                                                 }
@@ -3033,7 +3028,9 @@ function WorkspacePaneView({
                                                 onOpenReview={() =>
                                                     handleOpenChatReview(tab)
                                                 }
+                                                scrollSurfaceActive={isActiveChat}
                                                 tab={tab}
+                                                visible={isActiveChat}
                                             />
                                         </ChatPresentationErrorBoundary>
                                     </div>

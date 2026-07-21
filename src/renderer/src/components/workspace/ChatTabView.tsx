@@ -183,9 +183,12 @@ import {
 /* ─── Types ─── */
 
 interface ChatTabViewProps {
-    readonly active: boolean;
+    /** The chat is selected and its pane is currently rendered. */
+    readonly visible: boolean;
     /** True when this chat belongs to the pane currently receiving input. */
     readonly focused?: boolean;
+    /** The viewport can be measured and restored without a deferred-pane race. */
+    readonly scrollSurfaceActive?: boolean;
     readonly onDraftChange: (tabId: string, draft: string) => void;
     readonly onOpenFile: (
         projectId: string,
@@ -346,8 +349,9 @@ function hasAgentControlCatalog(
 /* ─── Main component ─── */
 
 export const ChatTabView = memo(function ChatTabView({
-    active,
+    visible,
     focused = true,
+    scrollSurfaceActive = visible,
     onDraftChange,
     onOpenFile,
     onOpenImage,
@@ -414,7 +418,7 @@ export const ChatTabView = memo(function ChatTabView({
     const frozenSessionStateRef = useRef<ChatSessionViewState | null>(null);
     const sessionState = useAiStore(
         useShallow((s) => {
-            if (!active) {
+            if (!visible) {
                 return frozenSessionStateRef.current;
             }
 
@@ -422,10 +426,10 @@ export const ChatTabView = memo(function ChatTabView({
         }),
     );
     useEffect(() => {
-        if (active) {
+        if (visible) {
             frozenSessionStateRef.current = sessionState;
         }
-    }, [active, sessionState]);
+    }, [sessionState, visible]);
     const projectSummary = useProjectsStore((state) =>
         tab.projectId
             ? (state.projects.find((project) => project.id === tab.projectId) ??
@@ -705,15 +709,15 @@ export const ChatTabView = memo(function ChatTabView({
 
     useEffect(() => {
         if (
-            active &&
+            visible &&
             latestSessionTabRef.current.sessionOpenMode === "history"
         ) {
             void ensureSession(latestSessionTabRef.current);
         }
-    }, [active, ensureSession, sessionPreparationKey]);
+    }, [ensureSession, sessionPreparationKey, visible]);
 
     useEffect(() => {
-        if (!active) return;
+        if (!visible) return;
         // Every visible chat must hydrate its persisted transcript. Focus only
         // controls speculative prefetch so split panes cannot show stale history.
         return chatActivationScheduler.activate(tab.id, async (phase) => {
@@ -725,20 +729,29 @@ export const ChatTabView = memo(function ChatTabView({
             }
         });
     }, [
-        active,
         focused,
         hydrateTranscriptWindow,
         prefetchTranscriptWindow,
         tab.id,
         tab.sessionId,
+        visible,
     ]);
 
     useEffect(() => {
-        if (active) return;
+        if (visible) return;
         // Cold tabs retain their metadata and persisted anchor, but must not
         // pin transcript blocks that prevent the global budget from evicting.
         setTranscriptWindowAnchor(tab.sessionId, null, false);
-    }, [active, setTranscriptWindowAnchor, tab.sessionId]);
+    }, [setTranscriptWindowAnchor, tab.sessionId, visible]);
+
+    useEffect(
+        () => () => {
+            // A deferred pane can unmount without a final visible=false render.
+            // Release its block pins so a closed surface cannot retain history.
+            setTranscriptWindowAnchor(tab.sessionId, null, false);
+        },
+        [setTranscriptWindowAnchor, tab.sessionId],
+    );
 
     const snapshot =
         sessionState?.snapshot ?? createEmptySnapshot(tab, runtimeCatalog);
@@ -979,7 +992,7 @@ export const ChatTabView = memo(function ChatTabView({
         const previousAttempt =
             agentControlDiscoveryAttemptsRef.current.get(discoveryKey);
         if (
-            !active ||
+            !visible ||
             latestSessionTabRef.current.sessionOpenMode === "history" ||
             hasAgentControls ||
             previousAttempt?.status === "completed" ||
@@ -1073,7 +1086,6 @@ export const ChatTabView = memo(function ChatTabView({
             }
         })();
     }, [
-        active,
         agentControlDiscoveryRetryNonce,
         ensureSession,
         hasAgentControls,
@@ -1082,6 +1094,7 @@ export const ChatTabView = memo(function ChatTabView({
         runtimeCatalog,
         tab.runtimeId,
         tab.sessionId,
+        visible,
     ]);
 
     const canonicalTrackedFiles = useMemo(
@@ -1399,7 +1412,7 @@ export const ChatTabView = memo(function ChatTabView({
         [],
     );
     useChatStreamingFrameProbe({
-        active: active && focused,
+        active: visible && focused,
         getNavigationGeneration: getPerformanceNavigationGeneration,
         isStreaming,
         scrollRef,
@@ -1672,7 +1685,7 @@ export const ChatTabView = memo(function ChatTabView({
     }, [applyPendingChatViewRestoreFallback]);
 
     useEffect(() => {
-        if (!active || !semanticRestoreAnchor) {
+        if (!scrollSurfaceActive || !semanticRestoreAnchor) {
             return;
         }
         const pendingRestore = pendingChatViewRestoreRef.current;
@@ -1729,7 +1742,6 @@ export const ChatTabView = memo(function ChatTabView({
             }
         });
     }, [
-        active,
         applyPendingChatViewRestoreFallback,
         loadTranscriptWindowBlock,
         semanticRestoreAnchor,
@@ -1737,20 +1749,27 @@ export const ChatTabView = memo(function ChatTabView({
         tab.sessionId,
         transcriptWindow?.blocksById,
         transcriptWindow?.capabilityVersion,
+        scrollSurfaceActive,
     ]);
 
     const handleNewTurnScrollTarget = useCallback(
         (target: number) => {
-            if (!isAnchoringNewChatTurn(scrollIntentRef.current)) {
+            if (
+                !scrollSurfaceActive ||
+                !isAnchoringNewChatTurn(scrollIntentRef.current)
+            ) {
                 return;
             }
 
             writeProgrammaticScroll(target, "new-turn");
         },
-        [writeProgrammaticScroll],
+        [scrollSurfaceActive, writeProgrammaticScroll],
     );
 
     const handleTimelineVirtualRangeChange = useCallback((range: MeasuredVirtualRange) => {
+        if (!scrollSurfaceActive) {
+            return;
+        }
         const previousRange = previousTranscriptVirtualRangeRef.current;
         const isScrollingForward =
             previousRange !== null &&
@@ -1942,15 +1961,19 @@ export const ChatTabView = memo(function ChatTabView({
         transcriptWindow?.blocksById,
         transcriptTimelineItems,
         writeProgrammaticScroll,
+        scrollSurfaceActive,
     ]);
 
     const handleTimelineVirtualResizeAutoFollow = useCallback(() => {
-        if (isAnchoringNewChatTurn(scrollIntentRef.current)) {
+        if (
+            !scrollSurfaceActive ||
+            isAnchoringNewChatTurn(scrollIntentRef.current)
+        ) {
             return;
         }
         scheduleScrollToBottom();
         setShowJumpToBottom(false);
-    }, [scheduleScrollToBottom]);
+    }, [scheduleScrollToBottom, scrollSurfaceActive]);
 
     const shouldPreserveTimelineVirtualResizeAnchor = useCallback(() => {
         // Following the tail and preserving a reader anchor are mutually
@@ -2238,7 +2261,7 @@ export const ChatTabView = memo(function ChatTabView({
     ]);
 
     useLayoutEffect(() => {
-        if (!active) {
+        if (!scrollSurfaceActive) {
             return;
         }
 
@@ -2320,23 +2343,23 @@ export const ChatTabView = memo(function ChatTabView({
         persistCurrentViewState,
         scrollToBottom,
         takeScheduledScrollPersist,
-        active,
+        scrollSurfaceActive,
         tab.sessionId,
     ]);
 
     useLayoutEffect(() => {
-        if (active && shouldAutoFollowRef.current) {
+        if (scrollSurfaceActive && shouldAutoFollowRef.current) {
             // The composer can collapse when a turn starts, changing the viewport
             // height before the new timeline entry has been measured.
             scrollToBottom();
         }
-    }, [active, composerExpanded, scrollToBottom, snapshot.updatedAt]);
+    }, [composerExpanded, scrollSurfaceActive, scrollToBottom, snapshot.updatedAt]);
 
     useEffect(() => {
         const scrollEl = scrollRef.current;
         const contentEl = timelineContentRef.current;
         if (
-            !active ||
+            !scrollSurfaceActive ||
             !scrollEl ||
             !contentEl ||
             typeof ResizeObserver === "undefined"
@@ -2356,7 +2379,7 @@ export const ChatTabView = memo(function ChatTabView({
         return () => {
             observer.disconnect();
         };
-    }, [active, scheduleScrollToBottom, tab.sessionId]);
+    }, [scheduleScrollToBottom, scrollSurfaceActive, tab.sessionId]);
 
     const handleScroll = useCallback(() => {
         const el = scrollRef.current;
@@ -2765,14 +2788,14 @@ export const ChatTabView = memo(function ChatTabView({
     }, [projectSearchScheduler, tab.sessionId]);
 
     useEffect(() => {
-        if (active) {
+        if (visible) {
             return;
         }
 
         projectSearchAbortRef.current?.abort();
         projectSearchAbortRef.current = null;
         projectSearchScheduler.cancelWorkspace(tab.sessionId);
-    }, [active, projectSearchScheduler, tab.projectId, tab.sessionId]);
+    }, [projectSearchScheduler, tab.projectId, tab.sessionId, visible]);
 
     const handleSearchProjectEntries = useCallback(
         (query: string) => {
@@ -2857,10 +2880,10 @@ export const ChatTabView = memo(function ChatTabView({
     );
 
     const handleChatFocus = useCallback(() => {
-        if (active) {
+        if (scrollSurfaceActive) {
             markChatTabFocused(tab.id);
         }
-    }, [active, markChatTabFocused, tab.id]);
+    }, [markChatTabFocused, scrollSurfaceActive, tab.id]);
     const handleChatPerformanceRender = useCallback(
         (_id: string, _phase: string, actualDuration: number) => {
             recordChatPerformanceMetric("react_commit_ms", {
@@ -2942,7 +2965,6 @@ export const ChatTabView = memo(function ChatTabView({
                 ) : null}
 
                 <ChatTimeline
-                    active={active}
                     canRenderFileReference={canRenderFileReference}
                     chatFontFamily={chatFontFamily}
                     chatFontSize={aiChatSettings.chatFontSize}
@@ -3012,6 +3034,8 @@ export const ChatTabView = memo(function ChatTabView({
                     }
                     timelineContentRef={timelineContentRef}
                     streamingStartedAt={activeTurnStartedAt}
+                    scrollSurfaceActive={scrollSurfaceActive}
+                    visible={visible}
                     worktreeId={tab.worktreeId ?? null}
                 />
 
@@ -3460,7 +3484,8 @@ function ImageAttachmentChip(props: {
 }
 
 type ChatTimelineProps = {
-    readonly active: boolean;
+    readonly scrollSurfaceActive: boolean;
+    readonly visible: boolean;
     readonly canRenderFileReference?: (
         rawReference: string,
         reference: ResolvedProjectFileReference,
@@ -3551,7 +3576,7 @@ function areChatTimelinePropsEqual(
 ): boolean {
     // Inactive views normally unmount under the workspace budget. If teardown
     // is deferred for one render, avoid reconciling an invisible timeline.
-    if (!previous.active && !next.active) {
+    if (!previous.visible && !next.visible) {
         return true;
     }
 
@@ -3562,7 +3587,8 @@ function areChatTimelinePropsEqual(
 }
 
 const ChatTimeline = memo(function ChatTimeline({
-    active,
+    scrollSurfaceActive,
+    visible,
     canRenderFileReference,
     chatFontFamily,
     chatFontSize,
@@ -3613,7 +3639,7 @@ const ChatTimeline = memo(function ChatTimeline({
     worktreeId,
 }: ChatTimelineProps) {
     useRenderProbe("ChatTimeline", {
-        active,
+        active: visible,
         historyRows: historyRows.length,
         rows: historyRows.length + hotTailRows.length,
     });
@@ -3638,7 +3664,7 @@ const ChatTimeline = memo(function ChatTimeline({
             timelineContentRef={timelineContentRef}
         >
                         <ChatTimelineHistory
-                            active={active}
+                            active={scrollSurfaceActive}
                             canRenderFileReference={
                                 canRenderFileReference
                             }
