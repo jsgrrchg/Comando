@@ -1173,3 +1173,71 @@ pub struct NativeAiErrorPayload {
     pub recoverable: bool,
     pub updated_at: String,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NativeReviewDeltaState {
+    Ready,
+    Partial,
+    Unavailable,
+    Superseded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewFileSummary {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
+    pub state: NativeReviewDeltaState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewDeltaSummary {
+    pub delta_id: crate::ids::ReviewDeltaId,
+    pub session_id: SessionId,
+    pub work_cycle_id: String,
+    pub tool_call_id: ToolCallId,
+    pub input_revision: crate::ids::ReviewRevision,
+    pub revision: crate::ids::ReviewRevision,
+    pub state: NativeReviewDeltaState,
+    #[serde(default)]
+    pub files: Vec<NativeReviewFileSummary>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiReviewDeltaReadyPayload {
+    #[serde(flatten)]
+    pub base: NativeAiEventBase,
+    pub delta: NativeReviewDeltaSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewDeltaReference {
+    pub delta_id: crate::ids::ReviewDeltaId,
+    pub session_id: SessionId,
+    pub work_cycle_id: String,
+    pub tool_call_id: ToolCallId,
+    pub input_revision: crate::ids::ReviewRevision,
+    pub expected_revision: crate::ids::ReviewRevision,
+    #[serde(default)]
+    pub observed_hashes: Vec<NativeReviewFileSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewLoadDeltaInput {
+    pub reference: NativeReviewDeltaReference,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewLoadDeltaOutput {
+    pub delta: NativeReviewDeltaSummary,
+}

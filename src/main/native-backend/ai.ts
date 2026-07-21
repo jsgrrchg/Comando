@@ -58,6 +58,8 @@ import {
     type NativeAiLaunchRuntimeAuthOutput,
     type NativeAiReviewCaptureOutput,
     type NativeAiReviewCommandOutput,
+    type NativeReviewDeltaReference,
+    type NativeReviewLoadDeltaOutput,
     type NativeAiRuntimeSessionMapping,
     type NativeAiSessionSnapshot,
     type NativeAiSessionTranscriptPage,
@@ -275,6 +277,18 @@ export class NativeAiGateway implements NativeAiGatewayContract {
             { sessionId },
         );
         return output.captured === true;
+    }
+
+    async loadReviewDelta(
+        reference: NativeReviewDeltaReference,
+    ): Promise<NativeReviewLoadDeltaOutput> {
+        if (!this.#reviewEnabled) {
+            throw new Error("Native AI review is not enabled.");
+        }
+        return await this.#client.request<NativeReviewLoadDeltaOutput>(
+            "ai_load_review_delta",
+            { reference },
+        );
     }
 
     async rejectTrackedFile(

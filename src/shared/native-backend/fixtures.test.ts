@@ -267,6 +267,15 @@ describe("native backend fixtures", () => {
             },
             kind: "tool-activity",
         });
+        expect(aiEvent("ai/event.review_delta_ready.json")).toMatchObject({
+            delta: {
+                deltaId: "delta_1",
+                inputRevision: 3,
+                state: "partial",
+                workCycleId: "cycle_1",
+            },
+            kind: "review-delta",
+        });
         const terminalActivityEvent = nativeAiEventToIpc({
             eventName: "ai://tool-activity",
             payload: {

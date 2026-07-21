@@ -2931,6 +2931,7 @@ export interface AiSessionDomainEventBase {
         | "permission-request"
         | "plan"
         | "review"
+        | "review-delta"
         | "session-info"
         | "status"
         | "session-closed"
@@ -3054,6 +3055,36 @@ export interface AiSessionReviewEvent extends AiSessionDomainEventBase {
     readonly trackedFiles: readonly AiTrackedFile[];
 }
 
+export type AiReviewDeltaState =
+    | "ready"
+    | "partial"
+    | "unavailable"
+    | "superseded";
+
+export interface AiReviewFileSummary {
+    readonly observedHash?: string;
+    readonly path: string;
+    readonly previousPath?: string;
+    readonly state: AiReviewDeltaState;
+}
+
+export interface AiReviewDeltaSummary {
+    readonly deltaId: string;
+    readonly files: readonly AiReviewFileSummary[];
+    readonly inputRevision: number;
+    readonly revision: number;
+    readonly sessionId: string;
+    readonly state: AiReviewDeltaState;
+    readonly toolCallId: string;
+    readonly updatedAt: string;
+    readonly workCycleId: string;
+}
+
+export interface AiSessionReviewDeltaEvent extends AiSessionDomainEventBase {
+    readonly delta: AiReviewDeltaSummary;
+    readonly kind: "review-delta";
+}
+
 export interface AiSessionInfoEvent extends AiSessionDomainEventBase {
     readonly kind: "session-info";
     readonly projectId: string | null;
@@ -3088,6 +3119,7 @@ export type AiSessionDomainEvent =
     | AiSessionPermissionRequestEvent
     | AiSessionPlanEvent
     | AiSessionReviewEvent
+    | AiSessionReviewDeltaEvent
     | AiSessionClosedEvent
     | AiSessionStatusEvent
     | AiSessionSubagentBreadcrumbEvent

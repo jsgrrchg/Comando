@@ -3,10 +3,11 @@ use std::path::PathBuf;
 
 use comando_types::ai::{
     NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth, NativeAiMessageDeltaPayload,
-    NativeAiMigrateSessionHistoryOutput, NativeAiSessionCatalogUpdatedPayload,
-    NativeAiSessionSnapshot, NativeAiSessionSummary, NativeAiSessionTranscriptPage,
-    NativeAiSubagentBreadcrumbPayload, NativeAiSubagentCreatedPayload, NativeAiToolActivityPayload,
-    NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptPayload,
+    NativeAiMigrateSessionHistoryOutput, NativeAiReviewDeltaReadyPayload,
+    NativeAiSessionCatalogUpdatedPayload, NativeAiSessionSnapshot, NativeAiSessionSummary,
+    NativeAiSessionTranscriptPage, NativeAiSubagentBreadcrumbPayload,
+    NativeAiSubagentCreatedPayload, NativeAiToolActivityPayload, NativeAiTranscriptBlock,
+    NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptPayload,
     NativeAiTranscriptStorageState,
 };
 use comando_types::capabilities::NativeBackendCapabilitiesOutput;
@@ -155,6 +156,18 @@ fn ai_fixtures_deserialize() {
         Some("export function main() {}\n")
     );
     assert_eq!(payload.exit_code, Some(0));
+
+    let review_delta: NativeRpcOutput = fixture("ai/event.review_delta_ready.json");
+    let NativeRpcOutput::Event(review_delta) = review_delta else {
+        panic!("expected AI review delta event");
+    };
+    let payload: NativeAiReviewDeltaReadyPayload =
+        serde_json::from_value(review_delta.payload).expect("payload should deserialize");
+    assert_eq!(payload.delta.delta_id.0, "delta_1");
+    assert_eq!(
+        payload.delta.state,
+        comando_types::ai::NativeReviewDeltaState::Partial
+    );
 
     let catalog: NativeRpcOutput = fixture("ai/event.session_catalog_updated.json");
     let NativeRpcOutput::Event(catalog) = catalog else {

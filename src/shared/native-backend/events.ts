@@ -44,6 +44,8 @@ export const NATIVE_TERMINAL_EVENTS = [
     "terminal://error",
 ] as const;
 
+export const AI_REVIEW_DELTA_READY_EVENT = "ai://review-delta-ready";
+
 export const NATIVE_AI_EVENTS = [
     "ai://runtime-status",
     "ai://session-created",
@@ -66,6 +68,7 @@ export const NATIVE_AI_EVENTS = [
     "ai://user-input-request",
     "ai://token-usage",
     "ai://review-updated",
+    AI_REVIEW_DELTA_READY_EVENT,
     "ai://tracked-file-updated",
     "ai://runtime-connection",
     "ai://error",

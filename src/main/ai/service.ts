@@ -3617,6 +3617,11 @@ export class AiService {
             return base;
         }
 
+        if (event.kind === "review-delta") {
+            // Delta contracts are intentionally inert until the native review route owns UI state.
+            return base;
+        }
+
         if (event.kind === "plan") {
             return {
                 ...base,

@@ -37,6 +37,7 @@ import type {
     NativeAiPlanUpdatedPayload,
     NativeAiReviewUpdatedPayload,
     NativeAiReviewCommandOutput,
+    NativeAiReviewDeltaReadyPayload,
     NativeAiRuntimeStatus,
     NativeAiSessionCatalogUpdatedPayload,
     NativeAiSessionClosedPayload,
@@ -221,6 +222,12 @@ export function nativeAiEventToIpc(
         );
     }
 
+    if (event.eventName === "ai://review-delta-ready") {
+        return nativeAiReviewDeltaReadyToIpc(
+            requireRecord(event.payload) as unknown as NativeAiReviewDeltaReadyPayload,
+        );
+    }
+
     if (event.eventName === "ai://error") {
         return nativeAiErrorToIpc(
             requireRecord(event.payload) as unknown as NativeAiErrorPayload,
@@ -228,6 +235,16 @@ export function nativeAiEventToIpc(
     }
 
     return null;
+}
+
+function nativeAiReviewDeltaReadyToIpc(
+    payload: NativeAiReviewDeltaReadyPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        delta: payload.delta,
+        kind: "review-delta",
+    };
 }
 
 export type NativeAiCatalogPatch = {

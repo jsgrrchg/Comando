@@ -241,6 +241,7 @@ impl NativeBackend {
             | "ai_migrate_session_history"
             | "ai_get_history_storage_health"
             | "ai_capture_review_baseline"
+            | "ai_load_review_delta"
             | "ai_reject_tracked_file"
             | "ai_reject_tracked_file_hunks"
             | "ai_reject_all_tracked_files"
@@ -2643,10 +2644,23 @@ impl NativeBackend {
                     Ok(session) => session,
                     Err(error) => return error_only(request.id, error.to_native_error()),
                 };
-                match self.review_service.capture_baseline(&session) {
+                match self.review_service.capture_baseline(&session, input) {
                     Ok(output) => response_only(
                         request.id,
                         serde_json::to_value(output).expect("review baseline output serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_review_delta" => {
+                let input = match parse_args::<native_ai::NativeReviewLoadDeltaInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.review_service.load_delta(input) {
+                    Ok(output) => response_only(
+                        request.id,
+                        serde_json::to_value(output).expect("review delta output serializes"),
                     ),
                     Err(error) => error_only(request.id, error),
                 }

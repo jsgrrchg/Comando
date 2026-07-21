@@ -10,8 +10,12 @@ use comando_diff::{
 use comando_fs::WriteTracker;
 use comando_fs::path::{ScopedPathIntent, normalize_relative_path, resolve_scoped_path};
 use comando_fs::read::hash_content_bytes;
+use comando_types::ai::{
+    NativeReviewDeltaReference, NativeReviewDeltaState, NativeReviewDeltaSummary,
+    NativeReviewLoadDeltaInput, NativeReviewLoadDeltaOutput,
+};
 use comando_types::error::{NativeError, NativeErrorCode};
-use comando_types::ids::SessionId;
+use comando_types::ids::{ReviewDeltaId, ReviewRevision, SessionId, ToolCallId};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -19,13 +23,45 @@ const MAX_REVIEW_TEXT_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Debug, Default)]
 pub struct NativeReviewService {
-    open_buffers: HashMap<PathBuf, String>,
+    baseline_counter: u64,
+    open_buffers: HashMap<PathBuf, ReviewBuffer>,
+    work_states: HashMap<SessionId, HashMap<String, ReviewWorkState>>,
+}
+
+#[derive(Debug, Clone)]
+struct ReviewBuffer {
+    content: String,
+    content_hash: String,
+    revision: ReviewRevision,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct ReviewWorkState {
+    context: ReviewBaselineContext,
+    decisions: HashMap<ReviewDeltaId, ReviewRevision>,
+    deltas: HashMap<ReviewDeltaId, NativeReviewDeltaSummary>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+struct ReviewBaselineContext {
+    additional_roots: Vec<String>,
+    cwd: String,
+    observed_buffers: HashMap<PathBuf, ReviewBuffer>,
+    revision: ReviewRevision,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeReviewSessionInput {
     pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_cycle_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_revision: Option<ReviewRevision>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<ToolCallId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,6 +80,8 @@ pub struct NativeReviewFileMutationInput {
     pub tracked_file: ReviewTrackedFile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<NativeReviewDeltaReference>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -56,6 +94,8 @@ pub struct NativeReviewHunkMutationInput {
     pub hunk_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<NativeReviewDeltaReference>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -66,6 +106,8 @@ pub struct NativeReviewRejectAllInput {
     pub review_root: Option<String>,
     #[serde(default)]
     pub tracked_files: Vec<ReviewTrackedFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<NativeReviewDeltaReference>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,6 +116,9 @@ pub struct NativeReviewCaptureOutput {
     pub captured: bool,
     pub session_id: SessionId,
     pub updated_at: String,
+    pub work_cycle_id: String,
+    pub revision: ReviewRevision,
+    pub delta: NativeReviewDeltaSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -100,8 +145,7 @@ pub struct NativeReviewConflict {
 struct RollbackBackup {
     path: PathBuf,
     content: Option<Vec<u8>>,
-    had_open_buffer: bool,
-    open_buffer_content: Option<String>,
+    open_buffer: Option<ReviewBuffer>,
 }
 
 impl NativeReviewService {
@@ -110,7 +154,19 @@ impl NativeReviewService {
     pub fn notify_file_buffer(&mut self, input: NativeReviewFileBufferInput) {
         let path = PathBuf::from(input.absolute_path);
         if let Some(content) = input.content {
-            self.open_buffers.insert(path, content);
+            let revision = self
+                .open_buffers
+                .get(&path)
+                .map(|buffer| ReviewRevision(buffer.revision.0 + 1))
+                .unwrap_or(ReviewRevision(1));
+            self.open_buffers.insert(
+                path,
+                ReviewBuffer {
+                    content_hash: hash_content_bytes(content.as_bytes()),
+                    content,
+                    revision,
+                },
+            );
         } else {
             self.open_buffers.remove(&path);
         }
@@ -119,12 +175,118 @@ impl NativeReviewService {
     pub fn capture_baseline(
         &mut self,
         session: &NativeAiSession,
+        input: NativeReviewSessionInput,
     ) -> Result<NativeReviewCaptureOutput, NativeError> {
+        self.baseline_counter = self.baseline_counter.saturating_add(1);
+        let work_cycle_id = input
+            .work_cycle_id
+            .unwrap_or_else(|| format!("baseline-{}", self.baseline_counter));
+        let revision = input.input_revision.unwrap_or(ReviewRevision(1));
+        let tool_call_id = input
+            .tool_call_id
+            .unwrap_or_else(|| ToolCallId("baseline".into()));
+        let updated_at = now();
+        let delta_id = ReviewDeltaId(format!(
+            "baseline:{}:{}",
+            session.session_id.0, self.baseline_counter
+        ));
+        let delta = NativeReviewDeltaSummary {
+            delta_id: delta_id.clone(),
+            session_id: session.session_id.clone(),
+            work_cycle_id: work_cycle_id.clone(),
+            tool_call_id,
+            input_revision: revision,
+            revision,
+            state: NativeReviewDeltaState::Unavailable,
+            files: Vec::new(),
+            updated_at: updated_at.clone(),
+        };
+        let mut deltas = self
+            .work_states
+            .get(&session.session_id)
+            .and_then(|cycles| cycles.get(&work_cycle_id))
+            .map(|state| state.deltas.clone())
+            .unwrap_or_default();
+        for previous_delta in deltas.values_mut() {
+            previous_delta.state = NativeReviewDeltaState::Superseded;
+        }
+        deltas.insert(delta_id, delta.clone());
+        let context = ReviewBaselineContext {
+            additional_roots: session.scope.additional_roots.clone(),
+            cwd: session.scope.cwd.clone(),
+            observed_buffers: self.open_buffers.clone(),
+            revision,
+        };
+        let work_state = ReviewWorkState {
+            context,
+            decisions: HashMap::new(),
+            deltas,
+        };
+        self.work_states
+            .entry(session.session_id.clone())
+            .or_default()
+            .insert(work_cycle_id.clone(), work_state);
         Ok(NativeReviewCaptureOutput {
             captured: true,
             session_id: session.session_id.clone(),
-            updated_at: now(),
+            updated_at,
+            work_cycle_id,
+            revision,
+            delta,
         })
+    }
+
+    pub fn load_delta(
+        &self,
+        input: NativeReviewLoadDeltaInput,
+    ) -> Result<NativeReviewLoadDeltaOutput, NativeError> {
+        let delta = self.resolve_reference(&input.reference)?;
+        Ok(NativeReviewLoadDeltaOutput { delta })
+    }
+
+    fn resolve_reference(
+        &self,
+        reference: &NativeReviewDeltaReference,
+    ) -> Result<NativeReviewDeltaSummary, NativeError> {
+        let state = self
+            .work_states
+            .get(&reference.session_id)
+            .and_then(|cycles| cycles.get(&reference.work_cycle_id))
+            .ok_or_else(|| review_reference_conflict(reference, "work_cycle_not_found"))?;
+        let delta = state
+            .deltas
+            .get(&reference.delta_id)
+            .ok_or_else(|| review_reference_conflict(reference, "delta_not_found"))?;
+        if delta.session_id != reference.session_id
+            || delta.work_cycle_id != reference.work_cycle_id
+            || delta.tool_call_id != reference.tool_call_id
+            || delta.input_revision != reference.input_revision
+        {
+            return Err(review_reference_conflict(reference, "reference_mismatch"));
+        }
+        if delta.state == NativeReviewDeltaState::Superseded {
+            return Err(review_reference_conflict(reference, "superseded"));
+        }
+        if delta.revision != reference.expected_revision {
+            return Err(review_reference_conflict(reference, "stale_revision"));
+        }
+        Ok(delta.clone())
+    }
+
+    fn record_decision(
+        &mut self,
+        reference: &NativeReviewDeltaReference,
+    ) -> Result<(), NativeError> {
+        let delta = self.resolve_reference(reference)?;
+        let state = self
+            .work_states
+            .get_mut(&reference.session_id)
+            .and_then(|cycles| cycles.get_mut(&reference.work_cycle_id))
+            .expect("validated review work state exists");
+        state
+            .decisions
+            .insert(delta.delta_id, reference.expected_revision);
+        Ok(())
     }
 
     pub fn reject_file(
@@ -133,6 +295,9 @@ impl NativeReviewService {
         input: NativeReviewFileMutationInput,
         write_tracker: &WriteTracker,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
+        if let Some(reference) = input.reference.as_ref() {
+            self.record_decision(reference)?;
+        }
         let updated_at = now();
         let review_root = normalize_review_root(session, input.review_root.as_deref())?;
         let tracked_file = self.prepare_tracked_file(
@@ -160,6 +325,9 @@ impl NativeReviewService {
         input: NativeReviewHunkMutationInput,
         write_tracker: &WriteTracker,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
+        if let Some(reference) = input.reference.as_ref() {
+            self.record_decision(reference)?;
+        }
         let updated_at = now();
         let review_root = normalize_review_root(session, input.review_root.as_deref())?;
         let tracked_file = self.prepare_tracked_file(
@@ -219,6 +387,9 @@ impl NativeReviewService {
         input: NativeReviewRejectAllInput,
         write_tracker: &WriteTracker,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
+        if let Some(reference) = input.reference.as_ref() {
+            self.record_decision(reference)?;
+        }
         let updated_at = now();
         let review_root = normalize_review_root(session, input.review_root.as_deref())?;
         let tracked_files = input
@@ -305,7 +476,7 @@ impl NativeReviewService {
             Err(error) => return Err(error),
         };
         if let Some(buffer) = self.open_buffers.get(&resolved) {
-            return ensure_review_text(buffer.clone(), review_path);
+            return ensure_review_text(buffer.content.clone(), review_path);
         }
         read_text_file_for_review(&resolved, review_path)
     }
@@ -434,7 +605,9 @@ impl NativeReviewService {
             .map_err(|error| review_io("write review file", &resolved, error))?;
         write_tracker.track_content(resolved.clone(), text);
         if let Some(buffer) = self.open_buffers.get_mut(&resolved) {
-            *buffer = text.to_string();
+            buffer.content = text.to_string();
+            buffer.content_hash = hash_content_bytes(text.as_bytes());
+            buffer.revision = ReviewRevision(buffer.revision.0 + 1);
         }
         Ok(())
     }
@@ -487,12 +660,11 @@ impl NativeReviewService {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
                     Err(error) => return Err(review_io("backup review file", &resolved, error)),
                 };
-                let open_buffer_content = self.open_buffers.get(&resolved).cloned();
+                let open_buffer = self.open_buffers.get(&resolved).cloned();
                 backups.push(RollbackBackup {
                     path: resolved,
                     content,
-                    had_open_buffer: open_buffer_content.is_some(),
-                    open_buffer_content,
+                    open_buffer,
                 });
             }
         }
@@ -526,10 +698,8 @@ impl NativeReviewService {
                 write_tracker.track_any(backup.path.clone());
             }
 
-            if backup.had_open_buffer {
-                if let Some(content) = backup.open_buffer_content {
-                    self.open_buffers.insert(backup.path, content);
-                }
+            if let Some(buffer) = backup.open_buffer {
+                self.open_buffers.insert(backup.path, buffer);
             } else {
                 self.open_buffers.remove(&backup.path);
             }
@@ -903,6 +1073,22 @@ fn review_conflict(path: &str, reason: &str, external_change_hash: Option<String
     }))
 }
 
+fn review_reference_conflict(reference: &NativeReviewDeltaReference, reason: &str) -> NativeError {
+    NativeError::new(
+        NativeErrorCode::Conflict,
+        "Cannot apply this review decision because its delta reference is no longer current.",
+    )
+    .with_details(json!({
+        "reviewDelta": {
+            "deltaId": reference.delta_id.0,
+            "expectedRevision": reference.expected_revision.0,
+            "reason": reason,
+            "sessionId": reference.session_id.0,
+            "workCycleId": reference.work_cycle_id,
+        }
+    }))
+}
+
 fn review_io(action: &str, path: &Path, error: std::io::Error) -> NativeError {
     let code = match error.kind() {
         std::io::ErrorKind::NotFound => NativeErrorCode::NotFound,
@@ -932,6 +1118,134 @@ mod tests {
     use super::*;
 
     #[test]
+    fn capture_baseline_records_context_and_an_unavailable_delta() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let session = test_session(repo.path(), "s-baseline");
+        let mut service = NativeReviewService::default();
+        let buffer_path = repo.path().join("open.txt");
+        service.notify_file_buffer(NativeReviewFileBufferInput {
+            absolute_path: buffer_path.to_string_lossy().to_string(),
+            content: Some("editor buffer\n".into()),
+        });
+
+        let output = service
+            .capture_baseline(
+                &session,
+                NativeReviewSessionInput {
+                    session_id: session.session_id.clone(),
+                    work_cycle_id: Some("cycle-1".into()),
+                    input_revision: Some(ReviewRevision(4)),
+                    tool_call_id: Some(ToolCallId("tool-1".into())),
+                },
+            )
+            .expect("capture baseline");
+
+        assert_eq!(output.work_cycle_id, "cycle-1");
+        assert_eq!(output.delta.state, NativeReviewDeltaState::Unavailable);
+        let loaded = service
+            .load_delta(NativeReviewLoadDeltaInput {
+                reference: NativeReviewDeltaReference {
+                    delta_id: output.delta.delta_id.clone(),
+                    expected_revision: output.delta.revision,
+                    input_revision: output.delta.input_revision,
+                    observed_hashes: Vec::new(),
+                    session_id: session.session_id.clone(),
+                    tool_call_id: output.delta.tool_call_id.clone(),
+                    work_cycle_id: output.work_cycle_id.clone(),
+                },
+            })
+            .expect("load baseline delta");
+        assert_eq!(loaded.delta, output.delta);
+    }
+
+    #[test]
+    fn stale_delta_reference_returns_a_conflict() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let session = test_session(repo.path(), "s-stale-reference");
+        let mut service = NativeReviewService::default();
+        let output = service
+            .capture_baseline(
+                &session,
+                NativeReviewSessionInput {
+                    session_id: session.session_id.clone(),
+                    work_cycle_id: Some("cycle-1".into()),
+                    input_revision: Some(ReviewRevision(1)),
+                    tool_call_id: Some(ToolCallId("tool-1".into())),
+                },
+            )
+            .expect("capture baseline");
+
+        let error = service
+            .load_delta(NativeReviewLoadDeltaInput {
+                reference: NativeReviewDeltaReference {
+                    delta_id: output.delta.delta_id,
+                    expected_revision: ReviewRevision(2),
+                    input_revision: ReviewRevision(1),
+                    observed_hashes: Vec::new(),
+                    session_id: session.session_id,
+                    tool_call_id: ToolCallId("tool-1".into()),
+                    work_cycle_id: "cycle-1".into(),
+                },
+            })
+            .expect_err("stale reference should fail");
+
+        assert_eq!(error.code, NativeErrorCode::Conflict);
+        assert_eq!(
+            error.details.expect("details")["reviewDelta"]["reason"],
+            "stale_revision"
+        );
+    }
+
+    #[test]
+    fn repeated_work_cycle_marks_the_previous_delta_superseded() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let session = test_session(repo.path(), "s-superseded-reference");
+        let mut service = NativeReviewService::default();
+        let first = service
+            .capture_baseline(
+                &session,
+                NativeReviewSessionInput {
+                    session_id: session.session_id.clone(),
+                    work_cycle_id: Some("cycle-1".into()),
+                    input_revision: Some(ReviewRevision(1)),
+                    tool_call_id: Some(ToolCallId("tool-1".into())),
+                },
+            )
+            .expect("capture first baseline");
+        service
+            .capture_baseline(
+                &session,
+                NativeReviewSessionInput {
+                    session_id: session.session_id.clone(),
+                    work_cycle_id: Some("cycle-1".into()),
+                    input_revision: Some(ReviewRevision(2)),
+                    tool_call_id: Some(ToolCallId("tool-2".into())),
+                },
+            )
+            .expect("capture second baseline");
+
+        let error = service
+            .load_delta(NativeReviewLoadDeltaInput {
+                reference: NativeReviewDeltaReference {
+                    delta_id: first.delta.delta_id,
+                    expected_revision: first.delta.revision,
+                    input_revision: first.delta.input_revision,
+                    observed_hashes: Vec::new(),
+                    session_id: session.session_id,
+                    tool_call_id: first.delta.tool_call_id,
+                    work_cycle_id: first.work_cycle_id,
+                },
+            })
+            .expect_err("superseded delta should fail");
+
+        assert_eq!(error.code, NativeErrorCode::Conflict);
+        assert_eq!(
+            error.details.expect("details")["reviewDelta"]["reason"],
+            "superseded"
+        );
+    }
+
+    #[test]
     fn reject_file_reverts_update_from_tracked_file() {
         let repo = tempfile::tempdir().expect("tempdir");
         fs::write(repo.path().join("a.txt"), "agent\n").expect("write agent");
@@ -948,6 +1262,7 @@ mod tests {
                     review_root: None,
                     tracked_file,
                     expected_version: None,
+                    reference: None,
                 },
                 &tracker,
             )
@@ -977,6 +1292,7 @@ mod tests {
                     review_root: None,
                     tracked_file,
                     expected_version: None,
+                    reference: None,
                 },
                 &tracker,
             )
@@ -1008,6 +1324,7 @@ mod tests {
                         tracked_file(&session, "a.txt", "base a\n", "agent a\n"),
                         tracked_file(&session, "b.txt", "base b\n", "agent b\n"),
                     ],
+                    reference: None,
                 },
                 &tracker,
             )
@@ -1048,6 +1365,7 @@ mod tests {
                     tracked_file,
                     hunk_ids: vec![hunk_id],
                     expected_version: None,
+                    reference: None,
                 },
                 &tracker,
             )
@@ -1080,6 +1398,7 @@ mod tests {
                     review_root: Some(repo.path().to_string_lossy().to_string()),
                     tracked_file,
                     expected_version: None,
+                    reference: None,
                 },
                 &tracker,
             )

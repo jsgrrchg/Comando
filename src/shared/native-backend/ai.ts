@@ -9,6 +9,8 @@ import type {
 } from "./ids";
 
 export type NativeAiRuntimeId = NativeRuntimeId;
+export type ReviewDeltaId = string;
+export type ReviewRevision = number;
 export type NativeAiRuntimeSupportState =
     | "legacy_only"
     | "native_ready"
@@ -761,6 +763,9 @@ export type NativeAiReviewCaptureOutput = {
     readonly captured: boolean;
     readonly sessionId: NativeSessionId;
     readonly updatedAt: string;
+    readonly workCycleId: string;
+    readonly revision: ReviewRevision;
+    readonly delta: NativeReviewDeltaSummary;
 };
 
 export type NativeAiReviewCommandOutput = {
@@ -770,6 +775,53 @@ export type NativeAiReviewCommandOutput = {
     readonly conflicts: readonly unknown[];
     readonly updatedAt: string;
     readonly stateFound?: boolean;
+};
+
+export type NativeReviewDeltaState =
+    | "ready"
+    | "partial"
+    | "unavailable"
+    | "superseded";
+
+export type NativeReviewFileSummary = {
+    readonly path: string;
+    readonly previousPath?: string;
+    readonly state: NativeReviewDeltaState;
+    readonly observedHash?: string;
+};
+
+export type NativeReviewDeltaSummary = {
+    readonly deltaId: ReviewDeltaId;
+    readonly sessionId: NativeSessionId;
+    readonly workCycleId: string;
+    readonly toolCallId: NativeToolCallId;
+    readonly inputRevision: ReviewRevision;
+    readonly revision: ReviewRevision;
+    readonly state: NativeReviewDeltaState;
+    readonly files: readonly NativeReviewFileSummary[];
+    readonly updatedAt: string;
+};
+
+export type NativeAiReviewDeltaReadyPayload = NativeAiEventBase & {
+    readonly delta: NativeReviewDeltaSummary;
+};
+
+export type NativeReviewDeltaReference = {
+    readonly deltaId: ReviewDeltaId;
+    readonly sessionId: NativeSessionId;
+    readonly workCycleId: string;
+    readonly toolCallId: NativeToolCallId;
+    readonly inputRevision: ReviewRevision;
+    readonly expectedRevision: ReviewRevision;
+    readonly observedHashes: readonly NativeReviewFileSummary[];
+};
+
+export type NativeReviewLoadDeltaInput = {
+    readonly reference: NativeReviewDeltaReference;
+};
+
+export type NativeReviewLoadDeltaOutput = {
+    readonly delta: NativeReviewDeltaSummary;
 };
 
 export type NativeAiErrorPayload = {
