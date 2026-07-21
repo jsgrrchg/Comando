@@ -822,6 +822,7 @@ export type NativeReviewLoadDeltaInput = {
 
 export type NativeReviewLoadDeltaOutput = {
     readonly delta: NativeReviewDeltaSummary;
+    readonly trackedFiles: readonly unknown[];
 };
 
 export type NativeAiErrorPayload = {

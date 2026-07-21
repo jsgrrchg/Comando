@@ -245,10 +245,18 @@ fn materialize_review_worker_task(
             .map(|cycle| cycle.context.clone())?
     };
     let updated_at = now();
-    let files = task
+    let materialized_files = task
         .diffs
         .iter()
         .map(|diff| materialize_review_file(&context, diff, &task.base.session_id, &updated_at))
+        .collect::<Vec<_>>();
+    let files = materialized_files
+        .iter()
+        .map(|file| file.summary.clone())
+        .collect::<Vec<_>>();
+    let tracked_files = materialized_files
+        .into_iter()
+        .filter_map(|file| file.tracked_file)
         .collect::<Vec<_>>();
     let state = if files
         .iter()
@@ -279,7 +287,14 @@ fn materialize_review_worker_task(
         base: task.base,
         delta,
         epoch: task.epoch,
+        tracked_files,
     })
+}
+
+#[derive(Debug)]
+struct MaterializedReviewFile {
+    summary: NativeReviewFileSummary,
+    tracked_file: Option<ReviewTrackedFile>,
 }
 
 fn materialize_review_file(
@@ -287,7 +302,7 @@ fn materialize_review_file(
     diff: &NativeReviewRuntimeDiff,
     session_id: &SessionId,
     updated_at: &str,
-) -> NativeReviewFileSummary {
+) -> MaterializedReviewFile {
     if diff.old_text.is_none() && diff.new_text.is_none() {
         return unavailable_review_file(diff);
     }
@@ -316,8 +331,8 @@ fn materialize_review_file(
     } else {
         NativeReviewDeltaState::Ready
     };
-    // Computing the patch here keeps hunk generation off the control plane.
-    let _ = compute_tracked_file_patch(
+    // Keep detail in the backend so the control plane only emits its summary.
+    let tracked_file = compute_tracked_file_patch(
         &session_id.0,
         &diff.path,
         diff.previous_path.clone(),
@@ -325,20 +340,26 @@ fn materialize_review_file(
         diff.new_text.clone(),
         updated_at.to_string(),
     );
-    NativeReviewFileSummary {
-        path: diff.path.clone(),
-        previous_path: diff.previous_path.clone(),
-        state,
-        observed_hash,
+    MaterializedReviewFile {
+        summary: NativeReviewFileSummary {
+            path: diff.path.clone(),
+            previous_path: diff.previous_path.clone(),
+            state,
+            observed_hash,
+        },
+        tracked_file,
     }
 }
 
-fn unavailable_review_file(diff: &NativeReviewRuntimeDiff) -> NativeReviewFileSummary {
-    NativeReviewFileSummary {
-        path: diff.path.clone(),
-        previous_path: diff.previous_path.clone(),
-        state: NativeReviewDeltaState::Unavailable,
-        observed_hash: None,
+fn unavailable_review_file(diff: &NativeReviewRuntimeDiff) -> MaterializedReviewFile {
+    MaterializedReviewFile {
+        summary: NativeReviewFileSummary {
+            path: diff.path.clone(),
+            previous_path: diff.previous_path.clone(),
+            state: NativeReviewDeltaState::Unavailable,
+            observed_hash: None,
+        },
+        tracked_file: None,
     }
 }
 
@@ -442,6 +463,7 @@ struct NativeReviewWorkerResult {
     base: NativeAiEventBase,
     delta: NativeReviewDeltaSummary,
     epoch: u64,
+    tracked_files: Vec<ReviewTrackedFile>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -469,6 +491,7 @@ struct ReviewWorkState {
     context: ReviewBaselineContext,
     decisions: HashMap<ReviewDeltaId, ReviewRevision>,
     deltas: HashMap<ReviewDeltaId, NativeReviewDeltaSummary>,
+    materialized_files: HashMap<ReviewDeltaId, Vec<ReviewTrackedFile>>,
 }
 
 #[allow(dead_code)]
@@ -599,6 +622,9 @@ impl NativeReviewService {
             state
                 .deltas
                 .insert(result.delta.delta_id.clone(), result.delta.clone());
+            state
+                .materialized_files
+                .insert(result.delta.delta_id.clone(), result.tracked_files);
             events.push(NativeAiReviewDeltaReadyPayload {
                 base: result.base,
                 delta: result.delta,
@@ -686,6 +712,7 @@ impl NativeReviewService {
             context: context.clone(),
             decisions: HashMap::new(),
             deltas,
+            materialized_files: HashMap::new(),
         };
         self.work_states
             .entry(session.session_id.clone())
@@ -711,7 +738,20 @@ impl NativeReviewService {
         input: NativeReviewLoadDeltaInput,
     ) -> Result<NativeReviewLoadDeltaOutput, NativeError> {
         let delta = self.resolve_reference(&input.reference)?;
-        Ok(NativeReviewLoadDeltaOutput { delta })
+        let tracked_files = self
+            .work_states
+            .get(&input.reference.session_id)
+            .and_then(|cycles| cycles.get(&input.reference.work_cycle_id))
+            .and_then(|state| state.materialized_files.get(&input.reference.delta_id))
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|file| serde_json::to_value(file).expect("tracked file serializes"))
+            .collect();
+        Ok(NativeReviewLoadDeltaOutput {
+            delta,
+            tracked_files,
+        })
     }
 
     fn resolve_reference(
@@ -1622,6 +1662,22 @@ mod tests {
             events[0].delta.files[0].observed_hash.as_deref(),
             Some(hash_content_bytes(b"editor after\n").as_str())
         );
+        let delta = events.into_iter().next().expect("delta event").delta;
+        let loaded = service
+            .load_delta(NativeReviewLoadDeltaInput {
+                reference: NativeReviewDeltaReference {
+                    delta_id: delta.delta_id.clone(),
+                    expected_revision: delta.revision,
+                    input_revision: delta.input_revision,
+                    observed_hashes: delta.files.clone(),
+                    session_id: delta.session_id.clone(),
+                    tool_call_id: delta.tool_call_id.clone(),
+                    work_cycle_id: delta.work_cycle_id.clone(),
+                },
+            })
+            .expect("load materialized delta");
+        assert_eq!(loaded.tracked_files.len(), 1);
+        assert!(loaded.tracked_files[0]["hunks"].is_array());
     }
 
     #[test]

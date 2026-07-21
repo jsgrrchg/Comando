@@ -1240,4 +1240,6 @@ pub struct NativeReviewLoadDeltaInput {
 #[serde(rename_all = "camelCase")]
 pub struct NativeReviewLoadDeltaOutput {
     pub delta: NativeReviewDeltaSummary,
+    #[serde(default)]
+    pub tracked_files: Vec<serde_json::Value>,
 }

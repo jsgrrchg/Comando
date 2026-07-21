@@ -191,6 +191,8 @@ export const IPC_CHANNELS = {
     rejectAiTrackedFileHunks: "ai:reject-tracked-file-hunks",
     keepAllAiTrackedFiles: "ai:keep-all-tracked-files",
     rejectAllAiTrackedFiles: "ai:reject-all-tracked-files",
+    loadAiReviewDelta: "ai:load-review-delta",
+    releaseAiReviewDelta: "ai:release-review-delta",
 } as const;
 
 export const IPC_EVENTS = {
@@ -2618,6 +2620,9 @@ export interface AiTrackedFile {
     readonly hunksAreAnchored?: boolean;
     readonly isText: boolean;
     readonly kind: "create" | "delete" | "move" | "update";
+    readonly nativeReviewDeltaId?: string;
+    readonly nativeReviewInputRevision?: number;
+    readonly nativeReviewWorkCycleId?: string;
     readonly newText: string | null;
     readonly oldText: string | null;
     readonly path: string;
@@ -2709,6 +2714,7 @@ export interface AiSessionSnapshot {
     readonly runtimeId: AiRuntimeId;
     readonly runtimeSessionId: string | null;
     readonly reviewActionLog?: AiReviewActionLogState | null;
+    readonly reviewDeltas?: readonly AiReviewDeltaSummary[];
     readonly sessionId: string;
     readonly status: AiSessionStatus;
     readonly title: string;
@@ -3078,6 +3084,17 @@ export interface AiReviewDeltaSummary {
     readonly toolCallId: string;
     readonly updatedAt: string;
     readonly workCycleId: string;
+}
+
+export interface AiReviewDeltaDetails {
+    readonly delta: AiReviewDeltaSummary;
+    readonly trackedFiles: readonly AiTrackedFile[];
+}
+
+export interface AiLoadReviewDeltaInput {
+    readonly expectedRevision: number;
+    readonly reviewDeltaId: string;
+    readonly sessionId: string;
 }
 
 export interface AiSessionReviewDeltaEvent extends AiSessionDomainEventBase {
@@ -3670,6 +3687,10 @@ export interface ComandoApi {
     getAiSessionSnapshot: (
         sessionId: string,
     ) => Promise<AiSessionSnapshot | null>;
+    loadAiReviewDelta: (
+        input: AiLoadReviewDeltaInput,
+    ) => Promise<AiReviewDeltaDetails | null>;
+    releaseAiReviewDelta: (reviewDeltaId: string) => Promise<void>;
     resyncAiSession: (sessionId: string) => Promise<AiSessionSnapshot | null>;
     getAiSessionTranscriptPage: (
         input: GetAiSessionTranscriptPageInput,

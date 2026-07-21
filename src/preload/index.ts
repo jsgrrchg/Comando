@@ -34,6 +34,8 @@ import {
     type AiTranscriptCapability,
     type AiLoadTranscriptPayloadInput,
     type AiLoadTranscriptPayloadsInput,
+    type AiLoadReviewDeltaInput,
+    type AiReviewDeltaDetails,
     type AiTranscriptPayload,
     type AiTranscriptPayloadsOutput,
     type AiTrackedFileHunkMutationInput,
@@ -1573,6 +1575,13 @@ const comandoApi: ComandoApi = {
                 sessionId,
             ),
         ),
+    loadAiReviewDelta: async (input: AiLoadReviewDeltaInput) =>
+        assertIpcObjectOrNull<AiReviewDeltaDetails>(
+            IPC_CHANNELS.loadAiReviewDelta,
+            await ipcRenderer.invoke(IPC_CHANNELS.loadAiReviewDelta, input),
+        ),
+    releaseAiReviewDelta: (reviewDeltaId: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.releaseAiReviewDelta, reviewDeltaId),
     resyncAiSession: async (sessionId: string) =>
         assertIpcObjectOrNull<AiSessionSnapshot>(
             IPC_CHANNELS.resyncAiSession,
