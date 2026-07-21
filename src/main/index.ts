@@ -82,6 +82,10 @@ import type { NativeBackendEvent } from "./native-backend/protocol";
 import { debugBenignError } from "./observability/logging";
 import { mainProcessPerformance } from "./observability/performance";
 import type { PersistenceGateway } from "./persistence/service";
+import {
+    createProjectInvalidationCoordinator,
+    type ProjectInvalidationCoordinator,
+} from "./projects/invalidation-coordinator";
 import { ProjectService } from "./projects/service";
 import { registerIpcHandlers } from "./ipc";
 import type { SettingsGateway } from "./settings/service";
@@ -114,6 +118,7 @@ let bootstrapSnapshot: AppBootstrapSnapshot | null = null;
 let aiService: AiService | null = null;
 let persistenceService: PersistenceGateway | null = null;
 let projectService: ProjectService | null = null;
+let projectInvalidationCoordinator: ProjectInvalidationCoordinator | null = null;
 let gitService: ClosableGitGateway | null = null;
 let githubService: GitHubService | null = null;
 let secretStore: SecretStoreGateway | null = null;
@@ -251,6 +256,11 @@ if (!hasSingleInstanceLock) {
                 nativeClient,
                 onDiagnostic: (message) => {
                     console.warn(message);
+                },
+            });
+            projectInvalidationCoordinator = createProjectInvalidationCoordinator({
+                apply: (payload) => {
+                    projectService?.handleProjectTreeInvalidation(payload);
                 },
             });
             projectService = new ProjectService({
@@ -524,6 +534,7 @@ async function shutdownApplication(): Promise<void> {
     const gitServiceToClose = gitService;
     const nativeBackendClientToClose = nativeBackendClient;
     const projectServiceToClose = projectService;
+    const projectInvalidationCoordinatorToClose = projectInvalidationCoordinator;
     const terminalServiceToClose = terminalService;
 
     aiService = null;
@@ -534,6 +545,7 @@ async function shutdownApplication(): Promise<void> {
     nativeBackendCapabilities = null;
     persistenceService = null;
     projectService = null;
+    projectInvalidationCoordinator = null;
     secretStore = null;
     settingsService = null;
     terminalService = null;
@@ -548,6 +560,7 @@ async function shutdownApplication(): Promise<void> {
         projectServiceToClose?.close(),
         nativeAppDataClientToClose?.close(),
     ]);
+    projectInvalidationCoordinatorToClose?.dispose();
 
     for (const result of shutdownResults) {
         if (result.status === "rejected") {
@@ -1256,6 +1269,7 @@ function broadcastProjectGitInvalidation(
     for (const worktree of worktrees) {
         clearLegacyGitCacheIfAny(worktree.rootPath);
         broadcastGitRepositoryInvalidated({
+            generation: payload.generation,
             occurredAt: payload.occurredAt,
             projectId: payload.projectId,
             reason: "filesystem",
@@ -1321,7 +1335,7 @@ function broadcastNativeBackendEvent(event: NativeBackendEvent): void {
                     eventName: event.eventName,
                 });
             }
-            projectService?.handleProjectTreeInvalidation(invalidation);
+            projectInvalidationCoordinator?.enqueue(invalidation);
         } catch (error) {
             debugBenignError("nativeBackend.projectTreeInvalidation", error);
         }

@@ -934,6 +934,7 @@ export interface GitRepositorySnapshot {
 }
 
 export interface GitRepositoryInvalidation {
+    readonly generation?: number;
     readonly occurredAt: string;
     readonly projectId: string;
     readonly reason:
@@ -1939,6 +1940,7 @@ export interface RevealProjectEntryInput {
 }
 
 export interface ProjectTreeInvalidation {
+    readonly generation?: number;
     readonly projectId: string;
     readonly occurredAt: string;
     readonly relativePaths?: readonly string[] | null;
