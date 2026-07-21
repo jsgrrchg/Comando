@@ -2784,6 +2784,7 @@ describe("ai-store queue", () => {
         expect(snapshot?.toolActivity).toEqual([
             {
                 ...updatedTool,
+                changeStats: null,
                 createdAt: "2026-04-14T00:00:00.000Z",
             },
         ]);
