@@ -3010,6 +3010,9 @@ function WorkspacePaneView({
                                         >
                                             <ChatTabView
                                                 active={isActiveChat}
+                                                focused={
+                                                    isActivePane && isActiveChat
+                                                }
                                                 onDraftChange={handleChatDraftChange}
                                                 onOpenFile={handleOpenWorkspaceFile}
                                                 onOpenImage={handleOpenChatImage}

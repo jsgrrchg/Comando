@@ -1899,15 +1899,13 @@ export const useAiStore = create<AiStore>((set, get) => ({
         const block = await transcriptWindowStore.load(sessionId, blockId);
         let hydratedPayloads: ReadonlyMap<string, AiTranscriptPayload> = new Map();
         if (block) {
-            // A sealed turn replaces the live tail with this visible block.
-            // Hydrate its tool payloads too so review diffs remain inspectable
-            // across that handoff and after reopening the chat.
-            const visiblePayloadRefs = new Set(
+            // Message text is needed for the initial transcript paint. Tool
+            // payloads can contain large outputs and diffs, so their existing
+            // visibility callback loads them only when a reader expands one.
+            const initialPayloadRefs = new Set(
                 block.entries.flatMap((entry) =>
                     entry.payloadRef &&
-                    (entry.kind === "message" ||
-                        entry.kind === "thinking" ||
-                        entry.kind === "tool")
+                    (entry.kind === "message" || entry.kind === "thinking")
                         ? [entry.payloadRef]
                         : [],
                 ),
@@ -1916,12 +1914,12 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 "transcript_payload_batch_ms",
                 {
                     sessionId,
-                    values: { payloadRefs: visiblePayloadRefs.size },
+                    values: { payloadRefs: initialPayloadRefs.size },
                 },
                 () =>
                     get().loadTranscriptPayloads(
                         sessionId,
-                        [...visiblePayloadRefs],
+                        [...initialPayloadRefs],
                         { protect: false, publish: false },
                     ),
             );

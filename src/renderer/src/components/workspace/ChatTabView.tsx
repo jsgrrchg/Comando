@@ -184,6 +184,8 @@ import {
 
 interface ChatTabViewProps {
     readonly active: boolean;
+    /** True when this chat belongs to the pane currently receiving input. */
+    readonly focused?: boolean;
     readonly onDraftChange: (tabId: string, draft: string) => void;
     readonly onOpenFile: (
         projectId: string,
@@ -345,6 +347,7 @@ function hasAgentControlCatalog(
 
 export const ChatTabView = memo(function ChatTabView({
     active,
+    focused = true,
     onDraftChange,
     onOpenFile,
     onOpenImage,
@@ -694,14 +697,17 @@ export const ChatTabView = memo(function ChatTabView({
     useEffect(() => {
         if (
             active &&
+            focused &&
             latestSessionTabRef.current.sessionOpenMode === "history"
         ) {
             void ensureSession(latestSessionTabRef.current);
         }
-    }, [active, ensureSession, sessionPreparationKey]);
+    }, [active, ensureSession, focused, sessionPreparationKey]);
 
     useEffect(() => {
-        if (!active) return;
+        if (!active || !focused) return;
+        // A visible secondary pane keeps its current shell, but its transcript
+        // hydration must not compete with the pane the user is navigating.
         return chatActivationScheduler.activate(tab.id, async (phase) => {
             if (phase === "window") {
                 await hydrateTranscriptWindow(tab.sessionId);
@@ -712,6 +718,7 @@ export const ChatTabView = memo(function ChatTabView({
         });
     }, [
         active,
+        focused,
         hydrateTranscriptWindow,
         prefetchTranscriptWindow,
         tab.id,
@@ -1375,7 +1382,7 @@ export const ChatTabView = memo(function ChatTabView({
         [],
     );
     useChatStreamingFrameProbe({
-        active,
+        active: active && focused,
         getNavigationGeneration: getPerformanceNavigationGeneration,
         isStreaming,
         scrollRef,
