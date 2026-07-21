@@ -89,6 +89,7 @@ interface ChatTimelineHistoryRowsProps {
     readonly semanticRestoreAnchor?: {
         readonly entryId: string;
         readonly offsetWithinEntry: number;
+        readonly timelineItemId?: string | null;
     } | null;
     readonly showStreamingIndicator: boolean;
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
@@ -100,6 +101,7 @@ interface ChatTimelineHistoryRowsProps {
 export interface ChatTimelineSemanticAnchor {
     readonly entryId: string;
     readonly offsetWithinEntry: number;
+    readonly timelineItemId: string;
 }
 
 export function captureChatTimelineSemanticAnchor({
@@ -122,6 +124,7 @@ export function captureChatTimelineSemanticAnchor({
     return {
         entryId,
         offsetWithinEntry: Math.max(0, viewportAnchor.offset),
+        timelineItemId: row.id,
     };
 }
 
@@ -364,7 +367,7 @@ export const ChatTimelineHistoryRows = memo(
                 return;
             }
 
-            const restoreKey = `${semanticRestoreAnchor.entryId}:${semanticRestoreAnchor.offsetWithinEntry}`;
+            const restoreKey = `${semanticRestoreAnchor.timelineItemId ?? semanticRestoreAnchor.entryId}:${semanticRestoreAnchor.offsetWithinEntry}`;
             if (restoredSemanticAnchorKeyRef.current === restoreKey) {
                 return;
             }
@@ -372,8 +375,10 @@ export const ChatTimelineHistoryRows = memo(
             const anchorIndex = historyRows.findIndex(
                 (row) =>
                     isChatTimelineRowItem(row) &&
-                    getTranscriptTimelineItemAnchorEntryId(row) ===
-                        semanticRestoreAnchor.entryId,
+                    (semanticRestoreAnchor.timelineItemId
+                        ? row.id === semanticRestoreAnchor.timelineItemId
+                        : getTranscriptTimelineItemAnchorEntryId(row) ===
+                          semanticRestoreAnchor.entryId),
             );
             if (anchorIndex < 0) {
                 if (semanticAnchorBlockLoaded) {

@@ -499,7 +499,7 @@ export const ChatTabView = memo(function ChatTabView({
     const captureTimelineSemanticAnchorRef = useRef<
         (() => Pick<
             ChatSemanticRestoreAnchor,
-            "entryId" | "offsetWithinEntry"
+            "entryId" | "offsetWithinEntry" | "timelineItemId"
         > | null) | null
     >(null);
     const pendingChatViewRestoreRef = useRef<PendingChatViewRestore | null>(
@@ -1817,8 +1817,10 @@ export const ChatTabView = memo(function ChatTabView({
             const restoredTimelineRow = visibleTimelineRows.find(
                 (row) =>
                     isChatTimelineRowItem(row) &&
-                    getTranscriptTimelineItemAnchorEntryId(row) ===
-                        pendingRestore.anchor?.entryId,
+                    (pendingRestore.anchor?.timelineItemId
+                        ? row.id === pendingRestore.anchor.timelineItemId
+                        : getTranscriptTimelineItemAnchorEntryId(row) ===
+                          pendingRestore.anchor?.entryId),
             );
             if (restoredTimelineRow) {
                 const restoredElement = [...(
@@ -1844,6 +1846,7 @@ export const ChatTabView = memo(function ChatTabView({
                 const confirmedAnchor = captureTranscriptSemanticAnchor({
                     entryId: pendingRestore.anchor.entryId,
                     offsetWithinEntry,
+                    timelineItemId: restoredTimelineRow.id,
                 });
 
                 // Keep the persisted anchor frozen until the virtual range sees it.
@@ -1900,6 +1903,7 @@ export const ChatTabView = memo(function ChatTabView({
                       )
                     : null,
                 offsetWithinEntry,
+                timelineItemId: firstVisibleTimelineRow?.id ?? null,
             });
             semanticAnchorRef.current = nextAnchor
                 ? {
@@ -1971,7 +1975,7 @@ export const ChatTabView = memo(function ChatTabView({
         (
             capture: (() => Pick<
                 ChatSemanticRestoreAnchor,
-                "entryId" | "offsetWithinEntry"
+                "entryId" | "offsetWithinEntry" | "timelineItemId"
             > | null) | null,
         ) => {
             captureTimelineSemanticAnchorRef.current = capture;

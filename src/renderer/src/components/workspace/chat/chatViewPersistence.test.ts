@@ -117,4 +117,29 @@ describe("chatViewPersistence", () => {
                 ?.anchor,
         ).toMatchObject({ blockId: null, entryId: "entry-legacy" });
     });
+
+    it("upgrades version 2 anchors without a virtual row identity", () => {
+        const key = getChatViewStorageKey("project-1", null, "session-legacy");
+        globalThis.localStorage.setItem(
+            key,
+            JSON.stringify({
+                anchor: {
+                    alignment: "start",
+                    entryId: "message:long",
+                    offsetWithinEntry: 48,
+                },
+                isNearBottom: false,
+                scrollTop: 320,
+                updatedAt: 1,
+                version: 2,
+            }),
+        );
+
+        expect(
+            readPersistedChatViewState("project-1", null, "session-legacy"),
+        )?.toMatchObject({
+            anchor: { timelineItemId: null },
+            version: 3,
+        });
+    });
 });

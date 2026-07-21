@@ -449,12 +449,13 @@ export function captureTranscriptSemanticAnchor(input: {
     readonly alignment?: TranscriptSemanticAnchor["alignment"];
     readonly entryId: string | null;
     readonly offsetWithinEntry?: number;
+    readonly timelineItemId?: string | null;
 }): TranscriptSemanticAnchor | null {
     if (!input.entryId) return null;
     return {
         alignment: input.alignment ?? "start",
         entryId: input.entryId,
         offsetWithinEntry: Math.max(0, input.offsetWithinEntry ?? 0),
-        timelineItemId: null,
+        timelineItemId: input.timelineItemId ?? null,
     };
 }

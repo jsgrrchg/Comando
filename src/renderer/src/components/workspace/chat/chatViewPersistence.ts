@@ -4,7 +4,8 @@ import {
     getWorktreeStorageScope,
 } from "@renderer/app/ai/sessionStorage";
 
-const CHAT_VIEW_STATE_VERSION = 2;
+const CHAT_VIEW_STATE_VERSION = 3;
+const LEGACY_CHAT_VIEW_STATE_VERSION = 2;
 const CHAT_VIEW_STATE_PREFIX = "comando.ai.chat.view";
 
 export interface PersistedChatViewState {
@@ -13,6 +14,7 @@ export interface PersistedChatViewState {
         readonly blockId: string | null;
         readonly entryId: string;
         readonly offsetWithinEntry: number;
+        readonly timelineItemId?: string | null;
     } | null;
     readonly isNearBottom: boolean;
     readonly scrollTop: number;
@@ -32,7 +34,8 @@ function normalizePersistedState(raw: unknown): PersistedChatViewState | null {
     const anchor = (raw as { anchor?: unknown }).anchor;
 
     if (
-        version !== CHAT_VIEW_STATE_VERSION ||
+        (version !== CHAT_VIEW_STATE_VERSION &&
+            version !== LEGACY_CHAT_VIEW_STATE_VERSION) ||
         typeof isNearBottom !== "boolean" ||
         typeof scrollTop !== "number" ||
         !Number.isFinite(scrollTop) ||
@@ -66,6 +69,14 @@ function normalizePersistedState(raw: unknown): PersistedChatViewState | null {
                       (anchor as { offsetWithinEntry: number })
                           .offsetWithinEntry,
                   ),
+                  // Version 2 identified a whole message. Version 3 retains
+                  // the virtual row so a long message restores its exact chunk.
+                  timelineItemId:
+                      typeof (anchor as { timelineItemId?: unknown })
+                          .timelineItemId === "string"
+                          ? (anchor as { timelineItemId: string })
+                                .timelineItemId
+                          : null,
               }
             : null;
 
@@ -89,6 +100,7 @@ function statesEqual(
         left.anchor?.entryId === right.anchor?.entryId &&
         left.anchor?.blockId === right.anchor?.blockId &&
         left.anchor?.offsetWithinEntry === right.anchor?.offsetWithinEntry &&
+        left.anchor?.timelineItemId === right.anchor?.timelineItemId &&
         left.anchor?.alignment === right.anchor?.alignment
     );
 }
@@ -143,7 +155,12 @@ export function persistChatViewState(
     }
 
     const nextState: PersistedChatViewState = {
-        anchor: state.anchor ?? null,
+        anchor: state.anchor
+            ? {
+                  ...state.anchor,
+                  timelineItemId: state.anchor.timelineItemId ?? null,
+              }
+            : null,
         isNearBottom: state.isNearBottom,
         scrollTop: Math.max(0, state.scrollTop),
         updatedAt: Date.now(),
