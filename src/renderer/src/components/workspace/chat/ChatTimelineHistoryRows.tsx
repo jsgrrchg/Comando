@@ -705,6 +705,17 @@ export const ChatTimelineHistoryRows = memo(
                 readonly item: TranscriptTimelineItem;
             }) => {
                 if (isTranscriptBlockSpacerItem(item)) {
+                    if (item.isLoaded) {
+                        // Keep the stable virtual anchor without exposing an implementation detail.
+                        return (
+                            <div
+                                aria-hidden="true"
+                                data-transcript-block-spacer={item.blockId}
+                                style={{ height: `${item.estimatedHeight}px` }}
+                            />
+                        );
+                    }
+
                     return (
                         <div
                             aria-label="Loading historical messages"
