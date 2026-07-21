@@ -3178,7 +3178,7 @@ impl NativeBackend {
                     &runtime_setup_store,
                     &ai_engine,
                     &ai_event,
-                ));
+                );
                 let forward_started_at = Instant::now();
                 let send_result = background_sender.send(outputs);
                 crate::performance::record(

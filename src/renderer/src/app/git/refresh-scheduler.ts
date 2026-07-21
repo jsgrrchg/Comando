@@ -7,7 +7,7 @@ type GitProjectRefreshSchedulerOptions = {
     readonly refreshProject: (
         projectId: string,
         worktreeId: string | null,
-    ) => void;
+    ) => Promise<void>;
     readonly setTimeoutFn?: typeof setTimeout;
     readonly clearTimeoutFn?: typeof clearTimeout;
 };
@@ -25,16 +25,34 @@ export function createGitProjectRefreshScheduler({
     clearTimeoutFn = clearTimeout,
 }: GitProjectRefreshSchedulerOptions): GitProjectRefreshScheduler {
     const pendingRefreshes = new Map<string, TimeoutHandle>();
+    const activeRefreshes = new Map<string, Promise<void>>();
+    const refreshAgain = new Set<string>();
+
+    const run = (projectId: string, worktreeId: string | null): void => {
+        const contextKey = getGitSchedulerContextKey(projectId, worktreeId);
+        if (activeRefreshes.has(contextKey)) {
+            // Keep only one catch-up pass while writes continue arriving.
+            refreshAgain.add(contextKey);
+            return;
+        }
+
+        const refresh = refreshProject(projectId, worktreeId).finally(() => {
+            activeRefreshes.delete(contextKey);
+            if (refreshAgain.delete(contextKey)) {
+                run(projectId, worktreeId);
+            }
+        });
+        activeRefreshes.set(contextKey, refresh);
+    };
 
     const cancel = (projectId: string, worktreeId: string | null): void => {
         const contextKey = getGitSchedulerContextKey(projectId, worktreeId);
         const timeout = pendingRefreshes.get(contextKey);
-        if (timeout === undefined) {
-            return;
+        if (timeout !== undefined) {
+            clearTimeoutFn(timeout);
+            pendingRefreshes.delete(contextKey);
         }
-
-        clearTimeoutFn(timeout);
-        pendingRefreshes.delete(contextKey);
+        refreshAgain.delete(contextKey);
     };
 
     return {
@@ -44,13 +62,14 @@ export function createGitProjectRefreshScheduler({
                 clearTimeoutFn(timeout);
             }
             pendingRefreshes.clear();
+            refreshAgain.clear();
         },
         schedule: (projectId, worktreeId) => {
             const contextKey = getGitSchedulerContextKey(projectId, worktreeId);
             cancel(projectId, worktreeId);
             const timeout = setTimeoutFn(() => {
                 pendingRefreshes.delete(contextKey);
-                refreshProject(projectId, worktreeId);
+                run(projectId, worktreeId);
             }, delayMs);
             pendingRefreshes.set(contextKey, timeout);
         },

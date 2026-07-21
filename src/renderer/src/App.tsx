@@ -1160,7 +1160,7 @@ export function App() {
             null;
         const projectRefreshScheduler = createGitProjectRefreshScheduler({
             refreshProject: (projectId, worktreeId) => {
-                void refreshGitProject(projectId, worktreeId);
+                return refreshGitProject(projectId, worktreeId).then(() => undefined);
             },
         });
 
