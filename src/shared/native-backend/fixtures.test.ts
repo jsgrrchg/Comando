@@ -320,6 +320,33 @@ describe("native backend fixtures", () => {
                 "tool-detail:session-1:tool_terminal_fallback",
             );
         }
+        const compactActivityEvent = nativeAiEventToIpc({
+            eventName: "ai://tool-activity",
+            payload: {
+                exitCode: 0,
+                kind: "edit",
+                runtimeId: "codex",
+                runtimeSessionId: "runtime-1",
+                sessionId: "session-1",
+                status: "completed",
+                summary: "Updated src/main.ts",
+                title: "Edit file",
+                toolActivityDetailId: "tool-detail:session-1:tool-1",
+                toolCallId: "tool-1",
+                updatedAt: "2026-07-20T00:00:00.000Z",
+            },
+            type: "event",
+        });
+        expect(compactActivityEvent).toMatchObject({
+            activity: {
+                diffs: [],
+                rawInputJson: null,
+                rawOutputJson: null,
+                terminalOutput: null,
+                toolActivityDetailId: "tool-detail:session-1:tool-1",
+            },
+            kind: "tool-activity",
+        });
         expect(
             nativeAiEventToIpc({
                 eventName: "ai://tool-activity",
