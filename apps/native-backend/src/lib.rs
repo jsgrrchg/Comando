@@ -1,10 +1,11 @@
 use std::io::{self, BufRead, Write};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub mod commands;
 pub mod logging;
+pub mod performance;
 pub mod protocol;
 pub mod review;
 
@@ -15,7 +16,10 @@ const BACKGROUND_CHANNEL_CAPACITY: usize = 256;
 const BACKGROUND_DRAIN_OUTPUT_LIMIT: usize = 64;
 
 enum InputMessage {
-    Line(io::Result<String>),
+    Line {
+        received_at: Instant,
+        result: io::Result<String>,
+    },
     Eof,
 }
 
@@ -32,7 +36,13 @@ where
 
     thread::spawn(move || {
         for line_result in reader.lines() {
-            if sender.send(InputMessage::Line(line_result)).is_err() {
+            if sender
+                .send(InputMessage::Line {
+                    received_at: Instant::now(),
+                    result: line_result,
+                })
+                .is_err()
+            {
                 return;
             }
         }
@@ -54,11 +64,15 @@ where
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
 
-        let line = match message {
-            InputMessage::Line(line_result) => line_result?,
+        let (line, received_at) = match message {
+            InputMessage::Line {
+                received_at,
+                result,
+            } => (result?, received_at),
             InputMessage::Eof => {
                 write_background_outputs(&mut writer, &background_receiver, usize::MAX)?;
                 write_outputs(&mut writer, backend.drain_fs_events(true))?;
+                performance::flush_to_diagnostics();
                 break;
             }
         };
@@ -67,19 +81,39 @@ where
             continue;
         }
 
-        let command_result = match parse_request_line(&line) {
-            Ok(request) => backend.handle_request_background(request, background_sender.clone()),
+        let command_started_at = Instant::now();
+        let (command_result, command_name) = match parse_request_line(&line) {
+            Ok(request) => {
+                let command_name = request.command.clone();
+                (
+                    backend.handle_request_background(request, background_sender.clone()),
+                    command_name,
+                )
+            }
             Err(error) => {
                 logging::diagnostic(format!(
                     "Rejected malformed request: {}",
                     error.error.message
                 ));
-                commands::CommandResult {
-                    outputs: vec![error_response(error.id, *error.error)],
-                    should_shutdown: false,
-                }
+                (
+                    commands::CommandResult {
+                        outputs: vec![error_response(error.id, *error.error)],
+                        should_shutdown: false,
+                    },
+                    "invalid".into(),
+                )
             }
         };
+
+        performance::record("sidecar.command", command_started_at.elapsed(), || {
+            format!(
+                "command={} queueDelayMicros={} outputCount={} shutdown={}",
+                command_name,
+                command_started_at.duration_since(received_at).as_micros(),
+                command_result.outputs.len(),
+                command_result.should_shutdown
+            )
+        });
 
         write_outputs(&mut writer, command_result.outputs)?;
         write_background_outputs(
@@ -89,6 +123,7 @@ where
         )?;
 
         if command_result.should_shutdown {
+            performance::flush_to_diagnostics();
             break;
         }
     }

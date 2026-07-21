@@ -223,7 +223,8 @@ if (!hasSingleInstanceLock) {
     void app
         .whenReady()
         .then(async () => {
-            mainProcessPerformance.markAppWhenReady();
+        mainProcessPerformance.markAppWhenReady();
+        mainProcessPerformance.startEventLoopMonitor();
             installFilePreviewProtocol();
             await startNativeBackendRequired();
             const databaseFile = path.join(
@@ -1207,9 +1208,20 @@ function focusExistingWindow(window: BrowserWindow): void {
 function broadcastProjectTreeInvalidation(
     payload: ProjectTreeInvalidation,
 ): void {
+    const tracingEnabled = mainProcessPerformance.isEnabled();
+    let surfaceCount = 0;
     windowRegistry.forEachLiveWebContents((webContents) => {
+        if (tracingEnabled) {
+            surfaceCount += 1;
+        }
         webContents.send(IPC_EVENTS.projectTreeInvalidated, payload);
     });
+    if (tracingEnabled) {
+        mainProcessPerformance.record("ipc.project-tree.broadcast", {
+            projectId: payload.projectId,
+            surfaceCount,
+        });
+    }
 }
 
 function broadcastProjectGitInvalidation(
@@ -1261,9 +1273,21 @@ function clearLegacyGitCacheIfAny(rootPath: string): void {
 function broadcastGitRepositoryInvalidated(
     payload: GitRepositoryInvalidation,
 ): void {
+    const tracingEnabled = mainProcessPerformance.isEnabled();
+    let surfaceCount = 0;
     windowRegistry.forEachLiveWebContents((webContents) => {
+        if (tracingEnabled) {
+            surfaceCount += 1;
+        }
         webContents.send(IPC_EVENTS.gitRepositoryInvalidated, payload);
     });
+    if (tracingEnabled) {
+        mainProcessPerformance.record("ipc.git-invalidation.broadcast", {
+            projectId: payload.projectId,
+            reason: payload.reason,
+            surfaceCount,
+        });
+    }
 }
 
 export function broadcastGitRepositorySnapshotUpdated(
@@ -1291,6 +1315,12 @@ function broadcastNativeBackendEvent(event: NativeBackendEvent): void {
             const invalidation = nativeProjectTreeInvalidationToIpc(
                 event.payload as NativeProjectTreeInvalidation,
             );
+            if (mainProcessPerformance.isEnabled()) {
+                mainProcessPerformance.record("project.invalidation.source", {
+                    projectId: invalidation.projectId,
+                    eventName: event.eventName,
+                });
+            }
             projectService?.handleProjectTreeInvalidation(invalidation);
         } catch (error) {
             debugBenignError("nativeBackend.projectTreeInvalidation", error);
@@ -1337,25 +1367,37 @@ function broadcastAiSessionSnapshot(
     ownerWindowId: string,
     payload: AiSessionUpdate,
 ): void {
-    mainProcessPerformance.recordAiSessionUpdate(payload);
+    const tracingEnabled = mainProcessPerformance.isEnabled();
+    let surfaceCount = 0;
 
     if (!ownerWindowId) {
         windowRegistry.forEachLiveWebContents((webContents) => {
+            if (tracingEnabled) {
+                surfaceCount += 1;
+            }
             dispatchAiSessionSnapshot(webContents, payload);
         });
+        mainProcessPerformance.recordAiSessionUpdate(payload, surfaceCount);
         return;
     }
 
     const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
     if (targetContents) {
+        if (tracingEnabled) {
+            surfaceCount += 1;
+        }
         dispatchAiSessionSnapshot(targetContents, payload, ownerWindowId);
     }
     const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
         ownerWindowId,
     );
     if (hostContents && hostContents !== targetContents) {
+        if (tracingEnabled) {
+            surfaceCount += 1;
+        }
         dispatchAiSessionSnapshot(hostContents, payload, ownerWindowId, false);
     }
+    mainProcessPerformance.recordAiSessionUpdate(payload, surfaceCount);
 }
 
 function broadcastAiSessionEvent(

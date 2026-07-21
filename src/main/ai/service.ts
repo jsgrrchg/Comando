@@ -84,6 +84,7 @@ import type {
     SecretStoreGateway,
 } from "@main/ai/secret-store";
 import { debugBenignError } from "@main/observability/logging";
+import { mainProcessPerformance } from "@main/observability/performance";
 import { NativeBackendError } from "@main/native-backend/client";
 
 import {
@@ -805,9 +806,13 @@ export class AiService {
 
         const previousSnapshot = this.#liveSnapshots.get(event.sessionId);
         if (previousSnapshot) {
-            const nextSnapshot = this.#applyNativeSessionEvent(
-                previousSnapshot,
-                event,
+            const nextSnapshot = mainProcessPerformance.measureSync(
+                "ai.snapshot.apply",
+                () => this.#applyNativeSessionEvent(previousSnapshot, event),
+                {
+                    eventKind: event.kind,
+                    sessionId: event.sessionId,
+                },
             );
             const cachedSnapshot = this.#cacheLiveSessionSnapshot(
                 nextSnapshot,
@@ -3589,10 +3594,20 @@ export class AiService {
         }
 
         if (event.kind === "tool-activity") {
-            return this.#applyNativeToolActivityReviewDiffs(
-                base,
-                event.activity,
-                event.origin,
+            return mainProcessPerformance.measureSync(
+                "ai.review.apply",
+                () =>
+                    this.#applyNativeToolActivityReviewDiffs(
+                        base,
+                        event.activity,
+                        event.origin,
+                    ),
+                {
+                    diffCount: event.activity.diffs.length,
+                    sessionId: event.sessionId,
+                    status: event.activity.status,
+                    toolCallId: event.activity.id,
+                },
             );
         }
 

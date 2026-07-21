@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::Instant;
 
 use comando_ai::AiEngine;
 use comando_ai::events::{
@@ -260,6 +261,8 @@ impl NativeBackend {
     }
 
     pub fn handle_request(&mut self, request: RpcRequest) -> CommandResult {
+        let command_name = request.command.clone();
+        let started_at = Instant::now();
         let mut result = match request.command.as_str() {
             BACKEND_PING => response_only(request.id, ping_payload()),
             BACKEND_HANDSHAKE => handle_handshake(request),
@@ -398,6 +401,21 @@ impl NativeBackend {
         result
             .outputs
             .extend(self.drain_fs_events(result.should_shutdown));
+        let metric_name = if command_name.starts_with("git_") {
+            "sidecar.git"
+        } else if command_name.starts_with("index_") {
+            "sidecar.index"
+        } else {
+            "sidecar.request"
+        };
+        crate::performance::record(metric_name, started_at.elapsed(), || {
+            format!(
+                "command={} outputCount={} shutdown={}",
+                command_name,
+                result.outputs.len(),
+                result.should_shutdown
+            )
+        });
         result
     }
 
@@ -3035,18 +3053,45 @@ impl NativeBackend {
         let runtime_setup_store = Arc::clone(&self.runtime_setup_store_shared);
         thread::spawn(move || {
             for ai_event in event_receiver {
+                let history_started_at = Instant::now();
                 if let Err(error) = ai_engine.record_history_event(&ai_event) {
                     eprintln!(
                         "[comando-native-backend] Native AI history event write failed: {error}"
                     );
                 }
+                crate::performance::record(
+                    "sidecar.ai-history-persist",
+                    history_started_at.elapsed(),
+                    || {
+                        let payload = ai_event.payload.as_object();
+                        let session_id = payload
+                            .and_then(|value| value.get("sessionId"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("-");
+                        let tool_call_id = payload
+                            .and_then(|value| value.get("toolCallId"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("-");
+                        format!(
+                            "eventName={} sessionId={} toolCallId={}",
+                            ai_event.event_name, session_id, tool_call_id
+                        )
+                    },
+                );
                 let mut outputs = vec![ai_runtime_event_output(ai_event.clone())];
                 outputs.extend(ai_error_runtime_outputs(
                     &runtime_setup_store,
                     &ai_engine,
                     &ai_event,
                 ));
-                if background_sender.send(outputs).is_err() {
+                let forward_started_at = Instant::now();
+                let send_result = background_sender.send(outputs);
+                crate::performance::record(
+                    "sidecar.ai-event-forward",
+                    forward_started_at.elapsed(),
+                    || format!("eventName={}", ai_event.event_name),
+                );
+                if send_result.is_err() {
                     break;
                 }
             }
@@ -3629,7 +3674,11 @@ impl NativeBackend {
     }
 
     pub(crate) fn drain_fs_events(&mut self, force: bool) -> Vec<RpcOutput> {
+        let started_at = Instant::now();
         let drain = self.fs_service.drain_watchers(force);
+        let tree_invalidation_count = drain.invalidations.len();
+        let git_invalidation_count = drain.git_invalidations.len();
+        let fs_event_count = drain.fs_events.len();
         let mut outputs = Vec::new();
         for invalidation in drain.invalidations {
             outputs.push(event(
@@ -3649,6 +3698,16 @@ impl NativeBackend {
                 serde_json::to_value(payload).expect("fs event serializes"),
             ));
         }
+        crate::performance::record(
+            "sidecar.fs-invalidation-drain",
+            started_at.elapsed(),
+            || {
+                format!(
+                    "force={} fsEvents={} gitInvalidations={} treeInvalidations={}",
+                    force, fs_event_count, git_invalidation_count, tree_invalidation_count,
+                )
+            },
+        );
         outputs
     }
 
