@@ -3961,7 +3961,9 @@ export class AiService {
             };
         }
 
-        return normalizeLiveSnapshotReviewState(snapshot);
+        return normalizeLiveSnapshotReviewState(
+            preservePassiveNativeReviewState(snapshot, previousSnapshot),
+        );
     }
 
     #shouldFinishNativeReviewBaseline(event: AiSessionDomainEvent): boolean {
@@ -6728,6 +6730,31 @@ function normalizeLiveReviewMutationSnapshot(
     return normalizeLiveSnapshotReviewState(snapshot);
 }
 
+function preservePassiveNativeReviewState(
+    incomingSnapshot: AiSessionSnapshot,
+    previousSnapshot: AiSessionSnapshot | null,
+): AiSessionSnapshot {
+    const previousDeltas = previousSnapshot?.reviewDeltas ?? [];
+    if (previousDeltas.length === 0 || !previousSnapshot) {
+        return incomingSnapshot;
+    }
+
+    // The native engine snapshots do not carry materialized review deltas. Keep
+    // their local references and hydrated files until an explicit review mutation.
+    return {
+        ...incomingSnapshot,
+        reviewDeltas: previousDeltas,
+        trackedFiles: [
+            ...incomingSnapshot.trackedFiles.filter(
+                (file) => !file.nativeReviewDeltaId,
+            ),
+            ...previousSnapshot.trackedFiles.filter(
+                (file) => file.nativeReviewDeltaId,
+            ),
+        ],
+    };
+}
+
 function normalizeSnapshotReviewState(
     snapshot: AiSessionSnapshot,
 ): AiSessionSnapshot {
@@ -6805,6 +6832,7 @@ export const __testing = {
     diffToAiFileDiff,
     normalizeTrackedDiffPath,
     parseCompleteNumberedFileOutput,
+    preservePassiveNativeReviewState,
     resolveDiffToFullTexts,
     resolveTrackedFileHunks,
     shouldSuppressToolActivityUpdate,

@@ -98,6 +98,44 @@ function createClaudeEditUpdateContext(toolCallId = "tool-1") {
 }
 
 describe("AiService tracked file review merging", () => {
+    it("keeps native review files when a later passive snapshot omits them", () => {
+        const delta: AiReviewDeltaSummary = {
+            deltaId: "delta-1",
+            files: [{ path: "src/changed.ts", state: "ready" }],
+            inputRevision: 1,
+            revision: 1,
+            sessionId: "session-1",
+            state: "ready",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+        const nativeTrackedFile = createTrackedFile({
+            identityKey: "native-review:src/changed.ts",
+            nativeReviewDeltaId: delta.deltaId,
+            path: "src/changed.ts",
+            version: delta.revision,
+        });
+        const previousSnapshot = {
+            ...createSnapshot(),
+            reviewDeltas: [delta],
+            trackedFiles: [nativeTrackedFile],
+        };
+        const passiveSnapshot = {
+            ...createSnapshot(),
+            status: "streaming" as const,
+            trackedFiles: [],
+        };
+
+        const preserved = __testing.preservePassiveNativeReviewState(
+            passiveSnapshot,
+            previousSnapshot,
+        );
+
+        expect(preserved.reviewDeltas).toEqual([delta]);
+        expect(preserved.trackedFiles).toEqual([nativeTrackedFile]);
+    });
+
     it("supersedes only overlapping paths from a native review delta", () => {
         const firstDelta: AiReviewDeltaSummary = {
             deltaId: "delta-1",

@@ -153,14 +153,17 @@ impl NativeReviewWorkerHandle {
 
     pub fn inherit_session(&self, parent_session_id: &SessionId, child_session_id: SessionId) {
         let mut registry = self.registry.lock().expect("review worker registry lock");
-        let Some(parent) = registry.sessions.get(parent_session_id).cloned() else {
-            return;
-        };
+        let parent = registry.sessions.get(parent_session_id).cloned();
         registry.sessions.insert(
             child_session_id,
             ReviewWorkerSession {
-                cycles: parent.cycles,
-                current_work_cycle_id: parent.current_work_cycle_id,
+                // A child can be announced before the parent prompt has captured its review
+                // baseline. Retain the relationship so the later baseline propagates to it.
+                cycles: parent
+                    .as_ref()
+                    .map(|parent| parent.cycles.clone())
+                    .unwrap_or_default(),
+                current_work_cycle_id: parent.and_then(|parent| parent.current_work_cycle_id),
                 parent_session_id: Some(parent_session_id.clone()),
             },
         );
@@ -1834,6 +1837,35 @@ mod tests {
             })
             .expect("load child delta");
         assert_eq!(loaded.tracked_files.len(), 1);
+    }
+
+    #[test]
+    fn worker_registers_a_subagent_announced_before_its_parent_baseline() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join("child.txt"), "after\n").expect("write child");
+        let parent = test_session(repo.path(), "s-late-parent");
+        let child = test_session(repo.path(), "s-early-child");
+        let mut service = NativeReviewService::default();
+
+        service
+            .worker_handle()
+            .inherit_session(&parent.session_id, child.session_id.clone());
+        capture_worker_baseline(&mut service, &parent, "cycle-1");
+
+        service.worker_handle().enqueue_tool_activity(tool_activity(
+            &child,
+            "tool-child",
+            vec![serde_json::json!({
+                "path": "child.txt",
+                "oldText": "before\n",
+                "newText": "after\n"
+            })],
+        ));
+
+        let events = wait_for_worker_events(&mut service);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].delta.session_id, child.session_id);
+        assert_eq!(events[0].delta.work_cycle_id, "cycle-1");
     }
 
     #[test]
