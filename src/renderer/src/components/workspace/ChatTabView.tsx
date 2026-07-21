@@ -496,9 +496,16 @@ export const ChatTabView = memo(function ChatTabView({
     const semanticAnchorRef = useRef<PersistedChatViewState["anchor"]>(
         null,
     );
+    const captureTimelineSemanticAnchorRef = useRef<
+        (() => Pick<
+            ChatSemanticRestoreAnchor,
+            "entryId" | "offsetWithinEntry"
+        > | null) | null
+    >(null);
     const pendingChatViewRestoreRef = useRef<PendingChatViewRestore | null>(
         null,
     );
+    const pendingBottomRestoreRef = useRef(false);
     const chatViewRestoreGenerationRef = useRef(0);
     const initialComposerParts = readInitialComposerPartsForTab(tab);
     const composerPartsRef = useRef<AIComposerPart[]>(initialComposerParts);
@@ -1750,6 +1757,17 @@ export const ChatTabView = memo(function ChatTabView({
         );
         const scrollElement = scrollRef.current;
         const pendingRestore = pendingChatViewRestoreRef.current;
+        if (
+            pendingBottomRestoreRef.current &&
+            shouldAutoFollowRef.current &&
+            range.endIndex >= range.startIndex
+        ) {
+            // The first active virtual range has current geometry. Settling here
+            // prevents the initial pre-hydration end position from becoming the
+            // reader anchor after blocks and measurements reconcile.
+            pendingBottomRestoreRef.current = false;
+            scheduleScrollToBottom();
+        }
         const prefetchBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
             transcriptTimelineItems,
             range.startIndex,
@@ -1906,6 +1924,7 @@ export const ChatTabView = memo(function ChatTabView({
         });
     }, [
         loadTranscriptWindowBlock,
+        scheduleScrollToBottom,
         setTranscriptWindowAnchor,
         tab.sessionId,
         transcriptWindow?.blocksById,
@@ -1922,7 +1941,14 @@ export const ChatTabView = memo(function ChatTabView({
     }, [scheduleScrollToBottom]);
 
     const shouldPreserveTimelineVirtualResizeAnchor = useCallback(() => {
-        return !resizeBottomLockRef.current && !shouldAutoFollowRef.current;
+        // Following the tail and preserving a reader anchor are mutually
+        // exclusive. Replaying an old viewport anchor would pull a settled
+        // conversation away from its latest message after hydration.
+        return (
+            !resizeBottomLockRef.current &&
+            !shouldAutoFollowRef.current &&
+            scrollIntentRef.current.mode === "reader"
+        );
     }, []);
 
     const shouldPreserveTimelineVirtualMeasureAnchor = useCallback(() => {
@@ -1941,6 +1967,18 @@ export const ChatTabView = memo(function ChatTabView({
             !resizeBottomLockRef.current
         );
     }, []);
+
+    const handleSemanticAnchorCaptureReady = useCallback(
+        (
+            capture: (() => Pick<
+                ChatSemanticRestoreAnchor,
+                "entryId" | "offsetWithinEntry"
+            > | null) | null,
+        ) => {
+            captureTimelineSemanticAnchorRef.current = capture;
+        },
+        [],
+    );
 
     const persistCurrentViewState = useCallback(
         (overrides?: {
@@ -1962,7 +2000,24 @@ export const ChatTabView = memo(function ChatTabView({
                   (scrollEl
                       ? isNearBottom(scrollEl)
                       : previousViewState?.isNearBottom ?? true));
-            const anchor = pendingRestore?.anchor ?? semanticAnchorRef.current;
+            const capturedAnchor =
+                !pendingRestore && !nextIsNearBottom
+                    ? captureTimelineSemanticAnchorRef.current?.()
+                    : undefined;
+            const anchor =
+                pendingRestore?.anchor ??
+                (capturedAnchor === undefined
+                    ? semanticAnchorRef.current
+                    : capturedAnchor
+                    ? {
+                          ...capturedAnchor,
+                          alignment: "start" as const,
+                          blockId: resolveTranscriptEntryBlockId(
+                              transcriptWindow?.blocksById ?? new Map(),
+                              capturedAnchor.entryId,
+                          ),
+                      }
+                    : null);
 
             // Inactive chat views can unmount, so keep the last confirmed
             // viewport available for the next activation.
@@ -1989,6 +2044,7 @@ export const ChatTabView = memo(function ChatTabView({
             tab.projectId,
             tab.sessionId,
             tab.worktreeId,
+            transcriptWindow?.blocksById,
         ],
     );
 
@@ -2200,6 +2256,7 @@ export const ChatTabView = memo(function ChatTabView({
         const persistViewStateOnDeactivate = () => {
             cancelled = true;
             cancelPendingScrollToBottom();
+            pendingBottomRestoreRef.current = false;
             const flushedState = takeScheduledScrollPersist();
             persistCurrentViewState(
                 resolveChatScrollPersistenceState({
@@ -2216,12 +2273,14 @@ export const ChatTabView = memo(function ChatTabView({
 
         if (shouldRestoreBottom) {
             pendingChatViewRestoreRef.current = null;
+            pendingBottomRestoreRef.current = true;
             setSemanticRestoreAnchor(null);
             shouldAutoFollowRef.current = true;
             scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
             scrollToBottom();
             setJumpToBottomVisibility(false);
         } else {
+            pendingBottomRestoreRef.current = false;
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
             const persistedAnchor = persistedViewStateRef.current?.anchor ?? null;
@@ -2883,6 +2942,9 @@ export const ChatTabView = memo(function ChatTabView({
                     liveTailRowId={timelineModel.liveTailRowId}
                     newTurnAnchorRowId={newTurnAnchorRowId}
                     onNewTurnScrollTarget={handleNewTurnScrollTarget}
+                    onSemanticAnchorCaptureReady={
+                        handleSemanticAnchorCaptureReady
+                    }
                     onSemanticAnchorRestored={handleSemanticAnchorRestored}
                     onSemanticAnchorUnavailable={handleSemanticAnchorUnavailable}
                     onVirtualScrollRequest={handleTimelineVirtualScrollRequest}
@@ -3401,6 +3463,12 @@ type ChatTimelineProps = {
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSemanticAnchorCaptureReady?: (
+        capture: (() => Pick<
+            ChatSemanticRestoreAnchor,
+            "entryId" | "offsetWithinEntry"
+        > | null) | null,
+    ) => void;
     readonly onSemanticAnchorRestored?: (entryId: string) => void;
     readonly onSemanticAnchorUnavailable?: (entryId: string) => void;
     readonly onVirtualScrollRequest?: (
@@ -3494,6 +3562,7 @@ const ChatTimeline = memo(function ChatTimeline({
     liveTailRowId,
     newTurnAnchorRowId,
     onNewTurnScrollTarget,
+    onSemanticAnchorCaptureReady,
     onSemanticAnchorRestored,
     onSemanticAnchorUnavailable,
     onVirtualScrollRequest,
@@ -3570,6 +3639,9 @@ const ChatTimeline = memo(function ChatTimeline({
                             liveTailRowId={liveTailRowId}
                             newTurnAnchorRowId={newTurnAnchorRowId}
                             onNewTurnScrollTarget={onNewTurnScrollTarget}
+                            onSemanticAnchorCaptureReady={
+                                onSemanticAnchorCaptureReady
+                            }
                             onSemanticAnchorRestored={onSemanticAnchorRestored}
                             onSemanticAnchorUnavailable={
                                 onSemanticAnchorUnavailable
@@ -3688,6 +3760,12 @@ export type ChatTimelineHistoryProps = {
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSemanticAnchorCaptureReady?: (
+        capture: (() => Pick<
+            ChatSemanticRestoreAnchor,
+            "entryId" | "offsetWithinEntry"
+        > | null) | null,
+    ) => void;
     readonly onSemanticAnchorRestored?: (entryId: string) => void;
     readonly onSemanticAnchorUnavailable?: (entryId: string) => void;
     readonly onVirtualScrollRequest?: (
@@ -3756,6 +3834,7 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
     liveTailRowId,
     newTurnAnchorRowId,
     onNewTurnScrollTarget,
+    onSemanticAnchorCaptureReady,
     onSemanticAnchorRestored,
     onSemanticAnchorUnavailable,
     onVirtualScrollRequest,
@@ -3858,6 +3937,7 @@ export const ChatTimelineHistory = memo(function ChatTimelineHistory({
             liveTailRowId={liveTailRowId}
             newTurnAnchorRowId={newTurnAnchorRowId}
             onNewTurnScrollTarget={onNewTurnScrollTarget}
+            onSemanticAnchorCaptureReady={onSemanticAnchorCaptureReady}
             onSemanticAnchorRestored={onSemanticAnchorRestored}
             onSemanticAnchorUnavailable={onSemanticAnchorUnavailable}
             onVirtualScrollRequest={onVirtualScrollRequest}
