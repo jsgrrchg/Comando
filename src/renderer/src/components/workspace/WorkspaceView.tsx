@@ -4336,6 +4336,28 @@ function FileTabView({
             [document, tab.reviewContext],
         ),
     );
+    const hydrateReviewDeltas = useAiStore(
+        (state) => state.hydrateReviewDeltas,
+    );
+    useEffect(() => {
+        if (
+            !trackedFile?.nativeReviewDeltaId ||
+            (trackedFile.oldText !== null && trackedFile.newText !== null)
+        ) {
+            return;
+        }
+
+        // Native review events arrive as compact summaries; hydrate only when
+        // a file surface needs the full diff to preserve the lightweight stream.
+        void hydrateReviewDeltas(trackedFile.sessionId);
+    }, [
+        hydrateReviewDeltas,
+        trackedFile?.nativeReviewDeltaId,
+        trackedFile?.newText,
+        trackedFile?.oldText,
+        trackedFile?.sessionId,
+        trackedFile?.version,
+    ]);
     const keepTrackedFileHunks = useAiStore(
         (state) => state.keepTrackedFileHunks,
     );

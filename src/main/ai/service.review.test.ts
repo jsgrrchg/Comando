@@ -198,6 +198,44 @@ describe("AiService tracked file review merging", () => {
         ]);
     });
 
+    it("replaces a preparing native delta with its materialized revision", () => {
+        const preparing: AiReviewDeltaSummary = {
+            deltaId: "delta-1",
+            files: [{ path: "a.ts", state: "preparing" }],
+            inputRevision: 2,
+            revision: 2,
+            sessionId: "session-1",
+            state: "preparing",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+        const materialized: AiReviewDeltaSummary = {
+            ...preparing,
+            files: [{ path: "a.ts", state: "ready" }],
+            revision: 3,
+            state: "ready",
+        };
+
+        const withPlaceholder = __testing.applyNativeReviewDeltaSnapshot(
+            createSnapshot(),
+            preparing,
+        );
+        const updated = __testing.applyNativeReviewDeltaSnapshot(
+            withPlaceholder,
+            materialized,
+        );
+
+        expect(updated.reviewDeltas).toEqual([materialized]);
+        expect(updated.trackedFiles).toEqual([
+            expect.objectContaining({
+                nativeReviewDeltaId: materialized.deltaId,
+                path: "a.ts",
+                version: materialized.revision,
+            }),
+        ]);
+    });
+
     it("accumulates consecutive updates for the same file", () => {
         const firstTrackedFile = createTrackedFile({
             newText: "line 1\nline 2",

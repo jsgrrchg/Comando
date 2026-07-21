@@ -87,9 +87,12 @@ impl Drop for NativeReviewWorker {
 }
 
 impl NativeReviewWorkerHandle {
-    pub fn enqueue_tool_activity(&self, payload: NativeAiToolActivityPayload) {
+    pub fn ingest_tool_activity(
+        &self,
+        payload: NativeAiToolActivityPayload,
+    ) -> Option<NativeAiReviewDeltaReadyPayload> {
         if !is_terminal_review_activity(&payload) {
-            return;
+            return None;
         }
         let diffs = payload
             .diffs
@@ -97,36 +100,72 @@ impl NativeReviewWorkerHandle {
             .filter_map(|diff| serde_json::from_value::<NativeReviewRuntimeDiff>(diff).ok())
             .collect::<Vec<_>>();
         if diffs.is_empty() {
-            return;
+            return None;
         }
         let tool_call_id = payload.tool_call_id.clone();
 
         let mut registry = self.registry.lock().expect("review worker registry lock");
         let Some(session) = registry.sessions.get_mut(&payload.base.session_id) else {
-            return;
+            return None;
         };
         let Some(work_cycle_id) = session.current_work_cycle_id.clone() else {
-            return;
+            return None;
         };
         let Some(cycle) = session.cycles.get_mut(&work_cycle_id) else {
-            return;
+            return None;
         };
-        cycle.next_revision = cycle.next_revision.saturating_add(1);
-        let input_revision = ReviewRevision(cycle.next_revision);
+        let input_revision = ReviewRevision(cycle.next_revision.saturating_add(1));
+        // Reserve a newer revision for materialization so the renderer can replace
+        // this lightweight placeholder without changing its delta identity.
+        let revision = ReviewRevision(input_revision.0.saturating_add(1));
+        cycle.next_revision = revision.0;
+        let delta_id = ReviewDeltaId(format!(
+            "review:{}:{}:{}:{}",
+            payload.base.session_id.0, work_cycle_id, tool_call_id.0, input_revision.0
+        ));
+        let provisional = NativeReviewDeltaSummary {
+            delta_id: delta_id.clone(),
+            session_id: payload.base.session_id.clone(),
+            work_cycle_id: work_cycle_id.clone(),
+            tool_call_id: tool_call_id.clone(),
+            input_revision,
+            revision: input_revision,
+            state: NativeReviewDeltaState::Preparing,
+            files: diffs
+                .iter()
+                .map(|diff| NativeReviewFileSummary {
+                    path: diff.path.clone(),
+                    previous_path: diff.previous_path.clone(),
+                    state: NativeReviewDeltaState::Preparing,
+                    observed_hash: None,
+                })
+                .collect(),
+            updated_at: now(),
+        };
         let task = NativeReviewWorkerTask {
-            base: payload.base,
+            base: payload.base.clone(),
+            delta_id,
             diffs,
             epoch: cycle.epoch,
             input_revision,
+            revision,
             tool_call_id,
             work_cycle_id,
         };
         drop(registry);
 
         // The unbounded handoff keeps the event bridge non-blocking without losing review work.
-        let _ = self
-            .sender
-            .send(NativeReviewWorkerCommand::Materialize(task));
+        self.sender
+            .send(NativeReviewWorkerCommand::Materialize(task))
+            .ok()?;
+        Some(NativeAiReviewDeltaReadyPayload {
+            base: payload.base,
+            delta: provisional,
+        })
+    }
+
+    pub fn enqueue_tool_activity(&self, payload: NativeAiToolActivityPayload) {
+        let _ = self.ingest_tool_activity(payload);
     }
 
     fn register_baseline(
@@ -314,15 +353,12 @@ fn materialize_review_worker_task(
         NativeReviewDeltaState::Partial
     };
     let delta = NativeReviewDeltaSummary {
-        delta_id: ReviewDeltaId(format!(
-            "review:{}:{}:{}:{}",
-            task.base.session_id.0, task.work_cycle_id, task.tool_call_id.0, task.input_revision.0
-        )),
+        delta_id: task.delta_id.clone(),
         session_id: task.base.session_id.clone(),
         work_cycle_id: task.work_cycle_id.clone(),
         tool_call_id: task.tool_call_id.clone(),
         input_revision: task.input_revision,
-        revision: task.input_revision,
+        revision: task.revision,
         state,
         files,
         updated_at,
@@ -498,9 +534,11 @@ enum NativeReviewWorkerCommand {
 #[derive(Debug, Clone)]
 struct NativeReviewWorkerTask {
     base: NativeAiEventBase,
+    delta_id: ReviewDeltaId,
     diffs: Vec<NativeReviewRuntimeDiff>,
     epoch: u64,
     input_revision: ReviewRevision,
+    revision: ReviewRevision,
     tool_call_id: ToolCallId,
     work_cycle_id: String,
 }
@@ -1747,6 +1785,47 @@ mod tests {
             .expect("load materialized delta");
         assert_eq!(loaded.tracked_files.len(), 1);
         assert!(loaded.tracked_files[0]["hunks"].is_array());
+    }
+
+    #[test]
+    fn worker_emits_a_preparing_delta_before_materializing_the_same_identity() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join("a.txt"), "after\n").expect("write file");
+        let session = test_session(repo.path(), "s-worker-preparing");
+        let mut service = NativeReviewService::default();
+        capture_worker_baseline(&mut service, &session, "cycle-1");
+
+        let preparing = service
+            .worker_handle()
+            .ingest_tool_activity(tool_activity(
+                &session,
+                "tool-1",
+                vec![serde_json::json!({
+                    "path": "a.txt",
+                    "oldText": "before\n",
+                    "newText": "after\n"
+                })],
+            ))
+            .expect("preparing delta");
+
+        assert_eq!(preparing.delta.state, NativeReviewDeltaState::Preparing);
+        assert_eq!(
+            preparing.delta.files[0].state,
+            NativeReviewDeltaState::Preparing
+        );
+        assert_eq!(preparing.delta.files[0].observed_hash, None);
+
+        let materialized = wait_for_worker_events(&mut service)
+            .into_iter()
+            .next()
+            .expect("materialized delta");
+        assert_eq!(materialized.delta.delta_id, preparing.delta.delta_id);
+        assert_eq!(
+            materialized.delta.input_revision,
+            preparing.delta.input_revision
+        );
+        assert!(materialized.delta.revision > preparing.delta.revision);
+        assert_eq!(materialized.delta.state, NativeReviewDeltaState::Ready);
     }
 
     #[test]

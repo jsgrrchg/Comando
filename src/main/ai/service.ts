@@ -6626,6 +6626,9 @@ function applyNativeReviewDeltaSnapshot(
 function nativeReviewDeltaStateForFiles(
     files: AiReviewDeltaSummary["files"],
 ): AiReviewDeltaSummary["state"] {
+    if (files.every((file) => file.state === "preparing")) {
+        return "preparing";
+    }
     if (files.every((file) => file.state === "ready")) {
         return "ready";
     }

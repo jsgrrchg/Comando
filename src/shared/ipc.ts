@@ -3073,6 +3073,7 @@ export interface AiSessionReviewEvent extends AiSessionDomainEventBase {
 }
 
 export type AiReviewDeltaState =
+    | "preparing"
     | "ready"
     | "partial"
     | "unavailable"

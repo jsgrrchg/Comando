@@ -947,7 +947,11 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
     hydrateReviewDeltas: async (sessionId) => {
         const snapshot = get().sessions[sessionId]?.snapshot;
-        const deltas = snapshot?.reviewDeltas ?? [];
+        // A provisional delta has no materialized detail yet. Waiting for its
+        // terminal update avoids reporting a predictable load failure.
+        const deltas = (snapshot?.reviewDeltas ?? []).filter(
+            (delta) => delta.state !== "preparing",
+        );
         await Promise.all(
             deltas.map(async (delta) => {
                 const key = `${sessionId}\0${delta.deltaId}\0${delta.revision}`;

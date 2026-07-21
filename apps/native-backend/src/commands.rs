@@ -3090,12 +3090,21 @@ impl NativeBackend {
                         SessionId(child_session_id.into()),
                     );
                 }
+                let mut review_outputs = Vec::new();
                 if ai_event.event_name == AI_TOOL_ACTIVITY_EVENT {
                     if let Ok(activity) = serde_json::from_value::<
                         native_ai::NativeAiToolActivityPayload,
                     >(ai_event.payload.clone())
                     {
-                        review_worker.enqueue_tool_activity(activity);
+                        if let Some(payload) = review_worker.ingest_tool_activity(activity) {
+                            // Publish the lightweight placeholder before the worker has
+                            // materialized hunks so review surfaces never lose the edit.
+                            review_outputs.push(event(
+                                comando_types::events::AI_REVIEW_DELTA_READY_EVENT,
+                                serde_json::to_value(payload)
+                                    .expect("provisional review delta serializes"),
+                            ));
+                        }
                     }
                 }
                 if ai_event.event_name == AI_SESSION_CLOSED_EVENT {
@@ -3130,7 +3139,9 @@ impl NativeBackend {
                         )
                     },
                 );
-                let mut outputs = vec![ai_runtime_event_output(ai_event.clone())];
+                let forward_event = compact_tool_activity_event(ai_event.clone());
+                let mut outputs = vec![ai_runtime_event_output(forward_event)];
+                outputs.extend(review_outputs);
                 outputs.extend(ai_error_runtime_outputs(
                     &runtime_setup_store,
                     &ai_engine,

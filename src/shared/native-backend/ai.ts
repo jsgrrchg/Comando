@@ -778,6 +778,7 @@ export type NativeAiReviewCommandOutput = {
 };
 
 export type NativeReviewDeltaState =
+    | "preparing"
     | "ready"
     | "partial"
     | "unavailable"
