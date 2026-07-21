@@ -2113,6 +2113,7 @@ mod tests {
                 preview: Some(id.to_string()),
                 status: Some("completed".to_string()),
                 tool_activity_detail_id: None,
+                tool_change_stats: None,
                 tool_kind: None,
             },
             payload_ref: None,

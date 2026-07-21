@@ -148,6 +148,12 @@ describe("transcriptWindowProjection", () => {
                         preview: "Updated src/app.ts",
                         status: "completed",
                         toolActivityDetailId: "tool-detail:edit-1",
+                        toolChangeStats: {
+                            additions: 4,
+                            approximate: false,
+                            deletions: 1,
+                            fileCount: 1,
+                        },
                         toolKind: "edit",
                     },
                     updatedAt: STARTED_AT,
@@ -168,6 +174,12 @@ describe("transcriptWindowProjection", () => {
                 diffs: [],
                 id: "edit-1",
                 kind: "edit",
+                changeStats: {
+                    additions: 4,
+                    approximate: false,
+                    deletions: 1,
+                    fileCount: 1,
+                },
                 toolActivityDetailId: "tool-detail:edit-1",
             }),
         ]);

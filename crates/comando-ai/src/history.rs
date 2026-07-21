@@ -2466,6 +2466,7 @@ fn legacy_transcript_entry(
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 tool_activity_detail_id: None,
+                tool_change_stats: None,
                 tool_kind: None,
             },
             payload_ref: Some(payload_ref.clone()),
@@ -3000,6 +3001,7 @@ mod tests {
                 preview: Some(preview.into()),
                 status: Some("completed".to_string()),
                 tool_activity_detail_id: None,
+                tool_change_stats: None,
                 tool_kind: None,
             },
             payload_ref: None,

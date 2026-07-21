@@ -386,6 +386,12 @@ export type NativeAiTranscriptEntryEnvelope = {
         readonly preview: string | null;
         readonly status: string | null;
         readonly toolActivityDetailId?: string | null;
+        readonly toolChangeStats?: {
+            readonly additions: number;
+            readonly approximate: boolean;
+            readonly deletions: number;
+            readonly fileCount: number;
+        } | null;
         readonly toolKind?: string | null;
     };
     readonly payloadRef: string | null;
@@ -673,6 +679,12 @@ export type NativeAiThinkingStartedPayload = NativeAiMessageStartedPayload;
 export type NativeAiThinkingCompletedPayload = NativeAiMessageCompletedPayload;
 
 export type NativeAiToolActivityPayload = NativeAiEventBase & {
+    readonly changeStats?: {
+        readonly additions: number;
+        readonly approximate: boolean;
+        readonly deletions: number;
+        readonly fileCount: number;
+    } | null;
     readonly toolCallId: NativeToolCallId;
     readonly title: string;
     readonly kind: string;

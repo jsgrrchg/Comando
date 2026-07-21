@@ -342,6 +342,7 @@ function createTranscriptToolSummary(
 ): AiToolActivity {
     const status = entry.summary.status;
     return {
+        changeStats: entry.summary.toolChangeStats ?? null,
         createdAt: entry.createdAt,
         diffs: [],
         exitCode: null,

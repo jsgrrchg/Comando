@@ -4533,10 +4533,88 @@ fn compact_tool_activity_event(mut event: AiRuntimeEvent) -> AiRuntimeEvent {
         "toolActivityDetailId".to_string(),
         Value::String(format!("tool-detail:{session_id}:{tool_call_id}")),
     );
+    if let Some(change_stats) = compact_tool_activity_change_stats(payload.get("diffs")) {
+        // Preserve only header-scale facts before dropping the expensive hunks.
+        // The detail record remains authoritative when the review is opened.
+        payload.insert("changeStats".to_string(), change_stats);
+    }
     for key in ["diffs", "rawInput", "rawOutput", "terminalOutput"] {
         payload.remove(key);
     }
     event
+}
+
+fn compact_tool_activity_change_stats(diffs: Option<&Value>) -> Option<Value> {
+    let diffs = diffs?.as_array()?;
+    if diffs.is_empty() {
+        return None;
+    }
+
+    let mut additions = 0_u32;
+    let mut deletions = 0_u32;
+    let mut approximate = false;
+
+    for diff in diffs {
+        let Some(diff) = diff.as_object() else {
+            approximate = true;
+            continue;
+        };
+        if diff.get("isText").and_then(Value::as_bool) == Some(false) {
+            approximate |= diff.get("reversible").and_then(Value::as_bool) == Some(false);
+            continue;
+        }
+        if let Some(hunks) = diff
+            .get("hunks")
+            .and_then(Value::as_array)
+            .filter(|hunks| !hunks.is_empty())
+        {
+            for hunk in hunks {
+                let Some(lines) = hunk.get("lines").and_then(Value::as_array) else {
+                    approximate = true;
+                    continue;
+                };
+                for line in lines {
+                    match line.get("type").and_then(Value::as_str) {
+                        Some("add") => additions = additions.saturating_add(1),
+                        Some("remove") => deletions = deletions.saturating_add(1),
+                        _ => {}
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Do not rebuild hunks on the event bridge. Text-only fallbacks still
+        // provide a bounded estimate without putting diff computation on its path.
+        approximate = true;
+        match diff.get("kind").and_then(Value::as_str) {
+            Some("create") => {
+                additions = additions.saturating_add(json_text_line_count(diff.get("newText")));
+            }
+            Some("delete") => {
+                if diff.get("reversible").and_then(Value::as_bool) != Some(false) {
+                    deletions = deletions.saturating_add(json_text_line_count(diff.get("oldText")));
+                }
+            }
+            Some("move") if diff.get("oldText") == diff.get("newText") => {}
+            _ => {}
+        }
+    }
+
+    Some(json!({
+        "additions": additions,
+        "approximate": approximate,
+        "deletions": deletions,
+        "fileCount": u32::try_from(diffs.len()).unwrap_or(u32::MAX),
+    }))
+}
+
+fn json_text_line_count(value: Option<&Value>) -> u32 {
+    value
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(|text| u32::try_from(text.split('\n').count()).unwrap_or(u32::MAX))
+        .unwrap_or(0)
 }
 
 fn parse_args<T: DeserializeOwned>(request: &RpcRequest) -> Result<T, NativeError> {
@@ -4836,6 +4914,46 @@ mod tests {
             )]
         );
         assert!(!result.should_shutdown);
+    }
+
+    #[test]
+    fn compacts_tool_activity_with_header_change_stats() {
+        let event = AiRuntimeEvent::new(
+            AI_TOOL_ACTIVITY_EVENT,
+            &json!({
+                "sessionId": "session-1",
+                "toolCallId": "edit-1",
+                "diffs": [{
+                    "hunks": [{
+                        "lines": [
+                            { "type": "remove" },
+                            { "type": "add" },
+                            { "type": "add" }
+                        ]
+                    }],
+                    "isText": true,
+                    "kind": "update",
+                    "reversible": true
+                }]
+            }),
+        );
+
+        let compacted = compact_tool_activity_event(event);
+
+        assert_eq!(
+            compacted.payload["changeStats"],
+            json!({
+                "additions": 2,
+                "approximate": false,
+                "deletions": 1,
+                "fileCount": 1
+            })
+        );
+        assert!(compacted.payload.get("diffs").is_none());
+        assert_eq!(
+            compacted.payload["toolActivityDetailId"],
+            "tool-detail:session-1:edit-1"
+        );
     }
 
     #[test]

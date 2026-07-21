@@ -2531,8 +2531,18 @@ export interface AiToolActivityLocation {
     readonly path: string;
 }
 
+export interface AiToolActivityChangeStats {
+    readonly additions: number;
+    readonly approximate: boolean;
+    readonly deletions: number;
+    readonly fileCount: number;
+}
+
 export interface AiToolActivity {
     readonly action?: AiToolActivityAction | null;
+    // A compact, persisted cache for activity headers. Full diffs remain the
+    // source of truth and are restored only when the activity is opened.
+    readonly changeStats?: AiToolActivityChangeStats | null;
     readonly createdAt: string;
     readonly diffs: readonly AiFileDiff[];
     readonly exitCode: number | null;
@@ -2753,6 +2763,7 @@ export interface AiTranscriptEntrySummary {
     // Tool entries retain this lightweight identity so an evicted payload can
     // still be classified and reloaded as an editable change.
     readonly toolActivityDetailId?: string | null;
+    readonly toolChangeStats?: AiToolActivityChangeStats | null;
     readonly toolKind?: string | null;
 }
 

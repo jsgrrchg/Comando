@@ -617,6 +617,7 @@ function nativeAiToolActivityToIpc(
 ): AiSessionDomainEvent {
     const activity: AiToolActivity = {
         action: null,
+        changeStats: nativeAiToolActivityChangeStatsToIpc(payload.changeStats),
         createdAt: payload.updatedAt,
         diffs: nativeFileDiffsToIpc(payload.diffs),
         exitCode:
@@ -642,6 +643,20 @@ function nativeAiToolActivityToIpc(
         ...nativeAiEventBase(payload),
         activity,
         kind: "tool-activity",
+    };
+}
+
+function nativeAiToolActivityChangeStatsToIpc(
+    value: NativeAiToolActivityPayload["changeStats"],
+): AiToolActivity["changeStats"] {
+    if (!value) {
+        return null;
+    }
+    return {
+        additions: Math.max(0, value.additions),
+        approximate: value.approximate === true,
+        deletions: Math.max(0, value.deletions),
+        fileCount: Math.max(0, value.fileCount),
     };
 }
 

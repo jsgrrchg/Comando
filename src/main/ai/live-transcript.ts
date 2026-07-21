@@ -941,6 +941,7 @@ function createToolEntry(
                 preview: activity.summary,
                 status: activity.status,
                 toolActivityDetailId: activity.toolActivityDetailId,
+                toolChangeStats: activity.changeStats,
                 toolKind: activity.kind,
             },
             updatedAt,

@@ -546,6 +546,8 @@ pub struct NativeAiTranscriptEntrySummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_activity_detail_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_change_stats: Option<NativeAiToolActivityChangeStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_kind: Option<String>,
 }
 
@@ -1066,6 +1068,8 @@ pub struct NativeAiToolActivityPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_activity_detail_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_stats: Option<NativeAiToolActivityChangeStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_input: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_output: Option<serde_json::Value>,
@@ -1075,6 +1079,15 @@ pub struct NativeAiToolActivityPayload {
     pub terminal_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiToolActivityChangeStats {
+    pub additions: u32,
+    pub approximate: bool,
+    pub deletions: u32,
+    pub file_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

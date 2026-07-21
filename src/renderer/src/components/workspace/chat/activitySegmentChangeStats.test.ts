@@ -7,12 +7,14 @@ import { deriveActivitySegmentChangeStats } from "./activitySegmentChangeStats";
 
 function createEntry(
     id: string,
-    diff: AiFileDiff,
+    diff: AiFileDiff | null,
+    changeStats: AiToolActivity["changeStats"] = null,
 ): ToolActivitySegmentEntry {
     const activity: AiToolActivity = {
         action: null,
+        changeStats,
         createdAt: `2026-07-10T00:00:0${id}.000Z`,
-        diffs: [diff],
+        diffs: diff ? [diff] : [],
         exitCode: null,
         id: `edit-${id}`,
         kind: "edit",
@@ -91,6 +93,27 @@ describe("deriveActivitySegmentChangeStats", () => {
             additions: 2,
             approximate: false,
             deletions: 2,
+        });
+    });
+
+    it("uses persisted header stats while compact diffs are still unloaded", () => {
+        const stats = deriveActivitySegmentChangeStats([
+            createEntry(
+                "1",
+                null,
+                {
+                    additions: 14,
+                    approximate: false,
+                    deletions: 3,
+                    fileCount: 1,
+                },
+            ),
+        ]);
+
+        expect(stats).toEqual({
+            additions: 14,
+            approximate: false,
+            deletions: 3,
         });
     });
 });
