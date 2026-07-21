@@ -6,8 +6,8 @@ use std::time::Instant;
 use comando_ai::AiEngine;
 use comando_ai::events::{
     AI_ERROR_EVENT, AI_RUNTIME_STATUS_EVENT, AI_SESSION_CLOSED_EVENT, AI_SESSION_CREATED_EVENT,
-    AI_SESSION_UPDATED_EVENT, AI_TOOL_ACTIVITY_EVENT, AiRuntimeEvent, session_closed,
-    session_created, session_status_updated, session_updated,
+    AI_SESSION_UPDATED_EVENT, AI_SUBAGENT_CREATED_EVENT, AI_TOOL_ACTIVITY_EVENT, AiRuntimeEvent,
+    session_closed, session_created, session_status_updated, session_updated,
 };
 use comando_ai::history::{
     AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
@@ -3073,6 +3073,23 @@ impl NativeBackend {
         let review_worker = self.review_service.worker_handle();
         thread::spawn(move || {
             for ai_event in event_receiver {
+                if ai_event.event_name == AI_SUBAGENT_CREATED_EVENT
+                    && let (Some(parent_session_id), Some(child_session_id)) = (
+                        ai_event
+                            .payload
+                            .get("parentSessionId")
+                            .and_then(Value::as_str),
+                        ai_event
+                            .payload
+                            .get("childSessionId")
+                            .and_then(Value::as_str),
+                    )
+                {
+                    review_worker.inherit_session(
+                        &SessionId(parent_session_id.into()),
+                        SessionId(child_session_id.into()),
+                    );
+                }
                 if ai_event.event_name == AI_TOOL_ACTIVITY_EVENT {
                     if let Ok(activity) = serde_json::from_value::<
                         native_ai::NativeAiToolActivityPayload,

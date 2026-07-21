@@ -23,6 +23,7 @@ import type {
     AiSessionUpdate,
     AiSettingsSnapshot,
     AiToolActivity,
+    AiToolActivityDetail,
     AiTranscriptBlock,
     AiTranscriptBlockMetadata,
     AiTranscriptPayload,
@@ -113,6 +114,8 @@ type AiSessionRuntimeState = "history" | "live";
 const ensureSessionInFlight = new Map<string, Promise<void>>();
 const transcriptWindowHydrations = new Map<string, Promise<void>>();
 const transcriptWindowRefreshRequests = new Set<string>();
+const reviewDeltaHydrations = new Map<string, Promise<void>>();
+const toolActivityDetailHydrations = new Map<string, Promise<void>>();
 const TRANSCRIPT_PAYLOAD_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 const TRANSCRIPT_PAYLOAD_BATCH_MAX_REFS = 8;
 // Sharing this cache keeps the payload budget fixed as users open more sessions.
@@ -317,6 +320,11 @@ interface AiStore {
     ) => Promise<void>;
     hydrateSettings: (settings: AiSettingsSnapshot | null | undefined) => void;
     hydrateTranscriptWindow: (sessionId: string) => Promise<void>;
+    hydrateReviewDeltas: (sessionId: string) => Promise<void>;
+    hydrateToolActivityDetail: (
+        sessionId: string,
+        activityId: string,
+    ) => Promise<void>;
     keepAllTrackedFiles: (sessionId: string) => Promise<void>;
     keepTrackedFile: (input: AiTrackedFileMutationInput) => Promise<void>;
     keepTrackedFileHunks: (
@@ -758,6 +766,8 @@ export function resetAiStoreRuntimeBuffersForTests(): void {
     resetBufferedSessionDeltas();
     resetAiSessionResyncWatchdogs();
     optimisticSnapshotMutationStates.clear();
+    reviewDeltaHydrations.clear();
+    toolActivityDetailHydrations.clear();
     transcriptWindowHydrations.clear();
     transcriptWindowRefreshRequests.clear();
     transcriptWindowStore.reset();
@@ -934,6 +944,109 @@ export const useAiStore = create<AiStore>((set, get) => ({
     runtimeCatalogById: {},
     runtimeStatusById: {},
     sessions: {},
+
+    hydrateReviewDeltas: async (sessionId) => {
+        const snapshot = get().sessions[sessionId]?.snapshot;
+        const deltas = snapshot?.reviewDeltas ?? [];
+        await Promise.all(
+            deltas.map(async (delta) => {
+                const key = `${sessionId}\0${delta.deltaId}\0${delta.revision}`;
+                const existing = reviewDeltaHydrations.get(key);
+                if (existing) {
+                    await existing;
+                    return;
+                }
+                const hydration = getComandoApi()
+                    .loadAiReviewDelta({
+                        expectedRevision: delta.revision,
+                        reviewDeltaId: delta.deltaId,
+                        sessionId,
+                    })
+                    .then((details) => {
+                        if (!details) {
+                            return;
+                        }
+                        set((state) =>
+                            applyHydratedReviewDelta(
+                                state,
+                                sessionId,
+                                details.delta,
+                                details.trackedFiles,
+                            ),
+                        );
+                    })
+                    .catch((error) => {
+                        console.warn(
+                            "[comando] Failed to hydrate an AI review delta.",
+                            error,
+                        );
+                    })
+                    .finally(() => {
+                        reviewDeltaHydrations.delete(key);
+                        void getComandoApi()
+                            .releaseAiReviewDelta(delta.deltaId)
+                            .catch((error) => {
+                                console.warn(
+                                    "[comando] Failed to release an AI review delta.",
+                                    error,
+                                );
+                            });
+                    });
+                reviewDeltaHydrations.set(key, hydration);
+                await hydration;
+            }),
+        );
+    },
+
+    hydrateToolActivityDetail: async (sessionId, activityId) => {
+        const snapshot = get().sessions[sessionId]?.snapshot;
+        const activity = snapshot?.toolActivity.find(
+            (candidate) => candidate.id === activityId,
+        );
+        if (
+            !snapshot ||
+            !activity?.toolActivityDetailId ||
+            (activity.status !== "completed" && activity.status !== "failed") ||
+            hasToolActivityDetail(activity)
+        ) {
+            return;
+        }
+        const key = `${sessionId}\0${activity.toolActivityDetailId}`;
+        const existing = toolActivityDetailHydrations.get(key);
+        if (existing) {
+            await existing;
+            return;
+        }
+        const hydration = getComandoApi()
+            .loadAiToolActivityDetail({
+                sessionId,
+                toolActivityDetailId: activity.toolActivityDetailId,
+            })
+            .then((detail) => {
+                if (!detail) {
+                    return;
+                }
+                set((state) =>
+                    applyHydratedToolActivityDetail(
+                        state,
+                        sessionId,
+                        activityId,
+                        detail,
+                    ),
+                );
+            })
+            .catch((error) => {
+                console.warn(
+                    "[comando] Failed to hydrate AI tool activity detail.",
+                    error,
+                );
+            })
+            .finally(() => {
+                toolActivityDetailHydrations.delete(key);
+            });
+        toolActivityDetailHydrations.set(key, hydration);
+        await hydration;
+    },
 
     clearDraftAttachments: (sessionId) => {
         set((state) => ({
@@ -3786,6 +3899,118 @@ function upsertToolActivity(
         terminalOutput: nextActivity.terminalOutput ?? existing.terminalOutput,
     };
     return nextActivities;
+}
+
+function hasToolActivityDetail(activity: AiToolActivity): boolean {
+    return (
+        activity.diffs.length > 0 ||
+        activity.rawInputJson !== null ||
+        activity.rawOutputJson !== null ||
+        activity.terminalOutput !== null
+    );
+}
+
+function applyHydratedToolActivityDetail(
+    state: AiStore,
+    sessionId: string,
+    activityId: string,
+    detail: AiToolActivityDetail,
+): AiStore | Pick<AiStore, "sessions"> {
+    const session = state.sessions[sessionId];
+    const snapshot = session?.snapshot;
+    const activity = snapshot?.toolActivity.find(
+        (candidate) => candidate.id === activityId,
+    );
+    if (!session || !snapshot || !activity) {
+        return state;
+    }
+    const hydratedActivity: AiToolActivity = {
+        ...activity,
+        diffs: detail.diffs.length > 0 ? detail.diffs : activity.diffs,
+        rawInputJson: detail.rawInputJson ?? activity.rawInputJson,
+        rawOutputJson: detail.rawOutputJson ?? activity.rawOutputJson,
+        terminalOutput: detail.terminalOutput ?? activity.terminalOutput,
+    };
+    const nextSnapshot = {
+        ...snapshot,
+        toolActivity: snapshot.toolActivity.map((candidate) =>
+            candidate.id === activityId ? hydratedActivity : candidate,
+        ),
+    };
+    const nextTranscript = applyAiSessionDomainEventToTranscript(
+        session.transcript,
+        {
+            activity: hydratedActivity,
+            kind: "tool-activity",
+            origin: "restore",
+            parentSessionId: snapshot.parentSessionId ?? null,
+            runtimeId: snapshot.runtimeId,
+            runtimeSessionId: snapshot.runtimeSessionId,
+            sessionId,
+            updatedAt: hydratedActivity.updatedAt,
+        },
+    );
+    return {
+        sessions: {
+            ...state.sessions,
+            [sessionId]: {
+                ...session,
+                snapshot: nextSnapshot,
+                transcript: nextTranscript,
+            },
+        },
+    };
+}
+
+function applyHydratedReviewDelta(
+    state: AiStore,
+    sessionId: string,
+    delta: NonNullable<AiSessionSnapshot["reviewDeltas"]>[number],
+    trackedFiles: readonly AiTrackedFile[],
+): AiStore | Pick<AiStore, "sessions"> {
+    const session = state.sessions[sessionId];
+    const snapshot = session?.snapshot;
+    const currentDelta = snapshot?.reviewDeltas?.find(
+        (candidate) => candidate.deltaId === delta.deltaId,
+    );
+    if (!session || !snapshot || currentDelta?.revision !== delta.revision) {
+        return state;
+    }
+    const hydrated = trackedFiles.map((file) => ({
+        ...file,
+        nativeReviewDeltaId: delta.deltaId,
+        nativeReviewInputRevision: delta.inputRevision,
+        nativeReviewWorkCycleId: delta.workCycleId,
+        toolCallId: delta.toolCallId,
+        version: delta.revision,
+    }));
+    const hydratedPaths = new Set(
+        hydrated.flatMap((file) => [
+            file.path,
+            ...(file.previousPath ? [file.previousPath] : []),
+        ]),
+    );
+    const unavailablePlaceholders = snapshot.trackedFiles.filter(
+        (file) =>
+            file.nativeReviewDeltaId === delta.deltaId &&
+            !hydratedPaths.has(file.path),
+    );
+    const nextSnapshot = {
+        ...snapshot,
+        trackedFiles: [
+            ...snapshot.trackedFiles.filter(
+                (file) => file.nativeReviewDeltaId !== delta.deltaId,
+            ),
+            ...hydrated,
+            ...unavailablePlaceholders,
+        ],
+    };
+    return {
+        sessions: {
+            ...state.sessions,
+            [sessionId]: { ...session, snapshot: nextSnapshot },
+        },
+    };
 }
 
 function hasSessionIdentityPatch(

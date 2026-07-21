@@ -2170,6 +2170,21 @@ export const ToolActivityItem = memo(function ToolActivityItem({
     surface = "card",
     worktreeId = null,
 }: ToolActivityItemProps) {
+    const hydrateToolActivityDetail = useAiStore(
+        (state) => state.hydrateToolActivityDetail,
+    );
+    useEffect(() => {
+        if (!activity.toolActivityDetailId) {
+            return;
+        }
+        void hydrateToolActivityDetail(activity.sessionId, activity.id);
+    }, [
+        activity.id,
+        activity.sessionId,
+        activity.status,
+        activity.toolActivityDetailId,
+        hydrateToolActivityDetail,
+    ]);
     const pendingTrackedFiles = trackedFiles.filter(
         isAiTrackedFileUnresolved,
     );

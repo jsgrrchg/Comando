@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import type { AiTrackedFile } from "@shared/ipc";
+import type { AiReviewDeltaSummary, AiTrackedFile } from "@shared/ipc";
 
 import {
     forgetOpenFileBuffer,
@@ -98,6 +98,68 @@ function createClaudeEditUpdateContext(toolCallId = "tool-1") {
 }
 
 describe("AiService tracked file review merging", () => {
+    it("supersedes only overlapping paths from a native review delta", () => {
+        const firstDelta: AiReviewDeltaSummary = {
+            deltaId: "delta-1",
+            files: ["a.ts", "b.ts"].map((path) => ({
+                path,
+                state: "ready" as const,
+            })),
+            inputRevision: 1,
+            revision: 1,
+            sessionId: "session-1",
+            state: "ready",
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-14T12:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+        const nextDelta: AiReviewDeltaSummary = {
+            ...firstDelta,
+            deltaId: "delta-2",
+            files: [{ path: "a.ts", state: "ready" }],
+            inputRevision: 2,
+            revision: 2,
+            toolCallId: "tool-2",
+        };
+        const snapshot = {
+            ...createSnapshot(),
+            reviewDeltas: [firstDelta],
+            trackedFiles: ["a.ts", "b.ts"].map((path) =>
+                createTrackedFile({
+                    identityKey: `native-review:${path}`,
+                    nativeReviewDeltaId: firstDelta.deltaId,
+                    path,
+                    version: firstDelta.revision,
+                }),
+            ),
+        };
+
+        const updated = __testing.applyNativeReviewDeltaSnapshot(
+            snapshot,
+            nextDelta,
+        );
+
+        expect(updated.reviewDeltas).toEqual([
+            expect.objectContaining({
+                deltaId: firstDelta.deltaId,
+                files: [{ path: "b.ts", state: "ready" }],
+            }),
+            expect.objectContaining({
+                deltaId: nextDelta.deltaId,
+                files: [{ path: "a.ts", state: "ready" }],
+            }),
+        ]);
+        expect(
+            updated.trackedFiles.map((file) => [
+                file.path,
+                file.nativeReviewDeltaId,
+            ]),
+        ).toEqual([
+            ["b.ts", firstDelta.deltaId],
+            ["a.ts", nextDelta.deltaId],
+        ]);
+    });
+
     it("accumulates consecutive updates for the same file", () => {
         const firstTrackedFile = createTrackedFile({
             newText: "line 1\nline 2",

@@ -15,6 +15,7 @@ import type {
     AiTrackedFile,
     AiPermissionOption,
     AiToolActivity,
+    AiToolActivityDetail,
     AiUserInputQuestion,
     GitRepositoryInvalidation,
     ProjectEntryMutationResult,
@@ -915,6 +916,21 @@ export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
         toolCallId: readNullableString(record, "toolCallId"),
         updatedAt: readString(record, "updatedAt", new Date(0).toISOString()),
         ...(version !== null ? { version } : {}),
+    };
+}
+
+export function nativeAiToolActivityDetailToIpc(
+    value: unknown,
+): AiToolActivityDetail {
+    const record = requireRecord(value);
+    return {
+        diffs: nativeFileDiffsToIpc(record.diffs),
+        rawInputJson: stringifyNativeJson(record.rawInput),
+        rawOutputJson: stringifyNativeJson(record.rawOutput),
+        terminalOutput:
+            typeof record.terminalOutput === "string"
+                ? record.terminalOutput
+                : null,
     };
 }
 

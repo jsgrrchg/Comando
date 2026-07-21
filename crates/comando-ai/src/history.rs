@@ -37,6 +37,8 @@ const SESSION_STATE_FILE: &str = "session-state.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_COMPACT_STATE_FILE: &str = "compact-state.json";
+const SESSION_TOOL_DETAILS_FILE: &str = "tool-details.json";
+const SESSION_TOOL_DETAILS_DIR: &str = "tool-details";
 const DEFAULT_PAGE_LIMIT: usize = 50;
 const MAX_PAGE_LIMIT: usize = 200;
 const LEGACY_TRANSCRIPT_BACKFILL_PAGE_SIZE: usize = 256;
@@ -436,6 +438,55 @@ impl AiHistoryStore {
         self.save_session_state(session_id, &state)
     }
 
+    pub fn store_tool_activity_detail(
+        &self,
+        session_id: &SessionId,
+        detail_id: &str,
+        payload: Value,
+    ) -> AiResult<()> {
+        if !self.has_session(session_id) {
+            return Ok(());
+        }
+        let path = self.tool_activity_detail_path(session_id, detail_id);
+        let existing = if path.exists() {
+            Some(read_json_file::<AiToolActivityDetail>(&path)?)
+        } else {
+            self.load_legacy_tool_activity_detail_entry(session_id, detail_id)?
+        };
+        let payload = existing
+            .as_ref()
+            .map(|detail| merge_tool_activity_detail(&detail.payload, payload.clone()))
+            .unwrap_or(payload);
+        let hash = hash_message_payload(&payload)?;
+        if existing.as_ref().is_some_and(|detail| detail.hash == hash) {
+            return Ok(());
+        }
+        fs::create_dir_all(self.tool_details_dir(session_id)).map_err(|error| {
+            history_io(
+                "create AI tool detail directory",
+                &self.tool_details_dir(session_id),
+                error,
+            )
+        })?;
+        atomic_write_json(&path, &AiToolActivityDetail { hash, payload })
+    }
+
+    pub fn load_tool_activity_detail(
+        &self,
+        session_id: &SessionId,
+        detail_id: &str,
+    ) -> AiResult<Option<Value>> {
+        self.recover_if_needed(session_id)?;
+        let path = self.tool_activity_detail_path(session_id, detail_id);
+        if path.exists() {
+            let detail: AiToolActivityDetail = read_json_file(&path)?;
+            return Ok(Some(detail.payload));
+        }
+        if let Some(detail) = self.load_legacy_tool_activity_detail_entry(session_id, detail_id)? {
+            return Ok(Some(detail.payload));
+        }
+        self.load_legacy_tool_activity_detail(session_id, detail_id)
+}
     pub fn save_transcript_window(
         &self,
         session_id: &SessionId,
@@ -1326,6 +1377,73 @@ impl AiHistoryStore {
         self.session_dir(session_id).join(SESSION_STATE_FILE)
     }
 
+    fn tool_details_path(&self, session_id: &SessionId) -> PathBuf {
+        self.session_dir(session_id).join(SESSION_TOOL_DETAILS_FILE)
+    }
+
+    fn tool_details_dir(&self, session_id: &SessionId) -> PathBuf {
+        self.session_dir(session_id).join(SESSION_TOOL_DETAILS_DIR)
+    }
+
+    fn tool_activity_detail_path(&self, session_id: &SessionId, detail_id: &str) -> PathBuf {
+        self.tool_details_dir(session_id)
+            .join(format!("{}.json", sha256_hex(detail_id.as_bytes())))
+    }
+
+    fn load_legacy_tool_activity_detail_entry(
+        &self,
+        session_id: &SessionId,
+        detail_id: &str,
+    ) -> AiResult<Option<AiToolActivityDetail>> {
+        let path = self.tool_details_path(session_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let store: AiToolActivityDetailStore = read_json_file(&path)?;
+        Ok(store.details.get(detail_id).cloned())
+    }
+
+    fn load_legacy_tool_activity_detail(
+        &self,
+        session_id: &SessionId,
+        detail_id: &str,
+    ) -> AiResult<Option<Value>> {
+        let state = self.load_session_state(session_id)?;
+        let Some(activity) = state.tool_activity.into_iter().find(|activity| {
+            activity
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|tool_call_id| {
+                    detail_id == format!("tool-detail:{}:{tool_call_id}", session_id.0)
+                })
+        }) else {
+            return Ok(None);
+        };
+        let raw_input = activity
+            .get("rawInputJson")
+            .and_then(Value::as_str)
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or(Value::Null);
+        let raw_output = activity
+            .get("rawOutputJson")
+            .and_then(Value::as_str)
+            .and_then(|value| serde_json::from_str(value).ok())
+            .unwrap_or(Value::Null);
+        let detail = json!({
+            "diffs": activity.get("diffs").cloned().unwrap_or_else(|| json!([])),
+            "rawInput": raw_input,
+            "rawOutput": raw_output,
+            "terminalOutput": activity.get("terminalOutput").cloned().unwrap_or(Value::Null),
+        });
+        if is_empty_activity_value(&detail["rawInput"])
+            && is_empty_activity_value(&detail["rawOutput"])
+            && is_empty_activity_value(&detail["terminalOutput"])
+            && detail["diffs"].as_array().is_none_or(Vec::is_empty)
+        {
+            return Ok(None);
+        }
+        Ok(Some(detail))
+}
     fn transcript_path(&self, session_id: &SessionId) -> PathBuf {
         self.session_dir(session_id).join(SESSION_TRANSCRIPT_FILE)
     }
@@ -2790,6 +2908,49 @@ mod tests {
             "kind": "assistant",
             "status": "completed"
         })
+    }
+
+    #[test]
+    fn tool_activity_details_are_stored_as_independent_records() {
+        let (_temp, store) = store();
+        let session_id = SessionId("tool-details".into());
+        store.create_session(metadata(&session_id.0)).unwrap();
+
+        store
+            .store_tool_activity_detail(
+                &session_id,
+                "detail-1",
+                json!({ "rawInput": { "command": "first" }, "rawOutput": null }),
+            )
+            .unwrap();
+        store
+            .store_tool_activity_detail(
+                &session_id,
+                "detail-2",
+                json!({ "rawInput": { "command": "second" }, "rawOutput": null }),
+            )
+            .unwrap();
+        store
+            .store_tool_activity_detail(
+                &session_id,
+                "detail-1",
+                json!({ "rawInput": null, "rawOutput": "done" }),
+            )
+            .unwrap();
+
+        assert!(!store.tool_details_path(&session_id).exists());
+        assert_eq!(
+            fs::read_dir(store.tool_details_dir(&session_id))
+                .unwrap()
+                .count(),
+            2
+        );
+        let detail = store
+            .load_tool_activity_detail(&session_id, "detail-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail["rawInput"]["command"], "first");
+        assert_eq!(detail["rawOutput"], "done");
     }
 
     fn transcript_entry(

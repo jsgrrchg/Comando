@@ -23,7 +23,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const MAX_REVIEW_TEXT_BYTES: u64 = 5 * 1024 * 1024;
-const REVIEW_WORKER_QUEUE_CAPACITY: usize = 64;
 
 #[derive(Debug)]
 pub struct NativeReviewService {
@@ -46,7 +45,7 @@ impl Default for NativeReviewService {
 
 impl NativeReviewWorker {
     fn new() -> Self {
-        let (sender, receiver) = mpsc::sync_channel(REVIEW_WORKER_QUEUE_CAPACITY);
+        let (sender, receiver) = mpsc::channel();
         let (result_sender, results) = mpsc::channel();
         let registry = Arc::new(Mutex::new(ReviewWorkerRegistry::default()));
         let worker_registry = Arc::clone(&registry);
@@ -114,11 +113,6 @@ impl NativeReviewWorkerHandle {
         };
         cycle.next_revision = cycle.next_revision.saturating_add(1);
         let input_revision = ReviewRevision(cycle.next_revision);
-        for diff in &diffs {
-            cycle
-                .latest_tool_by_path
-                .insert(diff.path.clone(), tool_call_id.clone());
-        }
         let task = NativeReviewWorkerTask {
             base: payload.base,
             diffs,
@@ -129,10 +123,10 @@ impl NativeReviewWorkerHandle {
         };
         drop(registry);
 
-        // A full queue is intentionally lossy: a newer tool event supersedes this work.
+        // The unbounded handoff keeps the event bridge non-blocking without losing review work.
         let _ = self
             .sender
-            .try_send(NativeReviewWorkerCommand::Materialize(task));
+            .send(NativeReviewWorkerCommand::Materialize(task));
     }
 
     fn register_baseline(
@@ -141,18 +135,73 @@ impl NativeReviewWorkerHandle {
         work_cycle_id: String,
         context: ReviewBaselineContext,
     ) {
+        {
+            let mut registry = self.registry.lock().expect("review worker registry lock");
+            let session = registry.sessions.entry(session_id.clone()).or_default();
+            session.current_work_cycle_id = Some(work_cycle_id.clone());
+            session.cycles.insert(
+                work_cycle_id,
+                ReviewWorkerCycle {
+                    epoch: 0,
+                    next_revision: context.revision.0,
+                    context,
+                },
+            );
+        }
+        self.propagate_parent_state(&session_id);
+    }
+
+    pub fn inherit_session(&self, parent_session_id: &SessionId, child_session_id: SessionId) {
         let mut registry = self.registry.lock().expect("review worker registry lock");
-        let session = registry.sessions.entry(session_id).or_default();
-        session.current_work_cycle_id = Some(work_cycle_id.clone());
-        session.cycles.insert(
-            work_cycle_id,
-            ReviewWorkerCycle {
-                epoch: 0,
-                latest_tool_by_path: HashMap::new(),
-                next_revision: context.revision.0,
-                context,
+        let Some(parent) = registry.sessions.get(parent_session_id).cloned() else {
+            return;
+        };
+        registry.sessions.insert(
+            child_session_id,
+            ReviewWorkerSession {
+                cycles: parent.cycles,
+                current_work_cycle_id: parent.current_work_cycle_id,
+                parent_session_id: Some(parent_session_id.clone()),
             },
         );
+    }
+
+    fn propagate_parent_state(&self, parent_session_id: &SessionId) {
+        let mut registry = self.registry.lock().expect("review worker registry lock");
+        let Some(parent) = registry.sessions.get(parent_session_id).cloned() else {
+            return;
+        };
+        let mut pending = vec![parent_session_id.clone()];
+        let mut visited = HashSet::new();
+        while let Some(current_parent) = pending.pop() {
+            if !visited.insert(current_parent.clone()) {
+                continue;
+            }
+            let child_ids = registry
+                .sessions
+                .iter()
+                .filter_map(|(session_id, session)| {
+                    (session.parent_session_id.as_ref() == Some(&current_parent))
+                        .then_some(session_id.clone())
+                })
+                .collect::<Vec<_>>();
+            for child_id in child_ids {
+                if let Some(child) = registry.sessions.get_mut(&child_id) {
+                    child.cycles = parent.cycles.clone();
+                    child.current_work_cycle_id = parent.current_work_cycle_id.clone();
+                }
+                pending.push(child_id);
+            }
+        }
+    }
+
+    fn parent_session_id(&self, session_id: &SessionId) -> Option<SessionId> {
+        self.registry
+            .lock()
+            .expect("review worker registry lock")
+            .sessions
+            .get(session_id)
+            .and_then(|session| session.parent_session_id.clone())
     }
 
     fn update_buffer(&self, path: &Path, buffer: Option<ReviewBuffer>) {
@@ -178,7 +227,6 @@ impl NativeReviewWorkerHandle {
         };
         for cycle in session.cycles.values_mut() {
             cycle.epoch = cycle.epoch.saturating_add(1);
-            cycle.latest_tool_by_path.clear();
         }
     }
 
@@ -225,10 +273,6 @@ fn review_worker_task_is_current(
         return false;
     };
     cycle.epoch == task.epoch
-        && task
-            .diffs
-            .iter()
-            .all(|diff| cycle.latest_tool_by_path.get(&diff.path) == Some(&task.tool_call_id))
 }
 
 fn materialize_review_worker_task(
@@ -420,7 +464,7 @@ struct NativeReviewWorker {
 #[derive(Debug, Clone)]
 pub struct NativeReviewWorkerHandle {
     registry: Arc<Mutex<ReviewWorkerRegistry>>,
-    sender: mpsc::SyncSender<NativeReviewWorkerCommand>,
+    sender: mpsc::Sender<NativeReviewWorkerCommand>,
 }
 
 #[derive(Debug, Default)]
@@ -428,17 +472,17 @@ struct ReviewWorkerRegistry {
     sessions: HashMap<SessionId, ReviewWorkerSession>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct ReviewWorkerSession {
     cycles: HashMap<String, ReviewWorkerCycle>,
     current_work_cycle_id: Option<String>,
+    parent_session_id: Option<SessionId>,
 }
 
 #[derive(Debug, Clone)]
 struct ReviewWorkerCycle {
     context: ReviewBaselineContext,
     epoch: u64,
-    latest_tool_by_path: HashMap<String, ToolCallId>,
     next_revision: u64,
 }
 
@@ -611,6 +655,28 @@ impl NativeReviewService {
         for result in self.worker.results.try_iter() {
             if !self.worker.handle.result_is_current(&result) {
                 continue;
+            }
+            let needs_inherited_cycle = self
+                .work_states
+                .get(&result.delta.session_id)
+                .is_none_or(|cycles| !cycles.contains_key(&result.delta.work_cycle_id));
+            if needs_inherited_cycle {
+                let mut ancestor_id = result.delta.session_id.clone();
+                while let Some(parent_id) = self.worker.handle.parent_session_id(&ancestor_id) {
+                    if let Some(parent_state) = self
+                        .work_states
+                        .get(&parent_id)
+                        .and_then(|cycles| cycles.get(&result.delta.work_cycle_id))
+                        .cloned()
+                    {
+                        self.work_states
+                            .entry(result.delta.session_id.clone())
+                            .or_default()
+                            .insert(result.delta.work_cycle_id.clone(), parent_state);
+                        break;
+                    }
+                    ancestor_id = parent_id;
+                }
             }
             let Some(state) = self
                 .work_states
@@ -1681,6 +1747,96 @@ mod tests {
     }
 
     #[test]
+    fn worker_preserves_every_file_when_later_tools_overlap_one_path() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join("a.txt"), "second\n").expect("write a");
+        fs::write(repo.path().join("b.txt"), "first\n").expect("write b");
+        let session = test_session(repo.path(), "s-worker-overlap");
+        let mut service = NativeReviewService::default();
+        capture_worker_baseline(&mut service, &session, "cycle-1");
+
+        service.worker_handle().enqueue_tool_activity(tool_activity(
+            &session,
+            "tool-1",
+            vec![
+                serde_json::json!({
+                    "path": "a.txt",
+                    "oldText": "before\n",
+                    "newText": "first\n"
+                }),
+                serde_json::json!({
+                    "path": "b.txt",
+                    "oldText": "before\n",
+                    "newText": "first\n"
+                }),
+            ],
+        ));
+        service.worker_handle().enqueue_tool_activity(tool_activity(
+            &session,
+            "tool-2",
+            vec![serde_json::json!({
+                "path": "a.txt",
+                "oldText": "first\n",
+                "newText": "second\n"
+            })],
+        ));
+
+        let events = wait_for_worker_event_count(&mut service, 2);
+        assert_eq!(events.len(), 2);
+        assert!(
+            events[0]
+                .delta
+                .files
+                .iter()
+                .any(|file| file.path == "b.txt")
+        );
+        assert_eq!(events[1].delta.files[0].path, "a.txt");
+    }
+
+    #[test]
+    fn worker_inherits_the_parent_baseline_for_subagents() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join("child.txt"), "after\n").expect("write child");
+        let parent = test_session(repo.path(), "s-parent");
+        let child = test_session(repo.path(), "s-child");
+        let mut service = NativeReviewService::default();
+        capture_worker_baseline(&mut service, &parent, "cycle-1");
+        service
+            .worker_handle()
+            .inherit_session(&parent.session_id, child.session_id.clone());
+        capture_worker_baseline(&mut service, &parent, "cycle-2");
+
+        service.worker_handle().enqueue_tool_activity(tool_activity(
+            &child,
+            "tool-child",
+            vec![serde_json::json!({
+                "path": "child.txt",
+                "oldText": "before\n",
+                "newText": "after\n"
+            })],
+        ));
+
+        let events = wait_for_worker_events(&mut service);
+        assert_eq!(events[0].delta.session_id, child.session_id);
+        assert_eq!(events[0].delta.work_cycle_id, "cycle-2");
+        let delta = events[0].delta.clone();
+        let loaded = service
+            .load_delta(NativeReviewLoadDeltaInput {
+                reference: NativeReviewDeltaReference {
+                    delta_id: delta.delta_id.clone(),
+                    expected_revision: delta.revision,
+                    input_revision: delta.input_revision,
+                    observed_hashes: delta.files.clone(),
+                    session_id: delta.session_id.clone(),
+                    tool_call_id: delta.tool_call_id.clone(),
+                    work_cycle_id: delta.work_cycle_id.clone(),
+                },
+            })
+            .expect("load child delta");
+        assert_eq!(loaded.tracked_files.len(), 1);
+    }
+
+    #[test]
     fn worker_marks_large_diffs_unavailable_without_reading_them() {
         let repo = tempfile::tempdir().expect("tempdir");
         let session = test_session(repo.path(), "s-worker-large");
@@ -2155,6 +2311,21 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         panic!("review worker did not produce an event");
+    }
+
+    fn wait_for_worker_event_count(
+        service: &mut NativeReviewService,
+        expected: usize,
+    ) -> Vec<NativeAiReviewDeltaReadyPayload> {
+        let mut events = Vec::new();
+        for _ in 0..100 {
+            events.extend(service.drain_worker_events());
+            if events.len() >= expected {
+                return events;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("review worker did not produce {expected} events");
     }
 
     fn tracked_file(

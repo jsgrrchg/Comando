@@ -245,6 +245,120 @@ describe("ai-store queue", () => {
         vi.useRealTimers();
     });
 
+    it("hydrates compacted tool activity details into the snapshot and transcript", async () => {
+        const activity = createToolActivity({
+            id: "tool-compacted",
+            status: "completed",
+            toolActivityDetailId: "detail-1",
+        });
+        const detail = {
+            diffs: [
+                {
+                    hunks: createTrackedFile().hunks,
+                    isText: true,
+                    kind: "update" as const,
+                    newText: "after\n",
+                    oldText: "before\n",
+                    path: "src/app.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+            rawInputJson: '{"command":"test"}',
+            rawOutputJson: '{"exitCode":0}',
+            terminalOutput: "done",
+        };
+        const loadAiToolActivityDetail = vi.fn().mockResolvedValue(detail);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: { comando: { loadAiToolActivityDetail } },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({ toolActivity: [activity] }),
+        );
+
+        await useAiStore
+            .getState()
+            .hydrateToolActivityDetail(TAB.sessionId, activity.id);
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(loadAiToolActivityDetail).toHaveBeenCalledWith({
+            sessionId: TAB.sessionId,
+            toolActivityDetailId: "detail-1",
+        });
+        expect(session?.snapshot?.toolActivity[0]).toMatchObject(detail);
+        expect(session?.transcript.toolActivity[0]).toMatchObject(detail);
+    });
+
+    it("replaces native review placeholders with hydrated tracked files", async () => {
+        const delta = {
+            deltaId: "delta-1",
+            files: [
+                {
+                    path: "src/app.ts",
+                    state: "ready" as const,
+                },
+            ],
+            inputRevision: 4,
+            revision: 5,
+            sessionId: TAB.sessionId,
+            state: "ready" as const,
+            toolCallId: "tool-review",
+            updatedAt: "2026-04-14T00:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+        const hydratedFile = createTrackedFile({
+            identityKey: "native:src/app.ts",
+            toolCallId: "tool-review",
+        });
+        const loadAiReviewDelta = vi.fn().mockResolvedValue({
+            delta,
+            trackedFiles: [hydratedFile],
+        });
+        const releaseAiReviewDelta = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: { loadAiReviewDelta, releaseAiReviewDelta },
+            },
+            writable: true,
+        });
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                reviewDeltas: [delta],
+                trackedFiles: [
+                    createTrackedFile({
+                        hunks: [],
+                        identityKey: "native-review:src/app.ts",
+                        nativeReviewDeltaId: delta.deltaId,
+                        nativeReviewInputRevision: delta.inputRevision,
+                        nativeReviewWorkCycleId: delta.workCycleId,
+                        newText: null,
+                        oldText: null,
+                        reversible: false,
+                        toolCallId: delta.toolCallId,
+                        version: delta.revision,
+                    }),
+                ],
+            }),
+        );
+
+        await useAiStore.getState().hydrateReviewDeltas(TAB.sessionId);
+
+        const trackedFile = useAiStore.getState().sessions[TAB.sessionId]
+            ?.snapshot?.trackedFiles[0];
+        expect(trackedFile).toMatchObject({
+            hunks: hydratedFile.hunks,
+            identityKey: hydratedFile.identityKey,
+            nativeReviewDeltaId: delta.deltaId,
+            nativeReviewInputRevision: delta.inputRevision,
+            nativeReviewWorkCycleId: delta.workCycleId,
+            version: delta.revision,
+        });
+        expect(releaseAiReviewDelta).toHaveBeenCalledWith(delta.deltaId);
+    });
+
     it("hydrates complete payloads for visible block-native transcript windows", async () => {
         const metadata = [1, 2, 3].map((index) => ({
             blockId: `block-${index}`,

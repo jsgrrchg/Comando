@@ -2548,6 +2548,17 @@ export interface AiToolActivity {
     readonly updatedAt: string;
 }
 
+export interface AiLoadToolActivityDetailInput {
+    readonly sessionId: string;
+    readonly toolActivityDetailId: string;
+}
+
+export interface AiToolActivityDetail {
+    readonly diffs: readonly AiFileDiff[];
+    readonly rawInputJson: string | null;
+    readonly rawOutputJson: string | null;
+    readonly terminalOutput: string | null;
+}
 export interface AiPlanEntry {
     readonly content: string;
     readonly priority: "high" | "low" | "medium";
@@ -3691,6 +3702,9 @@ export interface ComandoApi {
         input: AiLoadReviewDeltaInput,
     ) => Promise<AiReviewDeltaDetails | null>;
     releaseAiReviewDelta: (reviewDeltaId: string) => Promise<void>;
+    loadAiToolActivityDetail: (
+        input: AiLoadToolActivityDetailInput,
+    ) => Promise<AiToolActivityDetail | null>;
     resyncAiSession: (sessionId: string) => Promise<AiSessionSnapshot | null>;
     getAiSessionTranscriptPage: (
         input: GetAiSessionTranscriptPageInput,

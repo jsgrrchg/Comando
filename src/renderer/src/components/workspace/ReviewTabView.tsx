@@ -508,6 +508,9 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     );
     const hasLiveSnapshot =
         sessionState?.runtimeState === "live" && !!sessionState.snapshot;
+    const hydrateReviewDeltas = useAiStore(
+        (state) => state.hydrateReviewDeltas,
+    );
 
     useEffect(() => {
         if (hasLiveSnapshot) {
@@ -517,6 +520,12 @@ function ReviewTabContent({ onOpenFile, tab }: ReviewTabViewProps) {
     }, [ensureSession, hasLiveSnapshot, sessionTab]);
 
     const snapshot = sessionState?.snapshot ?? createEmptySnapshot(tab);
+    useEffect(() => {
+        if ((snapshot.reviewDeltas?.length ?? 0) === 0) {
+            return;
+        }
+        void hydrateReviewDeltas(snapshot.sessionId);
+    }, [hydrateReviewDeltas, snapshot.reviewDeltas, snapshot.sessionId]);
     const currentError = sessionState?.localError ?? snapshot.lastError;
     const trackedFiles = useMemo(
         () => {

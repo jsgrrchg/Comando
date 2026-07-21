@@ -295,9 +295,14 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
     ): Promise<AiReviewMutationResult> {
         const trackedFile = nativeReviewTrackedFileForInput(input);
+        const reference = nativeReviewReferenceForTrackedFile(
+            input.context.snapshot,
+            trackedFile,
+        );
         await this.#requestReviewDiskMutation(input, "ai_reject_tracked_file", {
             expectedVersion:
                 input.input.expectedVersion ?? trackedFile.version ?? null,
+            ...(reference ? { reference } : {}),
             trackedFile,
         });
         return reviewMutationResultFromContext(input);
@@ -307,10 +312,15 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         input: AiReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
     ): Promise<AiReviewMutationResult> {
         const trackedFile = nativeReviewTrackedFileForInput(input);
+        const reference = nativeReviewReferenceForTrackedFile(
+            input.context.snapshot,
+            trackedFile,
+        );
         await this.#requestReviewDiskMutation(input, "ai_reject_tracked_file_hunks", {
             expectedVersion:
                 input.input.expectedVersion ?? trackedFile.version ?? null,
             hunkIds: input.input.hunkIds,
+            ...(reference ? { reference } : {}),
             trackedFile,
         });
         return reviewMutationResultFromContext(input);
@@ -321,7 +331,8 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     ): Promise<AiReviewMutationResult> {
         await this.#requestReviewDiskMutation(input, "ai_reject_all_tracked_files", {
             trackedFiles: input.context.snapshot.trackedFiles.filter(
-                isAiTrackedFileUnresolved,
+                (file) =>
+                    isAiTrackedFileUnresolved(file) && file.reversible,
             ),
         });
         return reviewMutationResultFromContext(input);
@@ -1271,6 +1282,34 @@ function nativeReviewTrackedFileForInput(
         throw new Error("The file to review was not found.");
     }
     return trackedFile;
+}
+
+function nativeReviewReferenceForTrackedFile(
+    snapshot: AiSessionSnapshot,
+    trackedFile: AiTrackedFile,
+): NativeReviewDeltaReference | null {
+    const deltaId = trackedFile.nativeReviewDeltaId;
+    if (!deltaId) {
+        return null;
+    }
+    const delta = snapshot.reviewDeltas?.find(
+        (candidate) => candidate.deltaId === deltaId,
+    );
+    return delta ? nativeReviewDeltaReference(delta) : null;
+}
+
+function nativeReviewDeltaReference(
+    delta: NonNullable<AiSessionSnapshot["reviewDeltas"]>[number],
+): NativeReviewDeltaReference {
+    return {
+        deltaId: delta.deltaId,
+        expectedRevision: delta.revision,
+        inputRevision: delta.inputRevision,
+        observedHashes: delta.files,
+        sessionId: delta.sessionId,
+        toolCallId: delta.toolCallId,
+        workCycleId: delta.workCycleId,
+    };
 }
 
 function reviewMutationResultFromContext<TInput>(
