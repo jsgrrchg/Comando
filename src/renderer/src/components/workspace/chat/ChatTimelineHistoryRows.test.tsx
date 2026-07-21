@@ -400,6 +400,7 @@ describe("ChatTimelineHistoryRows", () => {
             reason: "restore",
         });
         expect(onSemanticAnchorRestored).toHaveBeenCalledTimes(1);
+        expect(onSemanticAnchorRestored).toHaveBeenCalledWith(rows[1]?.id);
 
         root.unmount();
     });
@@ -471,6 +472,9 @@ describe("ChatTimelineHistoryRows", () => {
         });
 
         expect(onSemanticAnchorUnavailable).toHaveBeenCalledTimes(1);
+        expect(onSemanticAnchorUnavailable).toHaveBeenCalledWith(
+            "missing-entry",
+        );
         expect(mockScrollToIndex).not.toHaveBeenCalled();
 
         root.unmount();

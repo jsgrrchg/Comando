@@ -253,6 +253,13 @@ type ChatSemanticRestoreAnchor = NonNullable<
     PersistedChatViewState["anchor"]
 >;
 
+interface PendingChatViewRestore {
+    readonly anchor: ChatSemanticRestoreAnchor | null;
+    readonly fallbackScrollTop: number;
+    readonly generation: number;
+    phase: "loading-anchor" | "awaiting-range" | "applying-fallback";
+}
+
 function selectChatSessionViewState(
     state: ReturnType<typeof useAiStore.getState>,
     sessionId: string,
@@ -471,7 +478,10 @@ export const ChatTabView = memo(function ChatTabView({
     const semanticAnchorRef = useRef<PersistedChatViewState["anchor"]>(
         null,
     );
-    const semanticRestoreFallbackScrollTopRef = useRef<number | null>(null);
+    const pendingChatViewRestoreRef = useRef<PendingChatViewRestore | null>(
+        null,
+    );
+    const chatViewRestoreGenerationRef = useRef(0);
     const initialComposerParts = readInitialComposerPartsForTab(tab);
     const composerPartsRef = useRef<AIComposerPart[]>(initialComposerParts);
     const persistedDraftRef = useRef(tab.draft);
@@ -1573,28 +1583,72 @@ export const ChatTabView = memo(function ChatTabView({
         [requestChatScroll],
     );
 
-    const handleSemanticAnchorRestored = useCallback(() => {
-        semanticRestoreFallbackScrollTopRef.current = null;
+    const applyPendingChatViewRestoreFallback = useCallback(
+        (generation: number) => {
+            const pendingRestore = pendingChatViewRestoreRef.current;
+            if (
+                !pendingRestore ||
+                pendingRestore.generation !== generation
+            ) {
+                return;
+            }
+
+            pendingRestore.phase = "applying-fallback";
+            setSemanticRestoreAnchor(null);
+        },
+        [],
+    );
+
+    const cancelPendingChatViewRestore = useCallback(() => {
+        if (!pendingChatViewRestoreRef.current) {
+            return;
+        }
+
+        // A direct reader action becomes authoritative over queued restoration.
+        pendingChatViewRestoreRef.current = null;
+        semanticAnchorRef.current = null;
         setSemanticRestoreAnchor(null);
+    }, []);
+
+    const handleSemanticAnchorRestored = useCallback((entryId: string) => {
+        const pendingRestore = pendingChatViewRestoreRef.current;
+        if (
+            !pendingRestore ||
+            pendingRestore.anchor?.entryId !== entryId ||
+            pendingRestore.phase !== "loading-anchor"
+        ) {
+            return;
+        }
+
+        // scrollToIndex only requests movement; the visible range confirms it.
+        pendingRestore.phase = "awaiting-range";
         setShowJumpToBottom(true);
     }, []);
 
-    const handleSemanticAnchorUnavailable = useCallback(() => {
-        const fallbackScrollTop = semanticRestoreFallbackScrollTopRef.current;
-        semanticRestoreFallbackScrollTopRef.current = null;
-        setSemanticRestoreAnchor(null);
-        if (fallbackScrollTop !== null) {
-            writeProgrammaticScroll(fallbackScrollTop, "restore");
+    const handleSemanticAnchorUnavailable = useCallback((entryId: string) => {
+        const pendingRestore = pendingChatViewRestoreRef.current;
+        if (!pendingRestore || pendingRestore.anchor?.entryId !== entryId) {
+            return;
         }
-        setShowJumpToBottom(true);
-    }, [writeProgrammaticScroll]);
+
+        applyPendingChatViewRestoreFallback(pendingRestore.generation);
+    }, [applyPendingChatViewRestoreFallback]);
 
     useEffect(() => {
         if (!active || !semanticRestoreAnchor) {
             return;
         }
+        const pendingRestore = pendingChatViewRestoreRef.current;
+        if (
+            !pendingRestore ||
+            pendingRestore.anchor?.entryId !== semanticRestoreAnchor.entryId ||
+            pendingRestore.phase !== "loading-anchor"
+        ) {
+            return;
+        }
+        const restoreGeneration = pendingRestore.generation;
         if (!transcriptWindow?.capabilityVersion) {
-            handleSemanticAnchorUnavailable();
+            applyPendingChatViewRestoreFallback(restoreGeneration);
             return;
         }
 
@@ -1605,7 +1659,7 @@ export const ChatTabView = memo(function ChatTabView({
                 semanticRestoreAnchor.entryId,
             );
         if (!blockId) {
-            handleSemanticAnchorUnavailable();
+            applyPendingChatViewRestoreFallback(restoreGeneration);
             return;
         }
 
@@ -1629,15 +1683,19 @@ export const ChatTabView = memo(function ChatTabView({
         }
 
         void loadTranscriptWindowBlock(tab.sessionId, blockId).then((block) => {
-            if (!block) {
-                handleSemanticAnchorUnavailable();
+            if (
+                !block &&
+                pendingChatViewRestoreRef.current?.generation ===
+                    restoreGeneration
+            ) {
+                applyPendingChatViewRestoreFallback(restoreGeneration);
             }
         });
     }, [
         active,
-        handleSemanticAnchorUnavailable,
+        applyPendingChatViewRestoreFallback,
         loadTranscriptWindowBlock,
-        semanticRestoreAnchor?.blockId,
+        semanticRestoreAnchor,
         setTranscriptWindowAnchor,
         tab.sessionId,
         transcriptWindow?.blocksById,
@@ -1656,42 +1714,15 @@ export const ChatTabView = memo(function ChatTabView({
     );
 
     const handleTimelineVirtualRangeChange = useCallback((range: MeasuredVirtualRange) => {
-        const firstVisibleTimelineRow = transcriptTimelineItems
-            .slice(range.visibleStartIndex, range.visibleEndIndex + 1)
-            .find(isChatTimelineRowItem);
+        const visibleTimelineRows = transcriptTimelineItems.slice(
+            range.visibleStartIndex,
+            range.visibleEndIndex + 1,
+        );
+        const firstVisibleTimelineRow = visibleTimelineRows.find(
+            isChatTimelineRowItem,
+        );
         const scrollElement = scrollRef.current;
-        const listItemElement = firstVisibleTimelineRow
-            ? [...(
-                  timelineContentRef.current?.querySelectorAll<HTMLElement>(
-                      "[data-list-key]",
-                  ) ?? []
-              )].find((element) => element.dataset.listKey === firstVisibleTimelineRow.id)
-            : null;
-        const offsetWithinEntry =
-            scrollElement && listItemElement
-                ? Math.max(
-                      0,
-                      scrollElement.scrollTop -
-                          (scrollElement.scrollTop +
-                              listItemElement.getBoundingClientRect().top -
-                              scrollElement.getBoundingClientRect().top),
-                  )
-                : 0;
-        const nextAnchor = captureTranscriptSemanticAnchor({
-            entryId: firstVisibleTimelineRow
-                ? getTranscriptTimelineItemAnchorEntryId(firstVisibleTimelineRow)
-                : null,
-            offsetWithinEntry,
-        });
-        semanticAnchorRef.current = nextAnchor
-            ? {
-                  ...nextAnchor,
-                  blockId: resolveTranscriptEntryBlockId(
-                      transcriptWindow?.blocksById ?? new Map(),
-                      nextAnchor.entryId,
-                  ),
-              }
-            : null;
+        const pendingRestore = pendingChatViewRestoreRef.current;
         const visibleBlockIds = resolveUnloadedTranscriptBlockIdsInRange(
             transcriptTimelineItems,
             range.visibleStartIndex,
@@ -1704,11 +1735,114 @@ export const ChatTabView = memo(function ChatTabView({
         );
         setTranscriptWindowAnchor(
             tab.sessionId,
-            residentBlockIds[0] ?? null,
+            pendingRestore && pendingRestore.phase !== "applying-fallback"
+                ? (semanticAnchorRef.current?.blockId ??
+                  residentBlockIds[0] ??
+                  null)
+                : (residentBlockIds[0] ?? null),
             shouldAutoFollowRef.current,
         );
         for (const blockId of visibleBlockIds) {
             void loadTranscriptWindowBlock(tab.sessionId, blockId);
+        }
+
+        if (pendingRestore?.phase === "awaiting-range" && pendingRestore.anchor) {
+            const restoredTimelineRow = visibleTimelineRows.find(
+                (row) =>
+                    isChatTimelineRowItem(row) &&
+                    getTranscriptTimelineItemAnchorEntryId(row) ===
+                        pendingRestore.anchor?.entryId,
+            );
+            if (restoredTimelineRow) {
+                const restoredElement = [...(
+                    timelineContentRef.current?.querySelectorAll<HTMLElement>(
+                        "[data-list-key]",
+                    ) ?? []
+                )].find(
+                    (element) =>
+                        element.dataset.listKey === restoredTimelineRow.id,
+                );
+                const offsetWithinEntry =
+                    scrollElement && restoredElement
+                        ? Math.max(
+                              0,
+                              scrollElement.scrollTop -
+                                  (scrollElement.scrollTop +
+                                      restoredElement.getBoundingClientRect()
+                                          .top -
+                                      scrollElement.getBoundingClientRect()
+                                          .top),
+                          )
+                        : pendingRestore.anchor.offsetWithinEntry;
+                const confirmedAnchor = captureTranscriptSemanticAnchor({
+                    entryId: pendingRestore.anchor.entryId,
+                    offsetWithinEntry,
+                });
+
+                // Keep the persisted anchor frozen until the virtual range sees it.
+                semanticAnchorRef.current = confirmedAnchor
+                    ? {
+                          ...confirmedAnchor,
+                          blockId:
+                              resolveTranscriptEntryBlockId(
+                                  transcriptWindow?.blocksById ?? new Map(),
+                                  confirmedAnchor.entryId,
+                              ) ?? pendingRestore.anchor.blockId,
+                      }
+                    : pendingRestore.anchor;
+                pendingChatViewRestoreRef.current = null;
+                setSemanticRestoreAnchor(null);
+            }
+        } else if (pendingRestore?.phase === "applying-fallback") {
+            if (scrollElement && range.endIndex >= range.startIndex) {
+                // A range means the virtualizer has enough geometry to clamp safely.
+                pendingChatViewRestoreRef.current = null;
+                semanticAnchorRef.current = null;
+                setSemanticRestoreAnchor(null);
+                writeProgrammaticScroll(
+                    pendingRestore.fallbackScrollTop,
+                    "restore",
+                );
+                setShowJumpToBottom(true);
+            }
+        } else if (!pendingRestore) {
+            const listItemElement = firstVisibleTimelineRow
+                ? [...(
+                      timelineContentRef.current?.querySelectorAll<HTMLElement>(
+                          "[data-list-key]",
+                      ) ?? []
+                  )].find(
+                      (element) =>
+                          element.dataset.listKey === firstVisibleTimelineRow.id,
+                  )
+                : null;
+            const offsetWithinEntry =
+                scrollElement && listItemElement
+                    ? Math.max(
+                          0,
+                          scrollElement.scrollTop -
+                              (scrollElement.scrollTop +
+                                  listItemElement.getBoundingClientRect().top -
+                                  scrollElement.getBoundingClientRect().top),
+                      )
+                    : 0;
+            const nextAnchor = captureTranscriptSemanticAnchor({
+                entryId: firstVisibleTimelineRow
+                    ? getTranscriptTimelineItemAnchorEntryId(
+                          firstVisibleTimelineRow,
+                      )
+                    : null,
+                offsetWithinEntry,
+            });
+            semanticAnchorRef.current = nextAnchor
+                ? {
+                      ...nextAnchor,
+                      blockId: resolveTranscriptEntryBlockId(
+                          transcriptWindow?.blocksById ?? new Map(),
+                          nextAnchor.entryId,
+                      ),
+                  }
+                : null;
         }
         recordChatPerformanceMetric("virtual_range", {
             sessionId: tab.sessionId,
@@ -1726,6 +1860,7 @@ export const ChatTabView = memo(function ChatTabView({
         tab.sessionId,
         transcriptWindow?.blocksById,
         transcriptTimelineItems,
+        writeProgrammaticScroll,
     ]);
 
     const handleTimelineVirtualResizeAutoFollow = useCallback(() => {
@@ -1759,21 +1894,25 @@ export const ChatTabView = memo(function ChatTabView({
         }) => {
             const scrollEl = scrollRef.current;
             const previousViewState = persistedViewStateRef.current;
-            const scrollTop =
-                overrides?.scrollTop ??
-                scrollEl?.scrollTop ??
-                previousViewState?.scrollTop ??
-                0;
-            const nextIsNearBottom =
-                overrides?.isNearBottom ??
-                (scrollEl
-                    ? isNearBottom(scrollEl)
-                    : previousViewState?.isNearBottom ?? true);
+            const pendingRestore = pendingChatViewRestoreRef.current;
+            const scrollTop = pendingRestore
+                ? pendingRestore.fallbackScrollTop
+                : (overrides?.scrollTop ??
+                  scrollEl?.scrollTop ??
+                  previousViewState?.scrollTop ??
+                  0);
+            const nextIsNearBottom = pendingRestore
+                ? false
+                : (overrides?.isNearBottom ??
+                  (scrollEl
+                      ? isNearBottom(scrollEl)
+                      : previousViewState?.isNearBottom ?? true));
+            const anchor = pendingRestore?.anchor ?? semanticAnchorRef.current;
 
             // Inactive chat views can unmount, so keep the last confirmed
             // viewport available for the next activation.
             persistedViewStateRef.current = {
-                anchor: semanticAnchorRef.current,
+                anchor,
                 isNearBottom: nextIsNearBottom,
                 scrollTop,
             };
@@ -1783,7 +1922,8 @@ export const ChatTabView = memo(function ChatTabView({
                 tab.worktreeId ?? null,
                 tab.sessionId,
                 {
-                    anchor: semanticAnchorRef.current,
+                    // Never persist the virtualizer's first incomplete range.
+                    anchor,
                     isNearBottom: nextIsNearBottom,
                     scrollTop,
                 },
@@ -1897,6 +2037,7 @@ export const ChatTabView = memo(function ChatTabView({
 
     const handleTimelineWheelCapture = useCallback(
         (event: WheelEvent<HTMLDivElement>) => {
+            cancelPendingChatViewRestore();
             if (
                 !shouldAutoFollowRef.current ||
                 (event.deltaY >= 0 &&
@@ -1913,11 +2054,12 @@ export const ChatTabView = memo(function ChatTabView({
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
-        [cancelPendingScrollToBottom],
+        [cancelPendingChatViewRestore, cancelPendingScrollToBottom],
     );
 
     const handleTimelineTouchStart = useCallback(
         () => {
+            cancelPendingChatViewRestore();
             if (!shouldAutoFollowRef.current) {
                 return;
             }
@@ -1931,7 +2073,7 @@ export const ChatTabView = memo(function ChatTabView({
             resizeBottomLockRef.current = false;
             resizeStartedNearBottomRef.current = false;
         },
-        [cancelPendingScrollToBottom],
+        [cancelPendingChatViewRestore, cancelPendingScrollToBottom],
     );
 
     useEffect(() => {
@@ -1951,6 +2093,7 @@ export const ChatTabView = memo(function ChatTabView({
             return;
         }
 
+        const restoreGeneration = ++chatViewRestoreGenerationRef.current;
         let cancelled = false;
         const setJumpToBottomVisibility = (visible: boolean) => {
             queueMicrotask(() => {
@@ -1985,9 +2128,13 @@ export const ChatTabView = memo(function ChatTabView({
                     shouldAutoFollow: shouldAutoFollowRef.current,
                 }),
             );
+            pendingChatViewRestoreRef.current = null;
+            setSemanticRestoreAnchor(null);
         };
 
         if (shouldRestoreBottom) {
+            pendingChatViewRestoreRef.current = null;
+            setSemanticRestoreAnchor(null);
             shouldAutoFollowRef.current = true;
             scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
             scrollToBottom();
@@ -1996,14 +2143,20 @@ export const ChatTabView = memo(function ChatTabView({
             shouldAutoFollowRef.current = false;
             scrollIntentRef.current = readChatScroll(scrollIntentRef.current);
             const persistedAnchor = persistedViewStateRef.current?.anchor ?? null;
+            pendingChatViewRestoreRef.current = {
+                anchor: persistedAnchor,
+                fallbackScrollTop: restoreScrollTop,
+                generation: restoreGeneration,
+                phase: persistedAnchor
+                    ? "loading-anchor"
+                    : "applying-fallback",
+            };
             if (persistedAnchor) {
                 semanticAnchorRef.current = persistedAnchor;
-                semanticRestoreFallbackScrollTopRef.current = restoreScrollTop;
                 setSemanticRestoreAnchor(persistedAnchor);
             } else {
-                semanticRestoreFallbackScrollTopRef.current = null;
+                semanticAnchorRef.current = null;
                 setSemanticRestoreAnchor(null);
-                writeProgrammaticScroll(restoreScrollTop, "restore");
             }
             setJumpToBottomVisibility(!isNearBottom(scrollEl));
         }
@@ -2015,7 +2168,6 @@ export const ChatTabView = memo(function ChatTabView({
         persistCurrentViewState,
         scrollToBottom,
         takeScheduledScrollPersist,
-        writeProgrammaticScroll,
         active,
         tab.sessionId,
     ]);
@@ -2108,6 +2260,7 @@ export const ChatTabView = memo(function ChatTabView({
     ]);
 
     const handleJumpToBottom = useCallback(() => {
+        cancelPendingChatViewRestore();
         cancelPendingScrollToBottom();
         shouldAutoFollowRef.current = true;
         scrollIntentRef.current = followChatScrollEnd(scrollIntentRef.current);
@@ -2121,6 +2274,7 @@ export const ChatTabView = memo(function ChatTabView({
         const scrollEl = scrollRef.current;
         scheduleScrollPersist(scrollEl?.scrollTop ?? 0, true);
     }, [
+        cancelPendingChatViewRestore,
         cancelPendingScrollToBottom,
         scheduleScrollPersist,
         scrollToBottom,
@@ -3158,8 +3312,8 @@ type ChatTimelineProps = {
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
-    readonly onSemanticAnchorRestored?: () => void;
-    readonly onSemanticAnchorUnavailable?: () => void;
+    readonly onSemanticAnchorRestored?: (entryId: string) => void;
+    readonly onSemanticAnchorUnavailable?: (entryId: string) => void;
     readonly onVirtualScrollRequest?: (
         request: MeasuredVirtualScrollRequest,
     ) => void;
@@ -3434,8 +3588,8 @@ export type ChatTimelineHistoryProps = {
     readonly liveTailRowId: string | null;
     readonly newTurnAnchorRowId: string | null;
     readonly onNewTurnScrollTarget?: (target: number) => void;
-    readonly onSemanticAnchorRestored?: () => void;
-    readonly onSemanticAnchorUnavailable?: () => void;
+    readonly onSemanticAnchorRestored?: (entryId: string) => void;
+    readonly onSemanticAnchorUnavailable?: (entryId: string) => void;
     readonly onVirtualScrollRequest?: (
         request: MeasuredVirtualScrollRequest,
     ) => void;
