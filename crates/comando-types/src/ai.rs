@@ -1193,6 +1193,9 @@ pub struct NativeReviewFileSummary {
     pub state: NativeReviewDeltaState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_hash: Option<String>,
+    /// A stable machine-readable explanation when review details cannot be materialized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

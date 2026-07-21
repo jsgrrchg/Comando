@@ -3083,6 +3083,7 @@ export interface AiReviewFileSummary {
     readonly observedHash?: string;
     readonly path: string;
     readonly previousPath?: string;
+    readonly reason?: string;
     readonly state: AiReviewDeltaState;
 }
 

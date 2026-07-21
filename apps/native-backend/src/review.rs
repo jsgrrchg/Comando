@@ -99,6 +99,7 @@ impl NativeReviewWorkerHandle {
                 .diffs
                 .into_iter()
                 .filter_map(|diff| serde_json::from_value::<NativeReviewRuntimeDiff>(diff).ok())
+                .map(bound_review_runtime_diff)
                 .collect::<Vec<_>>(),
         );
         if diffs.is_empty() {
@@ -140,6 +141,7 @@ impl NativeReviewWorkerHandle {
                     previous_path: diff.previous_path.clone(),
                     state: NativeReviewDeltaState::Preparing,
                     observed_hash: None,
+                    reason: None,
                 })
                 .collect(),
             updated_at: now(),
@@ -289,24 +291,21 @@ impl NativeReviewWorkerHandle {
         }
     }
 
-    fn pending_delta(
-        &self,
-        reference: &NativeReviewDeltaReference,
-    ) -> Option<NativeReviewDeltaSummary> {
+    fn pending_delta(&self, reference: &NativeReviewDeltaReference) -> Option<PendingReviewDelta> {
         let registry = self.registry.lock().expect("review worker registry lock");
-        let delta = registry
+        let pending = registry
             .sessions
             .get(&reference.session_id)
             .and_then(|session| session.cycles.get(&reference.work_cycle_id))
             .and_then(|cycle| cycle.pending_deltas.get(&reference.delta_id))?
-            .delta
             .clone();
+        let delta = &pending.delta;
         (delta.session_id == reference.session_id
             && delta.work_cycle_id == reference.work_cycle_id
             && delta.tool_call_id == reference.tool_call_id
             && delta.input_revision == reference.input_revision
             && delta.revision == reference.expected_revision)
-            .then_some(delta)
+            .then_some(pending)
     }
 
     fn remove_pending_delta(
@@ -353,6 +352,48 @@ impl NativeReviewWorkerHandle {
 
 fn is_terminal_review_activity(payload: &NativeAiToolActivityPayload) -> bool {
     matches!(payload.status.as_str(), "completed" | "failed") && !payload.diffs.is_empty()
+}
+
+fn bound_review_runtime_diff(mut diff: NativeReviewRuntimeDiff) -> NativeReviewRuntimeDiff {
+    if review_text_is_too_large(&diff) {
+        // Keep the file identity but drop oversized text before it reaches the queued worker state.
+        diff.old_text = None;
+        diff.new_text = None;
+        diff.unavailable_reason = Some(ReviewUnavailableReason::TooLarge);
+    }
+    diff
+}
+
+fn review_text_is_too_large(diff: &NativeReviewRuntimeDiff) -> bool {
+    [diff.old_text.as_ref(), diff.new_text.as_ref()]
+        .into_iter()
+        .flatten()
+        .any(|text| text.len() as u64 > MAX_REVIEW_TEXT_BYTES)
+}
+
+fn provisional_review_tracked_files(pending: &PendingReviewDelta) -> Vec<serde_json::Value> {
+    pending
+        .diffs
+        .iter()
+        .filter(|diff| diff.unavailable_reason.is_none())
+        .filter_map(|diff| {
+            let mut file = compute_tracked_file_patch(
+                &pending.delta.session_id.0,
+                &diff.path,
+                diff.previous_path.clone(),
+                diff.old_text.clone(),
+                diff.new_text.clone(),
+                pending.delta.updated_at.clone(),
+            )?;
+            // The preparation phase exposes file content promptly, while only the worker owns
+            // definitive hunks and their anchoring information.
+            file.hunks.clear();
+            file.hunks_are_anchored = None;
+            file.tool_call_id = Some(pending.delta.tool_call_id.0.clone());
+            file.version = u32::try_from(pending.delta.revision.0).ok();
+            Some(serde_json::to_value(file).expect("provisional tracked file serializes"))
+        })
+        .collect()
 }
 
 fn review_worker_task_is_current(
@@ -448,23 +489,15 @@ fn materialize_review_file(
     session_id: &SessionId,
     updated_at: &str,
 ) -> MaterializedReviewFile {
-    if diff.old_text.is_none() && diff.new_text.is_none() {
-        return unavailable_review_file(diff);
+    if let Some(reason) = diff.unavailable_reason {
+        return unavailable_review_file(diff, reason);
     }
-    if diff
-        .new_text
-        .as_ref()
-        .is_some_and(|text| text.len() as u64 > MAX_REVIEW_TEXT_BYTES)
-        || diff
-            .old_text
-            .as_ref()
-            .is_some_and(|text| text.len() as u64 > MAX_REVIEW_TEXT_BYTES)
-    {
-        return unavailable_review_file(diff);
+    if diff.old_text.is_none() && diff.new_text.is_none() {
+        return unavailable_review_file(diff, ReviewUnavailableReason::MissingText);
     }
     let observed = match read_worker_current_text(context, &diff.path) {
         Ok(observed) => observed,
-        Err(()) => return unavailable_review_file(diff),
+        Err(reason) => return unavailable_review_file(diff, reason),
     };
     let observed_hash = observed
         .as_ref()
@@ -491,18 +524,42 @@ fn materialize_review_file(
             previous_path: diff.previous_path.clone(),
             state,
             observed_hash,
+            reason: None,
         },
         tracked_file,
     }
 }
 
-fn unavailable_review_file(diff: &NativeReviewRuntimeDiff) -> MaterializedReviewFile {
+#[derive(Debug, Clone, Copy)]
+enum ReviewUnavailableReason {
+    MissingText,
+    TooLarge,
+    NotText,
+    ContentUnavailable,
+}
+
+impl ReviewUnavailableReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingText => "missing_text",
+            Self::TooLarge => "too_large",
+            Self::NotText => "not_text",
+            Self::ContentUnavailable => "content_unavailable",
+        }
+    }
+}
+
+fn unavailable_review_file(
+    diff: &NativeReviewRuntimeDiff,
+    reason: ReviewUnavailableReason,
+) -> MaterializedReviewFile {
     MaterializedReviewFile {
         summary: NativeReviewFileSummary {
             path: diff.path.clone(),
             previous_path: diff.previous_path.clone(),
             state: NativeReviewDeltaState::Unavailable,
             observed_hash: None,
+            reason: Some(reason.as_str().to_string()),
         },
         tracked_file: None,
     }
@@ -511,21 +568,24 @@ fn unavailable_review_file(diff: &NativeReviewRuntimeDiff) -> MaterializedReview
 fn read_worker_current_text(
     context: &ReviewBaselineContext,
     review_path: &str,
-) -> Result<Option<String>, ()> {
-    let resolved = resolve_worker_review_path(context, review_path).ok_or(())?;
+) -> Result<Option<String>, ReviewUnavailableReason> {
+    let resolved = resolve_worker_review_path(context, review_path)
+        .ok_or(ReviewUnavailableReason::ContentUnavailable)?;
     if let Some(buffer) = context.observed_buffers.get(&resolved) {
         return Ok(Some(buffer.content.clone()));
     }
     let metadata = match fs::metadata(&resolved) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(()),
+        Err(_) => return Err(ReviewUnavailableReason::ContentUnavailable),
     };
     if metadata.len() > MAX_REVIEW_TEXT_BYTES {
-        return Err(());
+        return Err(ReviewUnavailableReason::TooLarge);
     }
-    let bytes = fs::read(resolved).map_err(|_| ())?;
-    String::from_utf8(bytes).map(Some).map_err(|_| ())
+    let bytes = fs::read(resolved).map_err(|_| ReviewUnavailableReason::ContentUnavailable)?;
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| ReviewUnavailableReason::NotText)
 }
 
 fn resolve_worker_review_path(
@@ -643,6 +703,8 @@ struct NativeReviewRuntimeDiff {
     old_text: Option<String>,
     #[serde(default)]
     new_text: Option<String>,
+    #[serde(skip)]
+    unavailable_reason: Option<ReviewUnavailableReason>,
 }
 
 #[derive(Debug, Clone)]
@@ -931,10 +993,10 @@ impl NativeReviewService {
         &self,
         input: NativeReviewLoadDeltaInput,
     ) -> Result<NativeReviewLoadDeltaOutput, NativeError> {
-        if let Some(delta) = self.worker.handle.pending_delta(&input.reference) {
+        if let Some(pending) = self.worker.handle.pending_delta(&input.reference) {
             return Ok(NativeReviewLoadDeltaOutput {
-                delta,
-                tracked_files: Vec::new(),
+                tracked_files: provisional_review_tracked_files(&pending),
+                delta: pending.delta,
             });
         }
         let delta = self.resolve_reference(&input.reference)?;
@@ -1921,7 +1983,10 @@ mod tests {
             })
             .expect("load pending delta");
         assert_eq!(pending.delta, preparing.delta);
-        assert!(pending.tracked_files.is_empty());
+        assert_eq!(pending.tracked_files.len(), 1);
+        assert_eq!(pending.tracked_files[0]["oldText"], "before\n");
+        assert_eq!(pending.tracked_files[0]["newText"], "after\n");
+        assert_eq!(pending.tracked_files[0]["hunks"], serde_json::json!([]));
 
         let materialized = wait_for_worker_events(&mut service)
             .into_iter()
@@ -2062,21 +2127,42 @@ mod tests {
         let mut service = NativeReviewService::default();
         capture_worker_baseline(&mut service, &session, "cycle-1");
 
-        service.worker_handle().enqueue_tool_activity(tool_activity(
-            &session,
-            "tool-large",
-            vec![serde_json::json!({
-                "path": "large.txt",
-                "oldText": "before",
-                "newText": "x".repeat((MAX_REVIEW_TEXT_BYTES + 1) as usize)
-            })],
-        ));
+        let preparing = service
+            .worker_handle()
+            .ingest_tool_activity(tool_activity(
+                &session,
+                "tool-large",
+                vec![serde_json::json!({
+                    "path": "large.txt",
+                    "oldText": "before",
+                    "newText": "x".repeat((MAX_REVIEW_TEXT_BYTES + 1) as usize)
+                })],
+            ))
+            .expect("preparing large delta");
+        let pending = service
+            .load_delta(NativeReviewLoadDeltaInput {
+                reference: NativeReviewDeltaReference {
+                    delta_id: preparing.delta.delta_id.clone(),
+                    expected_revision: preparing.delta.revision,
+                    input_revision: preparing.delta.input_revision,
+                    observed_hashes: preparing.delta.files.clone(),
+                    session_id: preparing.delta.session_id.clone(),
+                    tool_call_id: preparing.delta.tool_call_id.clone(),
+                    work_cycle_id: preparing.delta.work_cycle_id.clone(),
+                },
+            })
+            .expect("load large pending delta");
+        assert!(pending.tracked_files.is_empty());
 
         let events = wait_for_worker_events(&mut service);
         assert_eq!(events[0].delta.state, NativeReviewDeltaState::Partial);
         assert_eq!(
             events[0].delta.files[0].state,
             NativeReviewDeltaState::Unavailable
+        );
+        assert_eq!(
+            events[0].delta.files[0].reason.as_deref(),
+            Some("too_large")
         );
     }
 
@@ -2162,6 +2248,7 @@ mod tests {
             events[0].delta.files[0].state,
             NativeReviewDeltaState::Unavailable
         );
+        assert_eq!(events[0].delta.files[0].reason.as_deref(), Some("not_text"));
     }
 
     #[test]

@@ -789,6 +789,7 @@ export type NativeReviewFileSummary = {
     readonly previousPath?: string;
     readonly state: NativeReviewDeltaState;
     readonly observedHash?: string;
+    readonly reason?: string;
 };
 
 export type NativeReviewDeltaSummary = {
