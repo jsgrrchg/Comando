@@ -93,6 +93,8 @@ function statesEqual(
     );
 }
 
+// Chat sessions have one workspace tab, so session identity safely scopes view
+// state such as the transcript scroll anchor and fallback scroll position.
 export function getChatViewStorageKey(
     projectId: string | null,
     worktreeId: string | null | undefined,
