@@ -21,6 +21,10 @@ import {
     CHAT_TIMELINE_CONTENT_MAX_WIDTH_PX,
     getChatTimelineVirtualMeasurementWidth,
 } from "./chatTimelineVirtualization";
+import {
+    persistChatViewState,
+    readPersistedChatViewState,
+} from "./chatViewPersistence";
 
 const SMALL_HISTORY_ROW_COUNT = 3;
 const ACTIVITY_HEAVY_ENTRY_COUNT = 24;
@@ -478,6 +482,102 @@ describe("ChatTimelineHistoryRows", () => {
         expect(mockScrollToIndex).not.toHaveBeenCalled();
 
         root.unmount();
+    });
+
+    it("restores a persisted anchor after its virtualized chat remounts", () => {
+        const anchor = {
+            alignment: "start" as const,
+            blockId: "block-1",
+            entryId: "message:message-1",
+            offsetWithinEntry: 14,
+        };
+        const persisted = persistChatViewState(
+            "project-1",
+            "worktree-1",
+            "session-1",
+            {
+                anchor,
+                isNearBottom: false,
+                scrollTop: 420,
+            },
+        );
+        const storageWrite = vi.spyOn(window.localStorage, "setItem");
+        storageWrite.mockClear();
+        const scrollContainer = document.createElement("div");
+        const firstMountNode = document.createElement("div");
+        document.body.append(scrollContainer, firstMountNode);
+        const firstRoot = createRoot(firstMountNode);
+        const onSemanticAnchorRestored = vi.fn();
+
+        act(() => {
+            firstRoot.render(
+                <ChatTimelineHistoryRows
+                    historyRows={[createLoadedBlockSpacer()]}
+                    hotTailRowId={null}
+                    hotTailRows={[]}
+                    onSemanticAnchorRestored={onSemanticAnchorRestored}
+                    renderRow={({ row }) => <div>{row.id}</div>}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
+                    scrollRef={{ current: scrollContainer }}
+                    semanticAnchorBlockLoaded={false}
+                    semanticRestoreAnchor={anchor}
+                    showStreamingIndicator={false}
+                />,
+            );
+        });
+
+        expect(mockScrollToIndex).not.toHaveBeenCalled();
+        expect(onSemanticAnchorRestored).not.toHaveBeenCalled();
+
+        // The active chat B replaces A; A must restore from storage on remount.
+        firstRoot.unmount();
+        firstMountNode.remove();
+
+        const remountNode = document.createElement("div");
+        document.body.appendChild(remountNode);
+        const remountedRoot = createRoot(remountNode);
+        virtualListMockOptions.renderSecondItem = true;
+        const remountedAnchor = readPersistedChatViewState(
+            "project-1",
+            "worktree-1",
+            "session-1",
+        )?.anchor;
+
+        act(() => {
+            remountedRoot.render(
+                <ChatTimelineHistoryRows
+                    historyRows={createRows(3)}
+                    hotTailRowId={null}
+                    hotTailRows={[]}
+                    onSemanticAnchorRestored={onSemanticAnchorRestored}
+                    renderRow={({ row }) => <div>{row.id}</div>}
+                    renderStreamingIndicator={() => <div>Streaming</div>}
+                    scrollRef={{ current: scrollContainer }}
+                    semanticAnchorBlockLoaded
+                    semanticRestoreAnchor={remountedAnchor}
+                    showStreamingIndicator={false}
+                />,
+            );
+        });
+
+        expect(mockScrollToIndex).toHaveBeenCalledWith(1, {
+            align: "start",
+            offset: 14,
+            reason: "restore",
+        });
+        expect(onSemanticAnchorRestored).toHaveBeenCalledWith(
+            "message:message-1",
+        );
+        expect(storageWrite).not.toHaveBeenCalled();
+        expect(
+            readPersistedChatViewState(
+                "project-1",
+                "worktree-1",
+                "session-1",
+            ),
+        ).toEqual(persisted);
+
+        remountedRoot.unmount();
     });
     beforeEach(() => {
         (
