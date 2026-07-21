@@ -832,6 +832,16 @@ export class AiService {
                 nextSnapshot,
                 ownerWindowId,
             );
+            if (event.kind === "review-delta") {
+                // Native history owns the transcript, while review deltas are main-owned
+                // session state. Checkpoint each revision without persisting token traffic.
+                this.#persistence.saveSessionSnapshot(cachedSnapshot);
+                this.#hydrateAndPersistNativeReviewDelta(
+                    ownerWindowId,
+                    event.sessionId,
+                    event.delta,
+                );
+            }
             this.#onSessionSnapshot(
                 ownerWindowId,
                 this.#buildRendererSessionUpdate(previousSnapshot, cachedSnapshot),
@@ -4162,9 +4172,30 @@ export class AiService {
     async #loadPersistedSessionSnapshot(
         sessionId: string,
     ): Promise<AiSessionSnapshot | null> {
-        const snapshot = this.#nativeAi?.shouldHandleHistory()
-            ? await this.#nativeAi.loadSessionSnapshot(sessionId)
-            : await this.#persistence.loadSessionSnapshot(sessionId);
+        if (this.#nativeAi?.shouldHandleHistory()) {
+            const [nativeSnapshot, persistedSnapshot] = await Promise.all([
+                this.#nativeAi.loadSessionSnapshot(sessionId),
+                this.#persistence.loadSessionSnapshot(sessionId),
+            ]);
+            if (!nativeSnapshot) {
+                return persistedSnapshot
+                    ? clearRestoredSnapshotReviewState(
+                          normalizeRestoredAiSessionSnapshot(persistedSnapshot),
+                      )
+                    : null;
+            }
+
+            return clearRestoredSnapshotReviewState(
+                mergePersistedNativeReviewState(
+                    normalizeRestoredAiSessionSnapshot(nativeSnapshot),
+                    persistedSnapshot
+                        ? normalizeRestoredAiSessionSnapshot(persistedSnapshot)
+                        : null,
+                ),
+            );
+        }
+
+        const snapshot = await this.#persistence.loadSessionSnapshot(sessionId);
 
         return snapshot
             ? clearRestoredSnapshotReviewState(
@@ -4535,6 +4566,70 @@ export class AiService {
             return hydrated;
         });
         return { ...snapshot, trackedFiles };
+    }
+
+    #hydrateAndPersistNativeReviewDelta(
+        ownerWindowId: string,
+        sessionId: string,
+        delta: AiReviewDeltaSummary,
+    ): void {
+        if (delta.state === "unavailable" || delta.state === "superseded") {
+            return;
+        }
+
+        void this.loadReviewDelta(sessionId, delta.deltaId, delta.revision)
+            .then((details) => {
+                if (!details) {
+                    return;
+                }
+                const currentSnapshot = this.#liveSnapshots.get(sessionId);
+                const currentDelta = currentSnapshot?.reviewDeltas?.find(
+                    (candidate) => candidate.deltaId === details.delta.deltaId,
+                );
+                if (
+                    !currentSnapshot ||
+                    currentDelta?.revision !== details.delta.revision
+                ) {
+                    return;
+                }
+
+                const hydrated = details.trackedFiles.map((file) =>
+                    attachNativeReviewReference(file, details.delta),
+                );
+                const hydratedPaths = new Set(
+                    hydrated.flatMap((file) => [
+                        file.path,
+                        ...(file.previousPath ? [file.previousPath] : []),
+                    ]),
+                );
+                const nextSnapshot = {
+                    ...currentSnapshot,
+                    trackedFiles: [
+                        ...currentSnapshot.trackedFiles.filter(
+                            (file) =>
+                                file.nativeReviewDeltaId !==
+                                    details.delta.deltaId ||
+                                !hydratedPaths.has(file.path),
+                        ),
+                        ...hydrated,
+                    ],
+                };
+                const cachedSnapshot = this.#cacheLiveSessionSnapshot(
+                    nextSnapshot,
+                    ownerWindowId,
+                );
+                this.#persistence.saveSessionSnapshot(cachedSnapshot);
+                this.#onSessionSnapshot(
+                    ownerWindowId,
+                    this.#buildRendererSessionUpdate(
+                        currentSnapshot,
+                        cachedSnapshot,
+                    ),
+                );
+            })
+            .catch((error: unknown) => {
+                debugBenignError("ai.service.persistNativeReviewDelta", error);
+            });
     }
 
     #persistReviewMutation(
@@ -6683,6 +6778,38 @@ function clearRestoredSnapshotReviewState(
     };
 }
 
+function mergePersistedNativeReviewState(
+    historySnapshot: AiSessionSnapshot,
+    persistedSnapshot: AiSessionSnapshot | null,
+): AiSessionSnapshot {
+    if (
+        !persistedSnapshot ||
+        persistedSnapshot.sessionId !== historySnapshot.sessionId
+    ) {
+        return historySnapshot;
+    }
+    const reviewDeltas = persistedSnapshot.reviewDeltas ?? [];
+    const persistedNativeFiles = persistedSnapshot.trackedFiles.filter(
+        (file) => file.nativeReviewDeltaId !== undefined,
+    );
+    if (reviewDeltas.length === 0 && persistedNativeFiles.length === 0) {
+        return historySnapshot;
+    }
+
+    return {
+        ...historySnapshot,
+        // The history backend reconstructs transcript state but does not own review
+        // payloads. Merge only versioned native review data from its checkpoint.
+        reviewDeltas,
+        trackedFiles: [
+            ...historySnapshot.trackedFiles.filter(
+                (file) => file.nativeReviewDeltaId === undefined,
+            ),
+            ...persistedNativeFiles,
+        ],
+    };
+}
+
 function normalizeLiveSnapshotReviewState(
     snapshot: AiSessionSnapshot,
 ): AiSessionSnapshot {
@@ -7091,6 +7218,7 @@ export const __testing = {
     applyNativeReviewDeltaSnapshot,
     computeDiffHunks,
     diffToAiFileDiff,
+    mergePersistedNativeReviewState,
     normalizeTrackedDiffPath,
     parseCompleteNumberedFileOutput,
     preservePassiveNativeReviewState,
