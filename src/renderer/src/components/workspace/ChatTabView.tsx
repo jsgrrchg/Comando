@@ -52,6 +52,7 @@ import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useAiChatSettings } from "@renderer/app/hooks/use-ai-chat-settings";
 import { buildChatFontFamily } from "@renderer/app/settings/theme";
 import { useAiStore } from "@renderer/app/store/ai-store";
+import { TranscriptReviewPayloadRetention } from "@renderer/app/ai/transcriptReviewPayloadRetention";
 import { chatActivationScheduler } from "@renderer/app/workspace/chatActivationScheduler";
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
@@ -79,9 +80,11 @@ import { AIChatAgentControls } from "./AIChatAgentControls";
 import { LanguageIcon } from "./LanguageIcon";
 import { AIChatComposer } from "./chat/AIChatComposer";
 import { AIChatContextUsageBar } from "./chat/AIChatContextUsageBar";
+import { ChatHeader } from "./chat/ChatHeader";
+import { ChatTranscriptSurface } from "./chat/ChatTranscriptSurface";
 import { ChatContentColumn } from "./chat/ChatContentColumn";
+import { ChatComposerShell } from "./chat/ChatComposerShell";
 import { ChatTimelineHistoryRows } from "./chat/ChatTimelineHistoryRows";
-import { ToolExpansionStoreProvider } from "./chat/toolExpansionStore";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
@@ -129,7 +132,7 @@ import {
     readPersistedChatViewState,
     type PersistedChatViewState,
 } from "./chat/chatViewPersistence";
-import { EditedFilesBufferPanel } from "./chat/EditedFilesBufferPanel";
+import { ReviewSurface } from "./chat/ReviewSurface";
 import { PlanMessage } from "./chat/PlanMessage";
 import { shouldShowPlanBanner } from "./chat/planBannerState";
 import {
@@ -745,37 +748,22 @@ export const ChatTabView = memo(function ChatTabView({
             ),
         [transcriptWindow?.blocksById],
     );
-    const visibleToolPayloadRefCounts = useRef(new Map<string, number>());
+    const reviewPayloadRetentionRef = useRef(
+        new TranscriptReviewPayloadRetention(),
+    );
     const handleToolPayloadVisibilityChange = useCallback(
         (activityId: string, visible: boolean) => {
             const payloadRef = toolPayloadRefByActivityId.get(activityId);
             if (!payloadRef) return;
             if (!visible) {
-                const nextCount = Math.max(
-                    0,
-                    (visibleToolPayloadRefCounts.current.get(payloadRef) ?? 1) -
-                        1,
-                );
-                if (nextCount > 0) {
-                    visibleToolPayloadRefCounts.current.set(
-                        payloadRef,
-                        nextCount,
-                    );
-                    return;
+                if (reviewPayloadRetentionRef.current.release(payloadRef)) {
+                    releaseTranscriptPayload(tab.sessionId, payloadRef);
                 }
-                visibleToolPayloadRefCounts.current.delete(payloadRef);
-                releaseTranscriptPayload(tab.sessionId, payloadRef);
                 return;
             }
-            const currentCount =
-                visibleToolPayloadRefCounts.current.get(payloadRef) ?? 0;
-            visibleToolPayloadRefCounts.current.set(
-                payloadRef,
-                currentCount + 1,
-            );
-            if (currentCount > 0) return;
+            if (!reviewPayloadRetentionRef.current.retain(payloadRef)) return;
             void loadTranscriptPayload(tab.sessionId, payloadRef).then(() => {
-                if (!visibleToolPayloadRefCounts.current.has(payloadRef)) {
+                if (!reviewPayloadRetentionRef.current.has(payloadRef)) {
                     releaseTranscriptPayload(tab.sessionId, payloadRef);
                 }
             });
@@ -789,10 +777,9 @@ export const ChatTabView = memo(function ChatTabView({
     );
     useEffect(
         () => () => {
-            for (const payloadRef of visibleToolPayloadRefCounts.current.keys()) {
+            for (const payloadRef of reviewPayloadRetentionRef.current.releaseAll()) {
                 releaseTranscriptPayload(tab.sessionId, payloadRef);
             }
-            visibleToolPayloadRefCounts.current.clear();
         },
         [releaseTranscriptPayload, tab.sessionId],
     );
@@ -2598,82 +2585,28 @@ export const ChatTabView = memo(function ChatTabView({
             style={{ backgroundColor: "var(--color-bg-secondary)" }}
         >
             <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-                <div
-                    className="flex h-6 shrink-0 items-center gap-2 px-3 text-[10.5px] leading-none text-text-secondary"
-                    style={{
-                        backgroundColor: "var(--color-bg-secondary)",
-                        borderBottom:
-                            "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                        boxSizing: "border-box",
-                        fontFamily: "var(--font-mono)",
+                <ChatHeader
+                    displayTitle={chatDisplayTitle}
+                    editing={isEditingTitle}
+                    onBeginEdit={() => {
+                        skipTitleCommitRef.current = false;
+                        setTitleDraft(chatDisplayTitle);
+                        setIsEditingTitle(true);
                     }}
-                >
-                    {isEditingTitle && !parentSessionId ? (
-                        <input
-                            ref={titleInputRef}
-                            className="min-w-0 flex-1 rounded bg-transparent outline-none"
-                            style={{
-                                border: "none",
-                                borderBottom:
-                                    "1px solid var(--color-accent, var(--color-text-secondary))",
-                                color: "var(--color-text-primary)",
-                                fontFamily: "var(--font-mono)",
-                                fontSize: "10.5px",
-                                padding: 0,
-                            }}
-                            value={titleDraft}
-                            onChange={(e) => setTitleDraft(e.target.value)}
-                            onKeyDown={(e) => {
-                                if (e.key === "Enter") {
-                                    commitTitleEdit();
-                                } else if (e.key === "Escape") {
-                                    skipTitleCommitRef.current = true;
-                                    setIsEditingTitle(false);
-                                }
-                            }}
-                            onBlur={() => commitTitleEdit()}
-                        />
-                    ) : (
-                        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                            <span
-                                className="min-w-0 cursor-default truncate"
-                                style={{
-                                    color: "var(--color-text-primary)",
-                                }}
-                                onDoubleClick={() => {
-                                    if (parentSessionId) {
-                                        return;
-                                    }
-
-                                    skipTitleCommitRef.current = false;
-                                    setTitleDraft(chatDisplayTitle);
-                                    setIsEditingTitle(true);
-                                }}
-                                title={
-                                    parentSessionId
-                                        ? "Subagent names are managed by Codex"
-                                        : "Double-click to rename"
-                                }
-                            >
-                                {chatDisplayTitle}
-                            </span>
-                            {parentSessionId ? (
-                                <button
-                                    className="app-no-drag min-w-0 shrink truncate rounded px-1 text-[10px] text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary"
-                                    onClick={() =>
-                                        void openAiSessionById(parentSessionId)
-                                    }
-                                    title={`Open parent ${parentSessionContext?.title ?? "thread"}`}
-                                    type="button"
-                                >
-                                    Subagent of{" "}
-                                    {parentSessionContext?.title ??
-                                        "parent thread"}
-                                </button>
-                            ) : null}
-                        </div>
-                    )}
-                </div>
+                    onCancelEdit={() => {
+                        skipTitleCommitRef.current = true;
+                        setIsEditingTitle(false);
+                    }}
+                    onCommitEdit={commitTitleEdit}
+                    onOpenParent={() => {
+                        if (parentSessionId) void openAiSessionById(parentSessionId);
+                    }}
+                    onTitleDraftChange={setTitleDraft}
+                    parentSessionId={parentSessionId}
+                    parentTitle={parentSessionContext?.title ?? null}
+                    titleDraft={titleDraft}
+                    titleInputRef={titleInputRef}
+                />
                 {visiblePlan ? (
                     <div
                         className="shrink-0 px-3 pb-1 pt-2"
@@ -2807,8 +2740,7 @@ export const ChatTabView = memo(function ChatTabView({
                             {composerError ? renderError(composerError) : null}
 
                             {pendingReviewCount > 0 ? (
-                                <EditedFilesBufferPanel
-                                    defaultCollapsed
+                                <ReviewSurface
                                     diffZoom={diffZoom}
                                     items={pendingReviewItems}
                                     onKeepAll={handleKeepAllPendingReview}
@@ -2827,26 +2759,7 @@ export const ChatTabView = memo(function ChatTabView({
                 ) : null}
 
                 {/* Composer area */}
-                <div
-                    className={
-                        composerExpanded
-                            ? "flex min-h-0 flex-1 flex-col border-t"
-                            : "flex shrink-0 flex-col border-t"
-                    }
-                    style={{
-                        backgroundColor:
-                            "color-mix(in srgb, var(--color-accent) 4%, var(--color-bg-panel))",
-                        borderTopColor:
-                            "color-mix(in srgb, var(--color-accent) 14%, var(--color-border))",
-                    }}
-                >
-                    <ChatContentColumn
-                        className={
-                            composerExpanded
-                                ? "flex min-h-0 flex-1 flex-col"
-                                : undefined
-                        }
-                    >
+                <ChatComposerShell expanded={composerExpanded}>
                         <AIChatComposer
                             autoFocusKey={tab.id}
                             composerFontFamily={composerFontFamily}
@@ -2959,8 +2872,7 @@ export const ChatTabView = memo(function ChatTabView({
                             runtimeName={runtimeDisplayName}
                             status={snapshot.status}
                         />
-                    </ChatContentColumn>
-                </div>
+                </ChatComposerShell>
             </div>
         </div>
         </ChatPerformanceProfiler>
@@ -3371,31 +3283,23 @@ const ChatTimeline = memo(function ChatTimeline({
         rows: historyRows.length + hotTailRows.length,
     });
 
-    const timelineContainerClassName = covered
-        ? "pointer-events-none invisible absolute inset-0 min-h-0 min-w-0"
-        : "relative min-h-0 min-w-0 flex-1";
-
     return (
-        <ToolExpansionStoreProvider scopeKey={sessionId}>
-            <div
-                aria-hidden={covered}
-                className={timelineContainerClassName}
-                inert={covered ? true : undefined}
-            >
-                <div
-                    ref={scrollRef}
-                    className="chat-scroll h-full min-h-0 min-w-0 overflow-y-auto px-3 py-3"
-                    onScroll={onScroll}
-                    onTouchStart={onTouchStart}
-                    onWheelCapture={onWheelCapture}
-                >
-                    <ChatContentColumn
-                        ref={timelineContentRef}
-                        className="min-w-0 space-y-2"
-                        style={{
-                            fontFamily: chatFontFamily,
-                        }}
-                    >
+        <ChatTranscriptSurface
+            chatFontFamily={chatFontFamily}
+            covered={covered ?? false}
+            jumpToBottom={
+                <ChatJumpToBottomButton
+                    onClick={onJumpToBottom}
+                    visible={showJumpToBottom}
+                />
+            }
+            onScroll={onScroll}
+            onTouchStart={onTouchStart}
+            onWheelCapture={onWheelCapture}
+            scopeKey={sessionId}
+            scrollRef={scrollRef}
+            timelineContentRef={timelineContentRef}
+        >
                         <ChatTimelineHistory
                             active={active}
                             canRenderFileReference={
@@ -3460,14 +3364,7 @@ const ChatTimeline = memo(function ChatTimeline({
                             streamingStartedAt={streamingStartedAt}
                             worktreeId={worktreeId}
                         />
-                    </ChatContentColumn>
-                </div>
-                <ChatJumpToBottomButton
-                    onClick={onJumpToBottom}
-                    visible={showJumpToBottom}
-                />
-            </div>
-        </ToolExpansionStoreProvider>
+        </ChatTranscriptSurface>
     );
 }, areChatTimelinePropsEqual);
 

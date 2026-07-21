@@ -1,5 +1,6 @@
 export interface TranscriptPayloadLoader<T> {
     load(payloadRef: string): Promise<T>;
+    loadMany?(payloadRefs: readonly string[]): Promise<ReadonlyMap<string, T>>;
 }
 
 interface CachedPayload<T> {
@@ -44,20 +45,60 @@ export class TranscriptPayloadCache<T> {
         const request = this.loader
             .load(payloadRef)
             .then((payload) => {
-                const cached: CachedPayload<T> = {
-                    estimatedBytes: this.estimateBytes(payload),
-                    payload,
-                    protected: options.protect ?? false,
-                };
-                this.payloads.set(payloadRef, cached);
-                this.residentByteCount += cached.estimatedBytes;
-                this.touch(payloadRef, cached.protected);
-                this.evict();
+                this.cache(payloadRef, payload, options.protect ?? false);
                 return payload;
             })
             .finally(() => this.pending.delete(payloadRef));
         this.pending.set(payloadRef, request);
         return request;
+    }
+
+    loadMany(
+        payloadRefs: readonly string[],
+        options: TranscriptPayloadLoadOptions = {},
+    ): Promise<ReadonlyMap<string, T>> {
+        const uniquePayloadRefs = [...new Set(payloadRefs)];
+        const resolved = new Map<string, T>();
+        const pending: Promise<void>[] = [];
+        const missing: string[] = [];
+
+        for (const payloadRef of uniquePayloadRefs) {
+            const cached = this.payloads.get(payloadRef);
+            if (cached) {
+                if (options.protect && !cached.protected) {
+                    cached.protected = true;
+                }
+                this.touch(payloadRef, cached.protected);
+                resolved.set(payloadRef, cached.payload);
+                continue;
+            }
+            const activeRequest = this.pending.get(payloadRef);
+            if (activeRequest) {
+                pending.push(
+                    activeRequest.then((payload) => {
+                        resolved.set(payloadRef, payload);
+                    }),
+                );
+                continue;
+            }
+            missing.push(payloadRef);
+        }
+
+        const loadMissing = this.loader.loadMany && missing.length > 1
+            ? this.loadBatch(missing, options).then((payloads) => {
+                  for (const [payloadRef, payload] of payloads) {
+                      resolved.set(payloadRef, payload);
+                  }
+              })
+            : Promise.all(
+                  missing.map((payloadRef) =>
+                      this.load(payloadRef, options).then((payload) => {
+                          resolved.set(payloadRef, payload);
+                      }),
+                  ),
+              ).then(() => undefined);
+
+        return Promise.all([...pending, loadMissing]).then(() => resolved);
     }
 
     release(payloadRef: string): void {
@@ -127,5 +168,66 @@ export class TranscriptPayloadCache<T> {
         other.delete(payloadRef);
         target.delete(payloadRef);
         target.set(payloadRef, undefined);
+    }
+
+    private cache(
+        payloadRef: string,
+        payload: T,
+        protect: boolean,
+    ): void {
+        const previous = this.payloads.get(payloadRef);
+        if (previous) {
+            // Replacing a payload must not count the same key twice.
+            this.residentByteCount -= previous.estimatedBytes;
+        }
+        const cached: CachedPayload<T> = {
+            estimatedBytes: this.estimateBytes(payload),
+            payload,
+            protected: protect,
+        };
+        this.payloads.set(payloadRef, cached);
+        this.residentByteCount += cached.estimatedBytes;
+        this.evictedPayloadRefs.delete(payloadRef);
+        this.touch(payloadRef, cached.protected);
+        this.evict();
+    }
+
+    private loadBatch(
+        payloadRefs: readonly string[],
+        options: TranscriptPayloadLoadOptions,
+    ): Promise<ReadonlyMap<string, T>> {
+        if (!this.loader.loadMany) {
+            return Promise.resolve(new Map());
+        }
+
+        const batch = this.loader.loadMany(payloadRefs);
+        const requests = new Map<string, Promise<T>>();
+
+        for (const payloadRef of payloadRefs) {
+            const request = batch
+                .then((payloads) => {
+                    const payload = payloads.get(payloadRef);
+                    if (!payload) {
+                        throw new Error(`The transcript payload ${payloadRef} could not be found.`);
+                    }
+                    this.cache(payloadRef, payload, options.protect ?? false);
+                    return payload;
+                })
+                .finally(() => {
+                    if (this.pending.get(payloadRef) === request) {
+                        this.pending.delete(payloadRef);
+                    }
+                });
+            // Batch refs share the same in-flight registry as single loads.
+            this.pending.set(payloadRef, request);
+            requests.set(payloadRef, request);
+        }
+
+        return Promise.all(
+            payloadRefs.map(async (payloadRef) => [
+                payloadRef,
+                await requests.get(payloadRef)!,
+            ] as const),
+        ).then((payloads) => new Map(payloads));
     }
 }

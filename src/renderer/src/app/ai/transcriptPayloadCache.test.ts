@@ -79,4 +79,63 @@ describe("TranscriptPayloadCache", () => {
             expect.arrayContaining(["protected", "recoverable"]),
         );
     });
+
+    it("coalesces uncached payloads into one batch request", async () => {
+        const loadMany = vi.fn((payloadRefs: readonly string[]) =>
+            Promise.resolve(
+                new Map(payloadRefs.map((payloadRef) => [payloadRef, payloadRef])),
+            ),
+        );
+        const cache = new TranscriptPayloadCache(
+            { load: vi.fn(), loadMany },
+            100,
+            (value: string) => value.length,
+        );
+
+        await expect(cache.loadMany(["payload-1", "payload-2"])).resolves.toEqual(
+            new Map([
+                ["payload-1", "payload-1"],
+                ["payload-2", "payload-2"],
+            ]),
+        );
+        expect(loadMany).toHaveBeenCalledOnce();
+        expect(loadMany).toHaveBeenCalledWith(["payload-1", "payload-2"]);
+    });
+
+    it("joins concurrent batch loads without double-counting cached payloads", async () => {
+        let resolveBatch!: (payloads: ReadonlyMap<string, string>) => void;
+        const loadMany = vi.fn(() =>
+            new Promise<ReadonlyMap<string, string>>((resolve) => {
+                resolveBatch = resolve;
+            }),
+        );
+        const cache = new TranscriptPayloadCache(
+            { load: vi.fn(), loadMany },
+            100,
+            (value: string) => value.length,
+        );
+
+        const first = cache.loadMany(["payload-1", "payload-2"]);
+        const second = cache.loadMany(["payload-1", "payload-2"]);
+
+        expect(loadMany).toHaveBeenCalledOnce();
+        resolveBatch(new Map([
+            ["payload-1", "a".repeat(40)],
+            ["payload-2", "b".repeat(40)],
+        ]));
+
+        await expect(Promise.all([first, second])).resolves.toEqual([
+            new Map([
+                ["payload-1", "a".repeat(40)],
+                ["payload-2", "b".repeat(40)],
+            ]),
+            new Map([
+                ["payload-1", "a".repeat(40)],
+                ["payload-2", "b".repeat(40)],
+            ]),
+        ]);
+        expect(cache.residentBytes).toBe(80);
+        expect(cache.has("payload-1")).toBe(true);
+        expect(cache.has("payload-2")).toBe(true);
+    });
 });

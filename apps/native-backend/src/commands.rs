@@ -231,6 +231,7 @@ impl NativeBackend {
             | "ai_load_transcript_block_metadata"
             | "ai_load_transcript_block"
             | "ai_load_transcript_payload"
+            | "ai_load_transcript_payloads"
             | "ai_get_transcript_storage_state"
             | "ai_load_session_snapshot"
             | "ai_list_session_runtime_mappings"
@@ -364,6 +365,7 @@ impl NativeBackend {
             | "ai_load_transcript_block_metadata"
             | "ai_load_transcript_block"
             | "ai_load_transcript_payload"
+            | "ai_load_transcript_payloads"
             | "ai_get_transcript_storage_state"
             | "ai_load_session_snapshot"
             | "ai_list_session_runtime_mappings"
@@ -2488,6 +2490,29 @@ impl NativeBackend {
                     Ok(payload) => response_only(
                         request.id,
                         serde_json::to_value(payload).expect("AI transcript payload serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_transcript_payloads" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadTranscriptPayloadsInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .load_native_transcript_payloads(
+                            &input.session_id,
+                            &input.payload_refs,
+                            input.max_bytes,
+                        )
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(payloads) => response_only(
+                        request.id,
+                        serde_json::to_value(payloads)
+                            .expect("AI transcript payload batch serializes"),
                     ),
                     Err(error) => error_only(request.id, error),
                 }

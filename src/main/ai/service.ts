@@ -29,7 +29,9 @@ import type {
     AiTranscriptBlockMetadataOutput,
     AiTranscriptCapability,
     AiLoadTranscriptPayloadInput,
+    AiLoadTranscriptPayloadsInput,
     AiTranscriptPayload,
+    AiTranscriptPayloadsOutput,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiTrackedFile,
@@ -1395,6 +1397,22 @@ export class AiService {
             return null;
         }
         return await nativeAi.loadTranscriptPayload(input);
+    }
+
+    async getTranscriptPayloads(
+        input: AiLoadTranscriptPayloadsInput,
+    ): Promise<AiTranscriptPayloadsOutput | null> {
+        const nativeAi = this.#nativeAi;
+        if (
+            !nativeAi?.getTranscriptCapability?.().blockNativeVersion ||
+            !nativeAi.loadTranscriptPayloads
+        ) {
+            return null;
+        }
+        if (!(await this.#refreshTranscriptStorageMode(input.sessionId))) {
+            return null;
+        }
+        return await nativeAi.loadTranscriptPayloads(input);
     }
 
     async prepareSession(

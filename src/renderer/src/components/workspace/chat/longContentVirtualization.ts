@@ -21,6 +21,11 @@ export interface LongContentChunkRow {
     readonly sourceRowId: string;
 }
 
+const presentationChunksByMessage = new WeakMap<
+    AiSessionSnapshot["messages"][number],
+    { readonly content: string; readonly chunks: readonly string[] }
+>();
+
 /**
  * Replaces an exceptionally long, completed assistant message with stable
  * presentation rows. The original message remains the source of truth in the
@@ -42,7 +47,17 @@ export function splitLongContentRows<T>(
             continue;
         }
 
-        const chunks = splitMarkdownIntoPresentationChunks(row.message.content);
+        const cached = presentationChunksByMessage.get(row.message);
+        const chunks = cached?.content === row.message.content
+            ? cached.chunks
+            : splitMarkdownIntoPresentationChunks(row.message.content);
+        if (cached?.content !== row.message.content) {
+            // Keep fragmentation tied to the canonical message, not to mounted rows.
+            presentationChunksByMessage.set(row.message, {
+                chunks,
+                content: row.message.content,
+            });
+        }
         if (chunks.length < 2) {
             result.push(row);
             continue;

@@ -6,14 +6,16 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use comando_types::ai::{
-    AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, NativeAiCheckpointOpenTranscriptTailInput,
-    NativeAiHistorySessionSummary, NativeAiHistoryStorageHealth, NativeAiListSessionHistoryInput,
+    AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, AI_TRANSCRIPT_PAYLOAD_BATCH_MAX_REFS,
+    NativeAiCheckpointOpenTranscriptTailInput, NativeAiHistorySessionSummary,
+    NativeAiHistoryStorageHealth, NativeAiListSessionHistoryInput,
     NativeAiLoadSessionTranscriptPageInput, NativeAiOpenTranscriptTail,
     NativeAiRuntimeSessionMapping, NativeAiSessionSnapshot, NativeAiSessionStatus,
     NativeAiSessionTranscriptPage, NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadata,
     NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptEntryEnvelope,
     NativeAiTranscriptEntryKind, NativeAiTranscriptEntrySummary, NativeAiTranscriptPayload,
-    NativeAiTranscriptStorageMode, NativeAiTranscriptStorageState,
+    NativeAiTranscriptPayloadsOutput, NativeAiTranscriptStorageMode,
+    NativeAiTranscriptStorageState,
 };
 use comando_types::ids::{ProjectId, RuntimeId, RuntimeSessionId, SessionId, WorktreeId};
 use rusqlite::{Connection, OptionalExtension};
@@ -644,6 +646,45 @@ impl AiHistoryStore {
             content_hash: payload.sha256,
             byte_length: payload.byte_length,
             value: payload.value,
+        })
+    }
+
+    pub fn load_native_transcript_payloads(
+        &self,
+        session_id: &SessionId,
+        payload_refs: &[String],
+        max_bytes: usize,
+    ) -> AiResult<NativeAiTranscriptPayloadsOutput> {
+        if payload_refs.len() > AI_TRANSCRIPT_PAYLOAD_BATCH_MAX_REFS {
+            return Err(AiError::TooLarge(format!(
+                "a transcript payload batch may contain at most {AI_TRANSCRIPT_PAYLOAD_BATCH_MAX_REFS} refs"
+            )));
+        }
+        let transcript_revision = self
+            .transcript_store(session_id)
+            .transcript_revision(session_id)?;
+        let mut seen = HashSet::new();
+        let payloads = payload_refs
+            .iter()
+            .filter(|payload_ref| seen.insert(payload_ref.as_str()))
+            .map(|payload_ref| {
+                let payload = self.load_transcript_payload(session_id, payload_ref, max_bytes)?;
+                Ok(NativeAiTranscriptPayload {
+                    capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
+                    session_id: session_id.clone(),
+                    transcript_revision,
+                    payload_ref: payload.payload_ref,
+                    content_hash: payload.sha256,
+                    byte_length: payload.byte_length,
+                    value: payload.value,
+                })
+            })
+            .collect::<AiResult<Vec<_>>>()?;
+        Ok(NativeAiTranscriptPayloadsOutput {
+            capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
+            session_id: session_id.clone(),
+            payloads,
+            transcript_revision,
         })
     }
 

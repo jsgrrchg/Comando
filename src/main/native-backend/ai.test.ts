@@ -960,6 +960,63 @@ describe("NativeAiGateway", () => {
         ).rejects.toThrow("belongs to another session");
     });
 
+    it("batches payloads only when the negotiated backend command is available", async () => {
+        const payload = {
+            byteLength: 10,
+            capabilityVersion: 1,
+            contentHash: "abc123",
+            payloadRef: "payload:assistant-1",
+            sessionId: "session-1",
+            transcriptRevision: 2,
+            value: { kind: "message" },
+        };
+        const batchClient = createClient();
+        batchClient.request.mockResolvedValue({
+            capabilityVersion: 1,
+            payloads: [payload],
+            sessionId: "session-1",
+            transcriptRevision: 2,
+        });
+        const batchGateway = createGateway(batchClient, {
+            capabilities: {
+                commands: ["ai_load_transcript_payloads"],
+                domains: ["ai"],
+                events: [],
+                features: ["native-ai-transcript-block-v1"],
+            },
+        });
+
+        await expect(
+            batchGateway.loadTranscriptPayloads({
+                payloadRefs: [payload.payloadRef],
+                sessionId: "session-1",
+            }),
+        ).resolves.toMatchObject({ payloads: [payload] });
+        expect(batchClient.request).toHaveBeenCalledWith(
+            "ai_load_transcript_payloads",
+            expect.any(Object),
+        );
+
+        const legacyClient = createClient();
+        legacyClient.request.mockResolvedValue(payload);
+        const legacyGateway = createGateway(legacyClient, {
+            capabilities: {
+                commands: [],
+                domains: ["ai"],
+                events: [],
+                features: ["native-ai-transcript-block-v1"],
+            },
+        });
+        await legacyGateway.loadTranscriptPayloads({
+            payloadRefs: [payload.payloadRef],
+            sessionId: "session-1",
+        });
+        expect(legacyClient.request).toHaveBeenCalledWith(
+            "ai_load_transcript_payload",
+            expect.any(Object),
+        );
+    });
+
     it("does not hydrate review state when loading historical snapshots", async () => {
         const client = createClient();
         const legacyFile = createNativeTrackedFile({
