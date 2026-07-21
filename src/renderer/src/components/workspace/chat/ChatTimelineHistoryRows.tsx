@@ -69,8 +69,8 @@ interface ChatTimelineHistoryRowsProps {
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
     readonly onNewTurnScrollTarget?: (target: number) => void;
-    readonly onSemanticAnchorRestored?: () => void;
-    readonly onSemanticAnchorUnavailable?: () => void;
+    readonly onSemanticAnchorRestored?: (entryId: string) => void;
+    readonly onSemanticAnchorUnavailable?: (entryId: string) => void;
     readonly onVirtualScrollRequest?: (
         request: MeasuredVirtualScrollRequest,
     ) => void;
@@ -183,8 +183,8 @@ export const ChatTimelineHistoryRows = memo(
             useState(0);
         useEffect(() => {
             if (!semanticRestoreAnchor) {
-                // The same entry may be restored after reactivating a retained
-                // tab whose virtual geometry changed while it was hidden.
+                // A remounted timeline may need the same entry after its
+                // virtual geometry was discarded with the inactive view.
                 restoredSemanticAnchorKeyRef.current = null;
             }
         }, [semanticRestoreAnchor]);
@@ -328,7 +328,9 @@ export const ChatTimelineHistoryRows = memo(
             if (anchorIndex < 0) {
                 if (semanticAnchorBlockLoaded) {
                     restoredSemanticAnchorKeyRef.current = restoreKey;
-                    onSemanticAnchorUnavailable?.();
+                    onSemanticAnchorUnavailable?.(
+                        semanticRestoreAnchor.entryId,
+                    );
                 }
                 return;
             }
@@ -346,7 +348,7 @@ export const ChatTimelineHistoryRows = memo(
                 reason: "restore",
             });
             restoredSemanticAnchorKeyRef.current = restoreKey;
-            onSemanticAnchorRestored?.();
+            onSemanticAnchorRestored?.(semanticRestoreAnchor.entryId);
         }, [
             active,
             historyRows,

@@ -1,4 +1,12 @@
-import { memo, type ReactNode, type RefObject, type TouchEvent, type WheelEvent } from "react";
+import {
+    memo,
+    type KeyboardEvent,
+    type PointerEvent,
+    type ReactNode,
+    type RefObject,
+    type TouchEvent,
+    type WheelEvent,
+} from "react";
 
 import { ChatContentColumn } from "./ChatContentColumn";
 import { ToolExpansionStoreProvider } from "./toolExpansionStore";
@@ -8,6 +16,8 @@ interface ChatTranscriptSurfaceProps {
     readonly children: ReactNode;
     readonly covered: boolean;
     readonly jumpToBottom: ReactNode;
+    readonly onKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void;
+    readonly onPointerDown?: (event: PointerEvent<HTMLDivElement>) => void;
     readonly onScroll: () => void;
     readonly onTouchStart?: (event: TouchEvent<HTMLDivElement>) => void;
     readonly onWheelCapture?: (event: WheelEvent<HTMLDivElement>) => void;
@@ -22,6 +32,8 @@ export const ChatTranscriptSurface = memo(function ChatTranscriptSurface({
     children,
     covered,
     jumpToBottom,
+    onKeyDown,
+    onPointerDown,
     onScroll,
     onTouchStart,
     onWheelCapture,
@@ -43,6 +55,8 @@ export const ChatTranscriptSurface = memo(function ChatTranscriptSurface({
                 <div
                     ref={scrollRef}
                     className="chat-scroll h-full min-h-0 min-w-0 overflow-y-auto px-3 py-3"
+                    onKeyDown={onKeyDown}
+                    onPointerDown={onPointerDown}
                     onScroll={onScroll}
                     onTouchStart={onTouchStart}
                     onWheelCapture={onWheelCapture}
