@@ -4076,11 +4076,10 @@ export class AiService {
         snapshot: AiSessionSnapshot,
         delta: AiReviewDeltaSummary,
     ): AiSessionSnapshot {
-        return applyNativeReviewDelta(
+        return applyNativeReviewDeltaSnapshot(
             snapshot,
             delta,
             this.#resolvedReviewVersions.get(snapshot.sessionId),
-            this.#isNativeAiSession(snapshot.sessionId),
         );
     }
 
@@ -4559,7 +4558,22 @@ export class AiService {
             expandedDeltaIds.add(deltaId);
             return hydrated;
         });
-        return { ...snapshot, trackedFiles };
+        let hydratedSnapshot = { ...snapshot, trackedFiles };
+        for (const delta of deltas) {
+            const hydrated = hydratedByDeltaId.get(delta.deltaId);
+            if (!hydrated) {
+                continue;
+            }
+            hydratedSnapshot = {
+                ...hydratedSnapshot,
+                reviewActionLog: consolidateNativeReviewDeltaIntoActionLog(
+                    hydratedSnapshot,
+                    hydrated,
+                    delta,
+                ),
+            };
+        }
+        return hydratedSnapshot;
     }
 
     #hydrateAndPersistNativeReviewDelta(
@@ -4598,6 +4612,11 @@ export class AiService {
                 );
                 const nextSnapshot = {
                     ...currentSnapshot,
+                    reviewActionLog: consolidateNativeReviewDeltaIntoActionLog(
+                        currentSnapshot,
+                        hydrated,
+                        details.delta,
+                    ),
                     trackedFiles: [
                         ...currentSnapshot.trackedFiles.filter(
                             (file) =>
@@ -7027,20 +7046,46 @@ function applyNativeReviewDeltaSnapshot(
     return { ...snapshot, reviewDeltas, trackedFiles };
 }
 
-function applyNativeReviewDelta(
+function consolidateNativeReviewDeltaIntoActionLog(
     snapshot: AiSessionSnapshot,
+    trackedFiles: readonly AiTrackedFile[],
     delta: AiReviewDeltaSummary,
-    resolvedVersions: ReadonlyMap<string, number> | undefined,
-    isNativeSession: boolean,
-): AiSessionSnapshot {
-    const nextSnapshot = applyNativeReviewDeltaSnapshot(
-        snapshot,
-        delta,
-        resolvedVersions,
+): AiReviewActionLogState {
+    const actionLog =
+        validReviewActionLogForSnapshot(snapshot) ??
+        createReviewActionLogFromTrackedFiles(
+            snapshot.sessionId,
+            // Native placeholders carry no full-text baseline and must not
+            // become action-log entries before the worker hydrates them.
+            snapshot.trackedFiles.filter(
+                (file) => file.nativeReviewDeltaId === undefined,
+            ),
+            { updatedAt: snapshot.updatedAt },
+        );
+    return consolidateReviewDiffs(
+        actionLog,
+        trackedFiles.map(nativeTrackedFileToAiFileDiff),
+        {
+            origin: "live",
+            sessionId: snapshot.sessionId,
+            toolCallId: delta.toolCallId,
+            updatedAt: delta.updatedAt,
+            workCycleId: delta.workCycleId,
+        },
     );
-    return isNativeSession && snapshot.reviewActionLog !== null
-        ? { ...nextSnapshot, reviewActionLog: null }
-        : nextSnapshot;
+}
+
+function nativeTrackedFileToAiFileDiff(file: AiTrackedFile): AiFileDiff {
+    return {
+        hunks: file.hunks,
+        isText: file.isText,
+        kind: file.kind,
+        newText: file.newText,
+        oldText: file.oldText,
+        path: file.path,
+        previousPath: file.previousPath,
+        reversible: file.reversible,
+    };
 }
 
 function nativeReviewDeltaStateForFiles(
@@ -7259,8 +7304,8 @@ function nativeSetSecretPatch(
 }
 
 export const __testing = {
-    applyNativeReviewDelta,
     applyNativeReviewDeltaSnapshot,
+    consolidateNativeReviewDeltaIntoActionLog,
     computeDiffHunks,
     diffToAiFileDiff,
     mergePersistedNativeReviewState,

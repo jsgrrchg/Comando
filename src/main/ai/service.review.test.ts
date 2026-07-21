@@ -466,7 +466,7 @@ describe("AiService tracked file review merging", () => {
         ]);
     });
 
-    it("reproduces a resolved native edit returning to the rail on the next worker delta", () => {
+    it("keeps a resolved native edit out of the rail when a worker replays it", () => {
         const firstDelta: AiReviewDeltaSummary = {
             deltaId: "delta-1",
             files: [{ path: "src/app.ts", state: "ready" }],
@@ -512,21 +512,69 @@ describe("AiService tracked file review merging", () => {
 
         expect(deriveTrackedFilesFromActionLog(acceptedLog)).toEqual([]);
 
-        const afterWorkerDelta = __testing.applyNativeReviewDelta(
+        const afterWorkerDelta = __testing.applyNativeReviewDeltaSnapshot(
             acceptedSnapshot,
             nextDelta,
             undefined,
-            true,
         );
-        const railFiles = afterWorkerDelta.reviewActionLog
-            ? deriveTrackedFilesFromActionLog(afterWorkerDelta.reviewActionLog)
-            : afterWorkerDelta.trackedFiles;
+        const afterHydration = {
+            ...afterWorkerDelta,
+            reviewActionLog: __testing.consolidateNativeReviewDeltaIntoActionLog(
+                afterWorkerDelta,
+                [
+                    createTrackedFile({
+                        identityKey: "native-review:src/app.ts",
+                        nativeReviewDeltaId: nextDelta.deltaId,
+                        nativeReviewInputRevision: nextDelta.inputRevision,
+                        nativeReviewState: nextDelta.state,
+                        nativeReviewWorkCycleId: nextDelta.workCycleId,
+                        path: "src/app.ts",
+                        toolCallId: nextDelta.toolCallId,
+                        version: nextDelta.revision,
+                    }),
+                ],
+                nextDelta,
+            ),
+        };
+        const railFiles = deriveTrackedFilesFromActionLog(
+            afterHydration.reviewActionLog,
+        );
 
-        expect(afterWorkerDelta.reviewActionLog).toBeNull();
-        expect(railFiles).toEqual([
+        expect(afterWorkerDelta.reviewActionLog).toBe(acceptedLog);
+        expect(railFiles).toEqual([]);
+
+        const laterEditDelta: AiReviewDeltaSummary = {
+            ...nextDelta,
+            deltaId: "delta-3",
+            revision: 4,
+            toolCallId: "tool-3",
+            updatedAt: "2026-04-14T12:02:00.000Z",
+            workCycleId: "cycle-3",
+        };
+        const laterEditLog =
+            __testing.consolidateNativeReviewDeltaIntoActionLog(
+                afterHydration,
+                [
+                    createTrackedFile({
+                        identityKey: "native-review:src/app.ts",
+                        nativeReviewDeltaId: laterEditDelta.deltaId,
+                        nativeReviewInputRevision:
+                            laterEditDelta.inputRevision,
+                        nativeReviewState: laterEditDelta.state,
+                        nativeReviewWorkCycleId: laterEditDelta.workCycleId,
+                        newText: "before line\nafter line\nnew line",
+                        path: "src/app.ts",
+                        toolCallId: laterEditDelta.toolCallId,
+                        version: laterEditDelta.revision,
+                    }),
+                ],
+                laterEditDelta,
+            );
+
+        expect(deriveTrackedFilesFromActionLog(laterEditLog)).toEqual([
             expect.objectContaining({
-                nativeReviewDeltaId: nextDelta.deltaId,
-                path: "src/app.ts",
+                newText: "before line\nafter line\nnew line",
+                oldText: "before line\nafter line",
             }),
         ]);
     });
