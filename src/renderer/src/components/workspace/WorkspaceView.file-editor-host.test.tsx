@@ -243,6 +243,7 @@ const monacoHarness = vi.hoisted(() => {
     const editorPropSnapshots: Array<{
         readonly defaultValue: string | undefined;
         readonly path: string | undefined;
+        readonly saveViewState: boolean | undefined;
         readonly value: string | undefined;
     }> = [];
     let editorCounter = 0;
@@ -664,6 +665,7 @@ vi.mock("@monaco-editor/react", async () => {
         onMount,
         options,
         path,
+        saveViewState,
         value,
     }: {
         readonly beforeMount?: () => void;
@@ -672,6 +674,7 @@ vi.mock("@monaco-editor/react", async () => {
         readonly onMount?: (editor: unknown, monaco: unknown) => void;
         readonly options?: unknown;
         readonly path?: string;
+        readonly saveViewState?: boolean;
         readonly value?: string;
     }) => {
         const editorRef = React.useRef<ReturnType<
@@ -684,11 +687,13 @@ vi.mock("@monaco-editor/react", async () => {
             onMount,
             options,
             path,
+            saveViewState,
             value,
         });
         monacoHarness.editorPropSnapshots.push({
             defaultValue,
             path,
+            saveViewState,
             value,
         });
 
@@ -1221,6 +1226,41 @@ describe("WorkspaceFileEditorHost", () => {
         expect(monacoHarness.codeEditors).toHaveLength(1);
         expect(monacoHarness.codeEditors[0]?.disposed).toBe(false);
         expect(container.querySelector("[aria-hidden='true']")).not.toBeNull();
+    });
+
+    it("restores a saved Monaco view state only once per tab activation", async () => {
+        const savedViewState = {
+            contributionsState: {},
+            cursorState: [],
+            viewState: {
+                firstPosition: {
+                    column: 1,
+                    lineNumber: 1,
+                },
+                firstPositionDeltaTop: 0,
+                scrollLeft: 24,
+            },
+        };
+        const tab = {
+            ...createFileTab("file-1"),
+            viewState: savedViewState,
+        } satisfies RuntimeWorkspaceFileTab;
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        expect(monacoHarness.codeEditors[0]?.restoreViewState).toHaveBeenCalledOnce();
+        expect(monacoHarness.codeEditors[0]?.restoreViewState).toHaveBeenCalledWith(
+            savedViewState,
+        );
     });
 
     it("renders the Markdown view switch for .md and .markdown file tabs", async () => {
@@ -2076,6 +2116,7 @@ describe("WorkspaceFileEditorHost", () => {
         expect(monacoHarness.editorPropSnapshots.at(-1)).toEqual(
             expect.objectContaining({
                 defaultValue: tab.draftContent,
+                saveViewState: false,
                 value: undefined,
             }),
         );
