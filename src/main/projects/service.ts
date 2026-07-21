@@ -24,7 +24,6 @@ import type {
 import { normalizeProjectSearchQuery } from "@shared/project-search";
 import { normalizePathKey } from "@shared/path-identity";
 
-import { mainProcessPerformance } from "../observability/performance";
 import { debugBenignError } from "../observability/logging";
 import {
     NativeFsGateway,
@@ -77,14 +76,9 @@ export class ProjectService {
     }
 
     listProjects(): ProjectSummary[] {
-        return mainProcessPerformance.measureSync(
-            "db.projects.listProjects",
-            () => {
-                const projects = [...this.#store.listProjects()];
-                this.#scheduleActiveWatcherRegistrySync();
-                return projects;
-            },
-        );
+        const projects = [...this.#store.listProjects()];
+        this.#scheduleActiveWatcherRegistrySync();
+        return projects;
     }
 
     async addProjectPaths(
@@ -187,32 +181,17 @@ export class ProjectService {
             input.projectId,
             input.worktreeId ?? null,
         );
-        return await mainProcessPerformance
-            .measureAsync(
-                "projects.listProjectTreeChildren",
-                async () =>
-                    await this.#trackFilesystemAccess(
-                        resolveProjectPath(
-                            project.rootPath,
-                            input.parentRelativePath,
-                        ),
-                        async () =>
-                            await this.#nativeFs.listProjectTreeChildren({
-                                parentRelativePath:
-                                    input.parentRelativePath,
-                                projectId: input.projectId,
-                                rootPath: project.rootPath,
-                                worktreeId: project.worktreeId,
-                            }),
-                    ),
-                {
-                    parentRelativePath: input.parentRelativePath ?? ".",
+        const nodes = await this.#trackFilesystemAccess(
+            resolveProjectPath(project.rootPath, input.parentRelativePath),
+            async () =>
+                await this.#nativeFs.listProjectTreeChildren({
+                    parentRelativePath: input.parentRelativePath,
                     projectId: input.projectId,
-                    transport: "native",
-                    worktreeId: input.worktreeId ?? "primary",
-                },
-            )
-            .then((nodes) => [...nodes]);
+                    rootPath: project.rootPath,
+                    worktreeId: project.worktreeId,
+                }),
+        );
+        return [...nodes];
     }
 
     async listProjectEntries(
@@ -235,20 +214,7 @@ export class ProjectService {
         };
         const response = this.#indexedRoots.has(rootPathKey)
             ? await this.#trackFilesystemAccess(project.rootPath, listEntries)
-            : await mainProcessPerformance.measureAsync(
-                  "projects.buildSearchIndex",
-                  async () =>
-                      await this.#trackFilesystemAccess(
-                          project.rootPath,
-                          listEntries,
-                      ),
-                  {
-                      projectId: input.projectId,
-                      rootPath: resolveRootPath(project.rootPath),
-                      transport: "native",
-                      worktreeId: input.worktreeId ?? "primary",
-                  },
-              );
+            : await this.#trackFilesystemAccess(project.rootPath, listEntries);
 
         this.#indexedRoots.add(rootPathKey);
         return [...response.nodes];
@@ -305,20 +271,7 @@ export class ProjectService {
         };
         const response = this.#indexedRoots.has(rootPathKey)
             ? await this.#trackFilesystemAccess(project.rootPath, search)
-            : await mainProcessPerformance.measureAsync(
-                  "projects.buildSearchIndex",
-                  async () =>
-                      await this.#trackFilesystemAccess(
-                          project.rootPath,
-                          search,
-                      ),
-                  {
-                      projectId: input.projectId,
-                      rootPath: resolveRootPath(project.rootPath),
-                      transport: "native",
-                      worktreeId: input.worktreeId ?? "primary",
-                  },
-              );
+            : await this.#trackFilesystemAccess(project.rootPath, search);
 
         this.#indexedRoots.add(rootPathKey);
         return [...response.nodes];

@@ -80,7 +80,6 @@ import {
 } from "./native-backend/projects";
 import type { NativeBackendEvent } from "./native-backend/protocol";
 import { debugBenignError } from "./observability/logging";
-import { mainProcessPerformance } from "./observability/performance";
 import type { PersistenceGateway } from "./persistence/service";
 import {
     createProjectInvalidationCoordinator,
@@ -228,8 +227,6 @@ if (!hasSingleInstanceLock) {
     void app
         .whenReady()
         .then(async () => {
-        mainProcessPerformance.markAppWhenReady();
-        mainProcessPerformance.startEventLoopMonitor();
             installFilePreviewProtocol();
             await startNativeBackendRequired();
             const databaseFile = path.join(
@@ -524,9 +521,6 @@ async function shutdownApplication(): Promise<void> {
     for (const windowId of [...aiSessionStreamPorts.keys()]) {
         detachAiSessionStream(windowId);
     }
-
-    mainProcessPerformance.flush();
-    mainProcessPerformance.stop();
 
     aiService?.close();
 
@@ -910,7 +904,6 @@ function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
     const context = snapshot.windowContext;
 
     window.webContents.once("did-finish-load", () => {
-        mainProcessPerformance.markFirstMainWindowReady();
         void requestNativeBackendTestEventOnce();
     });
     window.webContents.on("did-finish-load", () => {
@@ -1221,20 +1214,9 @@ function focusExistingWindow(window: BrowserWindow): void {
 function broadcastProjectTreeInvalidation(
     payload: ProjectTreeInvalidation,
 ): void {
-    const tracingEnabled = mainProcessPerformance.isEnabled();
-    let surfaceCount = 0;
     windowRegistry.forEachLiveWebContents((webContents) => {
-        if (tracingEnabled) {
-            surfaceCount += 1;
-        }
         webContents.send(IPC_EVENTS.projectTreeInvalidated, payload);
     });
-    if (tracingEnabled) {
-        mainProcessPerformance.record("ipc.project-tree.broadcast", {
-            projectId: payload.projectId,
-            surfaceCount,
-        });
-    }
 }
 
 function broadcastProjectGitInvalidation(
@@ -1287,21 +1269,9 @@ function clearLegacyGitCacheIfAny(rootPath: string): void {
 function broadcastGitRepositoryInvalidated(
     payload: GitRepositoryInvalidation,
 ): void {
-    const tracingEnabled = mainProcessPerformance.isEnabled();
-    let surfaceCount = 0;
     windowRegistry.forEachLiveWebContents((webContents) => {
-        if (tracingEnabled) {
-            surfaceCount += 1;
-        }
         webContents.send(IPC_EVENTS.gitRepositoryInvalidated, payload);
     });
-    if (tracingEnabled) {
-        mainProcessPerformance.record("ipc.git-invalidation.broadcast", {
-            projectId: payload.projectId,
-            reason: payload.reason,
-            surfaceCount,
-        });
-    }
 }
 
 export function broadcastGitRepositorySnapshotUpdated(
@@ -1329,12 +1299,6 @@ function broadcastNativeBackendEvent(event: NativeBackendEvent): void {
             const invalidation = nativeProjectTreeInvalidationToIpc(
                 event.payload as NativeProjectTreeInvalidation,
             );
-            if (mainProcessPerformance.isEnabled()) {
-                mainProcessPerformance.record("project.invalidation.source", {
-                    projectId: invalidation.projectId,
-                    eventName: event.eventName,
-                });
-            }
             projectInvalidationCoordinator?.enqueue(invalidation);
         } catch (error) {
             debugBenignError("nativeBackend.projectTreeInvalidation", error);
@@ -1381,37 +1345,23 @@ function broadcastAiSessionSnapshot(
     ownerWindowId: string,
     payload: AiSessionUpdate,
 ): void {
-    const tracingEnabled = mainProcessPerformance.isEnabled();
-    let surfaceCount = 0;
-
     if (!ownerWindowId) {
         windowRegistry.forEachLiveWebContents((webContents) => {
-            if (tracingEnabled) {
-                surfaceCount += 1;
-            }
             dispatchAiSessionSnapshot(webContents, payload);
         });
-        mainProcessPerformance.recordAiSessionUpdate(payload, surfaceCount);
         return;
     }
 
     const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
     if (targetContents) {
-        if (tracingEnabled) {
-            surfaceCount += 1;
-        }
         dispatchAiSessionSnapshot(targetContents, payload, ownerWindowId);
     }
     const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
         ownerWindowId,
     );
     if (hostContents && hostContents !== targetContents) {
-        if (tracingEnabled) {
-            surfaceCount += 1;
-        }
         dispatchAiSessionSnapshot(hostContents, payload, ownerWindowId, false);
     }
-    mainProcessPerformance.recordAiSessionUpdate(payload, surfaceCount);
 }
 
 function broadcastAiSessionEvent(
