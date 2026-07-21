@@ -6,8 +6,8 @@ use std::time::Instant;
 use comando_ai::AiEngine;
 use comando_ai::events::{
     AI_ERROR_EVENT, AI_RUNTIME_STATUS_EVENT, AI_SESSION_CLOSED_EVENT, AI_SESSION_CREATED_EVENT,
-    AI_SESSION_UPDATED_EVENT, AiRuntimeEvent, session_closed, session_created,
-    session_status_updated, session_updated,
+    AI_SESSION_UPDATED_EVENT, AI_TOOL_ACTIVITY_EVENT, AiRuntimeEvent, session_closed,
+    session_created, session_status_updated, session_updated,
 };
 use comando_ai::history::{
     AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
@@ -46,7 +46,7 @@ use comando_types::commands::{
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
-use comando_types::ids::{RequestId, RuntimeId, WindowId};
+use comando_types::ids::{RequestId, RuntimeId, SessionId, WindowId};
 use comando_types::persistence::{
     NativePersistenceMode, NativePersistenceOpenStoreInput, NativePersistenceSnapshot,
 };
@@ -2304,21 +2304,26 @@ impl NativeBackend {
                     Ok(input) => input,
                     Err(error) => return error_only(request.id, error),
                 };
+                let session_id = input.session_id.clone();
                 match self.ai_engine.close_session(input) {
-                    Ok((output, summary)) => CommandResult {
-                        outputs: vec![
-                            response_ok(
-                                request.id,
-                                serde_json::to_value(output).expect("ai close output serializes"),
-                            ),
-                            event(
-                                AI_SESSION_CLOSED_EVENT,
-                                serde_json::to_value(session_closed(&summary))
-                                    .expect("ai session closed event serializes"),
-                            ),
-                        ],
-                        should_shutdown: false,
-                    },
+                    Ok((output, summary)) => {
+                        self.review_service.close_session(&session_id);
+                        CommandResult {
+                            outputs: vec![
+                                response_ok(
+                                    request.id,
+                                    serde_json::to_value(output)
+                                        .expect("ai close output serializes"),
+                                ),
+                                event(
+                                    AI_SESSION_CLOSED_EVENT,
+                                    serde_json::to_value(session_closed(&summary))
+                                        .expect("ai session closed event serializes"),
+                                ),
+                            ],
+                            should_shutdown: false,
+                        }
+                    }
                     Err(error) => error_only(request.id, error.to_native_error()),
                 }
             }
@@ -3065,8 +3070,24 @@ impl NativeBackend {
             .map_err(|error| error.to_native_error())?;
         let ai_engine = self.ai_engine.clone();
         let runtime_setup_store = Arc::clone(&self.runtime_setup_store_shared);
+        let review_worker = self.review_service.worker_handle();
         thread::spawn(move || {
             for ai_event in event_receiver {
+                if ai_event.event_name == AI_TOOL_ACTIVITY_EVENT {
+                    if let Ok(activity) = serde_json::from_value::<
+                        native_ai::NativeAiToolActivityPayload,
+                    >(ai_event.payload.clone())
+                    {
+                        review_worker.enqueue_tool_activity(activity);
+                    }
+                }
+                if ai_event.event_name == AI_SESSION_CLOSED_EVENT {
+                    if let Some(session_id) =
+                        ai_event.payload.get("sessionId").and_then(Value::as_str)
+                    {
+                        review_worker.cancel_session(&SessionId(session_id.into()));
+                    }
+                }
                 let history_started_at = Instant::now();
                 if let Err(error) = ai_engine.record_history_event(&ai_event) {
                     eprintln!(
@@ -3723,6 +3744,19 @@ impl NativeBackend {
             },
         );
         outputs
+    }
+
+    pub(crate) fn drain_review_events(&mut self) -> Vec<RpcOutput> {
+        self.review_service
+            .drain_worker_events()
+            .into_iter()
+            .map(|payload| {
+                event(
+                    comando_types::events::AI_REVIEW_DELTA_READY_EVENT,
+                    serde_json::to_value(payload).expect("review delta event serializes"),
+                )
+            })
+            .collect()
     }
 
     #[cfg(test)]

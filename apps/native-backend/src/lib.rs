@@ -58,6 +58,7 @@ where
                     &background_receiver,
                     BACKGROUND_DRAIN_OUTPUT_LIMIT,
                 )?;
+                write_outputs(&mut writer, backend.drain_review_events())?;
                 write_outputs(&mut writer, backend.drain_fs_events(false))?;
                 continue;
             }
@@ -71,6 +72,7 @@ where
             } => (result?, received_at),
             InputMessage::Eof => {
                 write_background_outputs(&mut writer, &background_receiver, usize::MAX)?;
+                write_outputs(&mut writer, backend.drain_review_events())?;
                 write_outputs(&mut writer, backend.drain_fs_events(true))?;
                 performance::flush_to_diagnostics();
                 break;
@@ -121,6 +123,7 @@ where
             &background_receiver,
             BACKGROUND_DRAIN_OUTPUT_LIMIT,
         )?;
+        write_outputs(&mut writer, backend.drain_review_events())?;
 
         if command_result.should_shutdown {
             performance::flush_to_diagnostics();

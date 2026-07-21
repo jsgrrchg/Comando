@@ -1,18 +1,21 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 
 use comando_ai::session::NativeAiSession;
 use comando_diff::{
-    ReviewDecision, ReviewTrackedFile, ReviewTrackedFileKind, resolve_tracked_file_hunks,
-    sync_tracked_file, tracked_current_text,
+    ReviewDecision, ReviewTrackedFile, ReviewTrackedFileKind, compute_tracked_file_patch,
+    resolve_tracked_file_hunks, sync_tracked_file, tracked_current_text,
 };
 use comando_fs::WriteTracker;
 use comando_fs::path::{ScopedPathIntent, normalize_relative_path, resolve_scoped_path};
 use comando_fs::read::hash_content_bytes;
 use comando_types::ai::{
+    NativeAiEventBase, NativeAiReviewDeltaReadyPayload, NativeAiToolActivityPayload,
     NativeReviewDeltaReference, NativeReviewDeltaState, NativeReviewDeltaSummary,
-    NativeReviewLoadDeltaInput, NativeReviewLoadDeltaOutput,
+    NativeReviewFileSummary, NativeReviewLoadDeltaInput, NativeReviewLoadDeltaOutput,
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::ids::{ReviewDeltaId, ReviewRevision, SessionId, ToolCallId};
@@ -20,12 +23,437 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const MAX_REVIEW_TEXT_BYTES: u64 = 5 * 1024 * 1024;
+const REVIEW_WORKER_QUEUE_CAPACITY: usize = 64;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct NativeReviewService {
     baseline_counter: u64,
     open_buffers: HashMap<PathBuf, ReviewBuffer>,
     work_states: HashMap<SessionId, HashMap<String, ReviewWorkState>>,
+    worker: NativeReviewWorker,
+}
+
+impl Default for NativeReviewService {
+    fn default() -> Self {
+        Self {
+            baseline_counter: 0,
+            open_buffers: HashMap::new(),
+            work_states: HashMap::new(),
+            worker: NativeReviewWorker::new(),
+        }
+    }
+}
+
+impl NativeReviewWorker {
+    fn new() -> Self {
+        let (sender, receiver) = mpsc::sync_channel(REVIEW_WORKER_QUEUE_CAPACITY);
+        let (result_sender, results) = mpsc::channel();
+        let registry = Arc::new(Mutex::new(ReviewWorkerRegistry::default()));
+        let worker_registry = Arc::clone(&registry);
+        let thread = thread::spawn(move || {
+            while let Ok(command) = receiver.recv() {
+                match command {
+                    NativeReviewWorkerCommand::Materialize(task) => {
+                        if !review_worker_task_is_current(&worker_registry, &task) {
+                            continue;
+                        }
+                        let Some(result) = materialize_review_worker_task(&worker_registry, task)
+                        else {
+                            continue;
+                        };
+                        if result_sender.send(result).is_err() {
+                            break;
+                        }
+                    }
+                    NativeReviewWorkerCommand::Shutdown => break,
+                }
+            }
+        });
+        Self {
+            handle: NativeReviewWorkerHandle { registry, sender },
+            results,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for NativeReviewWorker {
+    fn drop(&mut self) {
+        self.handle.cancel_all();
+        let _ = self.handle.sender.send(NativeReviewWorkerCommand::Shutdown);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl NativeReviewWorkerHandle {
+    pub fn enqueue_tool_activity(&self, payload: NativeAiToolActivityPayload) {
+        if !is_terminal_review_activity(&payload) {
+            return;
+        }
+        let diffs = payload
+            .diffs
+            .into_iter()
+            .filter_map(|diff| serde_json::from_value::<NativeReviewRuntimeDiff>(diff).ok())
+            .collect::<Vec<_>>();
+        if diffs.is_empty() {
+            return;
+        }
+        let tool_call_id = payload.tool_call_id.clone();
+
+        let mut registry = self.registry.lock().expect("review worker registry lock");
+        let Some(session) = registry.sessions.get_mut(&payload.base.session_id) else {
+            return;
+        };
+        let Some(work_cycle_id) = session.current_work_cycle_id.clone() else {
+            return;
+        };
+        let Some(cycle) = session.cycles.get_mut(&work_cycle_id) else {
+            return;
+        };
+        cycle.next_revision = cycle.next_revision.saturating_add(1);
+        let input_revision = ReviewRevision(cycle.next_revision);
+        for diff in &diffs {
+            cycle
+                .latest_tool_by_path
+                .insert(diff.path.clone(), tool_call_id.clone());
+        }
+        let task = NativeReviewWorkerTask {
+            base: payload.base,
+            diffs,
+            epoch: cycle.epoch,
+            input_revision,
+            tool_call_id,
+            work_cycle_id,
+        };
+        drop(registry);
+
+        // A full queue is intentionally lossy: a newer tool event supersedes this work.
+        let _ = self
+            .sender
+            .try_send(NativeReviewWorkerCommand::Materialize(task));
+    }
+
+    fn register_baseline(
+        &self,
+        session_id: SessionId,
+        work_cycle_id: String,
+        context: ReviewBaselineContext,
+    ) {
+        let mut registry = self.registry.lock().expect("review worker registry lock");
+        let session = registry.sessions.entry(session_id).or_default();
+        session.current_work_cycle_id = Some(work_cycle_id.clone());
+        session.cycles.insert(
+            work_cycle_id,
+            ReviewWorkerCycle {
+                epoch: 0,
+                latest_tool_by_path: HashMap::new(),
+                next_revision: context.revision.0,
+                context,
+            },
+        );
+    }
+
+    fn update_buffer(&self, path: &Path, buffer: Option<ReviewBuffer>) {
+        let mut registry = self.registry.lock().expect("review worker registry lock");
+        for session in registry.sessions.values_mut() {
+            for cycle in session.cycles.values_mut() {
+                if let Some(buffer) = buffer.as_ref() {
+                    cycle
+                        .context
+                        .observed_buffers
+                        .insert(path.to_path_buf(), buffer.clone());
+                } else {
+                    cycle.context.observed_buffers.remove(path);
+                }
+            }
+        }
+    }
+
+    fn prioritize_session(&self, session_id: &SessionId) {
+        let mut registry = self.registry.lock().expect("review worker registry lock");
+        let Some(session) = registry.sessions.get_mut(session_id) else {
+            return;
+        };
+        for cycle in session.cycles.values_mut() {
+            cycle.epoch = cycle.epoch.saturating_add(1);
+            cycle.latest_tool_by_path.clear();
+        }
+    }
+
+    pub fn cancel_session(&self, session_id: &SessionId) {
+        self.registry
+            .lock()
+            .expect("review worker registry lock")
+            .sessions
+            .remove(session_id);
+    }
+
+    fn cancel_all(&self) {
+        self.registry
+            .lock()
+            .expect("review worker registry lock")
+            .sessions
+            .clear();
+    }
+
+    fn result_is_current(&self, result: &NativeReviewWorkerResult) -> bool {
+        let registry = self.registry.lock().expect("review worker registry lock");
+        registry
+            .sessions
+            .get(&result.delta.session_id)
+            .and_then(|session| session.cycles.get(&result.delta.work_cycle_id))
+            .is_some_and(|cycle| cycle.epoch == result.epoch)
+    }
+}
+
+fn is_terminal_review_activity(payload: &NativeAiToolActivityPayload) -> bool {
+    matches!(payload.status.as_str(), "completed" | "failed") && !payload.diffs.is_empty()
+}
+
+fn review_worker_task_is_current(
+    registry: &Arc<Mutex<ReviewWorkerRegistry>>,
+    task: &NativeReviewWorkerTask,
+) -> bool {
+    let registry = registry.lock().expect("review worker registry lock");
+    let Some(cycle) = registry
+        .sessions
+        .get(&task.base.session_id)
+        .and_then(|session| session.cycles.get(&task.work_cycle_id))
+    else {
+        return false;
+    };
+    cycle.epoch == task.epoch
+        && task
+            .diffs
+            .iter()
+            .all(|diff| cycle.latest_tool_by_path.get(&diff.path) == Some(&task.tool_call_id))
+}
+
+fn materialize_review_worker_task(
+    registry: &Arc<Mutex<ReviewWorkerRegistry>>,
+    task: NativeReviewWorkerTask,
+) -> Option<NativeReviewWorkerResult> {
+    let context = {
+        let registry = registry.lock().expect("review worker registry lock");
+        registry
+            .sessions
+            .get(&task.base.session_id)
+            .and_then(|session| session.cycles.get(&task.work_cycle_id))
+            .filter(|cycle| cycle.epoch == task.epoch)
+            .map(|cycle| cycle.context.clone())?
+    };
+    let updated_at = now();
+    let files = task
+        .diffs
+        .iter()
+        .map(|diff| materialize_review_file(&context, diff, &task.base.session_id, &updated_at))
+        .collect::<Vec<_>>();
+    let state = if files
+        .iter()
+        .all(|file| file.state == NativeReviewDeltaState::Ready)
+    {
+        NativeReviewDeltaState::Ready
+    } else {
+        NativeReviewDeltaState::Partial
+    };
+    let delta = NativeReviewDeltaSummary {
+        delta_id: ReviewDeltaId(format!(
+            "review:{}:{}:{}:{}",
+            task.base.session_id.0, task.work_cycle_id, task.tool_call_id.0, task.input_revision.0
+        )),
+        session_id: task.base.session_id.clone(),
+        work_cycle_id: task.work_cycle_id.clone(),
+        tool_call_id: task.tool_call_id.clone(),
+        input_revision: task.input_revision,
+        revision: task.input_revision,
+        state,
+        files,
+        updated_at,
+    };
+    if !review_worker_task_is_current(registry, &task) {
+        return None;
+    }
+    Some(NativeReviewWorkerResult {
+        base: task.base,
+        delta,
+        epoch: task.epoch,
+    })
+}
+
+fn materialize_review_file(
+    context: &ReviewBaselineContext,
+    diff: &NativeReviewRuntimeDiff,
+    session_id: &SessionId,
+    updated_at: &str,
+) -> NativeReviewFileSummary {
+    if diff.old_text.is_none() && diff.new_text.is_none() {
+        return unavailable_review_file(diff);
+    }
+    if diff
+        .new_text
+        .as_ref()
+        .is_some_and(|text| text.len() as u64 > MAX_REVIEW_TEXT_BYTES)
+        || diff
+            .old_text
+            .as_ref()
+            .is_some_and(|text| text.len() as u64 > MAX_REVIEW_TEXT_BYTES)
+    {
+        return unavailable_review_file(diff);
+    }
+    let observed = match read_worker_current_text(context, &diff.path) {
+        Ok(observed) => observed,
+        Err(()) => return unavailable_review_file(diff),
+    };
+    let observed_hash = observed
+        .as_ref()
+        .map(|text| hash_content_bytes(text.as_bytes()));
+    let state = if observed.as_ref().is_some_and(|text| {
+        diff.new_text.as_deref() != Some(text) && diff.old_text.as_deref() != Some(text)
+    }) {
+        NativeReviewDeltaState::Partial
+    } else {
+        NativeReviewDeltaState::Ready
+    };
+    // Computing the patch here keeps hunk generation off the control plane.
+    let _ = compute_tracked_file_patch(
+        &session_id.0,
+        &diff.path,
+        diff.previous_path.clone(),
+        diff.old_text.clone(),
+        diff.new_text.clone(),
+        updated_at.to_string(),
+    );
+    NativeReviewFileSummary {
+        path: diff.path.clone(),
+        previous_path: diff.previous_path.clone(),
+        state,
+        observed_hash,
+    }
+}
+
+fn unavailable_review_file(diff: &NativeReviewRuntimeDiff) -> NativeReviewFileSummary {
+    NativeReviewFileSummary {
+        path: diff.path.clone(),
+        previous_path: diff.previous_path.clone(),
+        state: NativeReviewDeltaState::Unavailable,
+        observed_hash: None,
+    }
+}
+
+fn read_worker_current_text(
+    context: &ReviewBaselineContext,
+    review_path: &str,
+) -> Result<Option<String>, ()> {
+    let resolved = resolve_worker_review_path(context, review_path).ok_or(())?;
+    if let Some(buffer) = context.observed_buffers.get(&resolved) {
+        return Ok(Some(buffer.content.clone()));
+    }
+    let metadata = match fs::metadata(&resolved) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    if metadata.len() > MAX_REVIEW_TEXT_BYTES {
+        return Err(());
+    }
+    let bytes = fs::read(resolved).map_err(|_| ())?;
+    String::from_utf8(bytes).map(Some).map_err(|_| ())
+}
+
+fn resolve_worker_review_path(
+    context: &ReviewBaselineContext,
+    review_path: &str,
+) -> Option<PathBuf> {
+    let candidate = PathBuf::from(review_path);
+    if candidate.is_absolute() {
+        if candidate
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+        {
+            return None;
+        }
+        let mut roots = std::iter::once(PathBuf::from(&context.cwd))
+            .chain(context.additional_roots.iter().map(PathBuf::from));
+        return roots
+            .any(|root| candidate.starts_with(root))
+            .then_some(candidate);
+    }
+    if candidate
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(Path::new(&context.cwd).join(candidate))
+}
+
+#[derive(Debug)]
+struct NativeReviewWorker {
+    handle: NativeReviewWorkerHandle,
+    results: mpsc::Receiver<NativeReviewWorkerResult>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeReviewWorkerHandle {
+    registry: Arc<Mutex<ReviewWorkerRegistry>>,
+    sender: mpsc::SyncSender<NativeReviewWorkerCommand>,
+}
+
+#[derive(Debug, Default)]
+struct ReviewWorkerRegistry {
+    sessions: HashMap<SessionId, ReviewWorkerSession>,
+}
+
+#[derive(Debug, Default)]
+struct ReviewWorkerSession {
+    cycles: HashMap<String, ReviewWorkerCycle>,
+    current_work_cycle_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ReviewWorkerCycle {
+    context: ReviewBaselineContext,
+    epoch: u64,
+    latest_tool_by_path: HashMap<String, ToolCallId>,
+    next_revision: u64,
+}
+
+#[derive(Debug)]
+enum NativeReviewWorkerCommand {
+    Materialize(NativeReviewWorkerTask),
+    Shutdown,
+}
+
+#[derive(Debug, Clone)]
+struct NativeReviewWorkerTask {
+    base: NativeAiEventBase,
+    diffs: Vec<NativeReviewRuntimeDiff>,
+    epoch: u64,
+    input_revision: ReviewRevision,
+    tool_call_id: ToolCallId,
+    work_cycle_id: String,
+}
+
+#[derive(Debug)]
+struct NativeReviewWorkerResult {
+    base: NativeAiEventBase,
+    delta: NativeReviewDeltaSummary,
+    epoch: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeReviewRuntimeDiff {
+    path: String,
+    #[serde(default)]
+    previous_path: Option<String>,
+    #[serde(default)]
+    old_text: Option<String>,
+    #[serde(default)]
+    new_text: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +579,39 @@ struct RollbackBackup {
 impl NativeReviewService {
     pub fn set_app_data_dir(&mut self, _app_data_dir: impl Into<PathBuf>) {}
 
+    pub fn worker_handle(&self) -> NativeReviewWorkerHandle {
+        self.worker.handle.clone()
+    }
+
+    pub fn drain_worker_events(&mut self) -> Vec<NativeAiReviewDeltaReadyPayload> {
+        let mut events = Vec::new();
+        for result in self.worker.results.try_iter() {
+            if !self.worker.handle.result_is_current(&result) {
+                continue;
+            }
+            let Some(state) = self
+                .work_states
+                .get_mut(&result.delta.session_id)
+                .and_then(|cycles| cycles.get_mut(&result.delta.work_cycle_id))
+            else {
+                continue;
+            };
+            state
+                .deltas
+                .insert(result.delta.delta_id.clone(), result.delta.clone());
+            events.push(NativeAiReviewDeltaReadyPayload {
+                base: result.base,
+                delta: result.delta,
+            });
+        }
+        events
+    }
+
+    pub fn close_session(&mut self, session_id: &SessionId) {
+        self.work_states.remove(session_id);
+        self.worker.handle.cancel_session(session_id);
+    }
+
     pub fn notify_file_buffer(&mut self, input: NativeReviewFileBufferInput) {
         let path = PathBuf::from(input.absolute_path);
         if let Some(content) = input.content {
@@ -160,15 +621,19 @@ impl NativeReviewService {
                 .map(|buffer| ReviewRevision(buffer.revision.0 + 1))
                 .unwrap_or(ReviewRevision(1));
             self.open_buffers.insert(
-                path,
+                path.clone(),
                 ReviewBuffer {
                     content_hash: hash_content_bytes(content.as_bytes()),
                     content,
                     revision,
                 },
             );
+            self.worker
+                .handle
+                .update_buffer(&path, self.open_buffers.get(&path).cloned());
         } else {
             self.open_buffers.remove(&path);
+            self.worker.handle.update_buffer(&path, None);
         }
     }
 
@@ -218,7 +683,7 @@ impl NativeReviewService {
             revision,
         };
         let work_state = ReviewWorkState {
-            context,
+            context: context.clone(),
             decisions: HashMap::new(),
             deltas,
         };
@@ -226,6 +691,11 @@ impl NativeReviewService {
             .entry(session.session_id.clone())
             .or_default()
             .insert(work_cycle_id.clone(), work_state);
+        self.worker.handle.register_baseline(
+            session.session_id.clone(),
+            work_cycle_id.clone(),
+            context,
+        );
         Ok(NativeReviewCaptureOutput {
             captured: true,
             session_id: session.session_id.clone(),
@@ -295,6 +765,7 @@ impl NativeReviewService {
         input: NativeReviewFileMutationInput,
         write_tracker: &WriteTracker,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
+        self.worker.handle.prioritize_session(&input.session_id);
         if let Some(reference) = input.reference.as_ref() {
             self.record_decision(reference)?;
         }
@@ -325,6 +796,7 @@ impl NativeReviewService {
         input: NativeReviewHunkMutationInput,
         write_tracker: &WriteTracker,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
+        self.worker.handle.prioritize_session(&input.session_id);
         if let Some(reference) = input.reference.as_ref() {
             self.record_decision(reference)?;
         }
@@ -387,6 +859,7 @@ impl NativeReviewService {
         input: NativeReviewRejectAllInput,
         write_tracker: &WriteTracker,
     ) -> Result<NativeReviewCommandOutput, NativeError> {
+        self.worker.handle.prioritize_session(&input.session_id);
         if let Some(reference) = input.reference.as_ref() {
             self.record_decision(reference)?;
         }
@@ -1107,6 +1580,8 @@ fn now() -> String {
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::thread;
+    use std::time::Duration;
 
     use comando_ai::scope::SessionScope;
     use comando_ai::session::NativeAiSession;
@@ -1116,6 +1591,147 @@ mod tests {
     use comando_types::ids::{RuntimeId, SessionId};
 
     use super::*;
+
+    #[test]
+    fn worker_materializes_terminal_tool_diffs_from_the_versioned_buffer() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let path = repo.path().join("a.txt");
+        fs::write(&path, "disk before\n").expect("write disk");
+        let session = test_session(repo.path(), "s-worker-buffer");
+        let mut service = NativeReviewService::default();
+        service.notify_file_buffer(NativeReviewFileBufferInput {
+            absolute_path: path.to_string_lossy().to_string(),
+            content: Some("editor after\n".into()),
+        });
+        capture_worker_baseline(&mut service, &session, "cycle-1");
+
+        service.worker_handle().enqueue_tool_activity(tool_activity(
+            &session,
+            "tool-1",
+            vec![serde_json::json!({
+                "path": "a.txt",
+                "oldText": "before\n",
+                "newText": "editor after\n"
+            })],
+        ));
+
+        let events = wait_for_worker_events(&mut service);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].delta.state, NativeReviewDeltaState::Ready);
+        assert_eq!(
+            events[0].delta.files[0].observed_hash.as_deref(),
+            Some(hash_content_bytes(b"editor after\n").as_str())
+        );
+    }
+
+    #[test]
+    fn worker_marks_large_diffs_unavailable_without_reading_them() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        let session = test_session(repo.path(), "s-worker-large");
+        let mut service = NativeReviewService::default();
+        capture_worker_baseline(&mut service, &session, "cycle-1");
+
+        service.worker_handle().enqueue_tool_activity(tool_activity(
+            &session,
+            "tool-large",
+            vec![serde_json::json!({
+                "path": "large.txt",
+                "oldText": "before",
+                "newText": "x".repeat((MAX_REVIEW_TEXT_BYTES + 1) as usize)
+            })],
+        ));
+
+        let events = wait_for_worker_events(&mut service);
+        assert_eq!(events[0].delta.state, NativeReviewDeltaState::Partial);
+        assert_eq!(
+            events[0].delta.files[0].state,
+            NativeReviewDeltaState::Unavailable
+        );
+    }
+
+    #[test]
+    fn worker_materializes_create_delete_move_and_partial_files_as_one_delta() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join("delete.txt"), "before\n").expect("write delete");
+        fs::write(repo.path().join("moved.txt"), "after\n").expect("write move");
+        fs::write(repo.path().join("partial.txt"), "user edit\n").expect("write partial");
+        let session = test_session(repo.path(), "s-worker-kinds");
+        let mut service = NativeReviewService::default();
+        capture_worker_baseline(&mut service, &session, "cycle-1");
+
+        service.worker_handle().enqueue_tool_activity(tool_activity(
+            &session,
+            "tool-kinds",
+            vec![
+                serde_json::json!({
+                    "path": "create.txt",
+                    "oldText": null,
+                    "newText": "created\n"
+                }),
+                serde_json::json!({
+                    "path": "delete.txt",
+                    "oldText": "before\n",
+                    "newText": null
+                }),
+                serde_json::json!({
+                    "path": "moved.txt",
+                    "previousPath": "old.txt",
+                    "oldText": "before\n",
+                    "newText": "after\n"
+                }),
+                serde_json::json!({
+                    "path": "partial.txt",
+                    "oldText": "before\n",
+                    "newText": "after\n"
+                }),
+            ],
+        ));
+
+        let events = wait_for_worker_events(&mut service);
+        assert_eq!(events[0].delta.files.len(), 4);
+        assert_eq!(events[0].delta.state, NativeReviewDeltaState::Partial);
+        assert_eq!(
+            events[0].delta.files[0].state,
+            NativeReviewDeltaState::Ready
+        );
+        assert_eq!(
+            events[0].delta.files[1].state,
+            NativeReviewDeltaState::Ready
+        );
+        assert_eq!(
+            events[0].delta.files[2].state,
+            NativeReviewDeltaState::Ready
+        );
+        assert_eq!(
+            events[0].delta.files[3].state,
+            NativeReviewDeltaState::Partial
+        );
+    }
+
+    #[test]
+    fn worker_marks_binary_working_tree_files_unavailable() {
+        let repo = tempfile::tempdir().expect("tempdir");
+        fs::write(repo.path().join("binary.bin"), [0xff, 0x00]).expect("write binary");
+        let session = test_session(repo.path(), "s-worker-binary");
+        let mut service = NativeReviewService::default();
+        capture_worker_baseline(&mut service, &session, "cycle-1");
+
+        service.worker_handle().enqueue_tool_activity(tool_activity(
+            &session,
+            "tool-binary",
+            vec![serde_json::json!({
+                "path": "binary.bin",
+                "oldText": "before",
+                "newText": "after"
+            })],
+        ));
+
+        let events = wait_for_worker_events(&mut service);
+        assert_eq!(
+            events[0].delta.files[0].state,
+            NativeReviewDeltaState::Unavailable
+        );
+    }
 
     #[test]
     fn capture_baseline_records_context_and_an_unavailable_delta() {
@@ -1427,6 +2043,62 @@ mod tests {
             title: "Test".to_string(),
             updated_at: now(),
         }
+    }
+
+    fn capture_worker_baseline(
+        service: &mut NativeReviewService,
+        session: &NativeAiSession,
+        work_cycle_id: &str,
+    ) {
+        service
+            .capture_baseline(
+                session,
+                NativeReviewSessionInput {
+                    session_id: session.session_id.clone(),
+                    work_cycle_id: Some(work_cycle_id.into()),
+                    input_revision: Some(ReviewRevision(1)),
+                    tool_call_id: Some(ToolCallId("baseline".into())),
+                },
+            )
+            .expect("capture worker baseline");
+    }
+
+    fn tool_activity(
+        session: &NativeAiSession,
+        tool_call_id: &str,
+        diffs: Vec<serde_json::Value>,
+    ) -> NativeAiToolActivityPayload {
+        NativeAiToolActivityPayload {
+            base: NativeAiEventBase {
+                runtime_id: session.runtime_id.clone(),
+                runtime_session_id: session.runtime_session_id.clone(),
+                session_id: session.session_id.clone(),
+                updated_at: now(),
+            },
+            diffs,
+            exit_code: Some(0),
+            kind: "edit".into(),
+            raw_input: None,
+            raw_output: None,
+            status: "completed".into(),
+            summary: None,
+            terminal_output: None,
+            title: "Edit file".into(),
+            tool_call_id: ToolCallId(tool_call_id.into()),
+        }
+    }
+
+    fn wait_for_worker_events(
+        service: &mut NativeReviewService,
+    ) -> Vec<NativeAiReviewDeltaReadyPayload> {
+        for _ in 0..100 {
+            let events = service.drain_worker_events();
+            if !events.is_empty() {
+                return events;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        panic!("review worker did not produce an event");
     }
 
     fn tracked_file(
