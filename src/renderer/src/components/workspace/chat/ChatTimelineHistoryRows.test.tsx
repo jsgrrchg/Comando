@@ -58,6 +58,29 @@ const virtualListMockOptions = vi.hoisted(() => ({
 let rectWidthsByElement = new WeakMap<Element, number>();
 let rectWidthFallback = 0;
 
+function installMemoryStorage(): Storage {
+    const values = new Map<string, string>();
+    const storage = {
+        clear: () => values.clear(),
+        getItem: (key: string) => values.get(key) ?? null,
+        key: (index: number) => Array.from(values.keys())[index] ?? null,
+        get length() {
+            return values.size;
+        },
+        removeItem: (key: string) => values.delete(key),
+        setItem: (key: string, value: string) => values.set(key, value),
+    } as Storage;
+    Object.defineProperty(window, "localStorage", {
+        configurable: true,
+        value: storage,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: storage,
+    });
+    return storage;
+}
+
 vi.mock("@renderer/components/virtual/MeasuredVirtualList", async () => {
     const { createElement, useEffect } =
         await vi.importActual<typeof import("react")>("react");
@@ -580,7 +603,7 @@ describe("ChatTimelineHistoryRows", () => {
         remountedRoot.unmount();
     });
     beforeEach(() => {
-        window.localStorage.clear();
+        installMemoryStorage().clear();
         (
             globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }
         ).IS_REACT_ACT_ENVIRONMENT = true;
