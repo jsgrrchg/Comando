@@ -832,6 +832,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         return tab.id;
     },
 
+    /**
+     * Opens the workspace's single chat tab for a session.
+     *
+     * A session may exist in only one chat tab across the workspace. Reopening it
+     * focuses that tab or moves it to the requested target instead of duplicating
+     * the session surface.
+     */
     openChatSessionTab: async (input) => {
         const existingTab = findExistingChatTabBySessionId(
             get(),
@@ -4203,6 +4210,7 @@ function findExistingReviewTab(
     );
 }
 
+// Chat sessions are workspace singletons: one session maps to one chat tab.
 function findExistingChatTabBySessionId(
     state: WorkspaceTreeState,
     sessionId: string,

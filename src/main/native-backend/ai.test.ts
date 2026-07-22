@@ -1104,6 +1104,67 @@ describe("NativeAiGateway", () => {
         });
     });
 
+    it("validates native review mutations against the loaded delta", async () => {
+        const client = createClient();
+        const gateway = createGateway(client);
+        const trackedFile = createIpcTrackedFile({
+            nativeReviewDeltaId: "delta-1",
+            path: "src/main.rs",
+            version: 5,
+        });
+        const delta = {
+            deltaId: "delta-1",
+            files: [
+                {
+                    observedHash: "hash-1",
+                    path: "src/main.rs",
+                    state: "ready" as const,
+                },
+            ],
+            inputRevision: 4,
+            revision: 5,
+            sessionId: "session-1",
+            state: "ready" as const,
+            toolCallId: "tool-1",
+            updatedAt: "2026-04-14T00:00:00.000Z",
+            workCycleId: "cycle-1",
+        };
+        const snapshot = createIpcSnapshot({
+            reviewDeltas: [delta],
+            trackedFiles: [trackedFile],
+        });
+
+        await gateway.rejectTrackedFile({
+            context: {
+                additionalRoots: [],
+                cwd: "/workspace/project",
+                ownerWindowId: "window-1",
+                projectRoot: "/workspace/project",
+                snapshot,
+            },
+            input: {
+                path: "src/main.rs",
+                sessionId: "session-1",
+            },
+        });
+
+        expect(client.request).toHaveBeenCalledWith("ai_reject_tracked_file", {
+            expectedVersion: 5,
+            reference: {
+                deltaId: delta.deltaId,
+                expectedRevision: delta.revision,
+                inputRevision: delta.inputRevision,
+                observedHashes: delta.files,
+                sessionId: delta.sessionId,
+                toolCallId: delta.toolCallId,
+                workCycleId: delta.workCycleId,
+            },
+            reviewRoot: "/workspace/project",
+            sessionId: "session-1",
+            trackedFile,
+        });
+    });
+
     it("rejects all tracked files through the stateless native disk executor", async () => {
         const client = createClient();
         const gateway = createGateway(client);

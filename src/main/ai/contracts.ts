@@ -32,6 +32,7 @@ import type {
     AiTranscriptEntryEnvelope,
     AiLoadTranscriptPayloadInput,
     AiLoadTranscriptPayloadsInput,
+    AiLoadToolActivityDetailInput,
     AiTranscriptPayload,
     AiTranscriptPayloadsOutput,
     AiTranscriptStorageState,
@@ -43,6 +44,10 @@ import type {
     PrepareAiSessionInput,
     SendAiPromptInput,
 } from "@shared/ipc";
+import type {
+    NativeReviewDeltaReference,
+    NativeReviewLoadDeltaOutput,
+} from "@shared/native-backend";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -164,6 +169,12 @@ export interface NativeAiGateway {
         parentSessionId: string,
     ): Promise<readonly AiRuntimeSessionMapping[]>;
     loadSessionSnapshot(sessionId: string): Promise<AiSessionSnapshot | null>;
+    loadReviewDelta?(
+        reference: NativeReviewDeltaReference,
+    ): Promise<NativeReviewLoadDeltaOutput>;
+    loadToolActivityDetail?(
+        input: AiLoadToolActivityDetailInput,
+    ): Promise<unknown>;
     loadOpenTranscriptTail?(
         sessionId: string,
     ): Promise<AiOpenTranscriptTail | null>;

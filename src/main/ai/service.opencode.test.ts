@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
     AiRuntimeStatus,
+    AiReviewDeltaSummary,
     AiSessionSnapshot,
     AiSessionUpdate,
     AiTrackedFile,
@@ -45,6 +46,80 @@ afterEach(() => {
 });
 
 describe("AiService OpenCode branch", () => {
+    it("checkpoints hydrated native review deltas for historical sessions", async () => {
+        const saveSessionSnapshot = vi.fn<(snapshot: AiSessionSnapshot) => void>();
+        const delta: AiReviewDeltaSummary = {
+            deltaId: "delta-1",
+            files: [{ path: "src/app.ts", state: "ready" }],
+            inputRevision: 1,
+            revision: 2,
+            sessionId: "session-opencode",
+            state: "ready",
+            toolCallId: "tool-1",
+            updatedAt: "2026-06-20T00:00:01.000Z",
+            workCycleId: "cycle-1",
+        };
+        const nativeAi = createNativeAi({
+            loadReviewDelta: vi.fn(() =>
+                Promise.resolve({
+                    delta,
+                    trackedFiles: [
+                        createTrackedFile({
+                            nativeReviewDeltaId: delta.deltaId,
+                            path: "src/app.ts",
+                            toolCallId: delta.toolCallId,
+                            version: delta.revision,
+                        }),
+                    ],
+                }),
+            ),
+        });
+        const service = createService({
+            nativeAi,
+            persistence: { saveSessionSnapshot },
+        });
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSessionSnapshot(),
+        });
+        saveSessionSnapshot.mockClear();
+
+        service.handleNativeSessionEvent("window-1", {
+            delta,
+            kind: "review-delta",
+            origin: "live",
+            parentSessionId: null,
+            runtimeId: "opencode",
+            runtimeSessionId: "runtime-opencode",
+            sessionId: "session-opencode",
+            updatedAt: delta.updatedAt,
+        });
+
+        expect(saveSessionSnapshot).toHaveBeenCalledWith(
+            expect.objectContaining({ reviewDeltas: [delta] }),
+        );
+        await waitForAssertion(() => {
+            const persisted = saveSessionSnapshot.mock.calls.find(
+                ([snapshot]) =>
+                    snapshot.reviewDeltas?.some(
+                        (candidate) => candidate.deltaId === delta.deltaId,
+                    ) &&
+                    snapshot.reviewActionLog?.trackedFilesByIdentityKey[
+                        "review:session-opencode:src/app.ts"
+                    ] !== undefined,
+            );
+            expect(persisted).toBeDefined();
+            const file =
+                persisted?.[0].reviewActionLog?.trackedFilesByIdentityKey[
+                    "review:session-opencode:src/app.ts"
+                ];
+            expect(file).toMatchObject({
+                currentText: "export const value = 2;\n",
+                diffBase: "export const value = 1;\n",
+            });
+        });
+    });
+
     it("stores OpenCode settings and emits runtime status", async () => {
         let savedSettings: OpenCodeRuntimeSettings | null = null;
         const runtimeStatusEvents: AiRuntimeStatus[] = [];
@@ -3003,7 +3078,9 @@ describe("AiService OpenCode branch", () => {
             );
 
             expect(loadSessionSnapshot).toHaveBeenCalledWith("session-native");
-            expect(persistenceLoadSnapshot).not.toHaveBeenCalled();
+            expect(persistenceLoadSnapshot).toHaveBeenCalledWith(
+                "session-native",
+            );
             expect(
                 prepareSession.mock.calls[0]?.[0].launch.persistedSnapshot
                     .messages,

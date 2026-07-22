@@ -53,6 +53,7 @@
   "ai://user-input-request",
   "ai://token-usage",
   "ai://review-updated",
+  "ai://review-delta-ready",
   "ai://tracked-file-updated",
   "ai://runtime-connection",
   "ai://error",

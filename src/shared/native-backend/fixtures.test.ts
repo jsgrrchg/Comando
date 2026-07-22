@@ -267,6 +267,23 @@ describe("native backend fixtures", () => {
             },
             kind: "tool-activity",
         });
+        expect(aiEvent("ai/event.review_delta_ready.json")).toMatchObject({
+            delta: {
+                deltaId: "delta_1",
+                inputRevision: 3,
+                state: "partial",
+                workCycleId: "cycle_1",
+            },
+            kind: "review-delta",
+        });
+        expect(aiEvent("ai/event.review_delta_preparing.json")).toMatchObject({
+            delta: {
+                deltaId: "delta_preparing_1",
+                files: [{ path: "src/main.ts", state: "preparing" }],
+                state: "preparing",
+            },
+            kind: "review-delta",
+        });
         const terminalActivityEvent = nativeAiEventToIpc({
             eventName: "ai://tool-activity",
             payload: {
@@ -285,6 +302,7 @@ describe("native backend fixtures", () => {
                 status: "completed",
                 summary: "Terminal output available.",
                 title: "Run tests",
+                toolActivityDetailId: "tool-detail:session-1:tool_terminal_fallback",
                 toolCallId: "tool_terminal_fallback",
                 updatedAt: "2026-07-10T00:00:00.000Z",
             },
@@ -297,6 +315,9 @@ describe("native backend fixtures", () => {
             );
             expect(terminalActivityEvent.activity.terminalOutput).toBe(
                 "first line\nsecond line\n",
+            );
+            expect(terminalActivityEvent.activity.toolActivityDetailId).toBe(
+                "tool-detail:session-1:tool_terminal_fallback",
             );
         }
         expect(

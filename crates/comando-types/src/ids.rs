@@ -41,3 +41,8 @@ string_id!(RepositoryId);
 string_id!(OperationId);
 string_id!(FilePath);
 string_id!(RelativePath);
+string_id!(ReviewDeltaId);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ReviewRevision(pub u64);

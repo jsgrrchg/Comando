@@ -13,6 +13,16 @@ export interface BuildAiSessionDomainEventsOptions {
     readonly origin: AiSessionEventOrigin;
 }
 
+export function normalizeAiSessionStatusTitle(
+    title: string | null | undefined,
+): string | null {
+    if (typeof title !== "string") {
+        return null;
+    }
+    const trimmed = title.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+
 type EventBase = Omit<AiSessionDomainEventBase, "kind">;
 
 export function buildAiSessionDomainEvents(

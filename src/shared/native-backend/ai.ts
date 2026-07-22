@@ -9,6 +9,8 @@ import type {
 } from "./ids";
 
 export type NativeAiRuntimeId = NativeRuntimeId;
+export type ReviewDeltaId = string;
+export type ReviewRevision = number;
 export type NativeAiRuntimeSupportState =
     | "legacy_only"
     | "native_ready"
@@ -383,6 +385,14 @@ export type NativeAiTranscriptEntryEnvelope = {
         readonly label: string | null;
         readonly preview: string | null;
         readonly status: string | null;
+        readonly toolActivityDetailId?: string | null;
+        readonly toolChangeStats?: {
+            readonly additions: number;
+            readonly approximate: boolean;
+            readonly deletions: number;
+            readonly fileCount: number;
+        } | null;
+        readonly toolKind?: string | null;
     };
     readonly payloadRef: string | null;
 };
@@ -669,16 +679,28 @@ export type NativeAiThinkingStartedPayload = NativeAiMessageStartedPayload;
 export type NativeAiThinkingCompletedPayload = NativeAiMessageCompletedPayload;
 
 export type NativeAiToolActivityPayload = NativeAiEventBase & {
+    readonly changeStats?: {
+        readonly additions: number;
+        readonly approximate: boolean;
+        readonly deletions: number;
+        readonly fileCount: number;
+    } | null;
     readonly toolCallId: NativeToolCallId;
     readonly title: string;
     readonly kind: string;
     readonly status: string;
     readonly summary: string | null;
+    readonly toolActivityDetailId?: string | null;
     readonly rawInput?: unknown;
     readonly rawOutput?: unknown;
     readonly diffs?: readonly unknown[];
     readonly terminalOutput?: string | null;
     readonly exitCode?: number | null;
+};
+
+export type NativeAiLoadToolActivityDetailInput = {
+    readonly sessionId: NativeSessionId;
+    readonly toolActivityDetailId: string;
 };
 
 export type NativeAiPlanEntryPayload = {
@@ -761,6 +783,9 @@ export type NativeAiReviewCaptureOutput = {
     readonly captured: boolean;
     readonly sessionId: NativeSessionId;
     readonly updatedAt: string;
+    readonly workCycleId: string;
+    readonly revision: ReviewRevision;
+    readonly delta: NativeReviewDeltaSummary;
 };
 
 export type NativeAiReviewCommandOutput = {
@@ -770,6 +795,56 @@ export type NativeAiReviewCommandOutput = {
     readonly conflicts: readonly unknown[];
     readonly updatedAt: string;
     readonly stateFound?: boolean;
+};
+
+export type NativeReviewDeltaState =
+    | "preparing"
+    | "ready"
+    | "partial"
+    | "unavailable"
+    | "superseded";
+
+export type NativeReviewFileSummary = {
+    readonly path: string;
+    readonly previousPath?: string;
+    readonly state: NativeReviewDeltaState;
+    readonly observedHash?: string;
+    readonly reason?: string;
+};
+
+export type NativeReviewDeltaSummary = {
+    readonly deltaId: ReviewDeltaId;
+    readonly sessionId: NativeSessionId;
+    readonly workCycleId: string;
+    readonly toolCallId: NativeToolCallId;
+    readonly inputRevision: ReviewRevision;
+    readonly revision: ReviewRevision;
+    readonly state: NativeReviewDeltaState;
+    readonly files: readonly NativeReviewFileSummary[];
+    readonly updatedAt: string;
+};
+
+export type NativeAiReviewDeltaReadyPayload = NativeAiEventBase & {
+    readonly delta: NativeReviewDeltaSummary;
+};
+
+export type NativeReviewDeltaReference = {
+    readonly deltaId: ReviewDeltaId;
+    readonly sessionId: NativeSessionId;
+    readonly workCycleId: string;
+    readonly toolCallId: NativeToolCallId;
+    readonly inputRevision: ReviewRevision;
+    readonly expectedRevision: ReviewRevision;
+    readonly observedHashes: readonly NativeReviewFileSummary[];
+};
+
+export type NativeReviewLoadDeltaInput = {
+    readonly reference: NativeReviewDeltaReference;
+};
+
+export type NativeReviewLoadDeltaOutput = {
+    readonly delta: NativeReviewDeltaSummary;
+    readonly trackedFiles: readonly unknown[];
 };
 
 export type NativeAiErrorPayload = {

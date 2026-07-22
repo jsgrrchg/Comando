@@ -15,6 +15,7 @@ import type {
     AiTrackedFile,
     AiPermissionOption,
     AiToolActivity,
+    AiToolActivityDetail,
     AiUserInputQuestion,
     GitRepositoryInvalidation,
     ProjectEntryMutationResult,
@@ -37,6 +38,7 @@ import type {
     NativeAiPlanUpdatedPayload,
     NativeAiReviewUpdatedPayload,
     NativeAiReviewCommandOutput,
+    NativeAiReviewDeltaReadyPayload,
     NativeAiRuntimeStatus,
     NativeAiSessionCatalogUpdatedPayload,
     NativeAiSessionClosedPayload,
@@ -221,6 +223,12 @@ export function nativeAiEventToIpc(
         );
     }
 
+    if (event.eventName === "ai://review-delta-ready") {
+        return nativeAiReviewDeltaReadyToIpc(
+            requireRecord(event.payload) as unknown as NativeAiReviewDeltaReadyPayload,
+        );
+    }
+
     if (event.eventName === "ai://error") {
         return nativeAiErrorToIpc(
             requireRecord(event.payload) as unknown as NativeAiErrorPayload,
@@ -228,6 +236,16 @@ export function nativeAiEventToIpc(
     }
 
     return null;
+}
+
+function nativeAiReviewDeltaReadyToIpc(
+    payload: NativeAiReviewDeltaReadyPayload,
+): AiSessionDomainEvent {
+    return {
+        ...nativeAiEventBase(payload),
+        delta: payload.delta,
+        kind: "review-delta",
+    };
 }
 
 export type NativeAiCatalogPatch = {
@@ -599,6 +617,7 @@ function nativeAiToolActivityToIpc(
 ): AiSessionDomainEvent {
     const activity: AiToolActivity = {
         action: null,
+        changeStats: nativeAiToolActivityChangeStatsToIpc(payload.changeStats),
         createdAt: payload.updatedAt,
         diffs: nativeFileDiffsToIpc(payload.diffs),
         exitCode:
@@ -614,6 +633,7 @@ function nativeAiToolActivityToIpc(
         sessionId: payload.sessionId,
         status: payload.status as AiToolActivity["status"],
         summary: payload.summary,
+        toolActivityDetailId: payload.toolActivityDetailId ?? null,
         terminalOutput: resolveNativeTerminalOutput(payload),
         title: payload.title,
         updatedAt: payload.updatedAt,
@@ -623,6 +643,20 @@ function nativeAiToolActivityToIpc(
         ...nativeAiEventBase(payload),
         activity,
         kind: "tool-activity",
+    };
+}
+
+function nativeAiToolActivityChangeStatsToIpc(
+    value: NativeAiToolActivityPayload["changeStats"],
+): AiToolActivity["changeStats"] {
+    if (!value) {
+        return null;
+    }
+    return {
+        additions: Math.max(0, value.additions),
+        approximate: value.approximate === true,
+        deletions: Math.max(0, value.deletions),
+        fileCount: Math.max(0, value.fileCount),
     };
 }
 
@@ -898,6 +932,21 @@ export function nativeReviewTrackedFileToIpc(value: unknown): AiTrackedFile {
         toolCallId: readNullableString(record, "toolCallId"),
         updatedAt: readString(record, "updatedAt", new Date(0).toISOString()),
         ...(version !== null ? { version } : {}),
+    };
+}
+
+export function nativeAiToolActivityDetailToIpc(
+    value: unknown,
+): AiToolActivityDetail {
+    const record = requireRecord(value);
+    return {
+        diffs: nativeFileDiffsToIpc(record.diffs),
+        rawInputJson: stringifyNativeJson(record.rawInput),
+        rawOutputJson: stringifyNativeJson(record.rawOutput),
+        terminalOutput:
+            typeof record.terminalOutput === "string"
+                ? record.terminalOutput
+                : null,
     };
 }
 

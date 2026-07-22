@@ -52,17 +52,27 @@ export function isReviewUnresolvedFile(file: AiTrackedFile): boolean {
 export function formatReviewConflictReason(reason: string | undefined): string {
     switch (reason) {
         case "binary_file":
+        case "not_text":
             return "Binary file changed outside review";
         case "encoding_unsupported":
             return "File encoding is not supported";
         case "too_large":
             return "File is too large for inline review";
+        case "missing_text":
+        case "content_unavailable":
+        case "baseline_unavailable":
+        case "worker_unavailable":
+            return "Review details are unavailable";
         default:
             return "Manual review required";
     }
 }
 
 export function getFileTone(file: AiTrackedFile): ReviewFileTone {
+    if (file.nativeReviewState === "preparing") {
+        return { accent: "var(--text-muted)", badge: "Preparing" };
+    }
+
     if (isReviewConflictFile(file)) {
         return { accent: "var(--diff-warn)", badge: "Conflict" };
     }
@@ -87,6 +97,10 @@ export function getFileTone(file: AiTrackedFile): ReviewFileTone {
 }
 
 export function getFileSummary(file: AiTrackedFile): string {
+    if (file.nativeReviewState === "preparing") {
+        return "Preparing diff…";
+    }
+
     if (isReviewConflictFile(file)) {
         return formatReviewConflictReason(file.conflict);
     }

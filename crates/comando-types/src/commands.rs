@@ -171,6 +171,7 @@ pub const AI_COMMANDS: &[&str] = &[
     "ai_migrate_session_history",
     "ai_get_history_storage_health",
     "ai_capture_review_baseline",
+    "ai_load_review_delta",
     "ai_reject_tracked_file",
     "ai_reject_tracked_file_hunks",
     "ai_reject_all_tracked_files",

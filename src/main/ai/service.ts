@@ -14,22 +14,26 @@ import type {
     AiRuntimeId,
     AiRuntimeStatus,
     AiSessionDomainEvent,
+    AiSessionEventOrigin,
     AiSessionConfigOption,
     AiSessionConfigOptionMutationInput,
     AiSessionModeMutationInput,
     AiSessionModelMutationInput,
-    AiSessionEventOrigin,
     AiSessionPinnedMutationInput,
     AiSessionUpdate,
     AiSessionRenameMutationInput,
     AiSessionSnapshot,
-    AiToolActivity,
+    AiReviewDeltaDetails,
+    AiReviewDeltaSummary,
     AiSessionTranscriptPage,
     AiTranscriptBlock,
     AiTranscriptBlockMetadataOutput,
     AiTranscriptCapability,
     AiLoadTranscriptPayloadInput,
     AiLoadTranscriptPayloadsInput,
+    AiLoadToolActivityDetailInput,
+    AiToolActivityDetail,
+    AiToolActivity,
     AiTranscriptPayload,
     AiTranscriptPayloadsOutput,
     AiTrackedFileHunkMutationInput,
@@ -52,6 +56,10 @@ import type {
     UpdateAiQueuedPromptInput,
 } from "@shared/ipc";
 import {
+    nativeAiToolActivityDetailToIpc,
+    nativeReviewTrackedFileToIpc,
+} from "@shared/native-backend/adapters";
+import {
     computeDiffHunks,
     getTrackedFileCurrentText,
     getTrackedFileDiffBase,
@@ -59,6 +67,11 @@ import {
     resolveTrackedFileHunks,
     upsertTrackedFile,
 } from "@shared/ai-tracked-file";
+import {
+    attachNativeReviewDeltaToTrackedFile,
+    toNativeReviewDeltaReference,
+} from "@shared/ai-review-delta";
+import { normalizeAiSessionStatusTitle } from "@shared/ai-session-events";
 import {
     beginReviewWorkCycle,
     consolidateReviewDiffs,
@@ -84,6 +97,7 @@ import type {
     SecretStoreGateway,
 } from "@main/ai/secret-store";
 import { debugBenignError } from "@main/observability/logging";
+import { mainProcessPerformance } from "@main/observability/performance";
 import { NativeBackendError } from "@main/native-backend/client";
 
 import {
@@ -225,6 +239,7 @@ type NativeAiReviewGateway = NativeAiGateway &
         Pick<
             NativeAiGateway,
             | "captureReviewBaseline"
+            | "loadReviewDelta"
             | "rejectAllTrackedFiles"
             | "rejectTrackedFile"
             | "rejectTrackedFileHunks"
@@ -512,6 +527,10 @@ export class AiService {
         RecentNativeReviewContext
     >();
     readonly #resolvedReviewVersions = new Map<string, Map<string, number>>();
+    readonly #nativeReviewDeltaDetails = new Map<
+        string,
+        AiReviewDeltaDetails
+    >();
     readonly #reviewMutationChains = new Map<string, Promise<void>>();
     readonly #nativeSessionIds = new Set<string>();
     readonly #transcriptStorageModes = new Map<
@@ -805,14 +824,28 @@ export class AiService {
 
         const previousSnapshot = this.#liveSnapshots.get(event.sessionId);
         if (previousSnapshot) {
-            const nextSnapshot = this.#applyNativeSessionEvent(
-                previousSnapshot,
-                event,
+            const nextSnapshot = mainProcessPerformance.measureSync(
+                "ai.snapshot.apply",
+                () => this.#applyNativeSessionEvent(previousSnapshot, event),
+                {
+                    eventKind: event.kind,
+                    sessionId: event.sessionId,
+                },
             );
             const cachedSnapshot = this.#cacheLiveSessionSnapshot(
                 nextSnapshot,
                 ownerWindowId,
             );
+            if (event.kind === "review-delta") {
+                // Native history owns the transcript, while review deltas are main-owned
+                // session state. Checkpoint each revision without persisting token traffic.
+                this.#persistence.saveSessionSnapshot(cachedSnapshot);
+                this.#hydrateAndPersistNativeReviewDelta(
+                    ownerWindowId,
+                    event.sessionId,
+                    event.delta,
+                );
+            }
             this.#onSessionSnapshot(
                 ownerWindowId,
                 this.#buildRendererSessionUpdate(previousSnapshot, cachedSnapshot),
@@ -3519,7 +3552,7 @@ export class AiService {
         }
 
         if (event.kind === "status") {
-            const title = normalizeSessionStatusTitle(event.title);
+            const title = normalizeAiSessionStatusTitle(event.title);
             return {
                 ...base,
                 activeTurnStartedAt: event.activeTurnStartedAt,
@@ -3589,7 +3622,9 @@ export class AiService {
         }
 
         if (event.kind === "tool-activity") {
-            return this.#applyNativeToolActivityReviewDiffs(
+            // Keep a local review bridge only until the native delta arrives. This makes a
+            // terminal edit visible even if the sidecar cannot materialize it.
+            return this.#applyNativeToolActivityReviewFallback(
                 base,
                 event.activity,
                 event.origin,
@@ -3600,6 +3635,10 @@ export class AiService {
             // Review state is owned by the TS action log. Native review events
             // are ignored so a stale sidecar cannot overwrite local decisions.
             return base;
+        }
+
+        if (event.kind === "review-delta") {
+            return this.#applyNativeReviewDelta(base, event.delta);
         }
 
         if (event.kind === "plan") {
@@ -3735,6 +3774,11 @@ export class AiService {
             return;
         }
 
+        if (this.#isNativeAiSession(sessionId)) {
+            // The backend owns native review versions; never seed a TS action log.
+            return;
+        }
+
         const reviewActionLog =
             validReviewActionLogForSnapshot(snapshot) ??
             createReviewActionLogFromTrackedFiles(
@@ -3827,27 +3871,6 @@ export class AiService {
         });
     }
 
-    #nativeReviewDiffContext(
-        sessionId: string,
-    ): NativeReviewBaseline | RecentNativeReviewContext | null {
-        const baseline = this.#nativeReviewBaselines.get(sessionId);
-        if (baseline) {
-            return baseline;
-        }
-
-        const recentContext = this.#recentNativeReviewContexts.get(sessionId);
-        if (!recentContext) {
-            return null;
-        }
-
-        if (recentContext.expiresAtMs <= Date.now()) {
-            this.#recentNativeReviewContexts.delete(sessionId);
-            return null;
-        }
-
-        return recentContext;
-    }
-
     #rememberRecentNativeReviewContext(
         sessionId: string,
         baseline: NativeReviewBaseline,
@@ -3860,7 +3883,25 @@ export class AiService {
         });
     }
 
-    #applyNativeToolActivityReviewDiffs(
+    #nativeReviewDiffContext(
+        sessionId: string,
+    ): NativeReviewBaseline | RecentNativeReviewContext | null {
+        const baseline = this.#nativeReviewBaselines.get(sessionId);
+        if (baseline) {
+            return baseline;
+        }
+        const recentContext = this.#recentNativeReviewContexts.get(sessionId);
+        if (!recentContext) {
+            return null;
+        }
+        if (recentContext.expiresAtMs <= Date.now()) {
+            this.#recentNativeReviewContexts.delete(sessionId);
+            return null;
+        }
+        return recentContext;
+    }
+
+    #applyNativeToolActivityReviewFallback(
         snapshot: AiSessionSnapshot,
         activity: AiToolActivity,
         origin: AiSessionEventOrigin,
@@ -3872,43 +3913,33 @@ export class AiService {
             !isTerminalNativeReviewActivityStatus(activity.status) ||
             activity.diffs.length === 0
         ) {
-            // Historical tool diffs are display-only; review state is owned by the action log.
             return snapshot;
         }
-
         const projectRoot = this.#resolveNativeReviewProjectRoot(snapshot);
         const scopeRoot = projectRoot ?? reviewContext.cwd;
         const normalizeDiffPath = (candidatePath: string): string | null => {
             const normalizedPath = normalizeTrackedDiffPath(
-                {
-                    cwd: reviewContext.cwd,
-                    projectRoot,
-                },
+                { cwd: reviewContext.cwd, projectRoot },
                 candidatePath,
             );
             const resolvedPath = resolveSessionScopedPath(
                 scopeRoot,
                 normalizedPath,
             );
-            const insideAdditionalRoot = reviewContext.additionalRoots.some(
-                (rootPath) => isPathInsideRoot(resolvedPath.absolutePath, rootPath),
-            );
             if (resolvedPath.insideRoot && resolvedPath.relativePath) {
                 return normalizedPath;
             }
-            if (insideAdditionalRoot) {
-                return resolvedPath.absolutePath;
-            }
-            return null;
+            return reviewContext.additionalRoots.some((rootPath) =>
+                isPathInsideRoot(resolvedPath.absolutePath, rootPath),
+            )
+                ? resolvedPath.absolutePath
+                : null;
         };
         let reviewActionLog = snapshot.reviewActionLog ?? null;
         let trackedFiles = snapshot.trackedFiles;
         const rawOutput = parseToolActivityJson(activity.rawOutputJson);
         for (const diff of activity.diffs) {
-            const normalizedDiff = normalizeAiFileDiffPaths(
-                diff,
-                normalizeDiffPath,
-            );
+            const normalizedDiff = normalizeAiFileDiffPaths(diff, normalizeDiffPath);
             if (!normalizedDiff) {
                 continue;
             }
@@ -3929,10 +3960,7 @@ export class AiService {
                                   path: normalizedDiff.path,
                               },
                               existingTrackedFile ?? undefined,
-                              {
-                                  cwd: reviewContext.cwd,
-                                  projectRoot,
-                              },
+                              { cwd: reviewContext.cwd, projectRoot },
                               normalizedDiff.path,
                               {
                                   meta: null,
@@ -3947,14 +3975,8 @@ export class AiService {
                 createReviewActionLogFromTrackedFiles(
                     snapshot.sessionId,
                     trackedFiles,
-                    {
-                        updatedAt: snapshot.updatedAt,
-                    },
+                    { updatedAt: snapshot.updatedAt },
                 );
-            // The action log is the single owner of review state: it preserves
-            // each file's accumulated diff base and reconciles a re-emitted
-            // runtime diff against it, so accepted/rejected work never resurfaces
-            // — no rebase here and no separate native review mirror to feed.
             const nextReviewActionLog = consolidateReviewDiffs(
                 baseReviewActionLog,
                 [fullTextDiff],
@@ -3972,14 +3994,9 @@ export class AiService {
             reviewActionLog = nextReviewActionLog;
             trackedFiles = deriveTrackedFilesFromActionLog(reviewActionLog);
         }
-
         return reviewActionLog === snapshot.reviewActionLog
             ? snapshot
-            : {
-                  ...snapshot,
-                  reviewActionLog,
-                  trackedFiles,
-              };
+            : { ...snapshot, reviewActionLog, trackedFiles };
     }
 
     #resolveNativeReviewProjectRoot(
@@ -3996,6 +4013,78 @@ export class AiService {
             debugBenignError("ai.service.resolveNativeReviewProjectRoot", error);
             return null;
         }
+    }
+
+    async loadReviewDelta(
+        sessionId: string,
+        reviewDeltaId: string,
+        expectedRevision: number,
+    ): Promise<AiReviewDeltaDetails | null> {
+        const snapshot =
+            this.#liveSnapshots.get(sessionId) ??
+            (await this.#persistence.loadSessionSnapshot(sessionId));
+        const delta = snapshot?.reviewDeltas?.find(
+            (candidate) => candidate.deltaId === reviewDeltaId,
+        );
+        if (!delta || delta.revision !== expectedRevision) {
+            return null;
+        }
+        const cached = this.#nativeReviewDeltaDetails.get(reviewDeltaId);
+        if (cached?.delta.revision === expectedRevision) {
+            return {
+                delta,
+                trackedFiles: filterNativeReviewDeltaTrackedFiles(
+                    cached.trackedFiles,
+                    delta,
+                ),
+            };
+        }
+        const nativeAi = this.#requireNativeReviewGateway("loadReviewDelta");
+        const output = await nativeAi.loadReviewDelta(
+            toNativeReviewDeltaReference(delta),
+        );
+        if (
+            output.delta.deltaId !== reviewDeltaId ||
+            output.delta.revision !== expectedRevision
+        ) {
+            return null;
+        }
+        const details: AiReviewDeltaDetails = {
+            delta,
+            trackedFiles: filterNativeReviewDeltaTrackedFiles(
+                output.trackedFiles.map(nativeReviewTrackedFileToIpc),
+                delta,
+            ),
+        };
+        this.#nativeReviewDeltaDetails.set(reviewDeltaId, details);
+        return details;
+    }
+
+    releaseReviewDelta(reviewDeltaId: string): void {
+        this.#nativeReviewDeltaDetails.delete(reviewDeltaId);
+    }
+
+    async loadToolActivityDetail(
+        input: AiLoadToolActivityDetailInput,
+    ): Promise<AiToolActivityDetail | null> {
+        const nativeAi = this.#nativeAi;
+        if (!nativeAi?.loadToolActivityDetail) {
+            return null;
+        }
+        const detail = await nativeAi.loadToolActivityDetail(input);
+        return detail === null || detail === undefined
+            ? null
+            : nativeAiToolActivityDetailToIpc(detail);
+}
+    #applyNativeReviewDelta(
+        snapshot: AiSessionSnapshot,
+        delta: AiReviewDeltaSummary,
+    ): AiSessionSnapshot {
+        return applyNativeReviewDeltaSnapshot(
+            snapshot,
+            delta,
+            this.#resolvedReviewVersions.get(snapshot.sessionId),
+        );
     }
 
     #preservePassiveNativeSnapshotTrackedFiles(
@@ -4025,7 +4114,9 @@ export class AiService {
             };
         }
 
-        return normalizeLiveSnapshotReviewState(snapshot);
+        return normalizeLiveSnapshotReviewState(
+            preservePassiveNativeReviewState(snapshot, previousSnapshot),
+        );
     }
 
     #shouldFinishNativeReviewBaseline(event: AiSessionDomainEvent): boolean {
@@ -4078,9 +4169,30 @@ export class AiService {
     async #loadPersistedSessionSnapshot(
         sessionId: string,
     ): Promise<AiSessionSnapshot | null> {
-        const snapshot = this.#nativeAi?.shouldHandleHistory()
-            ? await this.#nativeAi.loadSessionSnapshot(sessionId)
-            : await this.#persistence.loadSessionSnapshot(sessionId);
+        if (this.#nativeAi?.shouldHandleHistory()) {
+            const [nativeSnapshot, persistedSnapshot] = await Promise.all([
+                this.#nativeAi.loadSessionSnapshot(sessionId),
+                this.#persistence.loadSessionSnapshot(sessionId),
+            ]);
+            if (!nativeSnapshot) {
+                return persistedSnapshot
+                    ? clearRestoredSnapshotReviewState(
+                          normalizeRestoredAiSessionSnapshot(persistedSnapshot),
+                      )
+                    : null;
+            }
+
+            return clearRestoredSnapshotReviewState(
+                mergePersistedNativeReviewState(
+                    normalizeRestoredAiSessionSnapshot(nativeSnapshot),
+                    persistedSnapshot
+                        ? normalizeRestoredAiSessionSnapshot(persistedSnapshot)
+                        : null,
+                ),
+            );
+        }
+
+        const snapshot = await this.#persistence.loadSessionSnapshot(sessionId);
 
         return snapshot
             ? clearRestoredSnapshotReviewState(
@@ -4343,11 +4455,16 @@ export class AiService {
         readonly snapshot: AiSessionSnapshot;
     }> {
         const liveContext = this.#liveSessionContexts.get(sessionId);
-        const snapshot =
+        let snapshot =
             this.#liveSnapshots.get(sessionId) ??
             (await this.#persistence.loadSessionSnapshot(sessionId));
         if (!snapshot) {
             throw new Error("The AI session was not found.");
+        }
+
+        snapshot = await this.#hydrateNativeReviewSnapshot(snapshot);
+        if (this.#liveSnapshots.has(sessionId)) {
+            this.#liveSnapshots.set(sessionId, snapshot);
         }
 
         const projectRoot =
@@ -4378,6 +4495,158 @@ export class AiService {
             },
             snapshot,
         };
+    }
+
+    async #hydrateNativeReviewSnapshot(
+        snapshot: AiSessionSnapshot,
+    ): Promise<AiSessionSnapshot> {
+        const deltas = snapshot.reviewDeltas ?? [];
+        if (deltas.length === 0) {
+            return snapshot;
+        }
+
+        const hydratedByDeltaId = new Map<
+            string,
+            readonly AiTrackedFile[]
+        >();
+        for (const delta of deltas) {
+            if (
+                !snapshot.trackedFiles.some(
+                    (file) => file.nativeReviewDeltaId === delta.deltaId,
+                )
+            ) {
+                continue;
+            }
+            const details = await this.loadReviewDelta(
+                snapshot.sessionId,
+                delta.deltaId,
+                delta.revision,
+            );
+            if (details) {
+                const hydrated = details.trackedFiles.map((file) =>
+                    attachNativeReviewDeltaToTrackedFile(file, delta),
+                );
+                const hydratedPaths = new Set(
+                    hydrated.flatMap((file) => [
+                        file.path,
+                        ...(file.previousPath ? [file.previousPath] : []),
+                    ]),
+                );
+                hydratedByDeltaId.set(
+                    delta.deltaId,
+                    [
+                        ...hydrated,
+                        ...snapshot.trackedFiles.filter(
+                            (file) =>
+                                file.nativeReviewDeltaId === delta.deltaId &&
+                                !hydratedPaths.has(file.path),
+                        ),
+                    ],
+                );
+            }
+        }
+        if (hydratedByDeltaId.size === 0) {
+            return snapshot;
+        }
+
+        const expandedDeltaIds = new Set<string>();
+        const trackedFiles = snapshot.trackedFiles.flatMap((file) => {
+            const deltaId = file.nativeReviewDeltaId;
+            if (!deltaId || expandedDeltaIds.has(deltaId)) {
+                return deltaId ? [] : [file];
+            }
+            const hydrated = hydratedByDeltaId.get(deltaId);
+            if (!hydrated) {
+                return [file];
+            }
+            expandedDeltaIds.add(deltaId);
+            return hydrated;
+        });
+        let hydratedSnapshot = { ...snapshot, trackedFiles };
+        for (const delta of deltas) {
+            const hydrated = hydratedByDeltaId.get(delta.deltaId);
+            if (!hydrated) {
+                continue;
+            }
+            hydratedSnapshot = {
+                ...hydratedSnapshot,
+                reviewActionLog: consolidateNativeReviewDeltaIntoActionLog(
+                    hydratedSnapshot,
+                    hydrated,
+                    delta,
+                ),
+            };
+        }
+        return hydratedSnapshot;
+    }
+
+    #hydrateAndPersistNativeReviewDelta(
+        ownerWindowId: string,
+        sessionId: string,
+        delta: AiReviewDeltaSummary,
+    ): void {
+        if (delta.state === "unavailable" || delta.state === "superseded") {
+            return;
+        }
+
+        void this.loadReviewDelta(sessionId, delta.deltaId, delta.revision)
+            .then((details) => {
+                if (!details) {
+                    return;
+                }
+                const currentSnapshot = this.#liveSnapshots.get(sessionId);
+                const currentDelta = currentSnapshot?.reviewDeltas?.find(
+                    (candidate) => candidate.deltaId === details.delta.deltaId,
+                );
+                if (
+                    !currentSnapshot ||
+                    currentDelta?.revision !== details.delta.revision
+                ) {
+                    return;
+                }
+
+                const hydrated = details.trackedFiles.map((file) =>
+                    attachNativeReviewDeltaToTrackedFile(file, details.delta),
+                );
+                const hydratedPaths = new Set(
+                    hydrated.flatMap((file) => [
+                        file.path,
+                        ...(file.previousPath ? [file.previousPath] : []),
+                    ]),
+                );
+                const nextSnapshot = {
+                    ...currentSnapshot,
+                    reviewActionLog: consolidateNativeReviewDeltaIntoActionLog(
+                        currentSnapshot,
+                        hydrated,
+                        details.delta,
+                    ),
+                    trackedFiles: [
+                        ...currentSnapshot.trackedFiles.filter(
+                            (file) =>
+                                file.nativeReviewDeltaId !==
+                                    details.delta.deltaId ||
+                                !hydratedPaths.has(file.path),
+                        ),
+                        ...hydrated,
+                    ],
+                };
+                const cachedSnapshot = this.#cacheLiveSessionSnapshot(
+                    nextSnapshot,
+                    ownerWindowId,
+                );
+                this.#persistence.saveSessionSnapshot(cachedSnapshot);
+                this.#onSessionSnapshot(
+                    ownerWindowId,
+                    this.#buildRendererSessionUpdate(
+                        currentSnapshot,
+                        cachedSnapshot,
+                    ),
+                );
+            })
+            .catch((error: unknown) => {
+                debugBenignError("ai.service.persistNativeReviewDelta", error);
+            });
     }
 
     #persistReviewMutation(
@@ -4681,11 +4950,24 @@ export class AiService {
         }
 
         if (decision === "reject") {
-            this.#assertFallbackTrackedFileCurrentMatches(
-                reviewSession.context,
-                trackedFile,
-            );
-            this.#rejectFallbackTrackedFile(reviewSession.context, trackedFile);
+            const nativeAi = isNativeReviewTrackedFile(trackedFile)
+                ? this.#optionalNativeReviewDiskGateway("rejectTrackedFile")
+                : null;
+            if (nativeAi?.rejectTrackedFile) {
+                await nativeAi.rejectTrackedFile({
+                    context: reviewSession.context,
+                    input,
+                });
+            } else {
+                this.#assertFallbackTrackedFileCurrentMatches(
+                    reviewSession.context,
+                    trackedFile,
+                );
+                this.#rejectFallbackTrackedFile(
+                    reviewSession.context,
+                    trackedFile,
+                );
+            }
         }
 
         const baseSnapshot = {
@@ -4734,15 +5016,27 @@ export class AiService {
             decision,
         );
         if (decision === "reject") {
-            this.#assertFallbackTrackedFileCurrentMatches(
-                reviewSession.context,
-                trackedFile,
-            );
-            this.#writeFallbackTrackedFileCurrentText(
-                reviewSession.context,
-                trackedFile,
-                nextTrackedFile,
-            );
+            const nativeAi = isNativeReviewTrackedFile(trackedFile)
+                ? this.#optionalNativeReviewDiskGateway(
+                      "rejectTrackedFileHunks",
+                  )
+                : null;
+            if (nativeAi?.rejectTrackedFileHunks) {
+                await nativeAi.rejectTrackedFileHunks({
+                    context: reviewSession.context,
+                    input,
+                });
+            } else {
+                this.#assertFallbackTrackedFileCurrentMatches(
+                    reviewSession.context,
+                    trackedFile,
+                );
+                this.#writeFallbackTrackedFileCurrentText(
+                    reviewSession.context,
+                    trackedFile,
+                    nextTrackedFile,
+                );
+            }
         }
 
         const nextSnapshot = {
@@ -4850,39 +5144,55 @@ export class AiService {
         const pendingFallbackFiles = reviewSession.snapshot.trackedFiles.filter(
             (trackedFile) =>
                 isFallbackTrackedFile(trackedFile) &&
-                isAiTrackedFileUnresolved(trackedFile),
+                isAiTrackedFileUnresolved(trackedFile) &&
+                (decision === "keep" || trackedFile.reversible),
         );
         if (pendingFallbackFiles.length === 0) {
             return false;
         }
 
-        const hasNativePendingFiles = reviewSession.snapshot.trackedFiles.some(
+        const hasNonFallbackPendingFiles = reviewSession.snapshot.trackedFiles.some(
             (trackedFile) =>
                 !isFallbackTrackedFile(trackedFile) &&
                 isAiTrackedFileUnresolved(trackedFile),
         );
 
         if (decision === "reject") {
-            for (const trackedFile of pendingFallbackFiles) {
-                this.#assertFallbackTrackedFileCurrentMatches(
-                    reviewSession.context,
-                    trackedFile,
-                );
-            }
-            const backups = this.#createFallbackReviewBackups(
-                reviewSession.context,
-                pendingFallbackFiles,
+            const hasNativeReviewFiles = pendingFallbackFiles.some(
+                isNativeReviewTrackedFile,
             );
-            try {
+            const nativeAi = hasNativeReviewFiles
+                ? this.#optionalNativeReviewDiskGateway(
+                      "rejectAllTrackedFiles",
+                  )
+                : null;
+            if (nativeAi?.rejectAllTrackedFiles) {
+                await nativeAi.rejectAllTrackedFiles({
+                    context: reviewSession.context,
+                    input: sessionId,
+                });
+            } else {
                 for (const trackedFile of pendingFallbackFiles) {
-                    this.#rejectFallbackTrackedFile(
+                    this.#assertFallbackTrackedFileCurrentMatches(
                         reviewSession.context,
                         trackedFile,
                     );
                 }
-            } catch (error) {
-                this.#restoreFallbackReviewBackups(backups);
-                throw error;
+                const backups = this.#createFallbackReviewBackups(
+                    reviewSession.context,
+                    pendingFallbackFiles,
+                );
+                try {
+                    for (const trackedFile of pendingFallbackFiles) {
+                        this.#rejectFallbackTrackedFile(
+                            reviewSession.context,
+                            trackedFile,
+                        );
+                    }
+                } catch (error) {
+                    this.#restoreFallbackReviewBackups(backups);
+                    throw error;
+                }
             }
         }
 
@@ -4908,7 +5218,7 @@ export class AiService {
             ownerWindowId: reviewSession.context.ownerWindowId,
             snapshot: nextSnapshot,
         });
-        return !hasNativePendingFiles;
+        return !hasNonFallbackPendingFiles;
     }
 
     #createFallbackReviewBackups(
@@ -5750,46 +6060,33 @@ function parseToolActivityJson(value: string | null): unknown {
     }
 }
 
-function normalizeSessionStatusTitle(
-    title: string | null | undefined,
-): string | null {
-    if (typeof title !== "string") {
-        return null;
-    }
-    const trimmed = title.trim();
-    return trimmed.length > 0 ? trimmed : null;
-}
-
 function normalizeAiFileDiffPaths(
     diff: AiFileDiff,
     normalizePath: (candidatePath: string) => string | null,
 ): AiFileDiff | null {
-    const normalizedPath = normalizePath(diff.path);
-    if (!normalizedPath) {
+    const path = normalizePath(diff.path);
+    if (!path) {
         return null;
     }
-
-    const normalizedPreviousPath = diff.previousPath
+    const previousPath = diff.previousPath
         ? normalizePath(diff.previousPath)
         : null;
-    if (diff.previousPath && !normalizedPreviousPath) {
+    if (diff.previousPath && !previousPath) {
         return null;
     }
-
     return {
         ...diff,
-        path: normalizedPath,
-        previousPath:
-            normalizedPreviousPath && normalizedPreviousPath !== normalizedPath
-                ? normalizedPreviousPath
-                : null,
+        path,
+        previousPath: previousPath && previousPath !== path ? previousPath : null,
     };
 }
 
 function isFallbackTrackedFile(trackedFile: AiTrackedFile): boolean {
     return (
         trackedFile.identityKey.startsWith("review:") ||
-        trackedFile.identityKey.startsWith("tool:")
+        trackedFile.identityKey.startsWith("tool:") ||
+        trackedFile.identityKey.startsWith("native:") ||
+        trackedFile.identityKey.startsWith("native-review:")
     );
 }
 
@@ -5805,6 +6102,14 @@ function findFallbackTrackedFile(
                     trackedFile.previousPath === reviewPath ||
                     trackedFile.identityKey === reviewPath),
         ) ?? null
+    );
+}
+
+function isNativeReviewTrackedFile(trackedFile: AiTrackedFile): boolean {
+    return (
+        trackedFile.nativeReviewDeltaId !== undefined ||
+        trackedFile.identityKey.startsWith("native:") ||
+        trackedFile.identityKey.startsWith("native-review:")
     );
 }
 
@@ -6461,8 +6766,11 @@ function shouldSkipRuntimeSelectionPreference(
 function clearRestoredSnapshotReviewState(
     snapshot: AiSessionSnapshot,
 ): AiSessionSnapshot {
+    const nativeReviewFiles = snapshot.trackedFiles.filter(
+        (file) => file.nativeReviewDeltaId !== undefined,
+    );
     if (
-        snapshot.trackedFiles.length === 0 &&
+        nativeReviewFiles.length === snapshot.trackedFiles.length &&
         (snapshot.reviewActionLog ?? null) === null
     ) {
         return snapshot;
@@ -6470,10 +6778,42 @@ function clearRestoredSnapshotReviewState(
 
     return {
         ...snapshot,
-        // Persisted transcripts keep historical diffs; pending review state is
-        // intentionally restored only from the live action log.
+        // Native deltas have a versioned identity and can be resumed safely after restart.
+        // Legacy review state remains transient because it has no equivalent reference.
         reviewActionLog: null,
-        trackedFiles: [],
+        trackedFiles: nativeReviewFiles,
+    };
+}
+
+function mergePersistedNativeReviewState(
+    historySnapshot: AiSessionSnapshot,
+    persistedSnapshot: AiSessionSnapshot | null,
+): AiSessionSnapshot {
+    if (
+        !persistedSnapshot ||
+        persistedSnapshot.sessionId !== historySnapshot.sessionId
+    ) {
+        return historySnapshot;
+    }
+    const reviewDeltas = persistedSnapshot.reviewDeltas ?? [];
+    const persistedNativeFiles = persistedSnapshot.trackedFiles.filter(
+        (file) => file.nativeReviewDeltaId !== undefined,
+    );
+    if (reviewDeltas.length === 0 && persistedNativeFiles.length === 0) {
+        return historySnapshot;
+    }
+
+    return {
+        ...historySnapshot,
+        // The history backend reconstructs transcript state but does not own review
+        // payloads. Merge only versioned native review data from its checkpoint.
+        reviewDeltas,
+        trackedFiles: [
+            ...historySnapshot.trackedFiles.filter(
+                (file) => file.nativeReviewDeltaId === undefined,
+            ),
+            ...persistedNativeFiles,
+        ],
     };
 }
 
@@ -6519,6 +6859,284 @@ function createReviewWorkCycleId(sessionId: string, messageId: string): string {
     return `review-cycle:${sessionId}:${messageId}`;
 }
 
+function nativeReviewFileIdentity(path: string): string {
+    return `native-review:${path}`;
+}
+
+function applyNativeReviewDeltaSnapshot(
+    snapshot: AiSessionSnapshot,
+    delta: AiReviewDeltaSummary,
+    resolvedVersions?: ReadonlyMap<string, number>,
+): AiSessionSnapshot {
+    if (delta.state === "superseded") {
+        const supersededPaths = new Set(
+            delta.files.flatMap((file) => [
+                file.path,
+                ...(file.previousPath ? [file.previousPath] : []),
+            ]),
+        );
+        return {
+            ...snapshot,
+            reviewDeltas: (snapshot.reviewDeltas ?? []).flatMap((previous) => {
+                if (previous.deltaId !== delta.deltaId) {
+                    return [previous];
+                }
+                const files = previous.files.filter(
+                    (file) => !supersededPaths.has(file.path),
+                );
+                return files.length > 0
+                    ? [
+                          {
+                              ...previous,
+                              files,
+                              state: nativeReviewDeltaStateForFiles(files),
+                          },
+                      ]
+                    : [];
+            }),
+            trackedFiles: snapshot.trackedFiles.filter(
+                (file) =>
+                    file.nativeReviewDeltaId !== delta.deltaId ||
+                    !supersededPaths.has(file.path),
+            ),
+        };
+    }
+    const latestRevisionByPath = new Map<string, number>();
+    for (const previous of snapshot.reviewDeltas ?? []) {
+        for (const file of previous.files) {
+            latestRevisionByPath.set(
+                file.path,
+                Math.max(
+                    latestRevisionByPath.get(file.path) ?? 0,
+                    previous.revision,
+                ),
+            );
+        }
+    }
+    const activeFiles = delta.files.filter((file) => {
+        const identityKey = nativeReviewFileIdentity(file.path);
+        return (
+            (resolvedVersions?.get(identityKey) ?? 0) < delta.revision &&
+            (latestRevisionByPath.get(file.path) ?? 0) <= delta.revision
+        );
+    });
+    if (activeFiles.length === 0) {
+        return snapshot;
+    }
+    const replacedPaths = new Set(
+        activeFiles.flatMap((file) => [
+            file.path,
+            ...(file.previousPath ? [file.previousPath] : []),
+        ]),
+    );
+    const retainedDeltas = (snapshot.reviewDeltas ?? []).flatMap((previous) => {
+        const files = previous.files.filter(
+            (file) => !replacedPaths.has(file.path),
+        );
+        return files.length > 0
+            ? [
+                  {
+                      ...previous,
+                      files,
+                      state: nativeReviewDeltaStateForFiles(files),
+                  },
+              ]
+            : [];
+    });
+    const reviewDeltas = [
+        ...retainedDeltas,
+        {
+            ...delta,
+            files: activeFiles,
+            state: nativeReviewDeltaStateForFiles(activeFiles),
+        },
+    ];
+    const previousTrackedFiles = snapshot.trackedFiles;
+    const trackedFiles = [
+        ...snapshot.trackedFiles.filter(
+            (file) =>
+                !replacedPaths.has(file.path) ||
+                (!file.nativeReviewDeltaId && !isFallbackTrackedFile(file)),
+        ),
+        ...activeFiles.map((file) => {
+            const previous = previousTrackedFiles.find(
+                (candidate) =>
+                    candidate.nativeReviewDeltaId === delta.deltaId &&
+                    (candidate.path === file.path ||
+                        (file.previousPath !== undefined &&
+                            (candidate.path === file.previousPath ||
+                                candidate.previousPath === file.previousPath))),
+            );
+            const fallback = previousTrackedFiles.find(
+                (candidate) =>
+                    candidate.nativeReviewDeltaId === undefined &&
+                    isFallbackTrackedFile(candidate) &&
+                    candidate.toolCallId === delta.toolCallId &&
+                    (candidate.path === file.path ||
+                        candidate.previousPath === file.path ||
+                        (file.previousPath !== undefined &&
+                            (candidate.path === file.previousPath ||
+                                candidate.previousPath === file.previousPath))),
+            );
+            if (file.state === "unavailable") {
+                if (fallback) {
+                    return fallback;
+                }
+                if (
+                    previous &&
+                    (previous.oldText !== null || previous.newText !== null)
+                ) {
+                    // Native materialization can fail after exposing provisional text.
+                    // Detach that text from the unusable native reference so fallback
+                    // review mutations continue to validate the working tree.
+                    return {
+                        ...previous,
+                        identityKey: `review:${delta.sessionId}:${file.path}`,
+                        nativeReviewDeltaId: undefined,
+                        nativeReviewInputRevision: undefined,
+                        nativeReviewState: undefined,
+                        nativeReviewWorkCycleId: undefined,
+                        reviewState: "pending" as const,
+                        version: undefined,
+                    };
+                }
+            }
+            if (
+                previous &&
+                file.state !== "unavailable" &&
+                (previous.oldText !== null || previous.newText !== null)
+            ) {
+                // Keep the provisional content on screen until the newer revision hydrates.
+                return attachNativeReviewDeltaToTrackedFile(
+                    {
+                        ...previous,
+                        nativeReviewState: file.state,
+                        reviewState:
+                            file.state === "partial"
+                                ? "conflict"
+                                : "pending",
+                        updatedAt: delta.updatedAt,
+                    },
+                    delta,
+                );
+            }
+            return nativeReviewSummaryToTrackedFile(delta, file);
+        }),
+    ];
+    return { ...snapshot, reviewDeltas, trackedFiles };
+}
+
+function consolidateNativeReviewDeltaIntoActionLog(
+    snapshot: AiSessionSnapshot,
+    trackedFiles: readonly AiTrackedFile[],
+    delta: AiReviewDeltaSummary,
+): AiReviewActionLogState {
+    const actionLog =
+        validReviewActionLogForSnapshot(snapshot) ??
+        createReviewActionLogFromTrackedFiles(
+            snapshot.sessionId,
+            // Native placeholders carry no full-text baseline and must not
+            // become action-log entries before the worker hydrates them.
+            snapshot.trackedFiles.filter(
+                (file) => file.nativeReviewDeltaId === undefined,
+            ),
+            { updatedAt: snapshot.updatedAt },
+        );
+    return consolidateReviewDiffs(
+        actionLog,
+        trackedFiles.map(nativeTrackedFileToAiFileDiff),
+        {
+            origin: "live",
+            sessionId: snapshot.sessionId,
+            toolCallId: delta.toolCallId,
+            updatedAt: delta.updatedAt,
+            workCycleId: delta.workCycleId,
+        },
+    );
+}
+
+function nativeTrackedFileToAiFileDiff(file: AiTrackedFile): AiFileDiff {
+    return {
+        hunks: file.hunks,
+        isText: file.isText,
+        kind: file.kind,
+        newText: file.newText,
+        oldText: file.oldText,
+        path: file.path,
+        previousPath: file.previousPath,
+        reversible: file.reversible,
+    };
+}
+
+function nativeReviewDeltaStateForFiles(
+    files: AiReviewDeltaSummary["files"],
+): AiReviewDeltaSummary["state"] {
+    if (files.every((file) => file.state === "preparing")) {
+        return "preparing";
+    }
+    if (files.every((file) => file.state === "ready")) {
+        return "ready";
+    }
+    if (files.every((file) => file.state === "unavailable")) {
+        return "unavailable";
+    }
+    return "partial";
+}
+
+function filterNativeReviewDeltaTrackedFiles(
+    trackedFiles: readonly AiTrackedFile[],
+    delta: AiReviewDeltaSummary,
+): readonly AiTrackedFile[] {
+    const activePaths = new Set(
+        delta.files.flatMap((file) => [
+            file.path,
+            ...(file.previousPath ? [file.previousPath] : []),
+        ]),
+    );
+    return trackedFiles.filter(
+        (file) =>
+            activePaths.has(file.path) ||
+            (file.previousPath !== null && activePaths.has(file.previousPath)),
+    );
+}
+
+function nativeReviewSummaryToTrackedFile(
+    delta: AiReviewDeltaSummary,
+    file: AiReviewDeltaSummary["files"][number],
+): AiTrackedFile {
+    const isUnavailable = file.state === "unavailable";
+    const requiresManualReview = file.state === "partial" || isUnavailable;
+    return {
+        ...(requiresManualReview
+            ? {
+                  conflict:
+                      file.reason ??
+                      (file.state === "partial"
+                          ? "Review details are partial."
+                          : "content_unavailable"),
+              }
+            : {}),
+        hunks: [],
+        identityKey: nativeReviewFileIdentity(file.path),
+        isText: !isUnavailable,
+        kind: file.previousPath ? "move" : "update",
+        nativeReviewDeltaId: delta.deltaId,
+        nativeReviewInputRevision: delta.inputRevision,
+        nativeReviewState: file.state,
+        nativeReviewWorkCycleId: delta.workCycleId,
+        newText: null,
+        oldText: null,
+        path: file.path,
+        previousPath: file.previousPath ?? null,
+        reviewState: requiresManualReview ? "conflict" : "pending",
+        reversible: !isUnavailable,
+        sessionId: delta.sessionId,
+        toolCallId: delta.toolCallId,
+        updatedAt: delta.updatedAt,
+        version: delta.revision,
+    };
+}
+
 function isNativeTrackedFilesPatch(update: AiSessionUpdate): boolean {
     return (
         update.kind === "patch" &&
@@ -6554,6 +7172,31 @@ function normalizeLiveReviewMutationSnapshot(
     return normalizeLiveSnapshotReviewState(snapshot);
 }
 
+function preservePassiveNativeReviewState(
+    incomingSnapshot: AiSessionSnapshot,
+    previousSnapshot: AiSessionSnapshot | null,
+): AiSessionSnapshot {
+    const previousDeltas = previousSnapshot?.reviewDeltas ?? [];
+    if (previousDeltas.length === 0 || !previousSnapshot) {
+        return incomingSnapshot;
+    }
+
+    // The native engine snapshots do not carry materialized review deltas. Keep
+    // their local references and hydrated files until an explicit review mutation.
+    return {
+        ...incomingSnapshot,
+        reviewDeltas: previousDeltas,
+        trackedFiles: [
+            ...incomingSnapshot.trackedFiles.filter(
+                (file) => !file.nativeReviewDeltaId,
+            ),
+            ...previousSnapshot.trackedFiles.filter(
+                (file) => file.nativeReviewDeltaId,
+            ),
+        ],
+    };
+}
+
 function normalizeSnapshotReviewState(
     snapshot: AiSessionSnapshot,
 ): AiSessionSnapshot {
@@ -6565,7 +7208,12 @@ function normalizeSnapshotReviewState(
             : {
                   ...snapshot,
                   trackedFiles,
-              };
+            };
+    }
+
+    if ((snapshot.reviewDeltas?.length ?? 0) > 0) {
+        // Native summaries are canonical while their detail remains in Rust.
+        return snapshot;
     }
 
     return reviewActionLog === null && snapshot.trackedFiles.length === 0
@@ -6621,10 +7269,14 @@ function nativeSetSecretPatch(
 }
 
 export const __testing = {
+    applyNativeReviewDeltaSnapshot,
+    consolidateNativeReviewDeltaIntoActionLog,
     computeDiffHunks,
     diffToAiFileDiff,
+    mergePersistedNativeReviewState,
     normalizeTrackedDiffPath,
     parseCompleteNumberedFileOutput,
+    preservePassiveNativeReviewState,
     resolveDiffToFullTexts,
     resolveTrackedFileHunks,
     shouldSuppressToolActivityUpdate,

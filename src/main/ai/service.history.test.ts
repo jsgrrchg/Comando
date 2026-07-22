@@ -1048,6 +1048,26 @@ describe("AiService history", () => {
             trackedFiles: [],
         });
     });
+
+    it("restores versioned native review placeholders from persisted snapshots", async () => {
+        const trackedFile = createTrackedFile({
+            nativeReviewDeltaId: "delta-1",
+            nativeReviewInputRevision: 4,
+            nativeReviewState: "preparing",
+            nativeReviewWorkCycleId: "cycle-1",
+        });
+        const service = createService({
+            loadSessionSnapshot: vi.fn(() =>
+                createSnapshot({
+                    trackedFiles: [trackedFile],
+                }),
+            ),
+        });
+
+        const snapshot = await service.getSessionSnapshot("session-1");
+
+        expect(snapshot?.trackedFiles).toEqual([trackedFile]);
+    });
 });
 
 function createSnapshot(

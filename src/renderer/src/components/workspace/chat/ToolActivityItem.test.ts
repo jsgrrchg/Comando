@@ -17,6 +17,7 @@ import {
 
 const mockAiStoreState = vi.hoisted(() => ({
     current: {
+        hydrateToolActivityDetail: vi.fn(() => Promise.resolve()),
         sessions: {},
     },
 }));
@@ -152,6 +153,7 @@ const mountedRoots: Root[] = [];
 const mountedContainers: HTMLElement[] = [];
 
 beforeEach(() => {
+    mockAiStoreState.current.hydrateToolActivityDetail.mockClear();
     mockAiStoreState.current.sessions = {};
     mockProjectFileIndexState.paths = new Set(
         DEFAULT_PROJECT_FILE_INDEX_PATHS,
@@ -321,6 +323,31 @@ describe("ToolActivityItem", () => {
         expect(onPayloadVisibilityChange).toHaveBeenLastCalledWith(
             "tool-1",
             false,
+        );
+    });
+
+    it("hydrates an editable compact summary before its diff payload is loaded", () => {
+        renderInteractiveToolActivityItem({
+            activity: createActivity({
+                diffs: [],
+                kind: "edit",
+                locations: [],
+                summary: "Updated src/app.ts",
+                toolActivityDetailId: "tool-detail:session-1:tool-1",
+            }),
+            onOpenFile: async () => {},
+            projectId: "project-1",
+            trackedFiles: [],
+            worktreeId: null,
+        });
+
+        expect(mockAiStoreState.current.hydrateToolActivityDetail).toHaveBeenCalledWith(
+            "session-1",
+            "tool-1",
+            expect.objectContaining({
+                kind: "edit",
+                toolActivityDetailId: "tool-detail:session-1:tool-1",
+            }),
         );
     });
 

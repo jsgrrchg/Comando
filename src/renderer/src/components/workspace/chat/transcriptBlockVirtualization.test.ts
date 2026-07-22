@@ -321,6 +321,7 @@ describe("transcriptBlockVirtualization", () => {
             alignment: "start",
             entryId: "entry-1",
             offsetWithinEntry: 0,
+            timelineItemId: null,
         });
         expect(
             resolveTranscriptPrefetchBlockId(

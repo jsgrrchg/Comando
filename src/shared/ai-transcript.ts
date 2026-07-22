@@ -39,6 +39,7 @@ export function mergeAiTranscriptToolActivity(existing: AiToolActivity, incoming
     return {
         ...winner,
         ...(action === undefined ? {} : { action }),
+        changeStats: winner.changeStats ?? fallback.changeStats ?? null,
         diffs: winner.diffs.length > 0 ? winner.diffs : fallback.diffs,
         exitCode: winner.exitCode ?? fallback.exitCode,
         terminalOutput: winner.terminalOutput ?? fallback.terminalOutput,

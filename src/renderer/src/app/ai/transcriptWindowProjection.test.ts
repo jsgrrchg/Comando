@@ -118,6 +118,123 @@ describe("transcriptWindowProjection", () => {
             timeline_blocks_built: 1,
         });
     });
+
+    it("keeps an editable tool identifiable before its payload is loaded", () => {
+        const metadata: AiTranscriptBlockMetadata = {
+            blockId: "block-edit",
+            endSequence: 1,
+            entryCount: 1,
+            estimatedHeight: 72,
+            estimatedRowCount: 1,
+            firstCreatedAt: STARTED_AT,
+            lastCreatedAt: STARTED_AT,
+            revision: 1,
+            sessionId: SESSION_ID,
+            startSequence: 1,
+        };
+        const block: AiTranscriptBlock = {
+            ...metadata,
+            capabilityVersion: 1,
+            entries: [
+                {
+                    createdAt: STARTED_AT,
+                    id: "tool:projection-session:edit-1",
+                    kind: "tool",
+                    payloadRef: "payload:edit-1",
+                    sequence: 1,
+                    sessionId: SESSION_ID,
+                    summary: {
+                        label: "Edit src/app.ts",
+                        preview: "Updated src/app.ts",
+                        status: "completed",
+                        toolActivityDetailId: "tool-detail:edit-1",
+                        toolChangeStats: {
+                            additions: 4,
+                            approximate: false,
+                            deletions: 1,
+                            fileCount: 1,
+                        },
+                        toolKind: "edit",
+                    },
+                    updatedAt: STARTED_AT,
+                },
+            ],
+            transcriptRevision: 1,
+        };
+
+        const projection = buildBlockNativeTranscriptProjection(
+            buildAiSessionTranscriptModel({ messages: [], toolActivity: [] }),
+            new Map([[metadata.blockId, block]]),
+            [metadata],
+            new Map(),
+        );
+
+        expect(projection.sealed.transcript.toolActivity).toEqual([
+            expect.objectContaining({
+                diffs: [],
+                id: "edit-1",
+                kind: "edit",
+                changeStats: {
+                    additions: 4,
+                    approximate: false,
+                    deletions: 1,
+                    fileCount: 1,
+                },
+                toolActivityDetailId: "tool-detail:edit-1",
+            }),
+        ]);
+    });
+
+    it("derives the persisted detail key for a block written before tool summaries", () => {
+        const metadata: AiTranscriptBlockMetadata = {
+            blockId: "block-legacy-tool",
+            endSequence: 1,
+            entryCount: 1,
+            estimatedHeight: 72,
+            estimatedRowCount: 1,
+            firstCreatedAt: STARTED_AT,
+            lastCreatedAt: STARTED_AT,
+            revision: 1,
+            sessionId: SESSION_ID,
+            startSequence: 1,
+        };
+        const block: AiTranscriptBlock = {
+            ...metadata,
+            capabilityVersion: 1,
+            entries: [
+                {
+                    createdAt: STARTED_AT,
+                    id: "tool:projection-session:legacy-edit",
+                    kind: "tool",
+                    payloadRef: "payload:legacy-edit",
+                    sequence: 1,
+                    sessionId: SESSION_ID,
+                    summary: {
+                        label: "Edit src/app.ts",
+                        preview: "Updated src/app.ts",
+                        status: "completed",
+                    },
+                    updatedAt: STARTED_AT,
+                },
+            ],
+            transcriptRevision: 1,
+        };
+
+        const projection = buildBlockNativeTranscriptProjection(
+            buildAiSessionTranscriptModel({ messages: [], toolActivity: [] }),
+            new Map([[metadata.blockId, block]]),
+            [metadata],
+            new Map(),
+        );
+
+        expect(projection.sealed.transcript.toolActivity).toEqual([
+            expect.objectContaining({
+                id: "legacy-edit",
+                toolActivityDetailId:
+                    "tool-detail:projection-session:legacy-edit",
+            }),
+        ]);
+    });
 });
 
 function createLiveTranscript(

@@ -4336,6 +4336,28 @@ function FileTabView({
             [document, tab.reviewContext],
         ),
     );
+    const hydrateReviewDeltas = useAiStore(
+        (state) => state.hydrateReviewDeltas,
+    );
+    useEffect(() => {
+        if (
+            !trackedFile?.nativeReviewDeltaId ||
+            (trackedFile.oldText !== null && trackedFile.newText !== null)
+        ) {
+            return;
+        }
+
+        // Native review events arrive as compact summaries; hydrate only when
+        // a file surface needs the full diff to preserve the lightweight stream.
+        void hydrateReviewDeltas(trackedFile.sessionId);
+    }, [
+        hydrateReviewDeltas,
+        trackedFile?.nativeReviewDeltaId,
+        trackedFile?.newText,
+        trackedFile?.oldText,
+        trackedFile?.sessionId,
+        trackedFile?.version,
+    ]);
     const keepTrackedFileHunks = useAiStore(
         (state) => state.keepTrackedFileHunks,
     );
@@ -4499,6 +4521,9 @@ function FileTabView({
             ? trackedFile
             : null;
     const isInlineReviewActive = inlineReviewTrackedFile !== null;
+    const isPreparingInlineReview =
+        trackedFile?.nativeReviewState === "preparing" &&
+        inlineReviewTrackedFile === null;
     const reviewSignature = useMemo(
         () => getInlineReviewSignature(inlineReviewTrackedFile),
         [inlineReviewTrackedFile],
@@ -6461,6 +6486,16 @@ function FileTabView({
                 </FileSyncNotice>
             ) : null}
             <div className="relative min-h-0 flex-1">
+                {isPreparingInlineReview ? (
+                    <div className="h-full">
+                        <DeferredSurfaceState
+                            title="Preparing diff…"
+                            titlePath={document.absolutePath}
+                        >
+                            The review diff is being prepared.
+                        </DeferredSurfaceState>
+                    </div>
+                ) : null}
                 {inlineReviewTrackedFile ? (
                     <div
                         className="inline-review-diff relative h-full"
@@ -6687,7 +6722,9 @@ function FileTabView({
                 <div
                     aria-hidden={isMarkdownPreviewVisible}
                     className={
-                        inlineReviewTrackedFile || isMarkdownPreviewVisible
+                        inlineReviewTrackedFile ||
+                        isPreparingInlineReview ||
+                        isMarkdownPreviewVisible
                             ? "hidden"
                             : "relative h-full"
                     }

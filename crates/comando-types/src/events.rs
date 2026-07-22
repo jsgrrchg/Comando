@@ -2,6 +2,7 @@ pub const BACKEND_READY: &str = "backend://ready";
 pub const BACKEND_TEST_EVENT: &str = "backend://test-event";
 pub const BACKEND_ERROR: &str = "backend://error";
 pub const BACKEND_PERFORMANCE_SAMPLE: &str = "backend://performance-sample";
+pub const AI_REVIEW_DELTA_READY_EVENT: &str = "ai://review-delta-ready";
 
 pub const BACKEND_EVENTS: &[&str] = &[
     BACKEND_READY,
@@ -70,6 +71,7 @@ pub const AI_EVENTS: &[&str] = &[
     "ai://user-input-request",
     "ai://token-usage",
     "ai://review-updated",
+    AI_REVIEW_DELTA_READY_EVENT,
     "ai://tracked-file-updated",
     "ai://runtime-connection",
     "ai://error",

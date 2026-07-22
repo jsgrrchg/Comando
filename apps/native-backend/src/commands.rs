@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
+use std::time::Instant;
 
 use comando_ai::AiEngine;
 use comando_ai::events::{
     AI_ERROR_EVENT, AI_RUNTIME_STATUS_EVENT, AI_SESSION_CLOSED_EVENT, AI_SESSION_CREATED_EVENT,
-    AI_SESSION_UPDATED_EVENT, AiRuntimeEvent, session_closed, session_created,
-    session_status_updated, session_updated,
+    AI_SESSION_UPDATED_EVENT, AI_SUBAGENT_CREATED_EVENT, AI_TOOL_ACTIVITY_EVENT, AiRuntimeEvent,
+    session_closed, session_created, session_status_updated, session_updated,
 };
 use comando_ai::history::{
     AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
@@ -45,7 +46,7 @@ use comando_types::commands::{
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
-use comando_types::ids::{RequestId, RuntimeId, WindowId};
+use comando_types::ids::{RequestId, RuntimeId, SessionId, WindowId};
 use comando_types::persistence::{
     NativePersistenceMode, NativePersistenceOpenStoreInput, NativePersistenceSnapshot,
 };
@@ -240,6 +241,8 @@ impl NativeBackend {
             | "ai_migrate_session_history"
             | "ai_get_history_storage_health"
             | "ai_capture_review_baseline"
+            | "ai_load_review_delta"
+            | "ai_load_tool_activity_detail"
             | "ai_reject_tracked_file"
             | "ai_reject_tracked_file_hunks"
             | "ai_reject_all_tracked_files"
@@ -260,6 +263,8 @@ impl NativeBackend {
     }
 
     pub fn handle_request(&mut self, request: RpcRequest) -> CommandResult {
+        let command_name = request.command.clone();
+        let started_at = Instant::now();
         let mut result = match request.command.as_str() {
             BACKEND_PING => response_only(request.id, ping_payload()),
             BACKEND_HANDSHAKE => handle_handshake(request),
@@ -374,6 +379,8 @@ impl NativeBackend {
             | "ai_migrate_session_history"
             | "ai_get_history_storage_health"
             | "ai_capture_review_baseline"
+            | "ai_load_review_delta"
+            | "ai_load_tool_activity_detail"
             | "ai_reject_tracked_file"
             | "ai_reject_tracked_file_hunks"
             | "ai_reject_all_tracked_files"
@@ -398,6 +405,21 @@ impl NativeBackend {
         result
             .outputs
             .extend(self.drain_fs_events(result.should_shutdown));
+        let metric_name = if command_name.starts_with("git_") {
+            "sidecar.git"
+        } else if command_name.starts_with("index_") {
+            "sidecar.index"
+        } else {
+            "sidecar.request"
+        };
+        crate::performance::record(metric_name, started_at.elapsed(), || {
+            format!(
+                "command={} outputCount={} shutdown={}",
+                command_name,
+                result.outputs.len(),
+                result.should_shutdown
+            )
+        });
         result
     }
 
@@ -2285,21 +2307,26 @@ impl NativeBackend {
                     Ok(input) => input,
                     Err(error) => return error_only(request.id, error),
                 };
+                let session_id = input.session_id.clone();
                 match self.ai_engine.close_session(input) {
-                    Ok((output, summary)) => CommandResult {
-                        outputs: vec![
-                            response_ok(
-                                request.id,
-                                serde_json::to_value(output).expect("ai close output serializes"),
-                            ),
-                            event(
-                                AI_SESSION_CLOSED_EVENT,
-                                serde_json::to_value(session_closed(&summary))
-                                    .expect("ai session closed event serializes"),
-                            ),
-                        ],
-                        should_shutdown: false,
-                    },
+                    Ok((output, summary)) => {
+                        self.review_service.close_session(&session_id);
+                        CommandResult {
+                            outputs: vec![
+                                response_ok(
+                                    request.id,
+                                    serde_json::to_value(output)
+                                        .expect("ai close output serializes"),
+                                ),
+                                event(
+                                    AI_SESSION_CLOSED_EVENT,
+                                    serde_json::to_value(session_closed(&summary))
+                                        .expect("ai session closed event serializes"),
+                                ),
+                            ],
+                            should_shutdown: false,
+                        }
+                    }
                     Err(error) => error_only(request.id, error.to_native_error()),
                 }
             }
@@ -2625,12 +2652,39 @@ impl NativeBackend {
                     Ok(session) => session,
                     Err(error) => return error_only(request.id, error.to_native_error()),
                 };
-                match self.review_service.capture_baseline(&session) {
+                match self.review_service.capture_baseline(&session, input) {
                     Ok(output) => response_only(
                         request.id,
                         serde_json::to_value(output).expect("review baseline output serializes"),
                     ),
                     Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_review_delta" => {
+                let input = match parse_args::<native_ai::NativeReviewLoadDeltaInput>(&request) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.review_service.load_delta(input) {
+                    Ok(output) => response_only(
+                        request.id,
+                        serde_json::to_value(output).expect("review delta output serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_tool_activity_detail" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadToolActivityDetailInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self
+                    .ai_engine
+                    .load_tool_activity_detail(&input.session_id, &input.tool_activity_detail_id)
+                {
+                    Ok(output) => response_only(request.id, output.unwrap_or(Value::Null)),
+                    Err(error) => error_only(request.id, error.to_native_error()),
                 }
             }
             "ai_reject_tracked_file" => {
@@ -3033,20 +3087,106 @@ impl NativeBackend {
             .map_err(|error| error.to_native_error())?;
         let ai_engine = self.ai_engine.clone();
         let runtime_setup_store = Arc::clone(&self.runtime_setup_store_shared);
+        let review_worker = self.review_service.worker_handle();
         thread::spawn(move || {
             for ai_event in event_receiver {
-                if let Err(error) = ai_engine.record_history_event(&ai_event) {
-                    eprintln!(
-                        "[comando-native-backend] Native AI history event write failed: {error}"
+                if ai_event.event_name == AI_SUBAGENT_CREATED_EVENT
+                    && let (Some(parent_session_id), Some(child_session_id)) = (
+                        ai_event
+                            .payload
+                            .get("parentSessionId")
+                            .and_then(Value::as_str),
+                        ai_event
+                            .payload
+                            .get("childSessionId")
+                            .and_then(Value::as_str),
+                    )
+                {
+                    review_worker.inherit_session(
+                        &SessionId(parent_session_id.into()),
+                        SessionId(child_session_id.into()),
                     );
                 }
-                let mut outputs = vec![ai_runtime_event_output(ai_event.clone())];
+                let mut review_outputs = Vec::new();
+                let mut preserve_tool_activity_diffs = false;
+                if ai_event.event_name == AI_TOOL_ACTIVITY_EVENT {
+                    if let Ok(activity) = serde_json::from_value::<
+                        native_ai::NativeAiToolActivityPayload,
+                    >(ai_event.payload.clone())
+                    {
+                        let review_payloads = review_worker.ingest_tool_activity(activity);
+                        preserve_tool_activity_diffs = review_payloads.iter().any(|payload| {
+                            payload.delta.state == native_ai::NativeReviewDeltaState::Unavailable
+                        });
+                        for payload in review_payloads {
+                            // Publish the lightweight placeholder before the worker has
+                            // materialized hunks so review surfaces never lose the edit.
+                            review_outputs.push(event(
+                                comando_types::events::AI_REVIEW_DELTA_READY_EVENT,
+                                serde_json::to_value(payload)
+                                    .expect("provisional review delta serializes"),
+                            ));
+                        }
+                    } else {
+                        // Preserve the original evidence when native review cannot classify it.
+                        preserve_tool_activity_diffs = true;
+                    }
+                }
+                if ai_event.event_name == AI_SESSION_CLOSED_EVENT
+                    && let Some(session_id) =
+                        ai_event.payload.get("sessionId").and_then(Value::as_str)
+                {
+                    review_worker.cancel_session(&SessionId(session_id.into()));
+                }
+                let history_started_at = Instant::now();
+                let history_persisted = match ai_engine.record_history_event(&ai_event) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!(
+                            "[comando-native-backend] Native AI history event write failed: {error}"
+                        );
+                        false
+                    }
+                };
+                crate::performance::record(
+                    "sidecar.ai-history-persist",
+                    history_started_at.elapsed(),
+                    || {
+                        let payload = ai_event.payload.as_object();
+                        let session_id = payload
+                            .and_then(|value| value.get("sessionId"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("-");
+                        let tool_call_id = payload
+                            .and_then(|value| value.get("toolCallId"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("-");
+                        format!(
+                            "eventName={} sessionId={} toolCallId={}",
+                            ai_event.event_name, session_id, tool_call_id
+                        )
+                    },
+                );
+                let forward_event = prepare_ai_runtime_event_for_forwarding(
+                    ai_event.clone(),
+                    history_persisted,
+                    preserve_tool_activity_diffs,
+                );
+                let mut outputs = vec![ai_runtime_event_output(forward_event)];
+                outputs.extend(review_outputs);
                 outputs.extend(ai_error_runtime_outputs(
                     &runtime_setup_store,
                     &ai_engine,
                     &ai_event,
                 ));
-                if background_sender.send(outputs).is_err() {
+                let forward_started_at = Instant::now();
+                let send_result = background_sender.send(outputs);
+                crate::performance::record(
+                    "sidecar.ai-event-forward",
+                    forward_started_at.elapsed(),
+                    || format!("eventName={}", ai_event.event_name),
+                );
+                if send_result.is_err() {
                     break;
                 }
             }
@@ -3629,7 +3769,11 @@ impl NativeBackend {
     }
 
     pub(crate) fn drain_fs_events(&mut self, force: bool) -> Vec<RpcOutput> {
+        let started_at = Instant::now();
         let drain = self.fs_service.drain_watchers(force);
+        let tree_invalidation_count = drain.invalidations.len();
+        let git_invalidation_count = drain.git_invalidations.len();
+        let fs_event_count = drain.fs_events.len();
         let mut outputs = Vec::new();
         for invalidation in drain.invalidations {
             outputs.push(event(
@@ -3649,7 +3793,30 @@ impl NativeBackend {
                 serde_json::to_value(payload).expect("fs event serializes"),
             ));
         }
+        crate::performance::record(
+            "sidecar.fs-invalidation-drain",
+            started_at.elapsed(),
+            || {
+                format!(
+                    "force={} fsEvents={} gitInvalidations={} treeInvalidations={}",
+                    force, fs_event_count, git_invalidation_count, tree_invalidation_count,
+                )
+            },
+        );
         outputs
+    }
+
+    pub(crate) fn drain_review_events(&mut self) -> Vec<RpcOutput> {
+        self.review_service
+            .drain_worker_events()
+            .into_iter()
+            .map(|payload| {
+                event(
+                    comando_types::events::AI_REVIEW_DELTA_READY_EVENT,
+                    serde_json::to_value(payload).expect("review delta event serializes"),
+                )
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -4358,6 +4525,124 @@ fn ai_runtime_event_output(event_payload: AiRuntimeEvent) -> RpcOutput {
     event(event_payload.event_name, event_payload.payload)
 }
 
+fn prepare_ai_runtime_event_for_forwarding(
+    event: AiRuntimeEvent,
+    history_persisted: bool,
+    preserve_diffs: bool,
+) -> AiRuntimeEvent {
+    if !history_persisted {
+        // The renderer needs the original payload when its addressable detail was not stored.
+        return event;
+    }
+    compact_tool_activity_event(event, preserve_diffs)
+}
+
+fn compact_tool_activity_event(mut event: AiRuntimeEvent, preserve_diffs: bool) -> AiRuntimeEvent {
+    if event.event_name != AI_TOOL_ACTIVITY_EVENT {
+        return event;
+    }
+    let Some(payload) = event.payload.as_object_mut() else {
+        return event;
+    };
+    let (Some(session_id), Some(tool_call_id)) = (
+        payload.get("sessionId").and_then(Value::as_str),
+        payload.get("toolCallId").and_then(Value::as_str),
+    ) else {
+        return event;
+    };
+    payload.insert(
+        "toolActivityDetailId".to_string(),
+        Value::String(format!("tool-detail:{session_id}:{tool_call_id}")),
+    );
+    if let Some(change_stats) = compact_tool_activity_change_stats(payload.get("diffs")) {
+        // Preserve only header-scale facts before dropping the expensive hunks.
+        // The detail record remains authoritative when the review is opened.
+        payload.insert("changeStats".to_string(), change_stats);
+    }
+    let compacted_fields = if preserve_diffs {
+        &["rawInput", "rawOutput", "terminalOutput"][..]
+    } else {
+        &["diffs", "rawInput", "rawOutput", "terminalOutput"][..]
+    };
+    for key in compacted_fields {
+        payload.remove(*key);
+    }
+    event
+}
+
+fn compact_tool_activity_change_stats(diffs: Option<&Value>) -> Option<Value> {
+    let diffs = diffs?.as_array()?;
+    if diffs.is_empty() {
+        return None;
+    }
+
+    let mut additions = 0_u32;
+    let mut deletions = 0_u32;
+    let mut approximate = false;
+
+    for diff in diffs {
+        let Some(diff) = diff.as_object() else {
+            approximate = true;
+            continue;
+        };
+        if diff.get("isText").and_then(Value::as_bool) == Some(false) {
+            approximate |= diff.get("reversible").and_then(Value::as_bool) == Some(false);
+            continue;
+        }
+        if let Some(hunks) = diff
+            .get("hunks")
+            .and_then(Value::as_array)
+            .filter(|hunks| !hunks.is_empty())
+        {
+            for hunk in hunks {
+                let Some(lines) = hunk.get("lines").and_then(Value::as_array) else {
+                    approximate = true;
+                    continue;
+                };
+                for line in lines {
+                    match line.get("type").and_then(Value::as_str) {
+                        Some("add") => additions = additions.saturating_add(1),
+                        Some("remove") => deletions = deletions.saturating_add(1),
+                        _ => {}
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Do not rebuild hunks on the event bridge. Text-only fallbacks still
+        // provide a bounded estimate without putting diff computation on its path.
+        approximate = true;
+        match diff.get("kind").and_then(Value::as_str) {
+            Some("create") => {
+                additions = additions.saturating_add(json_text_line_count(diff.get("newText")));
+            }
+            Some("delete") => {
+                if diff.get("reversible").and_then(Value::as_bool) != Some(false) {
+                    deletions = deletions.saturating_add(json_text_line_count(diff.get("oldText")));
+                }
+            }
+            Some("move") if diff.get("oldText") == diff.get("newText") => {}
+            _ => {}
+        }
+    }
+
+    Some(json!({
+        "additions": additions,
+        "approximate": approximate,
+        "deletions": deletions,
+        "fileCount": u32::try_from(diffs.len()).unwrap_or(u32::MAX),
+    }))
+}
+
+fn json_text_line_count(value: Option<&Value>) -> u32 {
+    value
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(|text| u32::try_from(text.split('\n').count()).unwrap_or(u32::MAX))
+        .unwrap_or(0)
+}
+
 fn parse_args<T: DeserializeOwned>(request: &RpcRequest) -> Result<T, NativeError> {
     serde_json::from_value::<T>(request.args.clone()).map_err(|error| {
         NativeError::new(
@@ -4655,6 +4940,89 @@ mod tests {
             )]
         );
         assert!(!result.should_shutdown);
+    }
+
+    #[test]
+    fn compacts_tool_activity_with_header_change_stats() {
+        let event = AiRuntimeEvent::new(
+            AI_TOOL_ACTIVITY_EVENT,
+            &json!({
+                "sessionId": "session-1",
+                "toolCallId": "edit-1",
+                "diffs": [{
+                    "hunks": [{
+                        "lines": [
+                            { "type": "remove" },
+                            { "type": "add" },
+                            { "type": "add" }
+                        ]
+                    }],
+                    "isText": true,
+                    "kind": "update",
+                    "reversible": true
+                }]
+            }),
+        );
+
+        let compacted = compact_tool_activity_event(event, false);
+
+        assert_eq!(
+            compacted.payload["changeStats"],
+            json!({
+                "additions": 2,
+                "approximate": false,
+                "deletions": 1,
+                "fileCount": 1
+            })
+        );
+        assert!(compacted.payload.get("diffs").is_none());
+        assert_eq!(
+            compacted.payload["toolActivityDetailId"],
+            "tool-detail:session-1:edit-1"
+        );
+    }
+
+    #[test]
+    fn preserves_tool_diffs_when_native_review_is_unavailable() {
+        let diffs = json!([{
+            "isText": true,
+            "kind": "update",
+            "newText": "after",
+            "oldText": "before",
+            "path": "src/app.ts",
+            "reversible": true
+        }]);
+        let event = AiRuntimeEvent::new(
+            AI_TOOL_ACTIVITY_EVENT,
+            &json!({
+                "sessionId": "session-1",
+                "toolCallId": "edit-1",
+                "diffs": diffs
+            }),
+        );
+
+        let compacted = compact_tool_activity_event(event, true);
+
+        assert_eq!(compacted.payload["diffs"], diffs);
+        assert!(compacted.payload.get("rawInput").is_none());
+    }
+
+    #[test]
+    fn forwards_the_original_tool_payload_when_history_persistence_fails() {
+        let payload = json!({
+            "sessionId": "session-1",
+            "toolCallId": "edit-1",
+            "diffs": [{ "path": "src/app.ts", "newText": "after", "oldText": "before" }],
+            "rawInput": { "path": "src/app.ts" },
+            "rawOutput": { "updated": true },
+            "terminalOutput": "done"
+        });
+        let event = AiRuntimeEvent::new(AI_TOOL_ACTIVITY_EVENT, &payload);
+
+        let forwarded = prepare_ai_runtime_event_for_forwarding(event, false, false);
+
+        assert_eq!(forwarded.payload, payload);
+        assert!(forwarded.payload.get("toolActivityDetailId").is_none());
     }
 
     #[test]

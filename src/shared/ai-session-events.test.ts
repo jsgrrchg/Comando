@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { buildAiSessionDomainEvents } from "./ai-session-events";
+import {
+    buildAiSessionDomainEvents,
+    normalizeAiSessionStatusTitle,
+} from "./ai-session-events";
+
+describe("normalizeAiSessionStatusTitle", () => {
+    it("trims usable titles and discards blank values", () => {
+        expect(normalizeAiSessionStatusTitle("  Helpful title  ")).toBe(
+            "Helpful title",
+        );
+        expect(normalizeAiSessionStatusTitle(" \n ")).toBeNull();
+        expect(normalizeAiSessionStatusTitle(null)).toBeNull();
+    });
+});
 import type { AiSessionSnapshot, AiToolActivity } from "./ipc";
 
 function createSnapshot(

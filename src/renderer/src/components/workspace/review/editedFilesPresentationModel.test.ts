@@ -185,4 +185,16 @@ describe("editedFilesPresentationModel", () => {
             ),
         ).toBe("New file");
     });
+
+    it("labels provisional native review files while their hunks are prepared", () => {
+        const preparing = createTrackedFile({
+            nativeReviewState: "preparing",
+        });
+
+        expect(getFileTone(preparing)).toEqual({
+            accent: "var(--text-muted)",
+            badge: "Preparing",
+        });
+        expect(getFileSummary(preparing)).toBe("Preparing diff…");
+    });
 });

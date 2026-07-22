@@ -201,6 +201,7 @@ function mergeCanonicalToolActivity(
     return {
         ...canonical,
         action: canonical.action ?? alias.action,
+        changeStats: canonical.changeStats ?? alias.changeStats ?? null,
         createdAt:
             canonical.createdAt < alias.createdAt
                 ? canonical.createdAt
@@ -213,6 +214,8 @@ function mergeCanonicalToolActivity(
                 : alias.locations,
         rawInputJson: canonical.rawInputJson ?? alias.rawInputJson,
         rawOutputJson: canonical.rawOutputJson ?? alias.rawOutputJson,
+        toolActivityDetailId:
+            canonical.toolActivityDetailId ?? alias.toolActivityDetailId ?? null,
         summary: canonical.summary ?? alias.summary,
         terminalOutput: canonical.terminalOutput ?? alias.terminalOutput,
         updatedAt:

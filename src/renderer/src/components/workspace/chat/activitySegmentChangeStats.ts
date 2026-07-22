@@ -78,6 +78,61 @@ function toNetDiff(state: SegmentFileState): AiFileDiff | null {
 export function deriveActivitySegmentChangeStats(
     entries: readonly ToolActivitySegmentEntry[],
 ): ActivitySegmentChangeStats {
+    const cachedEntries = entries.filter(
+        (entry) => entry.reviewEntry.activity.changeStats !== null && entry.reviewEntry.activity.changeStats !== undefined,
+    );
+    const hasUnhydratedCachedEntry = cachedEntries.some(
+        (entry) =>
+            entry.reviewEntry.activity.diffs.length === 0 &&
+            entry.reviewEntry.trackedFiles.length === 0,
+    );
+    if (hasUnhydratedCachedEntry) {
+        const cached = cachedEntries.reduce(
+            (total, entry) => {
+                const stats = entry.reviewEntry.activity.changeStats!;
+                return {
+                    additions: total.additions + stats.additions,
+                    approximate: total.approximate || stats.approximate,
+                    deletions: total.deletions + stats.deletions,
+                };
+            },
+            { additions: 0, approximate: false, deletions: 0 },
+        );
+        const uncached = deriveDetailedActivitySegmentChangeStats(
+            entries.filter(
+                (entry) =>
+                    entry.reviewEntry.activity.changeStats === null ||
+                    entry.reviewEntry.activity.changeStats === undefined,
+            ),
+        );
+        const hasUncachedDetailedEntry = entries.some(
+            (entry) =>
+                (entry.reviewEntry.activity.changeStats === null ||
+                    entry.reviewEntry.activity.changeStats === undefined) &&
+                (entry.reviewEntry.activity.diffs.length > 0 ||
+                    entry.reviewEntry.trackedFiles.length > 0),
+        );
+
+        // Per-tool summaries deliberately avoid carrying file text. A lone
+        // cached edit is exact; multiple edits can overlap, so their aggregate
+        // is labelled approximate until full details derive the net diff.
+        return {
+            additions: cached.additions + uncached.additions,
+            approximate:
+                cached.approximate ||
+                uncached.approximate ||
+                cachedEntries.length > 1 ||
+                hasUncachedDetailedEntry,
+            deletions: cached.deletions + uncached.deletions,
+        };
+    }
+
+    return deriveDetailedActivitySegmentChangeStats(entries);
+}
+
+function deriveDetailedActivitySegmentChangeStats(
+    entries: readonly ToolActivitySegmentEntry[],
+): ActivitySegmentChangeStats {
     const states: SegmentFileState[] = [];
 
     for (const entry of entries) {

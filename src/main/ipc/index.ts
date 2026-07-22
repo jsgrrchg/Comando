@@ -19,6 +19,8 @@ import {
     type GetAiSessionTranscriptPageInput,
     type AiLoadTranscriptPayloadInput,
     type AiLoadTranscriptPayloadsInput,
+    type AiLoadReviewDeltaInput,
+    type AiLoadToolActivityDetailInput,
     type AiSessionModeMutationInput,
     type AiSessionModelMutationInput,
     type AiSessionRenameMutationInput,
@@ -393,6 +395,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getAiEnvironmentDiagnostics);
     ipcMain.removeHandler(IPC_CHANNELS.getAiRuntimeStatus);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionSnapshot);
+    ipcMain.removeHandler(IPC_CHANNELS.loadAiReviewDelta);
+    ipcMain.removeHandler(IPC_CHANNELS.releaseAiReviewDelta);
+    ipcMain.removeHandler(IPC_CHANNELS.loadAiToolActivityDetail);
     ipcMain.removeHandler(IPC_CHANNELS.resyncAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.listAiSessionHistory);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionTranscriptPage);
@@ -2266,6 +2271,23 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         IPC_CHANNELS.getAiSessionSnapshot,
         (_event, sessionId: string) =>
             options.aiService.getSessionSnapshot(sessionId),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.loadAiReviewDelta,
+        (_event, input: AiLoadReviewDeltaInput) =>
+            options.aiService.loadReviewDelta(
+                input.sessionId,
+                input.reviewDeltaId,
+                input.expectedRevision,
+            ),
+    );
+    ipcMain.handle(IPC_CHANNELS.releaseAiReviewDelta, (_event, reviewDeltaId: string) => {
+        options.aiService.releaseReviewDelta(reviewDeltaId);
+    });
+    ipcMain.handle(
+        IPC_CHANNELS.loadAiToolActivityDetail,
+        (_event, input: AiLoadToolActivityDetailInput) =>
+            options.aiService.loadToolActivityDetail(input),
     );
     ipcMain.handle(IPC_CHANNELS.resyncAiSession, (event, sessionId: string) => {
         const context = requireWindowContext(event.sender, "main");

@@ -191,6 +191,9 @@ export const IPC_CHANNELS = {
     rejectAiTrackedFileHunks: "ai:reject-tracked-file-hunks",
     keepAllAiTrackedFiles: "ai:keep-all-tracked-files",
     rejectAllAiTrackedFiles: "ai:reject-all-tracked-files",
+    loadAiReviewDelta: "ai:load-review-delta",
+    releaseAiReviewDelta: "ai:release-review-delta",
+    loadAiToolActivityDetail: "ai:load-tool-activity-detail",
 } as const;
 
 export const IPC_EVENTS = {
@@ -2528,8 +2531,18 @@ export interface AiToolActivityLocation {
     readonly path: string;
 }
 
+export interface AiToolActivityChangeStats {
+    readonly additions: number;
+    readonly approximate: boolean;
+    readonly deletions: number;
+    readonly fileCount: number;
+}
+
 export interface AiToolActivity {
     readonly action?: AiToolActivityAction | null;
+    // A compact, persisted cache for activity headers. Full diffs remain the
+    // source of truth and are restored only when the activity is opened.
+    readonly changeStats?: AiToolActivityChangeStats | null;
     readonly createdAt: string;
     readonly diffs: readonly AiFileDiff[];
     readonly exitCode: number | null;
@@ -2541,11 +2554,23 @@ export interface AiToolActivity {
     readonly sessionId: string;
     readonly status: "completed" | "failed" | "in_progress" | "pending";
     readonly summary: string | null;
+    readonly toolActivityDetailId?: string | null;
     readonly terminalOutput: string | null;
     readonly title: string;
     readonly updatedAt: string;
 }
 
+export interface AiLoadToolActivityDetailInput {
+    readonly sessionId: string;
+    readonly toolActivityDetailId: string;
+}
+
+export interface AiToolActivityDetail {
+    readonly diffs: readonly AiFileDiff[];
+    readonly rawInputJson: string | null;
+    readonly rawOutputJson: string | null;
+    readonly terminalOutput: string | null;
+}
 export interface AiPlanEntry {
     readonly content: string;
     readonly priority: "high" | "low" | "medium";
@@ -2618,6 +2643,10 @@ export interface AiTrackedFile {
     readonly hunksAreAnchored?: boolean;
     readonly isText: boolean;
     readonly kind: "create" | "delete" | "move" | "update";
+    readonly nativeReviewDeltaId?: string;
+    readonly nativeReviewInputRevision?: number;
+    readonly nativeReviewState?: AiReviewDeltaState;
+    readonly nativeReviewWorkCycleId?: string;
     readonly newText: string | null;
     readonly oldText: string | null;
     readonly path: string;
@@ -2709,6 +2738,7 @@ export interface AiSessionSnapshot {
     readonly runtimeId: AiRuntimeId;
     readonly runtimeSessionId: string | null;
     readonly reviewActionLog?: AiReviewActionLogState | null;
+    readonly reviewDeltas?: readonly AiReviewDeltaSummary[];
     readonly sessionId: string;
     readonly status: AiSessionStatus;
     readonly title: string;
@@ -2730,6 +2760,11 @@ export interface AiTranscriptEntrySummary {
     readonly label: string | null;
     readonly preview: string | null;
     readonly status: string | null;
+    // Tool entries retain this lightweight identity so an evicted payload can
+    // still be classified and reloaded as an editable change.
+    readonly toolActivityDetailId?: string | null;
+    readonly toolChangeStats?: AiToolActivityChangeStats | null;
+    readonly toolKind?: string | null;
 }
 
 export interface AiTranscriptEntryEnvelope {
@@ -2931,6 +2966,7 @@ export interface AiSessionDomainEventBase {
         | "permission-request"
         | "plan"
         | "review"
+        | "review-delta"
         | "session-info"
         | "status"
         | "session-closed"
@@ -3054,6 +3090,49 @@ export interface AiSessionReviewEvent extends AiSessionDomainEventBase {
     readonly trackedFiles: readonly AiTrackedFile[];
 }
 
+export type AiReviewDeltaState =
+    | "preparing"
+    | "ready"
+    | "partial"
+    | "unavailable"
+    | "superseded";
+
+export interface AiReviewFileSummary {
+    readonly observedHash?: string;
+    readonly path: string;
+    readonly previousPath?: string;
+    readonly reason?: string;
+    readonly state: AiReviewDeltaState;
+}
+
+export interface AiReviewDeltaSummary {
+    readonly deltaId: string;
+    readonly files: readonly AiReviewFileSummary[];
+    readonly inputRevision: number;
+    readonly revision: number;
+    readonly sessionId: string;
+    readonly state: AiReviewDeltaState;
+    readonly toolCallId: string;
+    readonly updatedAt: string;
+    readonly workCycleId: string;
+}
+
+export interface AiReviewDeltaDetails {
+    readonly delta: AiReviewDeltaSummary;
+    readonly trackedFiles: readonly AiTrackedFile[];
+}
+
+export interface AiLoadReviewDeltaInput {
+    readonly expectedRevision: number;
+    readonly reviewDeltaId: string;
+    readonly sessionId: string;
+}
+
+export interface AiSessionReviewDeltaEvent extends AiSessionDomainEventBase {
+    readonly delta: AiReviewDeltaSummary;
+    readonly kind: "review-delta";
+}
+
 export interface AiSessionInfoEvent extends AiSessionDomainEventBase {
     readonly kind: "session-info";
     readonly projectId: string | null;
@@ -3088,6 +3167,7 @@ export type AiSessionDomainEvent =
     | AiSessionPermissionRequestEvent
     | AiSessionPlanEvent
     | AiSessionReviewEvent
+    | AiSessionReviewDeltaEvent
     | AiSessionClosedEvent
     | AiSessionStatusEvent
     | AiSessionSubagentBreadcrumbEvent
@@ -3638,6 +3718,13 @@ export interface ComandoApi {
     getAiSessionSnapshot: (
         sessionId: string,
     ) => Promise<AiSessionSnapshot | null>;
+    loadAiReviewDelta: (
+        input: AiLoadReviewDeltaInput,
+    ) => Promise<AiReviewDeltaDetails | null>;
+    releaseAiReviewDelta: (reviewDeltaId: string) => Promise<void>;
+    loadAiToolActivityDetail: (
+        input: AiLoadToolActivityDetailInput,
+    ) => Promise<AiToolActivityDetail | null>;
     resyncAiSession: (sessionId: string) => Promise<AiSessionSnapshot | null>;
     getAiSessionTranscriptPage: (
         input: GetAiSessionTranscriptPageInput,

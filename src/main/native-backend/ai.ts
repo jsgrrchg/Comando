@@ -29,6 +29,7 @@ import type {
     AiTranscriptEntryEnvelope,
     AiLoadTranscriptPayloadInput,
     AiLoadTranscriptPayloadsInput,
+    AiLoadToolActivityDetailInput,
     AiTranscriptPayload,
     AiTranscriptPayloadsOutput,
     AiTranscriptStorageState,
@@ -42,6 +43,7 @@ import type {
     ListAiSessionHistoryInput,
 } from "@shared/ipc";
 import { AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX } from "@shared/ipc";
+import { toNativeReviewDeltaReference } from "@shared/ai-review-delta";
 import {
     getNativeAiTranscriptBlockCapabilityVersion,
     NATIVE_AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
@@ -58,6 +60,8 @@ import {
     type NativeAiLaunchRuntimeAuthOutput,
     type NativeAiReviewCaptureOutput,
     type NativeAiReviewCommandOutput,
+    type NativeReviewDeltaReference,
+    type NativeReviewLoadDeltaOutput,
     type NativeAiRuntimeSessionMapping,
     type NativeAiSessionSnapshot,
     type NativeAiSessionTranscriptPage,
@@ -277,13 +281,39 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         return output.captured === true;
     }
 
+    async loadReviewDelta(
+        reference: NativeReviewDeltaReference,
+    ): Promise<NativeReviewLoadDeltaOutput> {
+        if (!this.#reviewEnabled) {
+            throw new Error("Native AI review is not enabled.");
+        }
+        return await this.#client.request<NativeReviewLoadDeltaOutput>(
+            "ai_load_review_delta",
+            { reference },
+        );
+    }
+
+    async loadToolActivityDetail(
+        input: AiLoadToolActivityDetailInput,
+    ): Promise<unknown> {
+        return await this.#client.request<unknown>(
+            "ai_load_tool_activity_detail",
+            { ...input },
+        );
+    }
+
     async rejectTrackedFile(
         input: AiReviewSessionRpcInput<AiTrackedFileMutationInput>,
     ): Promise<AiReviewMutationResult> {
         const trackedFile = nativeReviewTrackedFileForInput(input);
+        const reference = nativeReviewReferenceForTrackedFile(
+            input.context.snapshot,
+            trackedFile,
+        );
         await this.#requestReviewDiskMutation(input, "ai_reject_tracked_file", {
             expectedVersion:
                 input.input.expectedVersion ?? trackedFile.version ?? null,
+            ...(reference ? { reference } : {}),
             trackedFile,
         });
         return reviewMutationResultFromContext(input);
@@ -293,10 +323,15 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         input: AiReviewSessionRpcInput<AiTrackedFileHunkMutationInput>,
     ): Promise<AiReviewMutationResult> {
         const trackedFile = nativeReviewTrackedFileForInput(input);
+        const reference = nativeReviewReferenceForTrackedFile(
+            input.context.snapshot,
+            trackedFile,
+        );
         await this.#requestReviewDiskMutation(input, "ai_reject_tracked_file_hunks", {
             expectedVersion:
                 input.input.expectedVersion ?? trackedFile.version ?? null,
             hunkIds: input.input.hunkIds,
+            ...(reference ? { reference } : {}),
             trackedFile,
         });
         return reviewMutationResultFromContext(input);
@@ -307,7 +342,8 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     ): Promise<AiReviewMutationResult> {
         await this.#requestReviewDiskMutation(input, "ai_reject_all_tracked_files", {
             trackedFiles: input.context.snapshot.trackedFiles.filter(
-                isAiTrackedFileUnresolved,
+                (file) =>
+                    isAiTrackedFileUnresolved(file) && file.reversible,
             ),
         });
         return reviewMutationResultFromContext(input);
@@ -1257,6 +1293,20 @@ function nativeReviewTrackedFileForInput(
         throw new Error("The file to review was not found.");
     }
     return trackedFile;
+}
+
+function nativeReviewReferenceForTrackedFile(
+    snapshot: AiSessionSnapshot,
+    trackedFile: AiTrackedFile,
+): NativeReviewDeltaReference | null {
+    const deltaId = trackedFile.nativeReviewDeltaId;
+    if (!deltaId) {
+        return null;
+    }
+    const delta = snapshot.reviewDeltas?.find(
+        (candidate) => candidate.deltaId === deltaId,
+    );
+    return delta ? toNativeReviewDeltaReference(delta) : null;
 }
 
 function reviewMutationResultFromContext<TInput>(

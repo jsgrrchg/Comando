@@ -543,6 +543,12 @@ pub struct NativeAiTranscriptEntrySummary {
     pub label: Option<String>,
     pub preview: Option<String>,
     pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_activity_detail_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_change_stats: Option<NativeAiToolActivityChangeStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1060,6 +1066,10 @@ pub struct NativeAiToolActivityPayload {
     pub status: String,
     pub summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_activity_detail_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_stats: Option<NativeAiToolActivityChangeStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_input: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_output: Option<serde_json::Value>,
@@ -1069,6 +1079,22 @@ pub struct NativeAiToolActivityPayload {
     pub terminal_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiToolActivityChangeStats {
+    pub additions: u32,
+    pub approximate: bool,
+    pub deletions: u32,
+    pub file_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiLoadToolActivityDetailInput {
+    pub session_id: SessionId,
+    pub tool_activity_detail_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1172,4 +1198,78 @@ pub struct NativeAiErrorPayload {
     pub message: String,
     pub recoverable: bool,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NativeReviewDeltaState {
+    Preparing,
+    Ready,
+    Partial,
+    Unavailable,
+    Superseded,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewFileSummary {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_path: Option<String>,
+    pub state: NativeReviewDeltaState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_hash: Option<String>,
+    /// A stable machine-readable explanation when review details cannot be materialized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewDeltaSummary {
+    pub delta_id: crate::ids::ReviewDeltaId,
+    pub session_id: SessionId,
+    pub work_cycle_id: String,
+    pub tool_call_id: ToolCallId,
+    pub input_revision: crate::ids::ReviewRevision,
+    pub revision: crate::ids::ReviewRevision,
+    pub state: NativeReviewDeltaState,
+    #[serde(default)]
+    pub files: Vec<NativeReviewFileSummary>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiReviewDeltaReadyPayload {
+    #[serde(flatten)]
+    pub base: NativeAiEventBase,
+    pub delta: NativeReviewDeltaSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewDeltaReference {
+    pub delta_id: crate::ids::ReviewDeltaId,
+    pub session_id: SessionId,
+    pub work_cycle_id: String,
+    pub tool_call_id: ToolCallId,
+    pub input_revision: crate::ids::ReviewRevision,
+    pub expected_revision: crate::ids::ReviewRevision,
+    #[serde(default)]
+    pub observed_hashes: Vec<NativeReviewFileSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewLoadDeltaInput {
+    pub reference: NativeReviewDeltaReference,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeReviewLoadDeltaOutput {
+    pub delta: NativeReviewDeltaSummary,
+    #[serde(default)]
+    pub tracked_files: Vec<serde_json::Value>,
 }
