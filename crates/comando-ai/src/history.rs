@@ -501,7 +501,7 @@ impl AiHistoryStore {
             return Ok(Some(detail.payload));
         }
         self.load_legacy_tool_activity_detail(session_id, detail_id)
-}
+    }
     pub fn save_transcript_window(
         &self,
         session_id: &SessionId,
@@ -1458,7 +1458,7 @@ impl AiHistoryStore {
             return Ok(None);
         }
         Ok(Some(detail))
-}
+    }
     fn transcript_path(&self, session_id: &SessionId) -> PathBuf {
         self.session_dir(session_id).join(SESSION_TRANSCRIPT_FILE)
     }
