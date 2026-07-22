@@ -89,6 +89,7 @@ function renderTopBar() {
 
 describe("DesktopTopBar context menu", () => {
     it("offers move and close actions for the context clicked with the secondary button", async () => {
+        const writeClipboardText = vi.fn(() => Promise.resolve());
         const writeText = vi.fn(() => Promise.resolve());
         const showWorkspaceContextMenu = vi
             .fn()
@@ -99,7 +100,10 @@ describe("DesktopTopBar context menu", () => {
             ...navigator,
             clipboard: { writeText },
         });
-        vi.stubGlobal("comando", { showWorkspaceContextMenu });
+        vi.stubGlobal("comando", {
+            showWorkspaceContextMenu,
+            writeClipboardText,
+        });
         const { container, onCloseContext, onMoveContextToNewWindow } =
             renderTopBar();
         const tab = container.querySelector<HTMLElement>(
@@ -124,7 +128,8 @@ describe("DesktopTopBar context menu", () => {
             x: 120,
             y: 40,
         });
-        expect(writeText).toHaveBeenCalledWith("/projects/sandbox");
+        expect(writeClipboardText).toHaveBeenCalledWith("/projects/sandbox");
+        expect(writeText).not.toHaveBeenCalled();
 
         await act(async () => {
             tab?.dispatchEvent(

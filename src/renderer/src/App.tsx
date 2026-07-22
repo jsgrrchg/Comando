@@ -29,6 +29,7 @@ import { resolveEditorLanguage } from "@shared/editor-language";
 import { isActiveAiRuntimeId } from "@shared/ai-runtimes";
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
+import { writeClipboardText } from "./app/utils/clipboard";
 import { setCachedAppEditorSettings } from "./app/settings/client";
 import {
     buildGitTreeNodesFromProjectTree,
@@ -2531,7 +2532,7 @@ export function App() {
             }
 
             try {
-                await navigator.clipboard.writeText(text);
+                await writeClipboardText(text);
             } catch {
                 window.alert("Could not copy the requested path.");
             }

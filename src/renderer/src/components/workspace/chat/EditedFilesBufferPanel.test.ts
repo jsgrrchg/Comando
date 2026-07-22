@@ -175,7 +175,7 @@ describe("EditedFilesBufferPanel", () => {
     it("starts collapsed to keep the sidebar compact", () => {
         const markup = renderToStaticMarkup(
             createElement(EditedFilesBufferPanel, {
-                defaultCollapsed: true,
+                collapsed: true,
                 diffZoom: 0.72,
                 items: [createItem()],
                 onKeepAll: () => {},

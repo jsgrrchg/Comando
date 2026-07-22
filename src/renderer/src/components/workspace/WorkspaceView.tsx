@@ -14,7 +14,6 @@ import {
     type MouseEvent as ReactMouseEvent,
     type ReactNode,
     type PointerEvent as ReactPointerEvent,
-    type WheelEvent as ReactWheelEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { useShallow } from "zustand/react/shallow";
@@ -2086,24 +2085,33 @@ function WorkspacePaneView({
         tabCount: node?.tabIds.length ?? 0,
     });
 
-    const handleTabStripWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    useEffect(() => {
         const container = tabStripRef.current;
         if (!container) {
             return;
         }
 
-        const hasHorizontalOverflow =
-            container.scrollWidth > container.clientWidth;
-        const shouldTranslateVerticalScroll =
-            Math.abs(event.deltaY) > Math.abs(event.deltaX);
+        const handleTabStripWheel = (event: WheelEvent) => {
+            const hasHorizontalOverflow =
+                container.scrollWidth > container.clientWidth;
+            const shouldTranslateVerticalScroll =
+                Math.abs(event.deltaY) > Math.abs(event.deltaX);
 
-        if (!hasHorizontalOverflow || !shouldTranslateVerticalScroll) {
-            return;
-        }
+            if (!hasHorizontalOverflow || !shouldTranslateVerticalScroll) {
+                return;
+            }
 
-        event.preventDefault();
-        container.scrollLeft += event.deltaY;
-    };
+            container.scrollLeft += event.deltaY;
+            event.preventDefault();
+        };
+
+        // React's delegated wheel listener is passive, so cancellation needs a
+        // native listener to avoid vertical scrolling alongside the tab strip.
+        container.addEventListener("wheel", handleTabStripWheel, {
+            passive: false,
+        });
+        return () => container.removeEventListener("wheel", handleTabStripWheel);
+    }, []);
     const paneTabOrderKey = paneTabIds.join("|");
     useActiveWorkspaceTabStripReveal({
         activeTabId: paneActiveTabId,
@@ -2797,7 +2805,6 @@ function WorkspacePaneView({
                     <div
                         className="workspace-tab-strip flex min-w-0 items-end overflow-x-auto overflow-y-hidden"
                         data-workspace-pane-id={paneNodeId}
-                        onWheel={handleTabStripWheel}
                         ref={(element) => {
                             tabStripRef.current = element;
                             tabDrag.setTabStripElement(paneNodeId, element);
@@ -3009,7 +3016,9 @@ function WorkspacePaneView({
                                             identity={`${tab.id}:${tab.sessionId}`}
                                         >
                                             <ChatTabView
-                                                active={isActiveChat}
+                                                // Each visible chat owns an independent viewport. Keep
+                                                // its follow state live while its agent is streaming,
+                                                // even when another pane has keyboard focus.
                                                 focused={
                                                     isActivePane && isActiveChat
                                                 }
@@ -3019,7 +3028,9 @@ function WorkspacePaneView({
                                                 onOpenReview={() =>
                                                     handleOpenChatReview(tab)
                                                 }
+                                                scrollSurfaceActive={isActiveChat}
                                                 tab={tab}
+                                                visible={isActiveChat}
                                             />
                                         </ChatPresentationErrorBoundary>
                                     </div>

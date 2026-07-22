@@ -3,7 +3,6 @@ import {
     useRef,
     useState,
     type KeyboardEvent as ReactKeyboardEvent,
-    type WheelEvent as ReactWheelEvent,
 } from "react";
 
 import {
@@ -14,6 +13,7 @@ import {
     projectAvatarColor,
     projectAvatarInitial,
 } from "./projectAvatar";
+import { writeClipboardText } from "../app/utils/clipboard";
 import { SidebarGitScopePicker } from "./sidebar/SidebarGitScopePicker";
 import { useProjectContextTabDrag } from "./useProjectContextTabDrag";
 
@@ -108,13 +108,26 @@ export function DesktopTopBar({
         };
     }, [menuOpen]);
 
-    const handleTabsWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-        if (!tabsRef.current || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {
+    useEffect(() => {
+        const tabs = tabsRef.current;
+        if (!tabs) {
             return;
         }
-        tabsRef.current.scrollLeft += event.deltaY;
-        event.preventDefault();
-    };
+
+        const handleTabsWheel = (event: WheelEvent) => {
+            if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) {
+                return;
+            }
+
+            tabs.scrollLeft += event.deltaY;
+            event.preventDefault();
+        };
+
+        // React delegates wheel events as passive, but this strip must cancel
+        // vertical scrolling after translating it into horizontal movement.
+        tabs.addEventListener("wheel", handleTabsWheel, { passive: false });
+        return () => tabs.removeEventListener("wheel", handleTabsWheel);
+    }, []);
 
     const handleTabKeyDown = (
         event: ReactKeyboardEvent<HTMLButtonElement>,
@@ -191,7 +204,6 @@ export function DesktopTopBar({
             <div
                 aria-label="Open project workspaces"
                 className="project-context-tabs app-no-drag"
-                onWheel={handleTabsWheel}
                 ref={tabsRef}
                 role="tablist"
             >
@@ -381,7 +393,7 @@ async function openWorkspaceContextMenu(input: {
     });
     if (action === "copy_full_path" && input.context.fullPath) {
         try {
-            await navigator.clipboard.writeText(input.context.fullPath);
+            await writeClipboardText(input.context.fullPath);
         } catch {
             window.alert("Could not copy the project path.");
         }

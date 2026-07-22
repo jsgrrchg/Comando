@@ -1222,13 +1222,22 @@ export function MeasuredVirtualList<T>({
         const mountedRange = scrollState.retainedRange
             ? {
                   ...range,
-                  endIndex: Math.max(
-                      range.endIndex,
-                      scrollState.retainedRange.endIndex,
+                  // A transcript reconciliation can remove rows before the
+                  // scroll-idle frame releases this retained range. Keep the
+                  // previous paint covered without indexing past the new list.
+                  endIndex: Math.min(
+                      items.length - 1,
+                      Math.max(
+                          range.endIndex,
+                          scrollState.retainedRange.endIndex,
+                      ),
                   ),
-                  startIndex: Math.min(
-                      range.startIndex,
-                      scrollState.retainedRange.startIndex,
+                  startIndex: Math.max(
+                      0,
+                      Math.min(
+                          range.startIndex,
+                          scrollState.retainedRange.startIndex,
+                      ),
                   ),
               }
             : range;

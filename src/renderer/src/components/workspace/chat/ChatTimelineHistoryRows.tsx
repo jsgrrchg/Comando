@@ -69,6 +69,9 @@ interface ChatTimelineHistoryRowsProps {
     readonly onVirtualResizeAutoFollow?: () => void;
     readonly onVirtualResizeStart?: () => void;
     readonly onNewTurnScrollTarget?: (target: number) => void;
+    readonly onSemanticAnchorCaptureReady?: (
+        capture: (() => ChatTimelineSemanticAnchor | null) | null,
+    ) => void;
     readonly onSemanticAnchorRestored?: (entryId: string) => void;
     readonly onSemanticAnchorUnavailable?: (entryId: string) => void;
     readonly onVirtualScrollRequest?: (
@@ -86,12 +89,43 @@ interface ChatTimelineHistoryRowsProps {
     readonly semanticRestoreAnchor?: {
         readonly entryId: string;
         readonly offsetWithinEntry: number;
+        readonly timelineItemId?: string | null;
     } | null;
     readonly showStreamingIndicator: boolean;
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
     readonly shouldSynchronizeVirtualScrollState?: () => boolean;
+}
+
+export interface ChatTimelineSemanticAnchor {
+    readonly entryId: string;
+    readonly offsetWithinEntry: number;
+    readonly timelineItemId: string;
+}
+
+export function captureChatTimelineSemanticAnchor({
+    historyRows,
+    viewportAnchor,
+}: {
+    readonly historyRows: readonly TranscriptTimelineItem[];
+    readonly viewportAnchor: MeasuredVirtualViewportAnchor | null;
+}): ChatTimelineSemanticAnchor | null {
+    if (!viewportAnchor) {
+        return null;
+    }
+
+    const row = historyRows[viewportAnchor.index];
+    const entryId = row ? getTranscriptTimelineItemAnchorEntryId(row) : null;
+    if (!entryId) {
+        return null;
+    }
+
+    return {
+        entryId,
+        offsetWithinEntry: Math.max(0, viewportAnchor.offset),
+        timelineItemId: row.id,
+    };
 }
 
 export function resolveChatTimelineFrozenContentWidth(input: {
@@ -144,6 +178,7 @@ export const ChatTimelineHistoryRows = memo(
         onVirtualResizeAutoFollow,
         onVirtualResizeStart,
         onNewTurnScrollTarget,
+        onSemanticAnchorCaptureReady,
         onSemanticAnchorRestored,
         onSemanticAnchorUnavailable,
         onVirtualScrollRequest,
@@ -311,12 +346,28 @@ export const ChatTimelineHistoryRows = memo(
             [],
         );
 
+        const captureSemanticAnchor = useCallback(() => {
+            return captureChatTimelineSemanticAnchor({
+                historyRows,
+                viewportAnchor:
+                    virtualListHandleRef.current?.captureViewportAnchor?.() ??
+                    null,
+            });
+        }, [historyRows]);
+
+        useEffect(() => {
+            onSemanticAnchorCaptureReady?.(captureSemanticAnchor);
+            return () => {
+                onSemanticAnchorCaptureReady?.(null);
+            };
+        }, [captureSemanticAnchor, onSemanticAnchorCaptureReady]);
+
         useLayoutEffect(() => {
             if (!active || !semanticRestoreAnchor) {
                 return;
             }
 
-            const restoreKey = `${semanticRestoreAnchor.entryId}:${semanticRestoreAnchor.offsetWithinEntry}`;
+            const restoreKey = `${semanticRestoreAnchor.timelineItemId ?? semanticRestoreAnchor.entryId}:${semanticRestoreAnchor.offsetWithinEntry}`;
             if (restoredSemanticAnchorKeyRef.current === restoreKey) {
                 return;
             }
@@ -324,8 +375,10 @@ export const ChatTimelineHistoryRows = memo(
             const anchorIndex = historyRows.findIndex(
                 (row) =>
                     isChatTimelineRowItem(row) &&
-                    getTranscriptTimelineItemAnchorEntryId(row) ===
-                        semanticRestoreAnchor.entryId,
+                    (semanticRestoreAnchor.timelineItemId
+                        ? row.id === semanticRestoreAnchor.timelineItemId
+                        : getTranscriptTimelineItemAnchorEntryId(row) ===
+                          semanticRestoreAnchor.entryId),
             );
             if (anchorIndex < 0) {
                 if (semanticAnchorBlockLoaded) {
