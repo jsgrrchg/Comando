@@ -14,6 +14,7 @@ import {
     projectAvatarColor,
     projectAvatarInitial,
 } from "./projectAvatar";
+import { writeClipboardText } from "../app/utils/clipboard";
 import { SidebarGitScopePicker } from "./sidebar/SidebarGitScopePicker";
 import { useProjectContextTabDrag } from "./useProjectContextTabDrag";
 
@@ -381,7 +382,7 @@ async function openWorkspaceContextMenu(input: {
     });
     if (action === "copy_full_path" && input.context.fullPath) {
         try {
-            await navigator.clipboard.writeText(input.context.fullPath);
+            await writeClipboardText(input.context.fullPath);
         } catch {
             window.alert("Could not copy the project path.");
         }
