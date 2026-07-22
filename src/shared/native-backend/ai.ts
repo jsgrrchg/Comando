@@ -694,7 +694,6 @@ export type NativeAiToolActivityPayload = NativeAiEventBase & {
     readonly rawInput?: unknown;
     readonly rawOutput?: unknown;
     readonly diffs?: readonly unknown[];
-    readonly toolActivityDetailId?: string | null;
     readonly terminalOutput?: string | null;
     readonly exitCode?: number | null;
 };
