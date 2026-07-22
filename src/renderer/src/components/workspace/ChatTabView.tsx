@@ -354,6 +354,8 @@ export const ChatTabView = memo(function ChatTabView({
     onOpenReview,
     tab,
 }: ChatTabViewProps) {
+    // Keep the rail preference while its virtualized surface is temporarily unmounted.
+    const [pendingReviewCollapsed, setPendingReviewCollapsed] = useState(true);
     const aiChatSettings = useAiChatSettings();
     const cancelQueuedPromptEdit = useAiStore((s) => s.cancelQueuedPromptEdit);
     const clearQueuedPrompts = useAiStore((s) => s.clearQueuedPrompts);
@@ -2986,6 +2988,7 @@ export const ChatTabView = memo(function ChatTabView({
 
                             {pendingReviewCount > 0 ? (
                                 <ReviewSurface
+                                    collapsed={pendingReviewCollapsed}
                                     diffZoom={diffZoom}
                                     items={pendingReviewItems}
                                     onKeepAll={handleKeepAllPendingReview}
@@ -2993,6 +2996,7 @@ export const ChatTabView = memo(function ChatTabView({
                                     onKeepItem={handleKeepPendingReviewItem}
                                     onOpenItem={handleOpenPendingReviewItem}
                                     onOpenReview={handleOpenReviewTab}
+                                    onCollapsedChange={setPendingReviewCollapsed}
                                     onRejectAll={handleRejectAllPendingReview}
                                     onRejectHunk={handleRejectPendingReviewHunk}
                                     onRejectItem={handleRejectPendingReviewItem}

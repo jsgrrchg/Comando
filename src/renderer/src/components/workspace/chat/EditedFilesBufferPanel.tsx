@@ -39,7 +39,7 @@ function toggleKey(
 }
 
 export interface EditedFilesBufferPanelProps {
-    readonly defaultCollapsed?: boolean;
+    readonly collapsed?: boolean;
     readonly diffZoom: number;
     readonly items: readonly ReviewFileItem[];
     readonly lineWrapping?: boolean;
@@ -48,6 +48,7 @@ export interface EditedFilesBufferPanelProps {
     readonly onKeepItem: (item: ReviewFileItem) => void;
     readonly onOpenItem?: (item: ReviewFileItem) => void;
     readonly onOpenReview: () => void;
+    readonly onCollapsedChange?: (collapsed: boolean) => void;
     readonly onRejectAll: () => void;
     readonly onRejectHunk?: (item: ReviewFileItem, hunkId: string) => void;
     readonly onRejectItem: (item: ReviewFileItem) => void;
@@ -55,7 +56,7 @@ export interface EditedFilesBufferPanelProps {
 }
 
 export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
-    defaultCollapsed = false,
+    collapsed = false,
     diffZoom,
     items,
     lineWrapping,
@@ -64,12 +65,12 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
     onKeepItem,
     onOpenItem,
     onOpenReview,
+    onCollapsedChange,
     onRejectAll,
     onRejectHunk,
     onRejectItem,
     summary,
 }: EditedFilesBufferPanelProps) {
-    const [collapsed, setCollapsed] = useState(defaultCollapsed);
     const [expandedKeys, setExpandedKeys] = useState<ReadonlySet<string>>(
         () => new Set<string>(),
     );
@@ -111,7 +112,7 @@ export const EditedFilesBufferPanel = memo(function EditedFilesBufferPanel({
                     aria-expanded={!collapsed}
                     aria-label={collapsed ? "Expand edits" : "Collapse edits"}
                     className="shrink-0"
-                    onClick={() => setCollapsed((v) => !v)}
+                    onClick={() => onCollapsedChange?.(!collapsed)}
                     style={{
                         alignItems: "center",
                         background: "transparent",
