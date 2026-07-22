@@ -88,6 +88,7 @@ import { ChatContentColumn } from "./chat/ChatContentColumn";
 import { ChatComposerShell } from "./chat/ChatComposerShell";
 import { ChatTimelineHistoryRows } from "./chat/ChatTimelineHistoryRows";
 import { ChatMessageRow } from "./chat/ChatMessageRow";
+import { formatChatElapsedDuration } from "./chat/chatElapsedDuration";
 import { CHAT_PILL_VARIANTS } from "./chat/chatPillPalette";
 import {
     reconcileChatTimelineModelFromProjection,
@@ -4615,13 +4616,7 @@ function StreamingIndicator({
                     (Date.now() - fallbackStartedAtRef.current) / 1000,
                 ),
             );
-            const min = Math.floor(totalSec / 60);
-            const sec = totalSec % 60;
-            setElapsed(
-                min > 0
-                    ? `${min}m ${String(sec).padStart(2, "0")}s`
-                    : `${sec}s`,
-            );
+            setElapsed(formatChatElapsedDuration(totalSec));
         };
 
         queueMicrotask(updateElapsed);
