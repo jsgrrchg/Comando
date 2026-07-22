@@ -26,7 +26,6 @@ type DragPhase = "dragging" | "idle" | "pending";
 
 export type WorkspaceDraggedTab = {
     readonly composerDragItem?: WorkspaceTabComposerDragItem | null;
-    readonly isDirty: boolean;
     readonly kind: WorkspaceTab["kind"];
     readonly paneId: string;
     readonly sourceIndex: number;
