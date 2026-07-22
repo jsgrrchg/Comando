@@ -101,13 +101,16 @@ describe("AiService OpenCode branch", () => {
         await waitForAssertion(() => {
             expect(saveSessionSnapshot).toHaveBeenCalledWith(
                 expect.objectContaining({
-                    trackedFiles: [
-                        expect.objectContaining({
-                            nativeReviewDeltaId: delta.deltaId,
-                            newText: "export const value = 2;\n",
-                            oldText: "export const value = 1;\n",
+                    reviewActionLog: expect.objectContaining({
+                        trackedFilesByIdentityKey: expect.objectContaining({
+                            "review:session-opencode:src/app.ts":
+                                expect.objectContaining({
+                                    currentText: "export const value = 2;\n",
+                                    diffBase: "export const value = 1;\n",
+                                }),
                         }),
-                    ],
+                    }),
+                    reviewDeltas: [delta],
                 }),
             );
         });

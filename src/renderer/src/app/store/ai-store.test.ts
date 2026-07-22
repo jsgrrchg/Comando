@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
     AiFileContextAttachment,
@@ -243,6 +243,10 @@ describe("ai-store queue", () => {
         });
         vi.restoreAllMocks();
         vi.useRealTimers();
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
     });
 
     it("hydrates compacted tool activity details into the snapshot and transcript", async () => {
