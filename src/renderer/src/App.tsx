@@ -1161,7 +1161,7 @@ export function App() {
             null;
         const projectRefreshScheduler = createGitProjectRefreshScheduler({
             refreshProject: (projectId, worktreeId) => {
-                void refreshGitProject(projectId, worktreeId);
+                return refreshGitProject(projectId, worktreeId).then(() => undefined);
             },
         });
 
@@ -1175,7 +1175,17 @@ export function App() {
                     payload.projectId,
                     preferredWorktreeId,
                 );
-                void refreshGitHistory(payload.projectId, preferredWorktreeId);
+                if (
+                    payload.reason === "branch" ||
+                    payload.reason === "remote" ||
+                    payload.reason === "worktree" ||
+                    payload.reason === "unknown"
+                ) {
+                    void refreshGitHistory(
+                        payload.projectId,
+                        preferredWorktreeId,
+                    );
+                }
             },
         );
         const unsubscribeSnapshot = comandoApi.onGitRepositorySnapshotUpdated(

@@ -3010,6 +3010,9 @@ function WorkspacePaneView({
                                         >
                                             <ChatTabView
                                                 active={isActiveChat}
+                                                focused={
+                                                    isActivePane && isActiveChat
+                                                }
                                                 onDraftChange={handleChatDraftChange}
                                                 onOpenFile={handleOpenWorkspaceFile}
                                                 onOpenImage={handleOpenChatImage}
@@ -4679,9 +4682,12 @@ function FileTabView({
                 }
             }
             editor.layout();
+            const restoredPosition = editor.getPosition();
+            const restoredScrollLeft = editor.getScrollLeft();
+            const restoredScrollTop = editor.getScrollTop();
 
-            // Re-apply after the first paint because Monaco can recompute
-            // layout/model state right after mount and override the scroll.
+            // Keep the post-layout viewport stable without re-restoring Monaco
+            // contributions, which schedules cancelable background work.
             viewStateRestoreFrameRef.current = window.requestAnimationFrame(
                 () => {
                     viewStateRestoreFrameRef.current = null;
@@ -4690,14 +4696,12 @@ function FileTabView({
                         return;
                     }
 
-                    try {
-                        editor.restoreViewState(viewState);
-                    } catch (error) {
-                        if (!isMonacoCancellationError(error)) {
-                            throw error;
-                        }
-                    }
                     editor.layout();
+                    if (restoredPosition) {
+                        editor.setPosition(restoredPosition);
+                    }
+                    editor.setScrollLeft(restoredScrollLeft);
+                    editor.setScrollTop(restoredScrollTop);
                 },
             );
         },
@@ -6882,7 +6886,9 @@ function FileTabView({
                         }}
                         keepCurrentModel
                         options={fileEditorOptions}
-                        saveViewState
+                        // WorkspaceView owns per-tab view state, including tabs
+                        // that point to the same Monaco model path.
+                        saveViewState={false}
                         path={buildWorkspaceFileEditorModelPath(
                             document.absolutePath,
                         )}

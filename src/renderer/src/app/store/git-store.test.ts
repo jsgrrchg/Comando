@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { GitRepositorySnapshot, GitWorktreeSummary } from "@shared/ipc";
+import type {
+    GitRepositorySnapshot,
+    GitWorktreeDiffResult,
+    GitWorktreeSummary,
+} from "@shared/ipc";
 
 import { useGitStore } from "./git-store";
 
@@ -69,6 +73,139 @@ describe("git-store history", () => {
     });
 });
 
+describe("git-store worktree diff cache", () => {
+    afterEach(() => {
+        resetGitStoreForTests();
+        vi.unstubAllGlobals();
+    });
+
+    it("defers a cached diff refresh until an active surface requests it", async () => {
+        const listGitWorktreeDiff = vi
+            .fn()
+            .mockResolvedValue(createWorktreeDiffResult({
+                updatedAt: "2026-07-14T12:02:00.000Z",
+            }));
+        const getGitRepositorySnapshot = vi.fn().mockResolvedValue(
+            createSnapshot({ changedPaths: ["src/changed.ts"] }),
+        );
+        stubComando({ getGitRepositorySnapshot, listGitWorktreeDiff });
+
+        const contextKey = "project-1::primary";
+        const cachedResult = createWorktreeDiffResult();
+        useGitStore.setState({
+            worktreeDiffsByContext: { [contextKey]: cachedResult },
+        });
+
+        await useGitStore.getState().refreshProject("project-1", null);
+
+        expect(listGitWorktreeDiff).not.toHaveBeenCalled();
+        expect(
+            useGitStore.getState().worktreeDiffsByContext[contextKey],
+        ).toBe(cachedResult);
+        expect(
+            useGitStore.getState().staleWorktreeDiffContexts[contextKey],
+        ).toBe(true);
+
+        await useGitStore.getState().ensureWorktreeDiff("project-1", null);
+
+        expect(listGitWorktreeDiff).toHaveBeenCalledWith({
+            projectId: "project-1",
+            worktreeId: null,
+        });
+        expect(
+            useGitStore.getState().staleWorktreeDiffContexts[contextKey],
+        ).toBe(false);
+    });
+
+    it("keeps a diff stale when a newer snapshot arrives during its refresh", async () => {
+        let resolveDiff: (result: GitWorktreeDiffResult | null) => void;
+        const listGitWorktreeDiff = vi.fn(
+            () =>
+                new Promise<GitWorktreeDiffResult | null>((resolve) => {
+                    resolveDiff = resolve;
+                }),
+        );
+        stubComando({ listGitWorktreeDiff });
+
+        const contextKey = "project-1::primary";
+        useGitStore.setState({
+            staleWorktreeDiffContexts: { [contextKey]: true },
+            worktreeDiffsByContext: {
+                [contextKey]: createWorktreeDiffResult(),
+            },
+        });
+
+        const refresh = useGitStore
+            .getState()
+            .ensureWorktreeDiff("project-1", null);
+        expect(
+            useGitStore.getState().loadingWorktreeDiffContexts[contextKey],
+        ).toBe(true);
+        expect(
+            useGitStore.getState().staleWorktreeDiffContexts[contextKey],
+        ).toBe(false);
+
+        useGitStore.getState().ingestSnapshot(
+            createSnapshot({
+                changedPaths: ["src/changed.ts"],
+                updatedAt: "2026-07-14T12:01:00.000Z",
+            }),
+        );
+        expect(
+            useGitStore.getState().staleWorktreeDiffContexts[contextKey],
+        ).toBe(true);
+
+        resolveDiff!(createWorktreeDiffResult());
+        await refresh;
+
+        expect(
+            useGitStore.getState().loadingWorktreeDiffContexts[contextKey],
+        ).toBe(false);
+        expect(
+            useGitStore.getState().staleWorktreeDiffContexts[contextKey],
+        ).toBe(true);
+    });
+
+    it("waits for a new snapshot before retrying a failed cached diff", async () => {
+        const listGitWorktreeDiff = vi
+            .fn()
+            .mockRejectedValueOnce(new Error("Temporary Git failure"))
+            .mockResolvedValueOnce(createWorktreeDiffResult());
+        stubComando({ listGitWorktreeDiff });
+
+        const contextKey = "project-1::primary";
+        const cachedResult = createWorktreeDiffResult();
+        useGitStore.setState({
+            staleWorktreeDiffContexts: { [contextKey]: true },
+            worktreeDiffsByContext: { [contextKey]: cachedResult },
+        });
+
+        await useGitStore.getState().ensureWorktreeDiff("project-1", null);
+        await useGitStore.getState().ensureWorktreeDiff("project-1", null);
+
+        expect(listGitWorktreeDiff).toHaveBeenCalledTimes(1);
+        expect(
+            useGitStore.getState().failedWorktreeDiffContexts[contextKey],
+        ).toBe(true);
+        expect(
+            useGitStore.getState().worktreeDiffsByContext[contextKey],
+        ).toBe(cachedResult);
+
+        useGitStore.getState().ingestSnapshot(
+            createSnapshot({
+                changedPaths: ["src/changed.ts"],
+                updatedAt: "2026-07-14T12:01:00.000Z",
+            }),
+        );
+        await useGitStore.getState().ensureWorktreeDiff("project-1", null);
+
+        expect(listGitWorktreeDiff).toHaveBeenCalledTimes(2);
+        expect(
+            useGitStore.getState().failedWorktreeDiffContexts[contextKey],
+        ).toBe(false);
+    });
+});
+
 function createSnapshot(
     overrides: Partial<GitRepositorySnapshot> = {},
 ): GitRepositorySnapshot {
@@ -122,6 +259,18 @@ function createWorktree(
     };
 }
 
+function createWorktreeDiffResult(
+    overrides: Partial<GitWorktreeDiffResult> = {},
+): GitWorktreeDiffResult {
+    return {
+        projectId: "project-1",
+        sections: [],
+        updatedAt: "2026-07-14T12:00:00.000Z",
+        worktreeId: null,
+        ...overrides,
+    };
+}
+
 function stubComando(api: Record<string, unknown>): void {
     vi.stubGlobal("window", {
         comando: api,
@@ -141,6 +290,7 @@ function resetGitStoreForTests(): void {
         expandedChangeGroups: {},
         expandedProjects: {},
         expandedWorktreeSections: {},
+        failedWorktreeDiffContexts: {},
         historyByContext: {},
         historyLimitsByContext: {},
         historyMatchedCountsByContext: {},
@@ -160,6 +310,7 @@ function resetGitStoreForTests(): void {
         selectedDiffPaths: {},
         selectedWorktreeDiffFileIds: {},
         snapshots: {},
+        staleWorktreeDiffContexts: {},
         worktreeInventoryUpdatedAtByProject: {},
         worktreesByProject: {},
         worktreeDiffRequestKeysByContext: {},

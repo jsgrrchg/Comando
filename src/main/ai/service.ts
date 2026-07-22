@@ -97,7 +97,6 @@ import type {
     SecretStoreGateway,
 } from "@main/ai/secret-store";
 import { debugBenignError } from "@main/observability/logging";
-import { mainProcessPerformance } from "@main/observability/performance";
 import { NativeBackendError } from "@main/native-backend/client";
 
 import {
@@ -824,13 +823,9 @@ export class AiService {
 
         const previousSnapshot = this.#liveSnapshots.get(event.sessionId);
         if (previousSnapshot) {
-            const nextSnapshot = mainProcessPerformance.measureSync(
-                "ai.snapshot.apply",
-                () => this.#applyNativeSessionEvent(previousSnapshot, event),
-                {
-                    eventKind: event.kind,
-                    sessionId: event.sessionId,
-                },
+            const nextSnapshot = this.#applyNativeSessionEvent(
+                previousSnapshot,
+                event,
             );
             const cachedSnapshot = this.#cacheLiveSessionSnapshot(
                 nextSnapshot,

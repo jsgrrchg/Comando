@@ -3351,6 +3351,24 @@ button {
         transparent;
 }
 
+.transcript-block-placeholder {
+    align-items: flex-start;
+    background: repeating-linear-gradient(
+        -45deg,
+        color-mix(in srgb, var(--color-bg-secondary) 72%, transparent) 0,
+        color-mix(in srgb, var(--color-bg-secondary) 72%, transparent) 12px,
+        color-mix(in srgb, var(--color-border) 22%, transparent) 12px,
+        color-mix(in srgb, var(--color-border) 22%, transparent) 24px
+    );
+    border: 1px solid color-mix(in srgb, var(--color-border) 45%, transparent);
+    border-radius: 0.5rem;
+    box-sizing: border-box;
+    color: var(--color-text-secondary);
+    display: flex;
+    font-size: 0.75rem;
+    padding: 0.75rem;
+}
+
 .chat-scroll::-webkit-scrollbar {
     width: 8px;
     height: 8px;

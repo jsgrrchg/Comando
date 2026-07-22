@@ -6,7 +6,6 @@ import type {
 import { StringDecoder } from "node:string_decoder";
 
 import { buildRuntimeSpawnEnv } from "../ai/runtime-env";
-import { mainProcessPerformance } from "../observability/performance";
 
 import {
     createNativeHandshakeInput,
@@ -312,13 +311,7 @@ export class NativeBackendClient {
 
         let output: NativeBackendOutput;
         try {
-            output = mainProcessPerformance.measureSync(
-                "native-backend.stdout.parse",
-                () => parseNativeBackendOutput(JSON.parse(line)),
-                mainProcessPerformance.isEnabled()
-                    ? { bytes: Buffer.byteLength(line) }
-                    : undefined,
-            );
+            output = parseNativeBackendOutput(JSON.parse(line));
         } catch (error) {
             const protocolError = new Error(
                 `Native backend emitted invalid stdout JSONL: ${formatError(error)}`,
@@ -330,11 +323,7 @@ export class NativeBackendClient {
         }
 
         if (output.type === "event") {
-            mainProcessPerformance.measureSync(
-                "native-backend.event.dispatch",
-                () => this.emitEvent(output),
-                nativeBackendEventTraceMetadata(output),
-            );
+            this.emitEvent(output);
             return;
         }
 
@@ -452,22 +441,6 @@ export class NativeBackendClient {
     private reportDiagnostic(message: string): void {
         this.onDiagnostic?.(message);
     }
-}
-
-function nativeBackendEventTraceMetadata(
-    event: NativeBackendEvent,
-): Record<string, string | undefined> | undefined {
-    if (!mainProcessPerformance.isEnabled()) {
-        return undefined;
-    }
-
-    const payload = isRecord(event.payload) ? event.payload : null;
-    return {
-        eventName: event.eventName,
-        sessionId: typeof payload?.sessionId === "string" ? payload.sessionId : undefined,
-        toolCallId:
-            typeof payload?.toolCallId === "string" ? payload.toolCallId : undefined,
-    };
 }
 
 function requestKey(id: NativeBackendRequestId | null): string {

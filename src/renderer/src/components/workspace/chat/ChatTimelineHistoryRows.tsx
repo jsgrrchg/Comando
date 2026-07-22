@@ -91,6 +91,7 @@ interface ChatTimelineHistoryRowsProps {
     readonly shouldDeferTrailingUserMeasurementAnchor?: () => boolean;
     readonly shouldPreserveVirtualMeasureAnchor?: () => boolean;
     readonly shouldPreserveVirtualResizeAnchor?: () => boolean;
+    readonly shouldSynchronizeVirtualScrollState?: () => boolean;
 }
 
 export function resolveChatTimelineFrozenContentWidth(input: {
@@ -157,6 +158,7 @@ export const ChatTimelineHistoryRows = memo(
         shouldDeferTrailingUserMeasurementAnchor,
         shouldPreserveVirtualMeasureAnchor,
         shouldPreserveVirtualResizeAnchor,
+        shouldSynchronizeVirtualScrollState,
     }: ChatTimelineHistoryRowsProps) {
         const historyRef = useRef<HTMLDivElement | null>(null);
         const hotTailRef = useRef<HTMLDivElement | null>(null);
@@ -703,12 +705,28 @@ export const ChatTimelineHistoryRows = memo(
                 readonly item: TranscriptTimelineItem;
             }) => {
                 if (isTranscriptBlockSpacerItem(item)) {
+                    if (item.isLoaded) {
+                        // Keep the stable virtual anchor without exposing an implementation detail.
+                        return (
+                            <div
+                                aria-hidden="true"
+                                data-transcript-block-spacer={item.blockId}
+                                style={{ height: `${item.estimatedHeight}px` }}
+                            />
+                        );
+                    }
+
                     return (
                         <div
-                            aria-hidden="true"
+                            aria-label="Loading historical messages"
+                            className="transcript-block-placeholder"
                             data-transcript-block-spacer={item.blockId}
+                            data-transcript-block-placeholder={item.blockId}
+                            role="status"
                             style={{ height: `${item.estimatedHeight}px` }}
-                        />
+                        >
+                            <span>Loading historical messages…</span>
+                        </div>
                     );
                 }
                 const gapPx = resolveRowGapPx(index);
@@ -789,6 +807,11 @@ export const ChatTimelineHistoryRows = memo(
                         onReady={handleVirtualListReady}
                         onScrollRequest={onVirtualScrollRequest}
                         overscan={CHAT_TIMELINE_VIRTUALIZATION_OVERSCAN}
+                        // A pixel budget keeps long markdown rows covered while
+                        // a trackpad fling advances faster than React can mount.
+                        overscanPx={
+                            CHAT_TIMELINE_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT * 2
+                        }
                         preserveScrollAnchorOnItemsChange
                         preserveScrollAnchorOnMeasure
                         shouldPreserveScrollAnchorOnItemsChange={
@@ -799,6 +822,9 @@ export const ChatTimelineHistoryRows = memo(
                         }
                         shouldPreserveScrollAnchorForItemMeasurement={
                             shouldPreserveVirtualMeasureAnchorForItem
+                        }
+                        shouldSynchronizeScrollState={
+                            shouldSynchronizeVirtualScrollState
                         }
                         scrollContainerRef={scrollRef}
                         scrollMarginTop={scrollMarginTop}

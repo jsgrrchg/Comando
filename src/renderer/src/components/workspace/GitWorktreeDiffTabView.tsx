@@ -52,6 +52,9 @@ export function GitWorktreeDiffTabView({
     const isLoading = useGitStore(
         (state) => state.loadingWorktreeDiffContexts[contextKey] === true,
     );
+    const isStale = useGitStore(
+        (state) => state.staleWorktreeDiffContexts[contextKey] === true,
+    );
     const activeFileId = useGitStore(
         (state) => state.selectedWorktreeDiffFileIds[contextKey] ?? null,
     );
@@ -170,8 +173,10 @@ export function GitWorktreeDiffTabView({
         allFileIds.every((fileId) => collapsedFileIds.includes(fileId));
 
     const handleRefresh = useCallback(() => {
-        void refreshProject(projectId, worktreeId);
-        void refreshWorktreeDiff(projectId, worktreeId);
+        // Refresh metadata first so it cannot invalidate a freshly loaded full diff.
+        void refreshProject(projectId, worktreeId).finally(() => {
+            void refreshWorktreeDiff(projectId, worktreeId);
+        });
     }, [projectId, refreshProject, refreshWorktreeDiff, worktreeId]);
 
     const handleDownloadAll = useCallback(() => {
@@ -265,10 +270,23 @@ export function GitWorktreeDiffTabView({
     useEffect(() => {
         if (!snapshot) {
             void refreshProject(projectId, worktreeId);
+            return;
         }
 
-        void ensureWorktreeDiff(projectId, worktreeId);
-    }, [ensureWorktreeDiff, projectId, refreshProject, snapshot, worktreeId]);
+        if (!isLoading) {
+            void ensureWorktreeDiff(projectId, worktreeId);
+        }
+        // A follow-up invalidation can arrive while a diff request is in flight.
+        // Watching both values schedules one catch-up only while this tab is active.
+    }, [
+        ensureWorktreeDiff,
+        isLoading,
+        isStale,
+        projectId,
+        refreshProject,
+        snapshot,
+        worktreeId,
+    ]);
 
     if (!result && !isLoading && error) {
         return (

@@ -920,6 +920,16 @@ describe("ChatTimelineHistoryRows", () => {
             }),
         );
         expect(markup).toContain('data-transcript-block-spacer="block-1"');
+        expect(markup).toContain("Loading historical messages…");
+    });
+
+    it("keeps loaded transcript block spacers invisible", () => {
+        const markup = renderHistoryRows([createLoadedBlockSpacer()]);
+
+        expect(markup).toContain('aria-hidden="true"');
+        expect(markup).toContain('data-transcript-block-spacer="block-1"');
+        expect(markup).not.toContain("transcript-block-placeholder");
+        expect(markup).not.toContain("Loading historical messages…");
     });
 
     it("passes all history rows to MeasuredVirtualList", () => {

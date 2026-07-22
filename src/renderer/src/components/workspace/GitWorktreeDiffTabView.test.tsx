@@ -18,6 +18,7 @@ const mockGitStoreState = vi.hoisted(() => ({
         selectWorktreeDiffFile: vi.fn(() => Promise.resolve(null)),
         setWorktreeDiffCollapsedFileIds: vi.fn(),
         snapshots: {},
+        staleWorktreeDiffContexts: {},
         stagePaths: vi.fn(() => Promise.resolve(null)),
         toggleWorktreeDiffFileCollapse: vi.fn(),
         unstagePaths: vi.fn(() => Promise.resolve(null)),
@@ -122,6 +123,7 @@ function resetStoreState() {
     mockGitStoreState.current.snapshots = {
         [CONTEXT_KEY]: null,
     };
+    mockGitStoreState.current.staleWorktreeDiffContexts = {};
     mockGitStoreState.current.stagePaths.mockClear();
     mockGitStoreState.current.toggleWorktreeDiffFileCollapse.mockClear();
     mockGitStoreState.current.unstagePaths.mockClear();

@@ -78,6 +78,7 @@ interface GitStoreState {
     readonly expandedChangeGroups: Record<string, readonly GitChangeGroupId[]>;
     readonly expandedProjects: Record<string, boolean>;
     readonly expandedWorktreeSections: Record<string, boolean>;
+    readonly failedWorktreeDiffContexts: Record<string, boolean>;
     readonly historyByContext: Record<
         string,
         readonly GitHistoryCommitSummary[]
@@ -100,6 +101,7 @@ interface GitStoreState {
     readonly selectedDiffPaths: Record<string, string | null>;
     readonly selectedWorktreeDiffFileIds: Record<string, string | null>;
     readonly snapshots: Record<string, GitRepositorySnapshot | null>;
+    readonly staleWorktreeDiffContexts: Record<string, boolean>;
     readonly worktreeInventoryUpdatedAtByProject: Record<string, string>;
     readonly worktreesByProject: Record<
         string,
@@ -287,6 +289,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     expandedChangeGroups: {},
     expandedProjects: {},
     expandedWorktreeSections: {},
+    failedWorktreeDiffContexts: {},
     historyByContext: {},
     historyLimitsByContext: {},
     historyMatchedCountsByContext: {},
@@ -306,6 +309,7 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
     selectedDiffPaths: {},
     selectedWorktreeDiffFileIds: {},
     snapshots: {},
+    staleWorktreeDiffContexts: {},
     worktreeInventoryUpdatedAtByProject: {},
     worktreesByProject: {},
     worktreeDiffRequestKeysByContext: {},
@@ -479,12 +483,25 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
 
     ensureWorktreeDiff: async (projectId, worktreeId = null) => {
         const contextKey = getContextKey(projectId, worktreeId);
-        if (hasOwn(get().worktreeDiffsByContext, contextKey)) {
-            return get().worktreeDiffsByContext[contextKey] ?? null;
+        const state = get();
+        const cachedResult = state.worktreeDiffsByContext[contextKey] ?? null;
+        const hasCachedResult = hasOwn(
+            state.worktreeDiffsByContext,
+            contextKey,
+        );
+        if (
+            hasCachedResult &&
+            state.staleWorktreeDiffContexts[contextKey] !== true
+        ) {
+            return cachedResult;
         }
 
-        if (get().loadingWorktreeDiffContexts[contextKey] === true) {
-            return get().worktreeDiffsByContext[contextKey] ?? null;
+        if (state.loadingWorktreeDiffContexts[contextKey] === true) {
+            return cachedResult;
+        }
+
+        if (state.failedWorktreeDiffContexts[contextKey] === true) {
+            return cachedResult;
         }
 
         return get().refreshWorktreeDiff(projectId, worktreeId);
@@ -849,11 +866,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                 };
             });
 
-            refreshCachedWorktreeDiff(
-                get,
-                projectId,
-                resolvedWorktreeId,
-            );
             return snapshot;
         } catch (error) {
             set((state) => {
@@ -894,9 +906,18 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
 
         set((state) => ({
             errors: { ...state.errors, [contextKey]: null },
+            failedWorktreeDiffContexts: {
+                ...state.failedWorktreeDiffContexts,
+                [contextKey]: false,
+            },
             loadingWorktreeDiffContexts: {
                 ...state.loadingWorktreeDiffContexts,
                 [contextKey]: true,
+            },
+            // A newer snapshot can mark this stale again while the request runs.
+            staleWorktreeDiffContexts: {
+                ...state.staleWorktreeDiffContexts,
+                [contextKey]: false,
             },
             worktreeDiffRequestKeysByContext: {
                 ...state.worktreeDiffRequestKeysByContext,
@@ -970,11 +991,19 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                         [contextKey]:
                             error instanceof Error
                                 ? error.message
-                                : "Could not load the project diff.",
+                            : "Could not load the project diff.",
+                    },
+                    failedWorktreeDiffContexts: {
+                        ...state.failedWorktreeDiffContexts,
+                        [contextKey]: true,
                     },
                     loadingWorktreeDiffContexts: {
                         ...state.loadingWorktreeDiffContexts,
                         [contextKey]: false,
+                    },
+                    staleWorktreeDiffContexts: {
+                        ...state.staleWorktreeDiffContexts,
+                        [contextKey]: true,
                     },
                 };
             });
@@ -1305,6 +1334,9 @@ function applySnapshotState(
                 snapshot,
                 state.worktreeInventoryUpdatedAtByProject[projectId],
             );
+        const nextWorktreeDiffState = hasWorktreeChanges
+            ? markWorktreeDiffStaleState(state, contextKey)
+            : clearCleanWorktreeDiffState(state, contextKey);
 
         return {
             activeWorktreeIds: {
@@ -1380,9 +1412,7 @@ function applySnapshotState(
                       },
                   }
                 : {}),
-            ...(hasWorktreeChanges
-                ? {}
-                : clearCleanWorktreeDiffState(state, contextKey)),
+            ...nextWorktreeDiffState,
         };
     });
 }
@@ -1454,7 +1484,9 @@ function clearCleanWorktreeDiffState(
     GitStoreState,
     | "collapsedWorktreeDiffFileIds"
     | "diffsByContext"
+    | "failedWorktreeDiffContexts"
     | "selectedWorktreeDiffFileIds"
+    | "staleWorktreeDiffContexts"
     | "worktreeDiffsByContext"
 > {
     return {
@@ -1466,13 +1498,40 @@ function clearCleanWorktreeDiffState(
             ...state.diffsByContext,
             [contextKey]: {},
         },
+        failedWorktreeDiffContexts: {
+            ...state.failedWorktreeDiffContexts,
+            [contextKey]: false,
+        },
         selectedWorktreeDiffFileIds: {
             ...state.selectedWorktreeDiffFileIds,
             [contextKey]: null,
         },
+        staleWorktreeDiffContexts: {
+            ...state.staleWorktreeDiffContexts,
+            [contextKey]: false,
+        },
         worktreeDiffsByContext: {
             ...state.worktreeDiffsByContext,
             [contextKey]: null,
+        },
+    };
+}
+
+function markWorktreeDiffStaleState(
+    state: GitStoreState,
+    contextKey: string,
+): Pick<
+    GitStoreState,
+    "failedWorktreeDiffContexts" | "staleWorktreeDiffContexts"
+> {
+    return {
+        failedWorktreeDiffContexts: {
+            ...state.failedWorktreeDiffContexts,
+            [contextKey]: false,
+        },
+        staleWorktreeDiffContexts: {
+            ...state.staleWorktreeDiffContexts,
+            [contextKey]: hasOwn(state.worktreeDiffsByContext, contextKey),
         },
     };
 }
@@ -1531,6 +1590,8 @@ function refreshCachedWorktreeDiff(
     projectId: string,
     worktreeId: string | null,
 ): void {
+    // Explicit Git mutations refresh immediately; filesystem invalidations
+    // only mark the cached diff stale.
     const contextKey = getContextKey(projectId, worktreeId);
     if (hasOwn(get().worktreeDiffsByContext, contextKey)) {
         void get().refreshWorktreeDiff(projectId, worktreeId);

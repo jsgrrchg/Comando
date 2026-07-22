@@ -536,7 +536,7 @@ describe("ai-store queue", () => {
         });
     });
 
-    it("hydrates complete payloads for visible block-native transcript windows", async () => {
+    it("defers tool payloads while hydrating visible block-native transcript windows", async () => {
         const metadata = [1, 2, 3].map((index) => ({
             blockId: `block-${index}`,
             endSequence: index * 10,
@@ -615,11 +615,12 @@ describe("ai-store queue", () => {
             expect.arrayContaining([
                 "payload:message-2",
                 "payload:thinking-2",
-                "payload:tool-2",
                 "payload:message-3",
                 "payload:thinking-3",
-                "payload:tool-3",
             ]),
+        );
+        expect(getAiTranscriptPayload.mock.calls.map(([input]) => input.payloadRef)).not.toEqual(
+            expect.arrayContaining(["payload:tool-2", "payload:tool-3"]),
         );
 
         await useAiStore
@@ -630,7 +631,6 @@ describe("ai-store queue", () => {
             expect.arrayContaining([
                 "payload:message-1",
                 "payload:thinking-1",
-                "payload:tool-1",
             ]),
         );
         expect(
@@ -785,6 +785,9 @@ describe("ai-store queue", () => {
         });
         useAiStore.getState().applySessionSnapshot(createSnapshot());
         await useAiStore.getState().hydrateTranscriptWindow(TAB.sessionId);
+        await useAiStore
+            .getState()
+            .loadTranscriptPayload(TAB.sessionId, payloadRef);
 
         const getChangeCount = () => {
             const session = useAiStore.getState().sessions[TAB.sessionId];

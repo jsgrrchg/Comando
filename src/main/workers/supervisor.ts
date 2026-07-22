@@ -1,10 +1,6 @@
 import type { MessagePort, Worker } from "node:worker_threads";
 
 import { debugBenignError } from "../observability/logging";
-import {
-    mainProcessPerformance,
-    type PerformanceOperationName,
-} from "../observability/performance";
 
 export type WorkerDomain = "ai" | "db" | "git" | "projects";
 
@@ -76,12 +72,6 @@ export const WORKER_TIMEOUTS_MS: Record<WorkerDomain, number> = {
 const RESTART_BASE_DELAY_MS = 250;
 const RESTART_MAX_DELAY_MS = 5_000;
 const WORKER_GRACEFUL_EXIT_TIMEOUT_MS = 2_000;
-const DOMAIN_OPERATION: Record<WorkerDomain, PerformanceOperationName> = {
-    ai: "workers.ai.rpc",
-    db: "workers.db.rpc",
-    git: "workers.git.rpc",
-    projects: "workers.projects.rpc",
-};
 
 export class RpcWorkerSupervisor<TReady> {
     readonly #connect: () => Promise<RpcWorkerConnection<TReady>>;
@@ -125,22 +115,13 @@ export class RpcWorkerSupervisor<TReady> {
         const id = this.#nextRequestId++;
         const requestId = `${this.#domain}-${id}`;
 
-        return await mainProcessPerformance.measureAsync(
-            DOMAIN_OPERATION[this.#domain],
-            async () => {
-                const connection = await this.#ensureConnection();
-                return await this.#dispatchRequest<TResult>(
-                    connection,
-                    id,
-                    method,
-                    params,
-                    requestId,
-                );
-            },
-            {
-                method,
-                requestId,
-            },
+        const connection = await this.#ensureConnection();
+        return await this.#dispatchRequest<TResult>(
+            connection,
+            id,
+            method,
+            params,
+            requestId,
         );
     }
 

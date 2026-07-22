@@ -84,3 +84,26 @@ test("streaming has no transient frame continuity violations", async ({
         multiScrollWriteFrames: [],
     });
 });
+
+test("fast scrolling keeps every sampled viewport covered", async ({
+    page,
+}, testInfo) => {
+    const diagnostic = await page.evaluate(async () => {
+        return window.comandoTranscriptHarness.runFastScrollDiagnostic();
+    });
+    await testInfo.attach("transcript-fast-scroll-diagnostic", {
+        body: JSON.stringify(diagnostic, null, 2),
+        contentType: "application/json",
+    });
+
+    expect(diagnostic.samples.length).toBeGreaterThanOrEqual(8);
+    expect(diagnostic.samples.every((sample) => sample.mountedRows > 0)).toBe(
+        true,
+    );
+    expect(diagnostic.violations.uncoveredViewportFrames).toEqual([]);
+    // A fling can produce isolated long tasks while mounting fresh cards, but
+    // it must not degrade into one blocked task for every sampled frame.
+    expect(diagnostic.violations.longTaskCount).toBeLessThan(
+        diagnostic.samples.length,
+    );
+});

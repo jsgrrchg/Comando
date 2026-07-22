@@ -8,14 +8,15 @@ import {
     type ReactNode,
     type RefObject,
 } from "react";
+import { flushSync } from "react-dom";
 import { MAX_CACHED_CHAT_VIEW_ARTIFACTS } from "@renderer/components/workspace/chatViewResourceBudget";
 import { recordChatScrollWrite } from "@renderer/app/debug/chatPerformanceProbe";
 
 const DEFAULT_OVERSCAN = 4;
 const DEFAULT_VIEWPORT_HEIGHT = 720;
-const MAX_DYNAMIC_OVERSCAN_ROWS = 128;
-const MAX_TRAILING_OVERSCAN_ROWS = 16;
 const SCROLL_OVERSCAN_ROW_HEIGHT_PX = 72;
+const MAX_DYNAMIC_OVERSCAN_PX = 9_216;
+const MIN_TRAILING_OVERSCAN_PX = 1_152;
 
 interface CachedMeasurements {
     readonly geometry: CachedGeometry | null;
@@ -131,6 +132,11 @@ export interface MeasuredVirtualListProps<T> {
      */
     readonly observeMeasurements?: boolean;
     readonly overscan?: number;
+    /**
+     * Pixel budget around the viewport. Unlike a row count this remains useful
+     * when one message is much taller than the surrounding timeline rows.
+     */
+    readonly overscanPx?: number;
     readonly defaultViewportHeight?: number;
     readonly scrollMarginTop?: number;
     readonly scrollContainerRef: RefObject<HTMLElement | null>;
@@ -162,6 +168,11 @@ export interface MeasuredVirtualListProps<T> {
     readonly preserveScrollAnchorOnMeasure?: boolean;
     readonly shouldPreserveScrollAnchorOnItemsChange?: () => boolean;
     readonly shouldPreserveScrollAnchorOnMeasure?: () => boolean;
+    /**
+     * Lets a host flush a reader-originated range before the next paint while
+     * keeping programmatic scroll writes coalesced with its own policy.
+     */
+    readonly shouldSynchronizeScrollState?: () => boolean;
     /**
      * Lets callers skip anchor compensation for an individual measurement
      * without disabling it for other rows in the same layout update.
@@ -200,6 +211,7 @@ interface MeasuredVirtualItem<T> {
 }
 
 interface LayoutSnapshot<T> {
+    readonly mountedRange: MeasuredVirtualRange;
     readonly offsets: readonly number[];
     readonly range: MeasuredVirtualRange;
     readonly sizes: readonly number[];
@@ -213,6 +225,8 @@ interface CalculateMeasuredVirtualRangeOptions {
     readonly overscan: number;
     readonly overscanAfter?: number;
     readonly overscanBefore?: number;
+    readonly overscanAfterPx?: number;
+    readonly overscanBeforePx?: number;
     readonly scrollMarginTop: number;
     readonly scrollTop: number;
     readonly sizes: readonly number[];
@@ -326,6 +340,8 @@ export function calculateMeasuredVirtualRange({
     overscan,
     overscanAfter: requestedOverscanAfter,
     overscanBefore: requestedOverscanBefore,
+    overscanAfterPx: requestedOverscanAfterPx,
+    overscanBeforePx: requestedOverscanBeforePx,
     scrollMarginTop,
     scrollTop,
     sizes,
@@ -369,8 +385,21 @@ export function calculateMeasuredVirtualRange({
     );
     const overscanBefore = requestedOverscanBefore ?? overscan;
     const overscanAfter = requestedOverscanAfter ?? overscan;
-    const startIndex = Math.max(0, visibleStartIndex - overscanBefore);
-    const endIndex = Math.min(itemCount - 1, visibleEndIndex + overscanAfter);
+    const startIndex =
+        requestedOverscanBeforePx === undefined
+            ? Math.max(0, visibleStartIndex - overscanBefore)
+            : findFirstVisibleIndex(
+                  offsets,
+                  sizes,
+                  Math.max(0, effectiveScrollTop - requestedOverscanBeforePx),
+              );
+    const endIndex =
+        requestedOverscanAfterPx === undefined
+            ? Math.min(itemCount - 1, visibleEndIndex + overscanAfter)
+            : findLastVisibleIndex(
+                  offsets,
+                  scrollBottom + requestedOverscanAfterPx,
+              );
 
     return {
         endIndex,
@@ -527,6 +556,7 @@ export function MeasuredVirtualList<T>({
     enabled = true,
     observeMeasurements = true,
     overscan = DEFAULT_OVERSCAN,
+    overscanPx,
     defaultViewportHeight = DEFAULT_VIEWPORT_HEIGHT,
     scrollMarginTop = 0,
     scrollContainerRef,
@@ -543,12 +573,17 @@ export function MeasuredVirtualList<T>({
     preserveScrollAnchorOnMeasure = false,
     shouldPreserveScrollAnchorOnItemsChange,
     shouldPreserveScrollAnchorOnMeasure,
+    shouldSynchronizeScrollState,
     shouldPreserveScrollAnchorForItemMeasurement,
     onItemMeasured,
     renderItem,
 }: MeasuredVirtualListProps<T>) {
     const isBrowser = typeof window !== "undefined";
     const normalizedScrollMarginTop = Math.max(0, scrollMarginTop);
+    const baseOverscanPx = Math.max(
+        0,
+        overscanPx ?? overscan * SCROLL_OVERSCAN_ROW_HEIGHT_PX,
+    );
     const initialMeasurementsRef = useRef<
         CachedMeasurements | null | undefined
     >(undefined);
@@ -565,8 +600,12 @@ export function MeasuredVirtualList<T>({
     );
     const measuredSizesRef = useRef(measuredSizes);
     const [scrollState, setScrollState] = useState(() => ({
-        overscanAfter: overscan,
-        overscanBefore: overscan,
+        overscanAfterPx: baseOverscanPx,
+        overscanBeforePx: baseOverscanPx,
+        retainedRange: null as Pick<
+            MeasuredVirtualRange,
+            "endIndex" | "startIndex"
+        > | null,
         scrollTop: 0,
         viewportHeight: isBrowser
             ? defaultViewportHeight
@@ -603,6 +642,9 @@ export function MeasuredVirtualList<T>({
     const shouldPreserveScrollAnchorOnItemsChangeRef = useRef(
         shouldPreserveScrollAnchorOnItemsChange,
     );
+    const shouldSynchronizeScrollStateRef = useRef(
+        shouldSynchronizeScrollState,
+    );
     const onItemMeasuredRef = useRef(onItemMeasured);
     shouldPreserveScrollAnchorOnMeasureRef.current =
         shouldPreserveScrollAnchorOnMeasure;
@@ -610,6 +652,7 @@ export function MeasuredVirtualList<T>({
         shouldPreserveScrollAnchorForItemMeasurement;
     shouldPreserveScrollAnchorOnItemsChangeRef.current =
         shouldPreserveScrollAnchorOnItemsChange;
+    shouldSynchronizeScrollStateRef.current = shouldSynchronizeScrollState;
     onItemMeasuredRef.current = onItemMeasured;
     const cachedGeometry = useMemo(() => {
         const geometry = initialMeasurementsRef.current?.geometry ?? null;
@@ -1001,54 +1044,93 @@ export function MeasuredVirtualList<T>({
         }
 
         const syncScrollState = (isScrollEvent = false) => {
-            if (isScrollEvent) {
+            if (
+                isScrollEvent &&
+                (shouldSynchronizeScrollStateRef.current?.() ?? false)
+            ) {
                 isHandlingScrollRef.current = true;
                 if (scrollIdleFrameRef.current !== null) {
                     cancelAnimationFrame(scrollIdleFrameRef.current);
                 }
                 scrollIdleFrameRef.current = requestAnimationFrame(() => {
-                    isHandlingScrollRef.current = false;
-                    scrollIdleFrameRef.current = null;
+                    // Keep the old band through the first target-range paint.
+                    // Releasing it in the same frame can batch with the scroll
+                    // update and recreate the transient blank we are avoiding.
+                    scrollIdleFrameRef.current = requestAnimationFrame(() => {
+                        isHandlingScrollRef.current = false;
+                        scrollIdleFrameRef.current = null;
+                        setScrollState((current) =>
+                            current.retainedRange === null
+                                ? current
+                                : { ...current, retainedRange: null },
+                        );
+                    });
                 });
             }
             const nextScrollTop = container.scrollTop;
             const nextViewportHeight = container.clientHeight;
             const scrollDelta = nextScrollTop - previousScrollTopRef.current;
             previousScrollTopRef.current = nextScrollTop;
-            const dynamicOverscan = Math.min(
-                MAX_DYNAMIC_OVERSCAN_ROWS,
-                overscan +
-                    Math.ceil(
-                        Math.abs(scrollDelta) /
-                            SCROLL_OVERSCAN_ROW_HEIGHT_PX,
-                    ),
+            // Predict one additional paint ahead in pixels. A row-count buffer
+            // leaves holes when a fling crosses a very tall markdown row.
+            const dynamicOverscanPx = Math.min(
+                MAX_DYNAMIC_OVERSCAN_PX,
+                Math.max(
+                    baseOverscanPx,
+                    nextViewportHeight,
+                    baseOverscanPx + Math.abs(scrollDelta) * 2,
+                ),
             );
-            const trailingOverscan = Math.min(
-                dynamicOverscan,
-                Math.max(overscan, MAX_TRAILING_OVERSCAN_ROWS),
+            const trailingOverscanPx = Math.min(
+                dynamicOverscanPx,
+                Math.max(baseOverscanPx, MIN_TRAILING_OVERSCAN_PX),
             );
-            const overscanBefore =
-                scrollDelta < 0 ? dynamicOverscan : trailingOverscan;
-            const overscanAfter =
-                scrollDelta > 0 ? dynamicOverscan : trailingOverscan;
+            const overscanBeforePx =
+                scrollDelta < 0 ? dynamicOverscanPx : trailingOverscanPx;
+            const overscanAfterPx =
+                scrollDelta > 0 ? dynamicOverscanPx : trailingOverscanPx;
+            const retainedRange = isScrollEvent
+                ? layoutRangeRef.current
+                    ? {
+                          endIndex: layoutRangeRef.current.endIndex,
+                          startIndex: layoutRangeRef.current.startIndex,
+                      }
+                    : null
+                : null;
 
-            setScrollState((current) => {
-                if (
-                    current.overscanAfter === overscanAfter &&
-                    current.overscanBefore === overscanBefore &&
-                    current.scrollTop === nextScrollTop &&
-                    current.viewportHeight === nextViewportHeight
-                ) {
-                    return current;
-                }
+            const commitScrollState = () => {
+                setScrollState((current) => {
+                    if (
+                        current.overscanAfterPx === overscanAfterPx &&
+                        current.overscanBeforePx === overscanBeforePx &&
+                        current.retainedRange?.endIndex ===
+                            retainedRange?.endIndex &&
+                        current.retainedRange?.startIndex ===
+                            retainedRange?.startIndex &&
+                        current.scrollTop === nextScrollTop &&
+                        current.viewportHeight === nextViewportHeight
+                    ) {
+                        return current;
+                    }
 
-                return {
-                    overscanAfter,
-                    overscanBefore,
-                    scrollTop: nextScrollTop,
-                    viewportHeight: nextViewportHeight,
-                };
-            });
+                    return {
+                        overscanAfterPx,
+                        overscanBeforePx,
+                        retainedRange,
+                        scrollTop: nextScrollTop,
+                        viewportHeight: nextViewportHeight,
+                    };
+                });
+            };
+
+            if (isScrollEvent) {
+                // The browser may paint a compositor-driven scroll before a
+                // normal-priority React update commits. Publish this small range
+                // update now so the old and predicted bands cover that paint.
+                flushSync(commitScrollState);
+            } else {
+                commitScrollState();
+            }
         };
 
         syncScrollState();
@@ -1073,7 +1155,7 @@ export function MeasuredVirtualList<T>({
             container.removeEventListener("scroll", handleScroll);
             observer?.disconnect();
         };
-    }, [overscan, scrollContainerRef, virtualizationEnabled]);
+    }, [baseOverscanPx, scrollContainerRef, virtualizationEnabled]);
 
     // Resolve a row's height: an exact measurement wins; otherwise the row's
     // last measurement under its width-invariant identity (so a resize doesn't
@@ -1128,18 +1210,32 @@ export function MeasuredVirtualList<T>({
         const range = calculateMeasuredVirtualRange({
             itemCount: items.length,
             offsets,
-            overscan: scrollState.overscanBefore,
-            overscanAfter: scrollState.overscanAfter,
-            overscanBefore: scrollState.overscanBefore,
+            overscan,
+            overscanAfterPx: scrollState.overscanAfterPx,
+            overscanBeforePx: scrollState.overscanBeforePx,
             scrollMarginTop: normalizedScrollMarginTop,
             scrollTop: scrollState.scrollTop,
             sizes,
             viewportHeight: scrollState.viewportHeight,
             virtualizationEnabled,
         });
+        const mountedRange = scrollState.retainedRange
+            ? {
+                  ...range,
+                  endIndex: Math.max(
+                      range.endIndex,
+                      scrollState.retainedRange.endIndex,
+                  ),
+                  startIndex: Math.min(
+                      range.startIndex,
+                      scrollState.retainedRange.startIndex,
+                  ),
+              }
+            : range;
 
         if (items.length === 0) {
             return {
+                mountedRange,
                 offsets,
                 range,
                 sizes,
@@ -1150,6 +1246,7 @@ export function MeasuredVirtualList<T>({
 
         if (!virtualizationEnabled) {
             return {
+                mountedRange,
                 offsets,
                 range,
                 sizes,
@@ -1169,8 +1266,8 @@ export function MeasuredVirtualList<T>({
         const virtualItems: MeasuredVirtualItem<T>[] = [];
 
         for (
-            let index = range.startIndex;
-            index <= range.endIndex;
+            let index = mountedRange.startIndex;
+            index <= mountedRange.endIndex;
             index += 1
         ) {
             virtualItems.push({
@@ -1187,6 +1284,7 @@ export function MeasuredVirtualList<T>({
         }
 
         return {
+            mountedRange,
             offsets,
             range,
             sizes,
@@ -1201,9 +1299,11 @@ export function MeasuredVirtualList<T>({
         measuredSizes,
         normalizedScrollMarginTop,
         resolveItemSize,
+        overscan,
         scrollState.scrollTop,
-        scrollState.overscanAfter,
-        scrollState.overscanBefore,
+        scrollState.overscanAfterPx,
+        scrollState.overscanBeforePx,
+        scrollState.retainedRange,
         scrollState.viewportHeight,
         virtualizationEnabled,
     ]);

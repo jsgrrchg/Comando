@@ -9,7 +9,7 @@ describe("createGitProjectRefreshScheduler", () => {
 
     it("cancels a pending invalidation refresh when a snapshot arrives", () => {
         vi.useFakeTimers();
-        const refreshProject = vi.fn();
+        const refreshProject = vi.fn().mockResolvedValue(undefined);
         const scheduler = createGitProjectRefreshScheduler({
             refreshProject,
         });
@@ -23,7 +23,7 @@ describe("createGitProjectRefreshScheduler", () => {
 
     it("deduplicates repeated invalidations for the same git context", () => {
         vi.useFakeTimers();
-        const refreshProject = vi.fn();
+        const refreshProject = vi.fn().mockResolvedValue(undefined);
         const scheduler = createGitProjectRefreshScheduler({
             refreshProject,
         });
@@ -38,7 +38,7 @@ describe("createGitProjectRefreshScheduler", () => {
 
     it("keeps independent worktree refreshes separate", () => {
         vi.useFakeTimers();
-        const refreshProject = vi.fn();
+        const refreshProject = vi.fn().mockResolvedValue(undefined);
         const scheduler = createGitProjectRefreshScheduler({
             refreshProject,
         });
@@ -53,5 +53,32 @@ describe("createGitProjectRefreshScheduler", () => {
             "project-1",
             "worktree-b",
         );
+    });
+
+    it("runs one final refresh when invalidations arrive during a request", async () => {
+        vi.useFakeTimers();
+        const refreshControl: { finish: (() => void) | null } = {
+            finish: null,
+        };
+        const refreshProject = vi.fn(
+            () =>
+                new Promise<void>((resolve) => {
+                    refreshControl.finish = resolve;
+                }),
+        );
+        const scheduler = createGitProjectRefreshScheduler({
+            refreshProject,
+        });
+
+        scheduler.schedule("project-1", null);
+        vi.runAllTimers();
+        scheduler.schedule("project-1", null);
+        vi.runAllTimers();
+
+        expect(refreshProject).toHaveBeenCalledTimes(1);
+        refreshControl.finish?.();
+        await Promise.resolve();
+
+        expect(refreshProject).toHaveBeenCalledTimes(2);
     });
 });
