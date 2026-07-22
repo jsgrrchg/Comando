@@ -242,6 +242,7 @@ impl NativeBackend {
             | "ai_get_history_storage_health"
             | "ai_capture_review_baseline"
             | "ai_load_review_delta"
+            | "ai_load_tool_activity_detail"
             | "ai_reject_tracked_file"
             | "ai_reject_tracked_file_hunks"
             | "ai_reject_all_tracked_files"
@@ -378,6 +379,8 @@ impl NativeBackend {
             | "ai_migrate_session_history"
             | "ai_get_history_storage_health"
             | "ai_capture_review_baseline"
+            | "ai_load_review_delta"
+            | "ai_load_tool_activity_detail"
             | "ai_reject_tracked_file"
             | "ai_reject_tracked_file_hunks"
             | "ai_reject_all_tracked_files"
@@ -2668,6 +2671,20 @@ impl NativeBackend {
                         serde_json::to_value(output).expect("review delta output serializes"),
                     ),
                     Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_load_tool_activity_detail" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadToolActivityDetailInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self
+                    .ai_engine
+                    .load_tool_activity_detail(&input.session_id, &input.tool_activity_detail_id)
+                {
+                    Ok(output) => response_only(request.id, output.unwrap_or(Value::Null)),
+                    Err(error) => error_only(request.id, error.to_native_error()),
                 }
             }
             "ai_reject_tracked_file" => {
