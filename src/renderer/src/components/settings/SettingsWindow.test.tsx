@@ -142,6 +142,32 @@ describe("SettingsWindow terminal settings", () => {
         expect(markup).toContain("Terminal");
     });
 
+    it("warns when the autosave delay can overlap with agent edits", () => {
+        const highDelayMarkup = renderToStaticMarkup(
+            <SettingsWindow
+                {...createSettingsWindowProps({
+                    initialCategory: "editor",
+                    appEditor: {
+                        ...createSettingsWindowProps().appEditor,
+                        autoSaveDelayMs: 2000,
+                    },
+                })}
+            />,
+        );
+        const defaultMarkup = renderToStaticMarkup(
+            <SettingsWindow
+                {...createSettingsWindowProps({ initialCategory: "editor" })}
+            />,
+        );
+
+        expect(highDelayMarkup).toContain(
+            "Long autosave delays can leave edits pending while agents modify files",
+        );
+        expect(defaultMarkup).not.toContain(
+            "Long autosave delays can leave edits pending while agents modify files",
+        );
+    });
+
     it("renders the default tool activity expansion preference in AI settings", () => {
         const props = createSettingsWindowProps({ initialCategory: "ai" });
         const markup = renderToStaticMarkup(
