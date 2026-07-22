@@ -376,6 +376,7 @@ export function App() {
     );
     const gitHydrate = useGitStore((state) => state.hydrate);
     const gitErrors = useGitStore((state) => state.errors);
+    const refreshGitHistory = useGitStore((state) => state.refreshHistory);
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const ingestGitSnapshot = useGitStore((state) => state.ingestSnapshot);
     const gitSnapshots = useGitStore((state) => state.snapshots);
@@ -1174,6 +1175,17 @@ export function App() {
                     payload.projectId,
                     preferredWorktreeId,
                 );
+                if (
+                    payload.reason === "branch" ||
+                    payload.reason === "remote" ||
+                    payload.reason === "worktree" ||
+                    payload.reason === "unknown"
+                ) {
+                    void refreshGitHistory(
+                        payload.projectId,
+                        preferredWorktreeId,
+                    );
+                }
             },
         );
         const unsubscribeSnapshot = comandoApi.onGitRepositorySnapshotUpdated(
@@ -1198,7 +1210,7 @@ export function App() {
             unsubscribeWorktrees();
             projectRefreshScheduler.clear();
         };
-    }, [ingestGitSnapshot, refreshGitProject]);
+    }, [ingestGitSnapshot, refreshGitHistory, refreshGitProject]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
