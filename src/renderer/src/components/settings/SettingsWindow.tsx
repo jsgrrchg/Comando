@@ -95,6 +95,9 @@ const CATEGORIES: { id: Category; label: string }[] = [
     { id: "updates", label: "Updates" },
 ];
 
+// Long delays make it more likely that agent changes reach disk before local edits do.
+const HIGH_AUTOSAVE_DELAY_MS_WARNING_THRESHOLD = 2_000;
+
 const CATEGORY_DESCRIPTIONS: Record<Category, string> = {
     appearance: "Theme mode and visual presets",
     editor: "Typography and editor behavior",
@@ -2017,6 +2020,19 @@ function EditorContent({
                     />
                 }
             />
+            {state.autoSaveDelayMs >=
+            HIGH_AUTOSAVE_DELAY_MS_WARNING_THRESHOLD ? (
+                <div className="mx-3 mb-3 flex gap-2 rounded-md border border-[color-mix(in_srgb,var(--diff-warn)_30%,var(--color-border))] bg-[color-mix(in_srgb,var(--diff-warn)_10%,transparent)] px-3 py-2 text-[11px] leading-4 text-text-secondary">
+                    <span aria-hidden="true" className="text-[var(--diff-warn)]">
+                        ⚠
+                    </span>
+                    <span>
+                        Long autosave delays can leave edits pending while agents
+                        modify files, increasing the chance of save conflicts.
+                        Consider 1000 ms or less.
+                    </span>
+                </div>
+            ) : null}
             <SearchableRow
                 searchQuery={searchQuery}
                 section="Typography"
