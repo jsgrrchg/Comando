@@ -2860,10 +2860,6 @@ function WorkspacePaneView({
                                         onPointerDown={(event) =>
                                             tabDrag.beginTabPointerDown(
                                                 {
-                                                    isDirty:
-                                                        "isDirty" in tab
-                                                            ? tab.isDirty
-                                                            : false,
                                                     kind: tab.kind,
                                                     paneId: paneNodeId,
                                                     composerDragItem:
@@ -3284,9 +3280,6 @@ function WorkspaceTabDragOverlay({
                 <div className="flex h-7.75 max-w-72 items-center gap-1.5 rounded-md border border-border-strong bg-bg-panel/96 px-3 text-[12px] text-text-primary shadow-[0_10px_30px_rgba(15,23,42,0.22)] backdrop-blur-sm">
                     <TabIcon kind={draggedTab.kind} title={draggedTab.title} />
                     <span className="truncate">{draggedTab.title}</span>
-                    {draggedTab.isDirty ? (
-                        <span className="text-[9px] text-(--diff-warn)">●</span>
-                    ) : null}
                 </div>
             </div>
         </>,
@@ -6460,13 +6453,6 @@ function FileTabView({
             <FilePathBar
                 actions={filePathBarActions}
                 path={documentDisplayPath ?? document.relativePath}
-                statusLabel={
-                    tab.isSaving
-                        ? "Saving..."
-                        : tab.isDirty
-                          ? "Unsaved changes"
-                          : "Saved"
-                }
                 titlePath={document.absolutePath}
             />
 
@@ -7617,10 +7603,6 @@ function WorkspaceTabActivityIndicator({
                 ●
             </span>
         );
-    }
-
-    if ("isDirty" in tab && tab.isDirty) {
-        return <span className="text-[9px] text-(--diff-warn)">●</span>;
     }
 
     return null;
