@@ -632,6 +632,7 @@ function nativeAiToolActivityToIpc(
         sessionId: payload.sessionId,
         status: payload.status as AiToolActivity["status"],
         summary: payload.summary,
+        toolActivityDetailId: payload.toolActivityDetailId ?? null,
         terminalOutput: resolveNativeTerminalOutput(payload),
         title: payload.title,
         updatedAt: payload.updatedAt,

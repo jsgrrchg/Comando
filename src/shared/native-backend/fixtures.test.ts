@@ -302,6 +302,7 @@ describe("native backend fixtures", () => {
                 status: "completed",
                 summary: "Terminal output available.",
                 title: "Run tests",
+                toolActivityDetailId: "tool-detail:session-1:tool_terminal_fallback",
                 toolCallId: "tool_terminal_fallback",
                 updatedAt: "2026-07-10T00:00:00.000Z",
             },
@@ -314,6 +315,9 @@ describe("native backend fixtures", () => {
             );
             expect(terminalActivityEvent.activity.terminalOutput).toBe(
                 "first line\nsecond line\n",
+            );
+            expect(terminalActivityEvent.activity.toolActivityDetailId).toBe(
+                "tool-detail:session-1:tool_terminal_fallback",
             );
         }
         expect(
