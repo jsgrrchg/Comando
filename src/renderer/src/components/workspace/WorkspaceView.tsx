@@ -3139,6 +3139,22 @@ export function WorkspaceFileEditorHost({
         return fileTabs[0] ?? null;
     }, [activeFileTab, fileTabs, recentActiveTabIds]);
     const isVisible = activeFileTab !== null;
+    const hostedTabId = hostedTab?.id ?? null;
+    const previousHostedTabIdRef = useRef(hostedTabId);
+
+    useEffect(() => {
+        const previousHostedTabId = previousHostedTabIdRef.current;
+        previousHostedTabIdRef.current = hostedTabId;
+
+        if (
+            previousHostedTabId !== null &&
+            previousHostedTabId !== hostedTabId
+        ) {
+            // The file view's debounce is disposed on a tab switch, so flush
+            // the outgoing tab before it can be left dirty without a timer.
+            void onSave(previousHostedTabId);
+        }
+    }, [hostedTabId, onSave]);
 
     useRenderProbe("WorkspaceFileEditorHost", {
         hostedTabId: hostedTab?.id ?? null,

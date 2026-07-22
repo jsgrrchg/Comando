@@ -1018,11 +1018,13 @@ function renderHost({
     activeFileTab,
     fileTabs,
     onDraftChange = vi.fn(),
+    onSave = vi.fn(() => Promise.resolve()),
     recentActiveTabIds = [],
 }: {
     readonly activeFileTab: RuntimeWorkspaceFileTab | null;
     readonly fileTabs: readonly RuntimeWorkspaceFileTab[];
     readonly onDraftChange?: (tabId: string, draft: string) => void;
+    readonly onSave?: (tabId: string) => Promise<void>;
     readonly recentActiveTabIds?: readonly string[];
 }): ReactNode {
     return (
@@ -1033,7 +1035,7 @@ function renderHost({
             onAttachLineFragment={vi.fn()}
             onDraftChange={onDraftChange}
             onReload={vi.fn(() => Promise.resolve())}
-            onSave={vi.fn(() => Promise.resolve())}
+            onSave={onSave}
             recentActiveTabIds={recentActiveTabIds}
         />
     );
@@ -1226,6 +1228,43 @@ describe("WorkspaceFileEditorHost", () => {
         expect(monacoHarness.codeEditors).toHaveLength(1);
         expect(monacoHarness.codeEditors[0]?.disposed).toBe(false);
         expect(container.querySelector("[aria-hidden='true']")).not.toBeNull();
+    });
+
+    it("saves a dirty file immediately when another file replaces it before its debounce fires", async () => {
+        const onSave = vi.fn(() => Promise.resolve());
+        const firstTab = {
+            ...createFileTab("file-1"),
+            draftContent: "const value = 2;\n",
+            isDirty: true,
+        } satisfies RuntimeWorkspaceFileTab;
+        const secondTab = createFileTab("file-2", "src/other.ts");
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: firstTab,
+                    fileTabs: [firstTab, secondTab],
+                    onSave,
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(onSave).not.toHaveBeenCalled();
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: secondTab,
+                    fileTabs: [secondTab],
+                    onSave,
+                }),
+            );
+        });
+        await flushEffects();
+
+        expect(onSave).toHaveBeenCalledOnce();
+        expect(onSave).toHaveBeenCalledWith("file-1");
     });
 
     it("restores a saved Monaco view state only once per tab activation", async () => {
