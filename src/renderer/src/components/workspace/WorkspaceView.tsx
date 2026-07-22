@@ -2831,7 +2831,7 @@ function WorkspacePaneView({
                                         className={[
                                             "group app-no-drag relative flex h-7.75 items-center gap-1.5 border-r border-border-subtle text-[12px] transition",
                                             isPinned
-                                                ? "w-8 justify-center px-0"
+                                                ? "w-8 shrink-0 justify-center px-0"
                                                 : "px-3",
                                             tabDrag.draggedTab?.tabId ===
                                                 tab.id && tabDrag.isDragging
