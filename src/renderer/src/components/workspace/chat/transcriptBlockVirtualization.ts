@@ -18,6 +18,7 @@ export interface TranscriptSemanticAnchor {
     readonly alignment: "start" | "center" | "end";
     readonly entryId: string;
     readonly offsetWithinEntry: number;
+    readonly timelineItemId?: string | null;
 }
 
 export type TranscriptVirtualBlock =
@@ -454,5 +455,6 @@ export function captureTranscriptSemanticAnchor(input: {
         alignment: input.alignment ?? "start",
         entryId: input.entryId,
         offsetWithinEntry: Math.max(0, input.offsetWithinEntry ?? 0),
+        timelineItemId: null,
     };
 }
