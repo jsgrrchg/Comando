@@ -103,7 +103,10 @@ describe("AiService OpenCode branch", () => {
                 ([snapshot]) =>
                     snapshot.reviewDeltas?.some(
                         (candidate) => candidate.deltaId === delta.deltaId,
-                    ) && snapshot.reviewActionLog !== null,
+                    ) &&
+                    snapshot.reviewActionLog?.trackedFilesByIdentityKey[
+                        "review:session-opencode:src/app.ts"
+                    ] !== undefined,
             );
             expect(persisted).toBeDefined();
             const file =
