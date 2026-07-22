@@ -1186,7 +1186,7 @@ function ProjectSettingsRow({
                     onClick={() => {
                         if (
                             window.confirm(
-                                `Remove "${project.name}" from Comando?\n\nThis will hide the project from the app, but it will not delete project files or saved chat history.`,
+                                `Remove "${project.name}" from Comando?\n\nThis will delete all saved app data for this project, including chat history, transcripts, project settings, and restored workspace state. Project files on disk will not be deleted.`,
                             )
                         ) {
                             state.onRemoveProject?.(project.id);

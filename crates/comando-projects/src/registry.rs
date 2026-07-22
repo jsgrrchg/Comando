@@ -426,6 +426,7 @@ impl<'a> ProjectRegistry<'a> {
             if existing.is_primary == 1 && !desired_worktrees.contains_key(&existing_root_key) {
                 continue;
             }
+            clear_worktree_app_data(&transaction, &existing.id)?;
             transaction.execute(
                 "DELETE FROM project_worktrees WHERE id = ?1",
                 [&existing.id],
@@ -1220,6 +1221,37 @@ fn normalize_worktree_key(path: &str) -> String {
     }
 }
 
+fn clear_worktree_app_data(
+    transaction: &Transaction<'_>,
+    worktree_id: &str,
+) -> Result<(), ProjectRegistryError> {
+    transaction.execute(
+        "DELETE FROM chat_sessions WHERE worktree_id = ?1",
+        [worktree_id],
+    )?;
+    transaction.execute(
+        "
+        DELETE FROM workspace_tabs
+        WHERE worktree_id = ?1
+           OR (
+                json_valid(payload_json)
+                AND json_extract(payload_json, '$.worktreeId') = ?1
+           )
+        ",
+        [worktree_id],
+    )?;
+    transaction.execute(
+        "
+        UPDATE workspace_sessions
+        SET active_worktree_id = NULL,
+            shell_state_json = NULL
+        WHERE active_worktree_id = ?1
+        ",
+        [worktree_id],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
@@ -1354,6 +1386,111 @@ mod tests {
     }
 
     #[test]
+    fn removing_a_worktree_clears_only_its_persisted_data() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let project_root = create_dir(temp_dir.path(), "worktree-cleanup-root");
+        let secondary_root = create_dir(temp_dir.path(), "worktree-cleanup-secondary");
+        let mut connection = create_current_schema();
+        let added = ProjectRegistry::new(&mut connection)
+            .add_project_paths(std::slice::from_ref(&project_root))
+            .expect("add project");
+        let project_id = added.project_ids_to_open[0].clone();
+
+        let worktrees = ProjectRegistry::new(&mut connection)
+            .sync_project_worktrees(
+                &project_id,
+                &[
+                    NativeProjectSyncWorktree {
+                        root_path: project_root.clone(),
+                        branch_name: Some("main".to_string()),
+                        head_sha: None,
+                    },
+                    NativeProjectSyncWorktree {
+                        root_path: secondary_root,
+                        branch_name: Some("feature/cleanup".to_string()),
+                        head_sha: None,
+                    },
+                ],
+            )
+            .expect("sync worktrees");
+        let primary_id = worktrees
+            .iter()
+            .find(|worktree| worktree.is_primary)
+            .expect("primary worktree")
+            .id
+            .0
+            .clone();
+        let removed_id = worktrees
+            .iter()
+            .find(|worktree| !worktree.is_primary)
+            .expect("secondary worktree")
+            .id
+            .0
+            .clone();
+
+        connection
+            .execute(
+                "INSERT INTO workspace_layouts VALUES ('layout', '{}', 'pane', 'now', 'now')",
+                [],
+            )
+            .expect("insert layout");
+        for (id, worktree_id) in [("removed-chat", &removed_id), ("kept-chat", &primary_id)] {
+            connection
+                .execute(
+                    "INSERT INTO chat_sessions (id, project_id, worktree_id) VALUES (?1, ?2, ?3)",
+                    params![id, project_id.0, worktree_id],
+                )
+                .expect("insert chat");
+        }
+        for (id, worktree_id) in [("removed-tab", &removed_id), ("kept-tab", &primary_id)] {
+            connection
+                .execute(
+                    "
+                    INSERT INTO workspace_tabs (
+                        id, workspace_id, kind, title, payload_json, created_at, worktree_id, position
+                    )
+                    VALUES (?1, 'layout', 'chat', 'Chat', json_object('worktreeId', ?2), 'now', ?2, 0)
+                    ",
+                    params![id, worktree_id],
+                )
+                .expect("insert tab");
+        }
+        connection
+            .execute(
+                "
+                INSERT INTO workspace_sessions (
+                    id, active_project_id, active_worktree_id, shell_state_json, last_opened_at
+                )
+                VALUES ('session', ?1, ?2, '{}', 'now')
+                ",
+                params![project_id.0, removed_id],
+            )
+            .expect("insert workspace session");
+
+        ProjectRegistry::new(&mut connection)
+            .sync_project_worktrees(
+                &project_id,
+                &[NativeProjectSyncWorktree {
+                    root_path: project_root,
+                    branch_name: Some("main".to_string()),
+                    head_sha: None,
+                }],
+            )
+            .expect("remove secondary worktree");
+
+        assert_eq!(count_rows(&connection, "chat_sessions"), 1);
+        assert_eq!(count_rows(&connection, "workspace_tabs"), 1);
+        let active_worktree_id: Option<String> = connection
+            .query_row(
+                "SELECT active_worktree_id FROM workspace_sessions WHERE id = 'session'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read workspace session");
+        assert_eq!(active_worktree_id, None);
+    }
+
+    #[test]
     fn reopens_hidden_project_and_reuses_id() {
         let temp_dir = TempDir::new().expect("temp dir");
         let project_root = create_dir(temp_dir.path(), "hidden-reopen");
@@ -1431,7 +1568,30 @@ mod tests {
                     id TEXT PRIMARY KEY,
                     active_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
                     active_worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL,
+                    shell_state_json TEXT,
                     last_opened_at TEXT NOT NULL
+                );
+                CREATE TABLE workspace_layouts (
+                    id TEXT PRIMARY KEY,
+                    root_node_json TEXT NOT NULL,
+                    active_pane_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE workspace_tabs (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL REFERENCES workspace_layouts(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL
+                );
+                CREATE TABLE chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+                    worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE CASCADE
                 );
                 ",
             )

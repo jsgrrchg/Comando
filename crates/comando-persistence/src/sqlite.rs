@@ -194,7 +194,7 @@ fn ensure_current_schema(connection: &Connection) -> Result<(), PersistenceError
             title TEXT NOT NULL,
             payload_json TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL,
+            worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE CASCADE,
             position INTEGER NOT NULL
         );
 
@@ -229,7 +229,7 @@ fn ensure_current_schema(connection: &Connection) -> Result<(), PersistenceError
         CREATE TABLE IF NOT EXISTS chat_sessions (
             id TEXT PRIMARY KEY,
             project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
-            worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL,
+            worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE CASCADE,
             parent_session_id TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
             title TEXT NOT NULL,
             runtime TEXT NOT NULL DEFAULT 'pending',
@@ -388,8 +388,106 @@ fn ensure_current_schema(connection: &Connection) -> Result<(), PersistenceError
             ON workspace_sessions(window_id);
         ",
     )?;
+    migrate_worktree_owned_foreign_keys(connection)?;
 
     Ok(())
+}
+
+fn migrate_worktree_owned_foreign_keys(connection: &Connection) -> Result<(), PersistenceError> {
+    let workspace_tabs_are_cascaded =
+        foreign_key_uses_action(connection, "workspace_tabs", "worktree_id", "CASCADE")?;
+    let chat_sessions_are_cascaded =
+        foreign_key_uses_action(connection, "chat_sessions", "worktree_id", "CASCADE")?;
+    if workspace_tabs_are_cascaded && chat_sessions_are_cascaded {
+        return Ok(());
+    }
+
+    // SQLite cannot alter a foreign-key action in place, so rebuild only the owned tables.
+    connection.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let migration = connection.execute_batch(
+        "
+        BEGIN IMMEDIATE;
+
+        CREATE TABLE workspace_tabs_rebuilt (
+            id TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspace_layouts(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL
+        );
+        INSERT INTO workspace_tabs_rebuilt
+        SELECT id, workspace_id, kind, title, payload_json, created_at, worktree_id, position
+        FROM workspace_tabs;
+        DROP TABLE workspace_tabs;
+        ALTER TABLE workspace_tabs_rebuilt RENAME TO workspace_tabs;
+
+        CREATE TABLE chat_sessions_rebuilt (
+            id TEXT PRIMARY KEY,
+            project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+            worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE CASCADE,
+            parent_session_id TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+            title TEXT NOT NULL,
+            runtime TEXT NOT NULL DEFAULT 'pending',
+            runtime_session_id TEXT,
+            status TEXT NOT NULL DEFAULT 'idle',
+            draft TEXT NOT NULL DEFAULT '',
+            pinned_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_opened_at TEXT NOT NULL
+        );
+        INSERT INTO chat_sessions_rebuilt
+        SELECT
+            id, project_id, worktree_id, parent_session_id, title, runtime, runtime_session_id,
+            status, draft, pinned_at, created_at, updated_at, last_opened_at
+        FROM chat_sessions;
+        DROP TABLE chat_sessions;
+        ALTER TABLE chat_sessions_rebuilt RENAME TO chat_sessions;
+
+        CREATE INDEX idx_workspace_tabs_worktree_id
+            ON workspace_tabs(worktree_id);
+        CREATE INDEX idx_chat_sessions_last_opened
+            ON chat_sessions(last_opened_at DESC);
+        CREATE INDEX idx_chat_sessions_project_worktree_updated_at
+            ON chat_sessions(project_id, worktree_id, updated_at DESC);
+        CREATE INDEX idx_chat_sessions_runtime_updated_at
+            ON chat_sessions(runtime, updated_at DESC);
+        CREATE INDEX idx_chat_sessions_project_worktree_pinned_at
+            ON chat_sessions(project_id, worktree_id, pinned_at DESC, updated_at DESC);
+        CREATE INDEX idx_chat_sessions_parent_session_id
+            ON chat_sessions(parent_session_id);
+
+        COMMIT;
+        ",
+    );
+    if let Err(error) = migration {
+        let _ = connection.execute_batch("ROLLBACK; PRAGMA foreign_keys = ON;");
+        return Err(error.into());
+    }
+    connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+    Ok(())
+}
+
+fn foreign_key_uses_action(
+    connection: &Connection,
+    table: &'static str,
+    column: &'static str,
+    expected_action: &'static str,
+) -> Result<bool, PersistenceError> {
+    let mut statement = connection.prepare(&format!("PRAGMA foreign_key_list({table})"))?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(3)?, row.get::<_, String>(6)?))
+    })?;
+    for row in rows {
+        let (from_column, on_delete) = row?;
+        if from_column == column {
+            return Ok(on_delete.eq_ignore_ascii_case(expected_action));
+        }
+    }
+    Ok(false)
 }
 
 fn ensure_column(
@@ -551,6 +649,79 @@ mod tests {
         assert_eq!(
             metadata_value(store.connection(), "native.schema_version"),
             "1"
+        );
+    }
+
+    #[test]
+    fn migrates_worktree_owned_foreign_keys_to_cascade() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let database_path = temp_dir.path().join("legacy.sqlite3");
+        create_current_schema(&database_path);
+        let connection = Connection::open(&database_path).expect("db");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE workspace_layouts (
+                    id TEXT PRIMARY KEY,
+                    root_node_json TEXT NOT NULL,
+                    active_pane_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE workspace_tabs (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL REFERENCES workspace_layouts(id) ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL,
+                    position INTEGER NOT NULL
+                );
+                CREATE TABLE chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+                    worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL,
+                    parent_session_id TEXT REFERENCES chat_sessions(id) ON DELETE SET NULL,
+                    title TEXT NOT NULL,
+                    runtime TEXT NOT NULL DEFAULT 'pending',
+                    runtime_session_id TEXT,
+                    status TEXT NOT NULL DEFAULT 'idle',
+                    draft TEXT NOT NULL DEFAULT '',
+                    pinned_at TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_opened_at TEXT NOT NULL
+                );
+                ",
+            )
+            .expect("legacy owned tables");
+        drop(connection);
+
+        let (store, _) = SqlitePersistenceStore::open(NativeStorageConfig {
+            app_data_dir: temp_dir.path().to_path_buf(),
+            database_path,
+            mode: NativePersistenceMode::Write,
+        })
+        .expect("migrate store");
+
+        assert!(
+            foreign_key_uses_action(
+                store.connection(),
+                "workspace_tabs",
+                "worktree_id",
+                "CASCADE"
+            )
+            .expect("workspace tabs action")
+        );
+        assert!(
+            foreign_key_uses_action(
+                store.connection(),
+                "chat_sessions",
+                "worktree_id",
+                "CASCADE"
+            )
+            .expect("chat sessions action")
         );
     }
 

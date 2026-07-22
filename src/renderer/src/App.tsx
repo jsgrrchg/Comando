@@ -400,6 +400,9 @@ export function App() {
     const removeProjectTabs = useWorkspaceStore(
         (state) => state.removeProjectTabs,
     );
+    const removeUnavailableWorktreeTabs = useWorkspaceStore(
+        (state) => state.removeUnavailableWorktreeTabs,
+    );
     const closeWorkspaceTab = useWorkspaceStore((state) => state.closeTab);
     const requestCloseWorkspaceTab = useCallback(
         (tabId: string) =>
@@ -1161,8 +1164,18 @@ export function App() {
             useGitStore.getState().activeWorktreeIds[projectId] ??
             null;
         const projectRefreshScheduler = createGitProjectRefreshScheduler({
-            refreshProject: (projectId, worktreeId) => {
-                return refreshGitProject(projectId, worktreeId).then(() => undefined);
+            refreshProject: async (projectId, worktreeId) => {
+                const snapshot = await refreshGitProject(projectId, worktreeId);
+                if (!snapshot) {
+                    return;
+                }
+
+                // A watcher-driven removal has no sidebar action to close stale workspace contexts.
+                await removeUnavailableWorktreeTabs(
+                    projectId,
+                    snapshot.worktrees.map((worktree) => worktree.id),
+                );
+                await comandoApi.refreshAiProjectScopes(projectId);
             },
         });
 
@@ -1196,6 +1209,11 @@ export function App() {
                     snapshot.currentWorktreeId,
                 );
                 projectRefreshScheduler.cancel(snapshot.projectId, null);
+                // Snapshots cancel the deferred refresh, so they must also remove contexts for worktrees Git no longer reports.
+                void removeUnavailableWorktreeTabs(
+                    snapshot.projectId,
+                    snapshot.worktrees.map((worktree) => worktree.id),
+                );
                 ingestGitSnapshot(snapshot);
             },
         );
@@ -1211,7 +1229,12 @@ export function App() {
             unsubscribeWorktrees();
             projectRefreshScheduler.clear();
         };
-    }, [ingestGitSnapshot, refreshGitHistory, refreshGitProject]);
+    }, [
+        ingestGitSnapshot,
+        refreshGitHistory,
+        refreshGitProject,
+        removeUnavailableWorktreeTabs,
+    ]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();

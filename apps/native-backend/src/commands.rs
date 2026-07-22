@@ -46,7 +46,7 @@ use comando_types::commands::{
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
-use comando_types::ids::{RequestId, RuntimeId, SessionId, WindowId};
+use comando_types::ids::{ProjectId, RequestId, RuntimeId, SessionId, WindowId, WorktreeId};
 use comando_types::persistence::{
     NativePersistenceMode, NativePersistenceOpenStoreInput, NativePersistenceSnapshot,
 };
@@ -56,7 +56,7 @@ use comando_types::{
     projects as native_projects, terminal as native_terminal,
 };
 use rusqlite::{OptionalExtension, params};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 
 use crate::protocol::{RpcOutput, RpcRequest, error_response, event, response_ok};
@@ -68,6 +68,24 @@ use crate::review::{
 
 const SETTINGS_SNAPSHOT_KEY: &str = "settings.snapshot";
 const PROJECT_SETTINGS_KEY: &str = "settings.projects";
+const PERSISTENCE_KEY: &str = "persistence.windows";
+const PENDING_WORKTREE_DATA_CLEANUP_KEY: &str = "persistence.pending_worktree_data_cleanup";
+
+#[derive(Debug, Default)]
+struct CurrentProjectDataCleanup {
+    chat_session_count: u64,
+    project_settings_count: u64,
+    workspace_layout_count: u64,
+    workspace_session_count: u64,
+    workspace_tab_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+struct PendingWorktreeDataCleanup {
+    project_id: ProjectId,
+    worktree_id: WorktreeId,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandResult {
@@ -1180,7 +1198,7 @@ impl NativeBackend {
     }
 
     fn remove_project(&mut self, request: RpcRequest) -> CommandResult {
-        let Some(store) = self.persistence_store.as_mut() else {
+        let Some(store) = self.persistence_store.as_ref() else {
             return backend_not_ready(request.id);
         };
         if !matches!(store.mode(), NativePersistenceMode::Write) {
@@ -1197,8 +1215,21 @@ impl NativeBackend {
             Err(error) => return error_only(request.id, error),
         };
 
-        let mut registry = ProjectRegistry::new(store.connection_mut());
-        match registry.remove_project(&input.project_id) {
+        if let Err(error) = self.clear_current_project_data(&input.project_id, None) {
+            return error_only(request.id, error);
+        }
+        let result = {
+            let store = self
+                .persistence_store
+                .as_mut()
+                .expect("persistence store was checked above");
+            let mut registry = ProjectRegistry::new(store.connection_mut());
+            registry
+                .clear_project_app_data(&input.project_id)
+                .and_then(|_| registry.remove_project(&input.project_id))
+        };
+
+        match result {
             Ok(state) => {
                 self.fs_service.sync_state(state.clone());
                 CommandResult {
@@ -1306,26 +1337,70 @@ impl NativeBackend {
     }
 
     fn get_project_app_data_summary(&mut self, request: RpcRequest) -> CommandResult {
-        let Some(store) = self.persistence_store.as_mut() else {
+        if self.persistence_store.is_none() {
             return backend_not_ready(request.id);
-        };
+        }
         let input = match parse_args::<native_projects::NativeProjectIdInput>(&request) {
             Ok(input) => input,
             Err(error) => return error_only(request.id, error),
         };
 
-        let mut registry = ProjectRegistry::new(store.connection_mut());
-        match registry.get_project_app_data_summary(&input.project_id) {
-            Ok(summary) => response_only(
-                request.id,
-                serde_json::to_value(summary).expect("project app data summary serializes"),
-            ),
+        let summary = {
+            let store = self
+                .persistence_store
+                .as_mut()
+                .expect("persistence store was checked above");
+            let mut registry = ProjectRegistry::new(store.connection_mut());
+            registry.get_project_app_data_summary(&input.project_id)
+        };
+        match summary {
+            Ok(mut summary) => {
+                let history_count = self.ai_history_store().and_then(|history| {
+                    history
+                        .count_sessions_by_scope(&input.project_id, None)
+                        .map_err(|error| error.to_native_error())
+                });
+                let current = self
+                    .persistence_store
+                    .as_ref()
+                    .ok_or_else(|| {
+                        NativeError::new(
+                            NativeErrorCode::BackendNotReady,
+                            "Native persistence store has not been opened.",
+                        )
+                    })
+                    .and_then(|store| {
+                        inspect_current_persisted_project_data(store, &input.project_id, None)
+                    });
+                let (history_count, current) = match (history_count, current) {
+                    (Ok(history_count), Ok(current)) => (history_count, current),
+                    (Err(error), _) | (_, Err(error)) => return error_only(request.id, error),
+                };
+                summary.chat_session_count =
+                    summary.chat_session_count.saturating_add(history_count);
+                summary.project_settings_count = summary
+                    .project_settings_count
+                    .saturating_add(current.project_settings_count);
+                summary.workspace_layout_count = summary
+                    .workspace_layout_count
+                    .saturating_add(current.workspace_layout_count);
+                summary.workspace_session_count = summary
+                    .workspace_session_count
+                    .saturating_add(current.workspace_session_count);
+                summary.workspace_tab_count = summary
+                    .workspace_tab_count
+                    .saturating_add(current.workspace_tab_count);
+                response_only(
+                    request.id,
+                    serde_json::to_value(summary).expect("project app data summary serializes"),
+                )
+            }
             Err(error) => error_only(request.id, project_error(error)),
         }
     }
 
     fn clear_project_app_data(&mut self, request: RpcRequest) -> CommandResult {
-        let Some(store) = self.persistence_store.as_mut() else {
+        let Some(store) = self.persistence_store.as_ref() else {
             return backend_not_ready(request.id);
         };
         if !matches!(store.mode(), NativePersistenceMode::Write) {
@@ -1342,36 +1417,67 @@ impl NativeBackend {
             Err(error) => return error_only(request.id, error),
         };
 
-        let mut registry = ProjectRegistry::new(store.connection_mut());
-        match registry.clear_project_app_data(&input.project_id) {
-            Ok(result) => {
-                self.fs_service.sync_state(result.state.clone());
-                CommandResult {
-                    outputs: vec![
-                        response_ok(
-                            request.id,
-                            serde_json::to_value(&result)
-                                .expect("project clear app data output serializes"),
-                        ),
-                        event(
-                            "project://updated",
-                            json!({
-                                "projectId": input.project_id.0.as_str(),
-                                "worktreeId": Value::Null,
-                                "reason": "project_clear_app_data",
-                                "occurredAt": comando_persistence::store::now_rfc3339(),
-                            }),
-                        ),
-                    ],
-                    should_shutdown: false,
+        let result = {
+            let store = self
+                .persistence_store
+                .as_mut()
+                .expect("persistence store was checked above");
+            let mut registry = ProjectRegistry::new(store.connection_mut());
+            registry.clear_project_app_data(&input.project_id)
+        };
+
+        match result {
+            Ok(mut result) => match self.clear_current_project_data(&input.project_id, None) {
+                Ok(current) => {
+                    result.cleared.chat_session_count = result
+                        .cleared
+                        .chat_session_count
+                        .saturating_add(current.chat_session_count);
+                    result.cleared.project_settings_count = result
+                        .cleared
+                        .project_settings_count
+                        .saturating_add(current.project_settings_count);
+                    result.cleared.workspace_layout_count = result
+                        .cleared
+                        .workspace_layout_count
+                        .saturating_add(current.workspace_layout_count);
+                    result.cleared.workspace_session_count = result
+                        .cleared
+                        .workspace_session_count
+                        .saturating_add(current.workspace_session_count);
+                    result.cleared.workspace_tab_count = result
+                        .cleared
+                        .workspace_tab_count
+                        .saturating_add(current.workspace_tab_count);
+                    self.fs_service.sync_state(result.state.clone());
+                    CommandResult {
+                        outputs: vec![
+                            response_ok(
+                                request.id,
+                                serde_json::to_value(&result)
+                                    .expect("project clear app data output serializes"),
+                            ),
+                            event(
+                                "project://updated",
+                                json!({
+                                    "projectId": input.project_id.0.as_str(),
+                                    "worktreeId": Value::Null,
+                                    "reason": "project_clear_app_data",
+                                    "occurredAt": comando_persistence::store::now_rfc3339(),
+                                }),
+                            ),
+                        ],
+                        should_shutdown: false,
+                    }
                 }
-            }
+                Err(error) => error_only(request.id, error),
+            },
             Err(error) => error_only(request.id, project_error(error)),
         }
     }
 
     fn sync_project_worktrees(&mut self, request: RpcRequest) -> CommandResult {
-        let Some(store) = self.persistence_store.as_mut() else {
+        let Some(store) = self.persistence_store.as_ref() else {
             return backend_not_ready(request.id);
         };
         if !matches!(store.mode(), NativePersistenceMode::Write) {
@@ -1398,22 +1504,158 @@ impl NativeBackend {
             }
         };
 
-        let mut registry = ProjectRegistry::new(store.connection_mut());
-        match registry.sync_project_worktrees(&input.project_id, &input.worktrees) {
-            Ok(worktrees) => {
-                if let Ok(state) = registry.list_projects() {
-                    self.fs_service.sync_state(NativeProjectState {
-                        projects: state.projects,
-                        worktrees: state.worktrees,
-                    });
+        let pending_cleanup = match self.load_pending_worktree_data_cleanup() {
+            Ok(cleanup) => cleanup,
+            Err(error) => return error_only(request.id, error),
+        };
+        let sync_result = {
+            let store = self
+                .persistence_store
+                .as_mut()
+                .expect("persistence store was checked above");
+            let mut registry = ProjectRegistry::new(store.connection_mut());
+            let existing = registry.list_projects().map(|state| state.worktrees);
+            let worktrees = registry.sync_project_worktrees(&input.project_id, &input.worktrees);
+            let state = registry.list_projects();
+            (existing, worktrees, state)
+        };
+
+        let (existing, worktrees, state) = sync_result;
+        match (existing, worktrees, state) {
+            (Ok(existing), Ok(worktrees), Ok(state)) => {
+                let retained_ids = worktrees
+                    .iter()
+                    .map(|worktree| worktree.id.0.as_str())
+                    .collect::<std::collections::HashSet<_>>();
+                let removed_worktree_ids = existing
+                    .into_iter()
+                    .filter(|worktree| {
+                        worktree.project_id == input.project_id
+                            && !worktree.is_primary
+                            && !retained_ids.contains(worktree.id.0.as_str())
+                    })
+                    .map(|worktree| worktree.id)
+                    .collect::<Vec<_>>();
+                self.fs_service.sync_state(NativeProjectState {
+                    projects: state.projects,
+                    worktrees: state.worktrees,
+                });
+                let mut cleanup = pending_cleanup;
+                cleanup.extend(removed_worktree_ids.into_iter().map(|worktree_id| {
+                    PendingWorktreeDataCleanup {
+                        project_id: input.project_id.clone(),
+                        worktree_id,
+                    }
+                }));
+                if let Err(error) = self.retry_pending_worktree_data_cleanup(cleanup) {
+                    return error_only(request.id, error);
                 }
                 response_only(
                     request.id,
                     serde_json::to_value(worktrees).expect("project worktrees serialize"),
                 )
             }
-            Err(error) => error_only(request.id, project_error(error)),
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+                error_only(request.id, project_error(error))
+            }
         }
+    }
+
+    fn clear_current_project_data(
+        &mut self,
+        project_id: &ProjectId,
+        worktree_id: Option<&WorktreeId>,
+    ) -> Result<CurrentProjectDataCleanup, NativeError> {
+        let history = self.ai_history_store()?;
+        let session_ids = history
+            .session_ids_by_scope(project_id, worktree_id)
+            .map_err(|error| error.to_native_error())?;
+        for session_id in &session_ids {
+            // Closing live runtimes first prevents them from writing a deleted session back to disk.
+            let _ = self
+                .ai_engine
+                .close_session(native_ai::NativeAiSessionIdInput {
+                    session_id: session_id.clone(),
+                    target_session_id: None,
+                    runtime_session_id: None,
+                });
+        }
+        let chat_session_count = history
+            .delete_sessions_by_scope(project_id, worktree_id)
+            .map_err(|error| error.to_native_error())?;
+
+        let store = self.persistence_store.as_mut().ok_or_else(|| {
+            NativeError::new(
+                NativeErrorCode::BackendNotReady,
+                "Native persistence store has not been opened.",
+            )
+        })?;
+        let mut cleanup = clear_current_persisted_project_data(store, project_id, worktree_id)?;
+        cleanup.chat_session_count = chat_session_count;
+        Ok(cleanup)
+    }
+
+    fn load_pending_worktree_data_cleanup(
+        &self,
+    ) -> Result<Vec<PendingWorktreeDataCleanup>, NativeError> {
+        let store = self.persistence_store.as_ref().ok_or_else(|| {
+            NativeError::new(
+                NativeErrorCode::BackendNotReady,
+                "Native persistence store has not been opened.",
+            )
+        })?;
+        let value = load_app_data_value(store, PENDING_WORKTREE_DATA_CLEANUP_KEY)?;
+        if value.is_null() {
+            return Ok(Vec::new());
+        }
+        serde_json::from_value(value).map_err(|error| {
+            NativeError::new(
+                NativeErrorCode::InvalidJson,
+                format!("Pending worktree cleanup data could not be parsed: {error}"),
+            )
+        })
+    }
+
+    fn retry_pending_worktree_data_cleanup(
+        &mut self,
+        mut cleanup: Vec<PendingWorktreeDataCleanup>,
+    ) -> Result<(), NativeError> {
+        cleanup.sort_by(|left, right| {
+            (&left.project_id.0, &left.worktree_id.0)
+                .cmp(&(&right.project_id.0, &right.worktree_id.0))
+        });
+        cleanup.dedup();
+        self.save_pending_worktree_data_cleanup(&cleanup)?;
+
+        let mut remaining = Vec::new();
+        for entry in cleanup {
+            if self
+                .clear_current_project_data(&entry.project_id, Some(&entry.worktree_id))
+                .is_err()
+            {
+                // Persist failed work so a later watcher refresh can finish it safely.
+                remaining.push(entry);
+            }
+        }
+        self.save_pending_worktree_data_cleanup(&remaining)
+    }
+
+    fn save_pending_worktree_data_cleanup(
+        &mut self,
+        cleanup: &[PendingWorktreeDataCleanup],
+    ) -> Result<(), NativeError> {
+        let store = self.persistence_store.as_mut().ok_or_else(|| {
+            NativeError::new(
+                NativeErrorCode::BackendNotReady,
+                "Native persistence store has not been opened.",
+            )
+        })?;
+        let value = if cleanup.is_empty() {
+            Value::Null
+        } else {
+            serde_json::to_value(cleanup).expect("pending worktree cleanup serializes")
+        };
+        save_app_data_value(store, PENDING_WORKTREE_DATA_CLEANUP_KEY, &value)
     }
 
     fn refresh_projects(&mut self, request: RpcRequest) -> CommandResult {
@@ -4122,6 +4364,216 @@ fn backend_not_ready(id: RequestId) -> CommandResult {
     )
 }
 
+fn clear_current_persisted_project_data(
+    store: &mut SqlitePersistenceStore,
+    project_id: &ProjectId,
+    worktree_id: Option<&WorktreeId>,
+) -> Result<CurrentProjectDataCleanup, NativeError> {
+    let mut cleanup = CurrentProjectDataCleanup::default();
+
+    if worktree_id.is_none() {
+        let mut project_settings = load_app_data_value(store, PROJECT_SETTINGS_KEY)?;
+        if let Some(settings) = project_settings.as_object_mut() {
+            if settings.remove(&project_id.0).is_some() {
+                cleanup.project_settings_count = 1;
+                save_app_data_value(store, PROJECT_SETTINGS_KEY, &project_settings)?;
+            }
+        }
+    }
+
+    let mut persistence = load_app_data_value(store, PERSISTENCE_KEY)?;
+    if clear_persisted_workspace_contexts(&mut persistence, project_id, worktree_id, &mut cleanup) {
+        save_app_data_value(store, PERSISTENCE_KEY, &persistence)?;
+    }
+
+    Ok(cleanup)
+}
+
+fn inspect_current_persisted_project_data(
+    store: &SqlitePersistenceStore,
+    project_id: &ProjectId,
+    worktree_id: Option<&WorktreeId>,
+) -> Result<CurrentProjectDataCleanup, NativeError> {
+    let mut cleanup = CurrentProjectDataCleanup::default();
+
+    if worktree_id.is_none()
+        && load_app_data_value(store, PROJECT_SETTINGS_KEY)?
+            .as_object()
+            .is_some_and(|settings| settings.contains_key(&project_id.0))
+    {
+        cleanup.project_settings_count = 1;
+    }
+
+    let mut persistence = load_app_data_value(store, PERSISTENCE_KEY)?;
+    clear_persisted_workspace_contexts(&mut persistence, project_id, worktree_id, &mut cleanup);
+    Ok(cleanup)
+}
+
+fn clear_persisted_workspace_contexts(
+    persistence: &mut Value,
+    project_id: &ProjectId,
+    worktree_id: Option<&WorktreeId>,
+    cleanup: &mut CurrentProjectDataCleanup,
+) -> bool {
+    let Some(records) = persistence.as_array_mut() else {
+        return false;
+    };
+    let mut changed = false;
+
+    for record in records {
+        let Some(record_object) = record.as_object_mut() else {
+            continue;
+        };
+        let mut removed_contexts = 0_u64;
+        let mut next_active_scope: Option<(String, Option<String>)> = None;
+        if let Some(navigation) = record_object
+            .get_mut("workspaceRestore")
+            .and_then(Value::as_object_mut)
+            .and_then(|restore| restore.get_mut("snapshot"))
+            .and_then(Value::as_object_mut)
+        {
+            let retained_context_keys = navigation
+                .get_mut("contexts")
+                .and_then(Value::as_array_mut)
+                .and_then(|contexts| {
+                    let before = contexts.len();
+                    for context in contexts.iter().filter(|context| {
+                        workspace_context_matches_scope(context, project_id, worktree_id)
+                    }) {
+                        removed_contexts = removed_contexts.saturating_add(1);
+                        cleanup.workspace_tab_count = cleanup.workspace_tab_count.saturating_add(
+                            context
+                                .pointer("/workspace/tabs")
+                                .and_then(Value::as_array)
+                                .map_or(0, |tabs| u64::try_from(tabs.len()).unwrap_or(0)),
+                        );
+                    }
+                    contexts.retain(|context| {
+                        !workspace_context_matches_scope(context, project_id, worktree_id)
+                    });
+                    (contexts.len() != before).then(|| {
+                        contexts
+                            .iter()
+                            .filter_map(|context| {
+                                context
+                                    .get("key")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                            })
+                            .collect::<std::collections::HashSet<_>>()
+                    })
+                });
+            if let Some(context_keys) = retained_context_keys {
+                changed = true;
+                cleanup.workspace_layout_count = cleanup.workspace_layout_count.saturating_add(1);
+                cleanup.workspace_session_count = cleanup.workspace_session_count.saturating_add(1);
+                if let Some(open_context_keys) = navigation
+                    .get_mut("openContextKeys")
+                    .and_then(Value::as_array_mut)
+                {
+                    open_context_keys
+                        .retain(|key| key.as_str().is_some_and(|key| context_keys.contains(key)));
+                }
+                let active_context_key = navigation
+                    .get("activeContextKey")
+                    .and_then(Value::as_str)
+                    .filter(|key| context_keys.contains(*key));
+                if active_context_key.is_none() {
+                    let next_active = navigation
+                        .get("openContextKeys")
+                        .and_then(Value::as_array)
+                        .and_then(|keys| keys.first())
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    navigation.insert("activeContextKey".to_string(), next_active);
+                }
+                next_active_scope = navigation
+                    .get("activeContextKey")
+                    .and_then(Value::as_str)
+                    .and_then(|active_key| {
+                        navigation
+                            .get("contexts")
+                            .and_then(Value::as_array)
+                            .and_then(|contexts| {
+                                contexts.iter().find(|context| {
+                                    context.get("key").and_then(Value::as_str) == Some(active_key)
+                                })
+                            })
+                    })
+                    .and_then(|context| {
+                        context
+                            .get("projectId")
+                            .and_then(Value::as_str)
+                            .map(|project_id| {
+                                (
+                                    project_id.to_string(),
+                                    context
+                                        .get("worktreeId")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_string),
+                                )
+                            })
+                    });
+            }
+        }
+
+        if removed_contexts > 0
+            || persistence_snapshot_matches_scope(record_object, project_id, worktree_id)
+        {
+            if let Some(snapshot) = record_object
+                .get_mut("snapshot")
+                .and_then(Value::as_object_mut)
+            {
+                let (next_project_id, next_worktree_id) = next_active_scope
+                    .map(|(project_id, worktree_id)| {
+                        (
+                            Value::String(project_id),
+                            worktree_id.map_or(Value::Null, Value::String),
+                        )
+                    })
+                    .unwrap_or((Value::Null, Value::Null));
+                snapshot.insert("activeProjectId".to_string(), next_project_id.clone());
+                snapshot.insert("activeWorktreeId".to_string(), next_worktree_id.clone());
+                if let Some(window_context) = snapshot
+                    .get_mut("windowContext")
+                    .and_then(Value::as_object_mut)
+                {
+                    window_context.insert("projectId".to_string(), next_project_id);
+                    window_context.insert("worktreeId".to_string(), next_worktree_id);
+                }
+                changed = true;
+            }
+        }
+    }
+
+    changed
+}
+
+fn workspace_context_matches_scope(
+    context: &Value,
+    project_id: &ProjectId,
+    worktree_id: Option<&WorktreeId>,
+) -> bool {
+    context.get("projectId").and_then(Value::as_str) == Some(project_id.0.as_str())
+        && worktree_id.is_none_or(|worktree_id| {
+            context.get("worktreeId").and_then(Value::as_str) == Some(worktree_id.0.as_str())
+        })
+}
+
+fn persistence_snapshot_matches_scope(
+    record: &serde_json::Map<String, Value>,
+    project_id: &ProjectId,
+    worktree_id: Option<&WorktreeId>,
+) -> bool {
+    let Some(snapshot) = record.get("snapshot").and_then(Value::as_object) else {
+        return false;
+    };
+    snapshot.get("activeProjectId").and_then(Value::as_str) == Some(project_id.0.as_str())
+        && worktree_id.is_none_or(|worktree_id| {
+            snapshot.get("activeWorktreeId").and_then(Value::as_str) == Some(worktree_id.0.as_str())
+        })
+}
+
 fn load_app_data_value(store: &SqlitePersistenceStore, key: &str) -> Result<Value, NativeError> {
     let storage_key = app_data_storage_key(key)?;
     let raw_value = store
@@ -5934,6 +6386,170 @@ mod tests {
         assert!(rebuild_result.outputs.iter().any(|output| {
             matches!(output, RpcOutput::Event(event) if event.event_name == "index://stale")
         }));
+    }
+
+    #[test]
+    fn clearing_project_data_removes_current_settings_and_workspace_contexts() {
+        let (_temp_dir, mut backend, project_id) = backend_with_registered_project();
+        let other_project_id = "project-other";
+        let persistence = json!([
+            {
+                "snapshot": {
+                    "activeProjectId": project_id.as_str(),
+                    "activeWorktreeId": format!("{project_id}:primary"),
+                    "windowContext": {
+                        "projectId": project_id.as_str(),
+                        "worktreeId": format!("{project_id}:primary")
+                    }
+                },
+                "workspaceRestore": {
+                    "revision": 1,
+                    "schemaVersion": 1,
+                    "snapshot": {
+                        "activeContextKey": format!("{project_id}::__primary__"),
+                        "contexts": [
+                            {
+                                "key": format!("{project_id}::__primary__"),
+                                "lastActivatedAt": "2026-07-22T00:00:00.000Z",
+                                "projectId": project_id.as_str(),
+                                "worktreeId": null,
+                                "workspace": { "activePaneId": "pane-a", "rootNode": { "activeTabId": "tab-a", "id": "pane-a", "tabIds": ["tab-a"], "type": "pane" }, "tabs": [{ "id": "tab-a" }] }
+                            },
+                            {
+                                "key": format!("{other_project_id}::__primary__"),
+                                "lastActivatedAt": "2026-07-22T00:00:00.000Z",
+                                "projectId": other_project_id,
+                                "worktreeId": null,
+                                "workspace": { "activePaneId": "pane-b", "rootNode": { "activeTabId": "tab-b", "id": "pane-b", "tabIds": ["tab-b"], "type": "pane" }, "tabs": [{ "id": "tab-b" }] }
+                            }
+                        ],
+                        "openContextKeys": [format!("{project_id}::__primary__"), format!("{other_project_id}::__primary__")],
+                        "version": 3
+                    }
+                }
+            }
+        ]);
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            project_id.clone(),
+            json!({ "projectId": project_id.as_str(), "editor": { "fontSize": 14 } }),
+        );
+        settings.insert(
+            other_project_id.to_string(),
+            json!({ "projectId": other_project_id }),
+        );
+        let settings = Value::Object(settings);
+        assert!(
+            only_response(&backend.handle_request(request(
+                "app_data_set_json",
+                json!({ "key": PROJECT_SETTINGS_KEY, "value": settings }),
+            )))
+            .ok
+        );
+        assert!(
+            only_response(&backend.handle_request(request(
+                "app_data_set_json",
+                json!({ "key": PERSISTENCE_KEY, "value": persistence }),
+            )))
+            .ok
+        );
+
+        let cleared = backend.handle_request(request(
+            "project_clear_app_data",
+            json!({ "projectId": project_id }),
+        ));
+        let response = only_response(&cleared);
+        assert!(response.ok);
+        assert_eq!(
+            response.result.as_ref().unwrap()["cleared"]["projectSettingsCount"],
+            1
+        );
+        assert_eq!(
+            response.result.as_ref().unwrap()["cleared"]["workspaceLayoutCount"],
+            1
+        );
+        assert_eq!(
+            response.result.as_ref().unwrap()["cleared"]["workspaceTabCount"],
+            1
+        );
+
+        let settings = backend.handle_request(request(
+            "app_data_get_json",
+            json!({ "key": PROJECT_SETTINGS_KEY }),
+        ));
+        assert!(
+            only_response(&settings).result.as_ref().unwrap()["value"]
+                .get(&project_id)
+                .is_none()
+        );
+        assert!(
+            only_response(&settings).result.as_ref().unwrap()["value"]
+                .get(other_project_id)
+                .is_some()
+        );
+
+        let persistence = backend.handle_request(request(
+            "app_data_get_json",
+            json!({ "key": PERSISTENCE_KEY }),
+        ));
+        let snapshot = &only_response(&persistence).result.as_ref().unwrap()["value"][0]["workspaceRestore"]
+            ["snapshot"];
+        assert_eq!(snapshot["contexts"].as_array().unwrap().len(), 1);
+        assert_eq!(snapshot["contexts"][0]["projectId"], other_project_id);
+        assert_eq!(
+            snapshot["activeContextKey"],
+            format!("{other_project_id}::__primary__")
+        );
+    }
+
+    #[test]
+    fn retries_worktree_cleanup_after_current_persistence_recovers() {
+        let (_temp_dir, mut backend, project_id) = backend_with_registered_project();
+        let pending = PendingWorktreeDataCleanup {
+            project_id: ProjectId(project_id),
+            worktree_id: WorktreeId("removed-worktree".to_string()),
+        };
+        let store = backend
+            .persistence_store
+            .as_mut()
+            .expect("persistence store");
+        save_app_data_value(store, PERSISTENCE_KEY, &json!([])).expect("save persistence");
+        store
+            .connection_mut()
+            .execute(
+                "UPDATE app_settings SET value = 'not json' WHERE key = ?1",
+                [app_data_storage_key(PERSISTENCE_KEY).expect("storage key")],
+            )
+            .expect("corrupt persistence");
+
+        backend
+            .retry_pending_worktree_data_cleanup(vec![pending.clone()])
+            .expect("queue failed cleanup");
+        assert_eq!(
+            backend
+                .load_pending_worktree_data_cleanup()
+                .expect("load pending cleanup"),
+            vec![pending.clone()]
+        );
+
+        let store = backend
+            .persistence_store
+            .as_mut()
+            .expect("persistence store");
+        save_app_data_value(store, PERSISTENCE_KEY, &json!([])).expect("repair persistence");
+        backend
+            .retry_pending_worktree_data_cleanup(
+                backend
+                    .load_pending_worktree_data_cleanup()
+                    .expect("load queued cleanup"),
+            )
+            .expect("retry cleanup");
+        assert!(
+            backend
+                .load_pending_worktree_data_cleanup()
+                .expect("load empty cleanup")
+                .is_empty()
+        );
     }
 
     fn only_response(result: &CommandResult) -> &comando_types::protocol::NativeRpcResponse {

@@ -1638,6 +1638,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     });
     ipcMain.handle(IPC_CHANNELS.removeProject, async (_event, projectId: string) => {
         await options.projectService.removeProject(projectId);
+        windowRegistry.forEachLiveWebContents((webContents) => {
+            webContents.send(IPC_EVENTS.projectAppDataCleared, projectId);
+        });
         broadcastProjectsUpdated();
     });
     ipcMain.handle(IPC_CHANNELS.touchProject, (_event, projectId: string) => {

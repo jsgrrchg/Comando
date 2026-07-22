@@ -461,6 +461,55 @@ describe("workspace file opening", () => {
         expect(useWorkspaceStore.getState().activeContextKey).toBe(remainingContext.key);
     });
 
+    it("removes only contexts for unavailable worktrees", async () => {
+        const workspace = createDefaultWorkspaceState();
+        const primaryContext = {
+            key: "project-1::__primary__",
+            lastActivatedAt: "2026-04-15T00:00:00.000Z",
+            projectId: "project-1",
+            workspace,
+            worktreeId: null,
+        };
+        const availableContext = {
+            key: "project-1::worktree-available",
+            lastActivatedAt: "2026-04-16T00:00:00.000Z",
+            projectId: "project-1",
+            workspace,
+            worktreeId: "worktree-available",
+        };
+        const removedContext = {
+            key: "project-1::worktree-removed",
+            lastActivatedAt: "2026-04-17T00:00:00.000Z",
+            projectId: "project-1",
+            workspace,
+            worktreeId: "worktree-removed",
+        };
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activeContextKey: removedContext.key,
+            contextsByKey: {
+                [primaryContext.key]: primaryContext,
+                [availableContext.key]: availableContext,
+                [removedContext.key]: removedContext,
+            },
+            openContextKeys: [
+                primaryContext.key,
+                availableContext.key,
+                removedContext.key,
+            ],
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .removeUnavailableWorktreeTabs("project-1", ["worktree-available"]);
+
+        expect(useWorkspaceStore.getState().contextsByKey).toEqual({
+            [primaryContext.key]: primaryContext,
+            [availableContext.key]: availableContext,
+        });
+        expect(useWorkspaceStore.getState().activeContextKey).toBe(primaryContext.key);
+    });
+
     it("reorders workspace contexts without changing the active context", async () => {
         await useWorkspaceStore
             .getState()

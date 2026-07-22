@@ -312,6 +312,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
     reopenLastClosedTab: () => Promise<void>;
     removeProjectTabs: (projectId: string) => Promise<void>;
     removeWorktreeTabs: (projectId: string, worktreeId: string | null) => Promise<void>;
+    removeUnavailableWorktreeTabs: (
+        projectId: string,
+        availableWorktreeIds: readonly string[],
+    ) => Promise<void>;
     pinPaneTab: (paneId: string, tabId: string) => Promise<void>;
     reorderTab: (
         paneId: string,
@@ -2046,6 +2050,18 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     context.worktreeId,
                     worktreeId,
                 ),
+        );
+    },
+
+    removeUnavailableWorktreeTabs: async (projectId, availableWorktreeIds) => {
+        const available = new Set(availableWorktreeIds);
+        await removeWorkspaceContexts(
+            get,
+            set,
+            (context) =>
+                context.projectId === projectId &&
+                context.worktreeId !== null &&
+                !available.has(context.worktreeId),
         );
     },
 

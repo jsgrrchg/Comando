@@ -933,6 +933,73 @@ impl AiHistoryStore {
         Ok(summaries)
     }
 
+    pub fn count_sessions_by_scope(
+        &self,
+        project_id: &ProjectId,
+        worktree_id: Option<&WorktreeId>,
+    ) -> AiResult<u64> {
+        Ok(u64::try_from(self.session_ids_by_scope(project_id, worktree_id)?.len()).unwrap_or(0))
+    }
+
+    pub fn delete_sessions_by_scope(
+        &self,
+        project_id: &ProjectId,
+        worktree_id: Option<&WorktreeId>,
+    ) -> AiResult<u64> {
+        let session_ids = self.session_ids_by_scope(project_id, worktree_id)?;
+        for session_id in &session_ids {
+            let session_dir = self.session_dir(session_id);
+            if session_dir.exists() {
+                fs::remove_dir_all(&session_dir).map_err(|error| {
+                    history_io("delete scoped AI session dir", &session_dir, error)
+                })?;
+            }
+        }
+
+        Ok(u64::try_from(session_ids.len()).unwrap_or(0))
+    }
+
+    pub fn session_ids_by_scope(
+        &self,
+        project_id: &ProjectId,
+        worktree_id: Option<&WorktreeId>,
+    ) -> AiResult<Vec<SessionId>> {
+        let sessions_dir = self.sessions_dir();
+        if !sessions_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut session_ids = Vec::new();
+        for entry in fs::read_dir(&sessions_dir)
+            .map_err(|error| history_io("read AI sessions dir", &sessions_dir, error))?
+        {
+            let entry = entry
+                .map_err(|error| history_io("read AI session dir entry", &sessions_dir, error))?;
+            if !entry
+                .file_type()
+                .map_err(|error| history_io("read AI session file type", &entry.path(), error))?
+                .is_dir()
+            {
+                continue;
+            }
+
+            let metadata_path = entry.path().join(SESSION_META_FILE);
+            let Ok(metadata) = read_json_file::<AiHistorySessionMetadata>(&metadata_path) else {
+                continue;
+            };
+            if metadata.project_id.as_ref() != Some(project_id) {
+                continue;
+            }
+            // Cleanup must use the exact worktree id so primary compatibility does not delete another scope.
+            if worktree_id.is_some_and(|id| metadata.worktree_id.as_ref() != Some(id)) {
+                continue;
+            }
+            session_ids.push(metadata.session_id);
+        }
+
+        Ok(session_ids)
+    }
+
     pub fn list_runtime_mappings_for_parent(
         &self,
         parent_session_id: &SessionId,
@@ -3431,6 +3498,46 @@ mod tests {
         assert!(!store.has_session(&child.session_id));
         assert!(!store.has_session(&grandchild.session_id));
         assert!(store.has_session(&unrelated.session_id));
+    }
+
+    #[test]
+    fn deleting_worktree_scoped_sessions_preserves_other_scopes() {
+        let (_temp, store) = store();
+        let project_id = ProjectId("project_1".to_string());
+        let worktree_id = WorktreeId("worktree_1".to_string());
+
+        let target = metadata("target");
+        store.create_session(target.clone()).unwrap();
+
+        let mut target_child = metadata("target_child");
+        target_child.parent_session_id = Some(target.session_id.clone());
+        store.create_session(target_child.clone()).unwrap();
+
+        let mut other_worktree = metadata("other_worktree");
+        other_worktree.worktree_id = Some(WorktreeId("worktree_2".to_string()));
+        store.create_session(other_worktree.clone()).unwrap();
+
+        let mut other_project = metadata("other_project");
+        other_project.project_id = Some(ProjectId("project_2".to_string()));
+        store.create_session(other_project.clone()).unwrap();
+
+        assert_eq!(
+            store
+                .count_sessions_by_scope(&project_id, Some(&worktree_id))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            store
+                .delete_sessions_by_scope(&project_id, Some(&worktree_id))
+                .unwrap(),
+            2
+        );
+
+        assert!(!store.has_session(&target.session_id));
+        assert!(!store.has_session(&target_child.session_id));
+        assert!(store.has_session(&other_worktree.session_id));
+        assert!(store.has_session(&other_project.session_id));
     }
 
     #[test]
