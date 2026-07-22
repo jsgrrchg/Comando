@@ -47,7 +47,7 @@ afterEach(() => {
 
 describe("AiService OpenCode branch", () => {
     it("checkpoints hydrated native review deltas for historical sessions", async () => {
-        const saveSessionSnapshot = vi.fn();
+        const saveSessionSnapshot = vi.fn<(snapshot: AiSessionSnapshot) => void>();
         const delta: AiReviewDeltaSummary = {
             deltaId: "delta-1",
             files: [{ path: "src/app.ts", state: "ready" }],
@@ -99,20 +99,21 @@ describe("AiService OpenCode branch", () => {
             expect.objectContaining({ reviewDeltas: [delta] }),
         );
         await waitForAssertion(() => {
-            expect(saveSessionSnapshot).toHaveBeenCalledWith(
-                expect.objectContaining({
-                    reviewActionLog: expect.objectContaining({
-                        trackedFilesByIdentityKey: expect.objectContaining({
-                            "review:session-opencode:src/app.ts":
-                                expect.objectContaining({
-                                    currentText: "export const value = 2;\n",
-                                    diffBase: "export const value = 1;\n",
-                                }),
-                        }),
-                    }),
-                    reviewDeltas: [delta],
-                }),
+            const persisted = saveSessionSnapshot.mock.calls.find(
+                ([snapshot]) =>
+                    snapshot.reviewDeltas?.some(
+                        (candidate) => candidate.deltaId === delta.deltaId,
+                    ) && snapshot.reviewActionLog !== null,
             );
+            expect(persisted).toBeDefined();
+            const file =
+                persisted?.[0].reviewActionLog?.trackedFilesByIdentityKey[
+                    "review:session-opencode:src/app.ts"
+                ];
+            expect(file).toMatchObject({
+                currentText: "export const value = 2;\n",
+                diffBase: "export const value = 1;\n",
+            });
         });
     });
 
