@@ -3091,6 +3091,7 @@ impl NativeBackend {
                     );
                 }
                 let mut review_outputs = Vec::new();
+                let mut preserve_tool_activity_diffs = false;
                 if ai_event.event_name == AI_TOOL_ACTIVITY_EVENT {
                     if let Ok(activity) = serde_json::from_value::<
                         native_ai::NativeAiToolActivityPayload,
@@ -3105,21 +3106,27 @@ impl NativeBackend {
                                     .expect("provisional review delta serializes"),
                             ));
                         }
+                    } else {
+                        // Preserve the original evidence when native review cannot classify it.
+                        preserve_tool_activity_diffs = true;
                     }
                 }
-                if ai_event.event_name == AI_SESSION_CLOSED_EVENT {
-                    if let Some(session_id) =
+                if ai_event.event_name == AI_SESSION_CLOSED_EVENT
+                    && let Some(session_id) =
                         ai_event.payload.get("sessionId").and_then(Value::as_str)
-                    {
-                        review_worker.cancel_session(&SessionId(session_id.into()));
-                    }
+                {
+                    review_worker.cancel_session(&SessionId(session_id.into()));
                 }
                 let history_started_at = Instant::now();
-                if let Err(error) = ai_engine.record_history_event(&ai_event) {
-                    eprintln!(
-                        "[comando-native-backend] Native AI history event write failed: {error}"
-                    );
-                }
+                let history_persisted = match ai_engine.record_history_event(&ai_event) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        eprintln!(
+                            "[comando-native-backend] Native AI history event write failed: {error}"
+                        );
+                        false
+                    }
+                };
                 crate::performance::record(
                     "sidecar.ai-history-persist",
                     history_started_at.elapsed(),
@@ -3139,7 +3146,11 @@ impl NativeBackend {
                         )
                     },
                 );
-                let forward_event = compact_tool_activity_event(ai_event.clone());
+                let forward_event = prepare_ai_runtime_event_for_forwarding(
+                    ai_event.clone(),
+                    history_persisted,
+                    preserve_tool_activity_diffs,
+                );
                 let mut outputs = vec![ai_runtime_event_output(forward_event)];
                 outputs.extend(review_outputs);
                 outputs.extend(ai_error_runtime_outputs(
@@ -4491,6 +4502,18 @@ fn ai_error_runtime_outputs(
 
 fn ai_runtime_event_output(event_payload: AiRuntimeEvent) -> RpcOutput {
     event(event_payload.event_name, event_payload.payload)
+}
+
+fn prepare_ai_runtime_event_for_forwarding(
+    event: AiRuntimeEvent,
+    history_persisted: bool,
+    preserve_diffs: bool,
+) -> AiRuntimeEvent {
+    if !history_persisted || preserve_diffs {
+        // Keep complete tool evidence available until the lightweight payload path is enabled.
+        return event;
+    }
+    event
 }
 
 fn parse_args<T: DeserializeOwned>(request: &RpcRequest) -> Result<T, NativeError> {

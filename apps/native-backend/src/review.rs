@@ -58,7 +58,7 @@ impl NativeReviewWorker {
                         if !review_worker_task_is_current(&worker_registry, &task) {
                             continue;
                         }
-                        let Some(result) = materialize_review_worker_task(&worker_registry, task)
+                        let Some(result) = materialize_review_worker_task(&worker_registry, *task)
                         else {
                             continue;
                         };
@@ -209,7 +209,7 @@ impl NativeReviewWorkerHandle {
         // The unbounded handoff keeps the event bridge non-blocking without losing review work.
         if self
             .sender
-            .send(NativeReviewWorkerCommand::Materialize(task))
+            .send(NativeReviewWorkerCommand::Materialize(Box::new(task)))
             .is_err()
         {
             self.remove_pending_delta(&payload.base.session_id, &work_cycle_id, &delta_id);
@@ -904,7 +904,7 @@ fn review_worker_cycles_for_child(
 
 #[derive(Debug)]
 enum NativeReviewWorkerCommand {
-    Materialize(NativeReviewWorkerTask),
+    Materialize(Box<NativeReviewWorkerTask>),
     Shutdown,
 }
 

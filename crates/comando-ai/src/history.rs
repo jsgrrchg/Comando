@@ -313,6 +313,21 @@ pub struct AiHistorySessionState {
     pub tracked_files: Vec<Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct AiToolActivityDetailStore {
+    version: u32,
+    #[serde(default)]
+    details: BTreeMap<String, AiToolActivityDetail>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+struct AiToolActivityDetail {
+    hash: String,
+    payload: Value,
+}
+
 impl Default for AiHistorySessionState {
     fn default() -> Self {
         Self {
@@ -2653,6 +2668,19 @@ fn hash_message_payload(payload: &Value) -> AiResult<String> {
     let bytes = serde_json::to_vec(payload)
         .map_err(|error| history_json("serialize AI transcript message", error))?;
     Ok(sha256_hex(&bytes))
+}
+
+fn merge_tool_activity_detail(previous: &Value, mut next: Value) -> Value {
+    let (Some(previous), Some(next_object)) = (previous.as_object(), next.as_object_mut()) else {
+        return next;
+    };
+    for key in ["diffs", "rawInput", "rawOutput", "terminalOutput"] {
+        let empty = next_object.get(key).is_none_or(is_empty_activity_value);
+        if empty && let Some(value) = previous.get(key) {
+            next_object.insert(key.to_string(), value.clone());
+        }
+    }
+    next
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
