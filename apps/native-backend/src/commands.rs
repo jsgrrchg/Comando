@@ -4373,11 +4373,11 @@ fn clear_current_persisted_project_data(
 
     if worktree_id.is_none() {
         let mut project_settings = load_app_data_value(store, PROJECT_SETTINGS_KEY)?;
-        if let Some(settings) = project_settings.as_object_mut() {
-            if settings.remove(&project_id.0).is_some() {
-                cleanup.project_settings_count = 1;
-                save_app_data_value(store, PROJECT_SETTINGS_KEY, &project_settings)?;
-            }
+        if let Some(settings) = project_settings.as_object_mut()
+            && settings.remove(&project_id.0).is_some()
+        {
+            cleanup.project_settings_count = 1;
+            save_app_data_value(store, PROJECT_SETTINGS_KEY, &project_settings)?;
         }
     }
 
@@ -4517,32 +4517,30 @@ fn clear_persisted_workspace_contexts(
             }
         }
 
-        if removed_contexts > 0
-            || persistence_snapshot_matches_scope(record_object, project_id, worktree_id)
-        {
-            if let Some(snapshot) = record_object
+        if (removed_contexts > 0
+            || persistence_snapshot_matches_scope(record_object, project_id, worktree_id))
+            && let Some(snapshot) = record_object
                 .get_mut("snapshot")
                 .and_then(Value::as_object_mut)
+        {
+            let (next_project_id, next_worktree_id) = next_active_scope
+                .map(|(project_id, worktree_id)| {
+                    (
+                        Value::String(project_id),
+                        worktree_id.map_or(Value::Null, Value::String),
+                    )
+                })
+                .unwrap_or((Value::Null, Value::Null));
+            snapshot.insert("activeProjectId".to_string(), next_project_id.clone());
+            snapshot.insert("activeWorktreeId".to_string(), next_worktree_id.clone());
+            if let Some(window_context) = snapshot
+                .get_mut("windowContext")
+                .and_then(Value::as_object_mut)
             {
-                let (next_project_id, next_worktree_id) = next_active_scope
-                    .map(|(project_id, worktree_id)| {
-                        (
-                            Value::String(project_id),
-                            worktree_id.map_or(Value::Null, Value::String),
-                        )
-                    })
-                    .unwrap_or((Value::Null, Value::Null));
-                snapshot.insert("activeProjectId".to_string(), next_project_id.clone());
-                snapshot.insert("activeWorktreeId".to_string(), next_worktree_id.clone());
-                if let Some(window_context) = snapshot
-                    .get_mut("windowContext")
-                    .and_then(Value::as_object_mut)
-                {
-                    window_context.insert("projectId".to_string(), next_project_id);
-                    window_context.insert("worktreeId".to_string(), next_worktree_id);
-                }
-                changed = true;
+                window_context.insert("projectId".to_string(), next_project_id);
+                window_context.insert("worktreeId".to_string(), next_worktree_id);
             }
+            changed = true;
         }
     }
 
