@@ -32,6 +32,7 @@ import type {
     AiTranscriptEntryEnvelope,
     AiLoadTranscriptPayloadInput,
     AiLoadTranscriptPayloadsInput,
+    AiLoadToolActivityDetailInput,
     AiTranscriptPayload,
     AiTranscriptPayloadsOutput,
     AiTranscriptStorageState,
@@ -171,6 +172,9 @@ export interface NativeAiGateway {
     loadReviewDelta?(
         reference: NativeReviewDeltaReference,
     ): Promise<NativeReviewLoadDeltaOutput>;
+    loadToolActivityDetail?(
+        input: AiLoadToolActivityDetailInput,
+    ): Promise<unknown>;
     loadOpenTranscriptTail?(
         sessionId: string,
     ): Promise<AiOpenTranscriptTail | null>;

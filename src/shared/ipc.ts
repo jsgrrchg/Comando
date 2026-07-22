@@ -193,6 +193,7 @@ export const IPC_CHANNELS = {
     rejectAllAiTrackedFiles: "ai:reject-all-tracked-files",
     loadAiReviewDelta: "ai:load-review-delta",
     releaseAiReviewDelta: "ai:release-review-delta",
+    loadAiToolActivityDetail: "ai:load-tool-activity-detail",
 } as const;
 
 export const IPC_EVENTS = {
@@ -2543,6 +2544,7 @@ export interface AiToolActivity {
     readonly sessionId: string;
     readonly status: "completed" | "failed" | "in_progress" | "pending";
     readonly summary: string | null;
+    readonly toolActivityDetailId?: string | null;
     readonly terminalOutput: string | null;
     readonly title: string;
     readonly updatedAt: string;

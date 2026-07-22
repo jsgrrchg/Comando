@@ -20,6 +20,7 @@ import {
     type AiLoadTranscriptPayloadInput,
     type AiLoadTranscriptPayloadsInput,
     type AiLoadReviewDeltaInput,
+    type AiLoadToolActivityDetailInput,
     type AiSessionModeMutationInput,
     type AiSessionModelMutationInput,
     type AiSessionRenameMutationInput,
@@ -396,6 +397,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.loadAiReviewDelta);
     ipcMain.removeHandler(IPC_CHANNELS.releaseAiReviewDelta);
+    ipcMain.removeHandler(IPC_CHANNELS.loadAiToolActivityDetail);
     ipcMain.removeHandler(IPC_CHANNELS.resyncAiSession);
     ipcMain.removeHandler(IPC_CHANNELS.listAiSessionHistory);
     ipcMain.removeHandler(IPC_CHANNELS.getAiSessionTranscriptPage);
@@ -2282,6 +2284,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(IPC_CHANNELS.releaseAiReviewDelta, (_event, reviewDeltaId: string) => {
         options.aiService.releaseReviewDelta(reviewDeltaId);
     });
+    ipcMain.handle(
+        IPC_CHANNELS.loadAiToolActivityDetail,
+        (_event, input: AiLoadToolActivityDetailInput) =>
+            options.aiService.loadToolActivityDetail(input),
+    );
     ipcMain.handle(IPC_CHANNELS.resyncAiSession, (event, sessionId: string) => {
         const context = requireWindowContext(event.sender, "main");
         return options.aiService.getLiveSessionSnapshotForWindow(

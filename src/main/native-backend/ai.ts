@@ -29,6 +29,7 @@ import type {
     AiTranscriptEntryEnvelope,
     AiLoadTranscriptPayloadInput,
     AiLoadTranscriptPayloadsInput,
+    AiLoadToolActivityDetailInput,
     AiTranscriptPayload,
     AiTranscriptPayloadsOutput,
     AiTranscriptStorageState,
@@ -288,6 +289,15 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         return await this.#client.request<NativeReviewLoadDeltaOutput>(
             "ai_load_review_delta",
             { reference },
+        );
+    }
+
+    async loadToolActivityDetail(
+        input: AiLoadToolActivityDetailInput,
+    ): Promise<unknown> {
+        return await this.#client.request<unknown>(
+            "ai_load_tool_activity_detail",
+            { ...input },
         );
     }
 
