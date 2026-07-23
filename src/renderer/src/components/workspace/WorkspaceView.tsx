@@ -2229,8 +2229,6 @@ function WorkspacePaneView({
     ) {
         event.preventDefault();
         event.stopPropagation();
-        void setActivePane(paneNodeId);
-        handleSelectTab(tabId);
         setTabContextMenu({
             x: event.clientX,
             y: event.clientY,
@@ -2796,7 +2794,14 @@ function WorkspacePaneView({
                         ? "border-border-strong"
                         : "border-transparent",
                 ].join(" ")}
-                onMouseDown={() => void setActivePane(paneNodeId)}
+                onMouseDown={(event) => {
+                    // Context clicks must not change the focused pane before its menu opens.
+                    if (!shouldActivateWorkspacePaneOnMouseDown(event.button)) {
+                        return;
+                    }
+
+                    void setActivePane(paneNodeId);
+                }}
                 ref={(element) => {
                     tabDrag.setPaneElement(paneNodeId, element);
                 }}
@@ -3412,6 +3417,10 @@ function getCachedGitHubPullRequestTitle(
         )?.title ??
         tab.title
     );
+}
+
+export function shouldActivateWorkspacePaneOnMouseDown(button: number): boolean {
+    return isPrimaryPointerButton(button);
 }
 
 function PaneActionButton({
