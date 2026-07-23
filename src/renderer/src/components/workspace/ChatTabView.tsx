@@ -245,6 +245,7 @@ function ChatPerformanceProfiler({
 type ChatSessionViewState = Pick<
     ReturnType<typeof useAiStore.getState>["sessions"][string],
     | "dismissedPlanUpdatedAt"
+    | "isPlanCollapsed"
     | "draftAttachments"
     | "draftComposerParts"
     | "draftFileContexts"
@@ -279,6 +280,7 @@ function selectChatSessionViewState(
 
     return {
         dismissedPlanUpdatedAt: session.dismissedPlanUpdatedAt,
+        isPlanCollapsed: session.isPlanCollapsed,
         draftAttachments: session.draftAttachments,
         draftComposerParts: session.draftComposerParts,
         draftFileContexts: session.draftFileContexts,
@@ -390,6 +392,9 @@ export const ChatTabView = memo(function ChatTabView({
     const addDraftFileContext = useAiStore((s) => s.addDraftFileContext);
     const clearDraftAttachments = useAiStore((s) => s.clearDraftAttachments);
     const dismissSessionPlan = useAiStore((s) => s.dismissSessionPlan);
+    const setSessionPlanCollapsed = useAiStore(
+        (s) => s.setSessionPlanCollapsed,
+    );
 
     const keepAllTrackedFiles = useAiStore((s) => s.keepAllTrackedFiles);
     const keepTrackedFile = useAiStore((s) => s.keepTrackedFile);
@@ -876,6 +881,7 @@ export const ChatTabView = memo(function ChatTabView({
     const draftFileContexts =
         sessionState?.draftFileContexts ?? EMPTY_DRAFT_FILE_CONTEXTS;
     const dismissedPlanUpdatedAt = sessionState?.dismissedPlanUpdatedAt ?? null;
+    const isPlanCollapsed = sessionState?.isPlanCollapsed ?? false;
     const editingQueuedPrompt = sessionState?.editingQueuedPrompt ?? null;
     const queuedPrompts = sessionState?.queue ?? [];
     const pendingPermission = snapshot.pendingPermission;
@@ -2953,10 +2959,17 @@ export const ChatTabView = memo(function ChatTabView({
                     >
                         <ChatContentColumn>
                             <PlanMessage
+                                expanded={!isPlanCollapsed}
                                 onDismiss={() => {
                                     dismissSessionPlan(
                                         snapshot.sessionId,
                                         visiblePlan.updatedAt,
+                                    );
+                                }}
+                                onExpandedChange={(expanded) => {
+                                    setSessionPlanCollapsed(
+                                        snapshot.sessionId,
+                                        !expanded,
                                     );
                                 }}
                                 plan={visiblePlan}
