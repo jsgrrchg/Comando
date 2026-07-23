@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
     buildWorkspaceAgentsQuickCreateEntries,
     getQuickCreateButtonTitle,
+    shouldActivateWorkspacePaneOnMouseDown,
 } from "./WorkspaceView";
 
 describe("WorkspaceView quick create agents menu", () => {
@@ -97,5 +98,12 @@ describe("WorkspaceView quick create agents menu", () => {
         expect(getQuickCreateButtonTitle("grok", true)).toBe(
             "Open last item: Grok chat",
         );
+    });
+});
+
+describe("Workspace pane focus", () => {
+    it("does not focus a background pane from a secondary mouse button", () => {
+        expect(shouldActivateWorkspacePaneOnMouseDown(0)).toBe(true);
+        expect(shouldActivateWorkspacePaneOnMouseDown(2)).toBe(false);
     });
 });
