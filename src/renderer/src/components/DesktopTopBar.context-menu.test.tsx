@@ -27,7 +27,7 @@ function renderTopBar() {
     mountedContainers.push(container);
 
     const onCloseContext = vi.fn();
-    const onMoveContextToNewWindow = vi.fn();
+    const onMoveContext = vi.fn();
     const onOpenProject = vi.fn();
     const root = createRoot(container);
     mountedRoots.push(root);
@@ -66,7 +66,7 @@ function renderTopBar() {
                 onActivateContext: vi.fn(),
                 onCloneRepository: vi.fn(() => Promise.resolve(true)),
                 onCloseContext,
-                onMoveContextToNewWindow,
+                onMoveContext,
                 onOpenProject,
                 onOpenProjects: vi.fn(),
                 onOpenSettings: vi.fn(),
@@ -82,7 +82,7 @@ function renderTopBar() {
     return {
         container,
         onCloseContext,
-        onMoveContextToNewWindow,
+        onMoveContext,
         onOpenProject,
     };
 }
@@ -93,9 +93,16 @@ describe("DesktopTopBar context menu", () => {
         const writeText = vi.fn(() => Promise.resolve());
         const showWorkspaceContextMenu = vi
             .fn()
-            .mockResolvedValueOnce("copy_full_path")
-            .mockResolvedValueOnce("move_to_new_window")
-            .mockResolvedValueOnce("close");
+            .mockResolvedValueOnce({ type: "copy_full_path" })
+            .mockResolvedValueOnce({
+                targetWindowId: "target-window",
+                type: "move",
+            })
+            .mockResolvedValueOnce({
+                targetWindowId: null,
+                type: "move",
+            })
+            .mockResolvedValueOnce({ type: "close" });
         vi.stubGlobal("navigator", {
             ...navigator,
             clipboard: { writeText },
@@ -104,7 +111,7 @@ describe("DesktopTopBar context menu", () => {
             showWorkspaceContextMenu,
             writeClipboardText,
         });
-        const { container, onCloseContext, onMoveContextToNewWindow } =
+        const { container, onCloseContext, onMoveContext } =
             renderTopBar();
         const tab = container.querySelector<HTMLElement>(
             '[data-project-context-tab-key="project-2::__primary__"]',
@@ -125,6 +132,9 @@ describe("DesktopTopBar context menu", () => {
 
         expect(showWorkspaceContextMenu).toHaveBeenLastCalledWith({
             canCopyFullPath: true,
+            contextKey: "project-2::__primary__",
+            projectId: "project-2",
+            worktreeId: null,
             x: 120,
             y: 40,
         });
@@ -142,8 +152,26 @@ describe("DesktopTopBar context menu", () => {
             );
             await Promise.resolve();
         });
-        expect(onMoveContextToNewWindow).toHaveBeenCalledWith(
+        expect(onMoveContext).toHaveBeenCalledWith(
             "project-2::__primary__",
+            "target-window",
+        );
+        expect(onCloseContext).not.toHaveBeenCalled();
+
+        await act(async () => {
+            tab?.dispatchEvent(
+                new MouseEvent("contextmenu", {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: 120,
+                    clientY: 40,
+                }),
+            );
+            await Promise.resolve();
+        });
+        expect(onMoveContext).toHaveBeenLastCalledWith(
+            "project-2::__primary__",
+            null,
         );
         expect(onCloseContext).not.toHaveBeenCalled();
 
@@ -161,6 +189,20 @@ describe("DesktopTopBar context menu", () => {
         expect(onCloseContext).toHaveBeenCalledWith(
             "project-2::__primary__",
         );
+
+        await act(async () => {
+            tab?.dispatchEvent(
+                new MouseEvent("contextmenu", {
+                    bubbles: true,
+                    cancelable: true,
+                    clientX: 120,
+                    clientY: 40,
+                }),
+            );
+            await Promise.resolve();
+        });
+        expect(onMoveContext).toHaveBeenCalledTimes(2);
+        expect(onCloseContext).toHaveBeenCalledTimes(1);
     });
 
     it("opens a project from the portaled project menu", async () => {

@@ -1595,7 +1595,6 @@ export function SidebarGitScopePicker({
 
             try {
                 await getComandoApi().openProjectWindow({
-                    forceNewWindow: true,
                     projectId,
                     worktreeId: targetWorktree.id,
                 });

@@ -124,6 +124,94 @@ describe("createNativeAppDataClient", () => {
         await secondClient.close();
     });
 
+    it("atomically transfers a context between window snapshots", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+        const client = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const sourceWindow = await client.persistence.createMainWindowSession({
+            projectId: "project-1",
+        });
+        const targetWindow = await client.persistence.createMainWindowSession({
+            projectId: "project-2",
+        });
+        const sourceWorkspaceId = sourceWindow.windowContext?.workspaceId;
+        const targetWorkspaceId = targetWindow.windowContext?.workspaceId;
+        if (!sourceWorkspaceId || !targetWorkspaceId) {
+            throw new Error("Expected transfer workspace ids.");
+        }
+        await client.workspace.saveSnapshot(
+            sourceWorkspaceId,
+            workspaceNavigation("project-1", null, "pane-source"),
+        );
+        await client.workspace.saveSnapshot(
+            targetWorkspaceId,
+            workspaceNavigation("project-2", null, "pane-target"),
+        );
+        const sourceBefore = await client.workspace.loadSnapshot(
+            sourceWorkspaceId,
+        );
+        const targetBefore = await client.workspace.loadSnapshot(
+            targetWorkspaceId,
+        );
+
+        const transfer = await client.workspace.transferContext({
+            contextKey: "project-1::__primary__",
+            sourceRevision: sourceBefore.revision,
+            sourceWorkspaceId,
+            targetRevision: targetBefore.revision,
+            targetWorkspaceId,
+        });
+
+        expect(transfer.source).toMatchObject({
+            revision: sourceBefore.revision + 1,
+            snapshot: { activeContextKey: null, openContextKeys: [] },
+        });
+        expect(transfer.target).toMatchObject({
+            revision: targetBefore.revision + 1,
+            snapshot: {
+                activeContextKey: "project-1::__primary__",
+                openContextKeys: [
+                    "project-2::__primary__",
+                    "project-1::__primary__",
+                ],
+            },
+        });
+        await expect(
+            client.workspace.transferContext({
+                contextKey: "project-2::__primary__",
+                sourceRevision: targetBefore.revision,
+                sourceWorkspaceId: targetWorkspaceId,
+                targetRevision: sourceBefore.revision,
+                targetWorkspaceId: sourceWorkspaceId,
+            }),
+        ).rejects.toThrow("changed before it could be moved");
+        await client.close();
+
+        const restored = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        expect(
+            (await restored.workspace.loadSnapshot(sourceWorkspaceId)).snapshot
+                .openContextKeys,
+        ).toEqual([]);
+        expect(
+            (await restored.workspace.loadSnapshot(targetWorkspaceId)).snapshot
+                .openContextKeys,
+        ).toEqual([
+            "project-2::__primary__",
+            "project-1::__primary__",
+        ]);
+        await restored.close();
+    });
+
     it("migrates legacy SQLite app data into native app-data and keyring", async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
         tempDirs.push(tempDir);

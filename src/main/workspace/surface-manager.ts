@@ -7,9 +7,16 @@ import {
 } from "electron";
 
 import { IPC_EVENTS } from "@shared/ipc";
+import {
+    areWorkspaceScopesEquivalent,
+    areWorkspaceWorktreeIdsEquivalent,
+    type WorkspaceLocation,
+    type WorkspaceScope,
+} from "@shared/workspace-context";
 import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
+    WindowWorkspaceRestoreRecord,
     WorkspaceSurfaceActionCompletion,
     WorkspaceSurfaceActionDeliveryFailureReason,
     WorkspaceSurfaceActionDeliveryResult,
@@ -33,9 +40,9 @@ import {
 
 interface WorkspaceSurfaceRecord {
     bounds: WorkspaceSurfaceBounds | null;
-    readonly context: WindowContextSnapshot;
+    context: WindowContextSnapshot;
     readonly contextKey: string;
-    readonly hostWindowId: string;
+    hostWindowId: string;
     readonly id: string;
     isVisible: boolean;
     isReady: boolean;
@@ -59,6 +66,7 @@ interface WorkspaceSurfaceHostRecord {
     contentLeftInset: number;
     readonly hostWindow: BrowserWindow;
     readonly hostWindowId: string;
+    context: WindowContextSnapshot;
     pendingLayoutTimer: NodeJS.Timeout | null;
     snapshot: WorkspaceNavigationSnapshot;
     readonly surfaceIdsByContextKey: Map<string, string>;
@@ -67,7 +75,7 @@ interface WorkspaceSurfaceHostRecord {
 interface DispatchedWorkspaceSurfaceAction {
     claimed: boolean;
     readonly envelope: WorkspaceSurfaceActionEnvelope;
-    readonly hostWindowId: string;
+    hostWindowId: string;
     readonly surfaceId: string;
 }
 
@@ -79,12 +87,27 @@ interface WorkspaceSurfaceLifecycleHandlers {
     readonly onSurfaceDestroyed?: (ownerId: string) => void;
 }
 
+export interface OpenWorkspaceSurfaceLocation extends WorkspaceLocation {
+    readonly isActive: boolean;
+    readonly lastActivatedAt: string;
+}
+
+export interface WorkspaceSurfaceTransferResult {
+    readonly sourceSnapshot: WorkspaceNavigationSnapshot;
+    readonly surfaceId: string;
+    readonly targetSnapshot: WorkspaceNavigationSnapshot;
+}
+
 /**
  * Keeps project workspaces alive in isolated WebContents while the host renderer
  * owns the visible title bar and project switcher.
  */
 export class WorkspaceSurfaceManager {
     readonly #hostsByWindowId = new Map<string, WorkspaceSurfaceHostRecord>();
+    readonly #hostReadyWaitersByWindowId = new Map<
+        string,
+        Set<(ready: boolean) => void>
+    >();
     readonly #surfaceIdsByWebContentsId = new Map<number, string>();
     readonly #surfacesById = new Map<string, WorkspaceSurfaceRecord>();
     readonly #actionsById = new Map<
@@ -110,16 +133,19 @@ export class WorkspaceSurfaceManager {
                 contentLeftInset: 0,
                 hostWindow,
                 hostWindowId: hostContext.windowId,
+                context: hostContext,
                 pendingLayoutTimer: null,
                 snapshot,
                 surfaceIdsByContextKey: new Map(),
             };
             this.#hostsByWindowId.set(host.hostWindowId, host);
+            this.#resolveHostReadyWaiters(host.hostWindowId, true);
             const createdHost = host;
             hostWindow.on("resize", () => {
                 this.#scheduleActiveSurfaceLayout(createdHost);
             });
         }
+        host.context = hostContext;
 
         const openContextKeys = new Set(snapshot.openContextKeys);
         for (const [contextKey, surfaceId] of host.surfaceIdsByContextKey) {
@@ -153,6 +179,30 @@ export class WorkspaceSurfaceManager {
         this.#rejectInactiveActions(host);
         this.#applyVisibility(host, { focusActive: activeContextChanged });
         return host.snapshot;
+    }
+
+    waitForHost(hostWindowId: string, timeoutMs = 10_000): Promise<boolean> {
+        if (this.#hostsByWindowId.has(hostWindowId)) {
+            return Promise.resolve(true);
+        }
+        return new Promise<boolean>((resolve) => {
+            const finish = (ready: boolean) => {
+                clearTimeout(timer);
+                const waiters = this.#hostReadyWaitersByWindowId.get(hostWindowId);
+                waiters?.delete(finish);
+                if (waiters?.size === 0) {
+                    this.#hostReadyWaitersByWindowId.delete(hostWindowId);
+                }
+                resolve(ready);
+            };
+            const timer = setTimeout(() => {
+                finish(false);
+            }, timeoutMs);
+            const waiters =
+                this.#hostReadyWaitersByWindowId.get(hostWindowId) ?? new Set();
+            waiters.add(finish);
+            this.#hostReadyWaitersByWindowId.set(hostWindowId, waiters);
+        });
     }
 
     activate(hostWindowId: string, contextKey: string): boolean {
@@ -530,6 +580,188 @@ export class WorkspaceSurfaceManager {
             : null;
     }
 
+    listOpenWorkspaceLocations(): readonly OpenWorkspaceSurfaceLocation[] {
+        return [...this.#hostsByWindowId.values()].flatMap((host) =>
+            host.snapshot.openContextKeys.flatMap((contextKey) => {
+                const context = host.snapshot.contexts.find(
+                    (candidate) => candidate.key === contextKey,
+                );
+                if (!context || !host.surfaceIdsByContextKey.has(contextKey)) {
+                    return [];
+                }
+                return [
+                    {
+                        contextKey,
+                        hostWindowId: host.hostWindowId,
+                        isActive: host.activeContextKey === contextKey,
+                        lastActivatedAt: context.lastActivatedAt,
+                        projectId: context.projectId,
+                        worktreeId: context.worktreeId,
+                    },
+                ];
+            }),
+        );
+    }
+
+    findWorkspaceLocations(
+        scope: WorkspaceScope,
+    ): readonly OpenWorkspaceSurfaceLocation[] {
+        return this.listOpenWorkspaceLocations().filter((location) =>
+            areWorkspaceScopesEquivalent(location, scope),
+        );
+    }
+
+    findPreferredWorkspaceLocation(
+        scope: WorkspaceScope,
+        preferredHostWindowId = windowRegistry.getLastFocusedMainWindowId(),
+    ): OpenWorkspaceSurfaceLocation | null {
+        return (
+            [...this.findWorkspaceLocations(scope)].sort((left, right) => {
+                if (left.isActive !== right.isActive) {
+                    return left.isActive ? -1 : 1;
+                }
+                const leftIsPreferred =
+                    left.hostWindowId === preferredHostWindowId;
+                const rightIsPreferred =
+                    right.hostWindowId === preferredHostWindowId;
+                if (leftIsPreferred !== rightIsPreferred) {
+                    return leftIsPreferred ? -1 : 1;
+                }
+                const activationOrder =
+                    Date.parse(right.lastActivatedAt) -
+                    Date.parse(left.lastActivatedAt);
+                return activationOrder ||
+                    left.hostWindowId.localeCompare(right.hostWindowId);
+            })[0] ?? null
+        );
+    }
+
+    async transferSurface(input: {
+        readonly commit: () => Promise<{
+            readonly source: WindowWorkspaceRestoreRecord;
+            readonly target: WindowWorkspaceRestoreRecord;
+        }>;
+        readonly contextKey: string;
+        readonly sourceHostWindowId: string;
+        readonly targetHostWindowId: string;
+    }): Promise<WorkspaceSurfaceTransferResult> {
+        if (input.sourceHostWindowId === input.targetHostWindowId) {
+            throw new Error("The workspace is already in the target window.");
+        }
+        const sourceHost = this.#hostsByWindowId.get(
+            input.sourceHostWindowId,
+        );
+        const targetHost = this.#hostsByWindowId.get(
+            input.targetHostWindowId,
+        );
+        const surfaceId = sourceHost?.surfaceIdsByContextKey.get(
+            input.contextKey,
+        );
+        const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
+        if (!sourceHost || !targetHost || !surface) {
+            throw new Error("The workspace surface is no longer available.");
+        }
+        if (
+            sourceHost.hostWindow.isDestroyed() ||
+            targetHost.hostWindow.isDestroyed()
+        ) {
+            throw new Error("A workspace transfer window is no longer available.");
+        }
+        const movingContext = sourceHost.snapshot.contexts.find(
+            (context) => context.key === input.contextKey,
+        );
+        if (!movingContext) {
+            throw new Error("The workspace context is no longer available.");
+        }
+        if (
+            targetHost.snapshot.contexts.some((context) =>
+                areWorkspaceScopesEquivalent(context, movingContext),
+            ) ||
+            targetHost.surfaceIdsByContextKey.has(input.contextKey)
+        ) {
+            throw new Error("The destination already contains this workspace.");
+        }
+
+        const previousContext = surface.context;
+        const previousActionHostIds = new Map<string, string>();
+        let attachedToTarget = false;
+        surface.view.setVisible(false);
+        surface.isVisible = false;
+        surface.bounds = null;
+        try {
+            sourceHost.hostWindow.contentView.removeChildView(surface.view);
+            targetHost.hostWindow.contentView.addChildView(surface.view);
+            attachedToTarget = true;
+            sourceHost.surfaceIdsByContextKey.delete(input.contextKey);
+            targetHost.surfaceIdsByContextKey.set(input.contextKey, surface.id);
+            surface.hostWindowId = targetHost.hostWindowId;
+            surface.context = {
+                ...surface.context,
+                hostWindowId: targetHost.hostWindowId,
+                workspaceId: targetHost.context.workspaceId,
+                workspaceSessionId: targetHost.context.workspaceSessionId,
+            };
+            windowRegistry.registerEmbeddedRenderer(
+                surface.webContents,
+                surface.context,
+            );
+            for (const [actionId, action] of this.#actionsById) {
+                if (action.surfaceId !== surface.id) {
+                    continue;
+                }
+                previousActionHostIds.set(actionId, action.hostWindowId);
+                action.hostWindowId = targetHost.hostWindowId;
+            }
+
+            const committed = await input.commit();
+            sourceHost.snapshot = committed.source.snapshot;
+            sourceHost.activeContextKey =
+                committed.source.snapshot.activeContextKey;
+            targetHost.snapshot = committed.target.snapshot;
+            targetHost.activeContextKey =
+                committed.target.snapshot.activeContextKey;
+            surface.snapshot = toSurfaceSnapshot(
+                committed.target.snapshot,
+                input.contextKey,
+            );
+            this.#rejectInactiveActions(sourceHost);
+            this.#rejectInactiveActions(targetHost);
+            this.#applyVisibility(sourceHost);
+            this.#applyVisibility(targetHost, { focusActive: true });
+            return {
+                sourceSnapshot: sourceHost.snapshot,
+                surfaceId: surface.id,
+                targetSnapshot: targetHost.snapshot,
+            };
+        } catch (error) {
+            if (attachedToTarget && !targetHost.hostWindow.isDestroyed()) {
+                targetHost.hostWindow.contentView.removeChildView(surface.view);
+            }
+            if (!sourceHost.hostWindow.isDestroyed()) {
+                sourceHost.hostWindow.contentView.addChildView(surface.view);
+            }
+            targetHost.surfaceIdsByContextKey.delete(input.contextKey);
+            sourceHost.surfaceIdsByContextKey.set(input.contextKey, surface.id);
+            surface.hostWindowId = sourceHost.hostWindowId;
+            surface.context = previousContext;
+            windowRegistry.registerEmbeddedRenderer(
+                surface.webContents,
+                previousContext,
+            );
+            for (const [actionId, previousHostWindowId] of previousActionHostIds) {
+                const action = this.#actionsById.get(actionId);
+                if (action) {
+                    action.hostWindowId = previousHostWindowId;
+                }
+            }
+            this.#applyVisibility(sourceHost, {
+                focusActive:
+                    sourceHost.activeContextKey === input.contextKey,
+            });
+            throw error;
+        }
+    }
+
     activateProject(
         projectId: string,
         worktreeId: string | null | undefined,
@@ -539,7 +771,11 @@ export class WorkspaceSurfaceManager {
                 (candidate) =>
                     candidate.projectId === projectId &&
                     (worktreeId === undefined ||
-                        candidate.worktreeId === worktreeId),
+                        areWorkspaceWorktreeIdsEquivalent(
+                            projectId,
+                            candidate.worktreeId,
+                            worktreeId,
+                        )),
             );
             if (!context) {
                 continue;
@@ -551,6 +787,7 @@ export class WorkspaceSurfaceManager {
     }
 
     disposeHost(hostWindowId: string): void {
+        this.#resolveHostReadyWaiters(hostWindowId, false);
         const host = this.#hostsByWindowId.get(hostWindowId);
         if (!host) {
             return;
@@ -562,6 +799,17 @@ export class WorkspaceSurfaceManager {
             this.#destroySurface(host, surfaceId);
         }
         this.#hostsByWindowId.delete(hostWindowId);
+    }
+
+    #resolveHostReadyWaiters(hostWindowId: string, ready: boolean): void {
+        const waiters = this.#hostReadyWaitersByWindowId.get(hostWindowId);
+        if (!waiters) {
+            return;
+        }
+        this.#hostReadyWaitersByWindowId.delete(hostWindowId);
+        for (const resolve of waiters) {
+            resolve(ready);
+        }
     }
 
     #createSurface(
@@ -629,9 +877,15 @@ export class WorkspaceSurfaceManager {
                 return;
             }
 
+            const currentHost = this.#hostsByWindowId.get(
+                surface.hostWindowId,
+            );
+            if (!currentHost) {
+                return;
+            }
             const nextContextKey = getAdjacentContextKey(
-                host.snapshot.openContextKeys,
-                host.activeContextKey,
+                currentHost.snapshot.openContextKeys,
+                currentHost.activeContextKey,
                 direction,
             );
             if (!nextContextKey) {
@@ -639,16 +893,21 @@ export class WorkspaceSurfaceManager {
             }
 
             event.preventDefault();
-            this.activate(host.hostWindowId, nextContextKey);
-            host.hostWindow.webContents.send(
+            this.activate(currentHost.hostWindowId, nextContextKey);
+            currentHost.hostWindow.webContents.send(
                 IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
-                host.snapshot,
+                currentHost.snapshot,
             );
         });
         webContents.once("did-finish-load", () => {
             if (!webContents.isDestroyed()) {
                 this.#lifecycleHandlers.onSurfaceCreated?.(webContents, id);
-                this.#applyVisibility(host);
+                const currentHost = this.#hostsByWindowId.get(
+                    surface.hostWindowId,
+                );
+                if (currentHost) {
+                    this.#applyVisibility(currentHost);
+                }
             }
         });
         webContents.once("destroyed", () => {
