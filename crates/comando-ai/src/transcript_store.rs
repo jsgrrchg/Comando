@@ -221,6 +221,7 @@ impl TranscriptStore {
         &self,
         session_id: &SessionId,
         first_changed_offset: usize,
+        stale_entry_ids: &[String],
     ) -> AiResult<()> {
         if !self.database_path.exists() {
             return Ok(());
@@ -238,11 +239,8 @@ impl TranscriptStore {
                 .map_err(|error| {
                     transcript_sql("start legacy transcript invalidation transaction", error)
                 })?;
-            let obsolete_payload_files = purge_legacy_transcript_entries_from(
-                &transaction,
-                session_id,
-                first_changed_offset,
-            )?;
+            let obsolete_payload_files =
+                purge_legacy_transcript_entries_from(&transaction, session_id, stale_entry_ids)?;
             transaction
                 .execute(
                     "UPDATE transcript_sessions
@@ -1728,57 +1726,67 @@ fn refresh_block_metadata(
 fn purge_legacy_transcript_entries_from(
     transaction: &Transaction<'_>,
     session_id: &SessionId,
-    first_changed_offset: usize,
+    stale_entry_ids: &[String],
 ) -> AiResult<Vec<String>> {
-    let affected_blocks = {
+    let mut affected_blocks = BTreeSet::new();
+    // IDs preserve the JSONL-to-SQLite mapping even when native entries were
+    // skipped during backfill and therefore consumed no SQLite sequence.
+    for entry_ids in stale_entry_ids.chunks(500) {
+        let placeholders = std::iter::repeat_n("?", entry_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let parameters = std::iter::once(session_id.0.as_str())
+            .chain(entry_ids.iter().map(String::as_str))
+            .collect::<Vec<_>>();
+        let lookup_sql = format!(
+            "SELECT DISTINCT entries.block_id
+             FROM transcript_entries AS entries
+             JOIN transcript_blocks AS blocks
+                ON blocks.session_id = entries.session_id
+                AND blocks.block_id = entries.block_id
+             WHERE entries.session_id = ?
+                AND entries.entry_id IN ({placeholders})
+                AND blocks.turn_id GLOB 'legacy-transcript:*'"
+        );
         let mut statement = transaction
-            .prepare(
-                "SELECT entries.block_id
-                 FROM transcript_entries AS entries
-                 JOIN transcript_blocks AS blocks
-                    ON blocks.session_id = entries.session_id
-                    AND blocks.block_id = entries.block_id
-                 WHERE entries.session_id = ?1
-                    AND blocks.turn_id GLOB 'legacy-transcript:*'
-                 ORDER BY entries.sequence ASC
-                 LIMIT -1 OFFSET ?2",
-            )
+            .prepare(&lookup_sql)
             .map_err(|error| transcript_sql("prepare legacy transcript purge blocks", error))?;
-        statement
-            .query_map(params![session_id.0, first_changed_offset as i64], |row| {
+        let block_ids = statement
+            .query_map(params_from_iter(parameters.iter()), |row| {
                 row.get::<_, String>(0)
             })
             .map_err(|error| transcript_sql("query legacy transcript purge blocks", error))?
-            .collect::<Result<BTreeSet<_>, _>>()
-            .map_err(|error| transcript_sql("read legacy transcript purge block", error))?
-    };
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| transcript_sql("read legacy transcript purge block", error))?;
+        affected_blocks.extend(block_ids);
+
+        // Only backfill turns participate here so native transcript entries
+        // keep their own lifecycle during compatibility reconciliation.
+        let delete_sql = format!(
+            "DELETE FROM transcript_entries
+             WHERE session_id = ?
+                AND entry_id IN (
+                    SELECT entries.entry_id
+                    FROM transcript_entries AS entries
+                    JOIN transcript_blocks AS blocks
+                        ON blocks.session_id = entries.session_id
+                        AND blocks.block_id = entries.block_id
+                    WHERE entries.session_id = ?
+                        AND entries.entry_id IN ({placeholders})
+                        AND blocks.turn_id GLOB 'legacy-transcript:*'
+                )"
+        );
+        let delete_parameters = std::iter::once(session_id.0.as_str())
+            .chain(std::iter::once(session_id.0.as_str()))
+            .chain(entry_ids.iter().map(String::as_str));
+        transaction
+            .execute(&delete_sql, params_from_iter(delete_parameters))
+            .map_err(|error| transcript_sql("remove stale legacy transcript entries", error))?;
+    }
 
     if affected_blocks.is_empty() {
         return Ok(Vec::new());
     }
-
-    // Only backfill turns participate here so native transcript entries keep
-    // their own lifecycle when the compatibility transcript is reconciled.
-    transaction
-        .execute(
-            "DELETE FROM transcript_entries
-             WHERE session_id = ?1
-                AND entry_id IN (
-                    SELECT entry_id FROM (
-                        SELECT entries.entry_id
-                        FROM transcript_entries AS entries
-                        JOIN transcript_blocks AS blocks
-                            ON blocks.session_id = entries.session_id
-                            AND blocks.block_id = entries.block_id
-                        WHERE entries.session_id = ?1
-                            AND blocks.turn_id GLOB 'legacy-transcript:*'
-                        ORDER BY entries.sequence ASC
-                        LIMIT -1 OFFSET ?2
-                    )
-                )",
-            params![session_id.0, first_changed_offset as i64],
-        )
-        .map_err(|error| transcript_sql("remove stale legacy transcript entries", error))?;
 
     for block_id in affected_blocks {
         let has_entries = transaction

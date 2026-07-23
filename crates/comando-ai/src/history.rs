@@ -581,8 +581,16 @@ impl AiHistoryStore {
         if reuse_len < index.len() || reuse_len < records.len() {
             // Keep the previous index visible until SQLite has acknowledged
             // the invalidation, so a retry recomputes the same changed tail.
+            let stale_legacy_entry_ids = index.message_ids[reuse_len..]
+                .iter()
+                .map(|message_id| format!("message:{message_id}"))
+                .collect::<Vec<_>>();
             self.transcript_store(session_id)
-                .invalidate_legacy_transcript_backfill_from(session_id, reuse_len)?;
+                .invalidate_legacy_transcript_backfill_from(
+                    session_id,
+                    reuse_len,
+                    &stale_legacy_entry_ids,
+                )?;
         }
         self.save_index(session_id, &next_index)?;
         self.save_metadata(&metadata)?;
@@ -4611,6 +4619,63 @@ mod tests {
                 .sum::<usize>(),
             300
         );
+    }
+
+    #[test]
+    fn transcript_reconciliation_removes_replaced_legacy_entry_after_native_gap() {
+        let (_temp, store) = store();
+        let session_id = SessionId("mixed_transcript_reconciliation".to_string());
+        let mut messages = (0..300)
+            .map(|index| message(&format!("legacy-{index}"), "legacy content"))
+            .collect::<Vec<_>>();
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, messages.clone())
+            .unwrap();
+
+        let transcript_store = store.transcript_store(&session_id);
+        transcript_store
+            .begin_legacy_transcript_backfill(&session_id)
+            .unwrap();
+        let (native_entry, native_payload) =
+            legacy_transcript_entry(&session_id, messages[0].clone()).unwrap();
+        transcript_store
+            .seal_turn(
+                &session_id,
+                "native-turn",
+                vec![native_entry],
+                vec![native_payload],
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::Migrating
+        );
+
+        messages[100] = message("legacy-replacement", "replacement content");
+        store.save_transcript_window(&session_id, messages).unwrap();
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+
+        let entry_ids = store
+            .load_transcript_block_metadata(&session_id)
+            .unwrap()
+            .into_iter()
+            .flat_map(|block| {
+                store
+                    .load_transcript_block(&session_id, &block.block_id)
+                    .unwrap()
+                    .unwrap()
+                    .entries
+            })
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(entry_ids.len(), 300);
+        assert!(!entry_ids.contains(&"message:legacy-100".to_string()));
+        assert!(entry_ids.contains(&"message:legacy-replacement".to_string()));
     }
 
     #[test]
