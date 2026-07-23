@@ -246,6 +246,7 @@ type ChatSessionViewState = Pick<
     ReturnType<typeof useAiStore.getState>["sessions"][string],
     | "dismissedPlanUpdatedAt"
     | "isPlanCollapsed"
+    | "isPendingReviewCollapsed"
     | "draftAttachments"
     | "draftComposerParts"
     | "draftFileContexts"
@@ -281,6 +282,7 @@ function selectChatSessionViewState(
     return {
         dismissedPlanUpdatedAt: session.dismissedPlanUpdatedAt,
         isPlanCollapsed: session.isPlanCollapsed,
+        isPendingReviewCollapsed: session.isPendingReviewCollapsed,
         draftAttachments: session.draftAttachments,
         draftComposerParts: session.draftComposerParts,
         draftFileContexts: session.draftFileContexts,
@@ -361,8 +363,6 @@ export const ChatTabView = memo(function ChatTabView({
     onOpenReview,
     tab,
 }: ChatTabViewProps) {
-    // Keep the rail preference while its virtualized surface is temporarily unmounted.
-    const [pendingReviewCollapsed, setPendingReviewCollapsed] = useState(true);
     const aiChatSettings = useAiChatSettings();
     const cancelQueuedPromptEdit = useAiStore((s) => s.cancelQueuedPromptEdit);
     const clearQueuedPrompts = useAiStore((s) => s.clearQueuedPrompts);
@@ -394,6 +394,9 @@ export const ChatTabView = memo(function ChatTabView({
     const dismissSessionPlan = useAiStore((s) => s.dismissSessionPlan);
     const setSessionPlanCollapsed = useAiStore(
         (s) => s.setSessionPlanCollapsed,
+    );
+    const setSessionPendingReviewCollapsed = useAiStore(
+        (s) => s.setSessionPendingReviewCollapsed,
     );
 
     const keepAllTrackedFiles = useAiStore((s) => s.keepAllTrackedFiles);
@@ -882,6 +885,8 @@ export const ChatTabView = memo(function ChatTabView({
         sessionState?.draftFileContexts ?? EMPTY_DRAFT_FILE_CONTEXTS;
     const dismissedPlanUpdatedAt = sessionState?.dismissedPlanUpdatedAt ?? null;
     const isPlanCollapsed = sessionState?.isPlanCollapsed ?? false;
+    const pendingReviewCollapsed =
+        sessionState?.isPendingReviewCollapsed ?? true;
     const editingQueuedPrompt = sessionState?.editingQueuedPrompt ?? null;
     const queuedPrompts = sessionState?.queue ?? [];
     const pendingPermission = snapshot.pendingPermission;
@@ -3107,7 +3112,12 @@ export const ChatTabView = memo(function ChatTabView({
                                     onKeepItem={handleKeepPendingReviewItem}
                                     onOpenItem={handleOpenPendingReviewItem}
                                     onOpenReview={handleOpenReviewTab}
-                                    onCollapsedChange={setPendingReviewCollapsed}
+                                    onCollapsedChange={(collapsed) =>
+                                        setSessionPendingReviewCollapsed(
+                                            tab.sessionId,
+                                            collapsed,
+                                        )
+                                    }
                                     onRejectAll={handleRejectAllPendingReview}
                                     onRejectHunk={handleRejectPendingReviewHunk}
                                     onRejectItem={handleRejectPendingReviewItem}

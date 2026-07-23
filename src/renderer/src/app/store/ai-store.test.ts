@@ -4554,6 +4554,19 @@ describe("ai-store queue", () => {
         ).toBe(true);
     });
 
+    it("keeps the pending review collapse preference per session", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+
+        useAiStore
+            .getState()
+            .setSessionPendingReviewCollapsed(TAB.sessionId, false);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]
+                ?.isPendingReviewCollapsed,
+        ).toBe(false);
+    });
+
     it("merges incremental session patches without replacing the whole snapshot", () => {
         useAiStore.getState().registerSessionTab(TAB);
         useAiStore.getState().applySessionSnapshot(
