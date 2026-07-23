@@ -4206,6 +4206,50 @@ mod tests {
     }
 
     #[test]
+    fn transcript_storage_state_keeps_native_entries_authoritative_after_legacy_migration() {
+        let (_temp, store) = store();
+        let session_id = SessionId("native_entry_after_legacy_migration".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        let legacy_message = message("legacy-1", "legacy content");
+        store
+            .save_transcript_window(&session_id, vec![legacy_message.clone()])
+            .unwrap();
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+
+        let native_message = message("native-1", "native content");
+        let (entry, payload) =
+            legacy_transcript_entry(&session_id, native_message.clone()).unwrap();
+        store
+            .seal_transcript_turn(&session_id, "native-turn", vec![entry], vec![payload])
+            .unwrap();
+        store
+            .save_transcript_window(&session_id, vec![legacy_message, native_message])
+            .unwrap();
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        let entries = store
+            .load_transcript_block_metadata(&session_id)
+            .unwrap()
+            .into_iter()
+            .flat_map(|block| {
+                store
+                    .load_transcript_block(&session_id, &block.block_id)
+                    .unwrap()
+                    .unwrap()
+                    .entries
+            })
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec!["message:legacy-1", "message:native-1"]);
+    }
+
+    #[test]
     fn snapshot_keeps_a_legacy_transcript_visible_when_a_completed_backfill_is_stale() {
         let (_temp, store) = store();
         let session_id = SessionId("stale_legacy_backfill_snapshot".to_string());

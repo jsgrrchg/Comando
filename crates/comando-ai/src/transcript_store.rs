@@ -89,20 +89,6 @@ impl TranscriptStore {
             return Ok(true);
         }
         let connection = self.open(session_id, false)?;
-        let origin = connection
-            .query_row(
-                "SELECT transcript_origin
-                 FROM transcript_sessions
-                 WHERE session_id = ?1",
-                params![session_id.0],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()
-            .map_err(|error| transcript_sql("load transcript origin", error))?;
-        if origin.as_deref() != Some("native") {
-            return Ok(true);
-        }
-
         let has_native_entries = connection
             .query_row(
                 "SELECT EXISTS(
@@ -119,8 +105,8 @@ impl TranscriptStore {
             )
             .map_err(|error| transcript_sql("detect native transcript entries", error))?
             == 1;
-        // Opening the store creates an empty native-default row. It must not
-        // suppress a JSONL backfill until actual native content exists.
+        // Native entries are authoritative even when the session began as a
+        // legacy backfill. An empty native-default row is not sufficient.
         Ok(!has_native_entries)
     }
 
