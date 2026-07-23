@@ -7,6 +7,7 @@ import {
 } from "electron";
 
 import { IPC_EVENTS } from "@shared/ipc";
+import { areWorkspaceWorktreeIdsEquivalent } from "@shared/workspace-context";
 import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
@@ -539,7 +540,11 @@ export class WorkspaceSurfaceManager {
                 (candidate) =>
                     candidate.projectId === projectId &&
                     (worktreeId === undefined ||
-                        candidate.worktreeId === worktreeId),
+                        areWorkspaceWorktreeIdsEquivalent(
+                            projectId,
+                            candidate.worktreeId,
+                            worktreeId,
+                        )),
             );
             if (!context) {
                 continue;
