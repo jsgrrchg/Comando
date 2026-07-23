@@ -60,4 +60,16 @@ describe("PlanMessage", () => {
 
         expect(markup).not.toContain("Dismiss plan banner");
     });
+
+    it("hides plan entries when controlled as collapsed", () => {
+        const markup = renderToStaticMarkup(
+            createElement(PlanMessage, {
+                expanded: false,
+                plan: createPlan(),
+            }),
+        );
+
+        expect(markup).not.toContain("Inspect current behavior");
+        expect(markup).toContain('aria-expanded="false"');
+    });
 });

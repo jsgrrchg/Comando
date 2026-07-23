@@ -43,13 +43,18 @@ const PLAN_TONE_COLOR: Record<PlanTone, string> = {
 /* ─── Component ─── */
 
 export function PlanMessage({
+    expanded: controlledExpanded,
     onDismiss,
+    onExpandedChange,
     plan,
 }: {
+    readonly expanded?: boolean;
     readonly onDismiss?: () => void;
+    readonly onExpandedChange?: (expanded: boolean) => void;
     readonly plan: AiPlan;
 }) {
-    const [expanded, setExpanded] = useState(true);
+    const [uncontrolledExpanded, setUncontrolledExpanded] = useState(true);
+    const expanded = controlledExpanded ?? uncontrolledExpanded;
     const canExpand = plan.entries.length > 0;
 
     const completedCount = plan.entries.filter(
@@ -76,7 +81,11 @@ export function PlanMessage({
                     className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     onClick={() => {
                         if (canExpand) {
-                            setExpanded((current) => !current);
+                            if (onExpandedChange) {
+                                onExpandedChange(!expanded);
+                            } else {
+                                setUncontrolledExpanded(!expanded);
+                            }
                         }
                     }}
                     style={{
