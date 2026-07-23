@@ -30,7 +30,6 @@ import {
     type WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
 import {
-    areWorkspaceScopesEquivalent,
     normalizeWorkspaceWorktreeId,
 } from "@shared/workspace-context";
 import {
@@ -108,6 +107,7 @@ import {
 } from "./window";
 import { windowRegistry } from "./windows/registry";
 import { workspaceSurfaceManager } from "./workspace/surface-manager";
+import { moveWorkspaceBetweenWindows } from "./workspace/move-coordinator";
 import type { WorkspaceGateway } from "./workspace/service";
 
 import { initReviewEngine } from "@shared/ai-review-engine/reviewEngine";
@@ -775,20 +775,13 @@ async function openOrFocusProjectWindow(
         throw new Error("The persistence service is unavailable.");
     }
 
-    // Snapshot-bearing requests are the legacy move path. They are replaced by
-    // live surface transfers later in this series and must remain functional
-    // until that path is removed.
-    const existingWindow = input.workspaceSnapshot
-        ? null
-        : await activateExistingWorkspaceScope(
-              input.projectId,
-              input.worktreeId ?? null,
-          );
+    const existingWindow = await activateExistingWorkspaceScope(
+        input.projectId,
+        input.worktreeId ?? null,
+    );
     if (!existingWindow) {
         await openNewMainWindowWithOptions({
-            forceNewWindow: input.forceNewWindow,
             projectId: input.projectId,
-            workspaceSnapshot: input.workspaceSnapshot,
             worktreeId: input.worktreeId,
         });
         return;
@@ -824,16 +817,14 @@ async function openOrFocusProjectWindow(
 }
 
 async function openNewMainWindowWithOptions(input: {
-    readonly forceNewWindow?: boolean;
     readonly projectId: string | null;
-    readonly workspaceSnapshot?: WorkspaceNavigationSnapshot;
     readonly worktreeId?: string | null;
 }): Promise<void> {
     if (!persistenceService) {
         throw new Error("The persistence service is unavailable.");
     }
 
-    if (input.projectId && !input.workspaceSnapshot) {
+    if (input.projectId) {
         const existingWindow = await activateExistingWorkspaceScope(
             input.projectId,
             input.worktreeId ?? null,
@@ -844,7 +835,7 @@ async function openNewMainWindowWithOptions(input: {
     }
 
     const closedProjectSnapshot =
-        input.projectId && !input.workspaceSnapshot
+        input.projectId
             ? await persistenceService.findClosedMainWindowSnapshotForProject(
                   input.projectId,
                   input.worktreeId,
@@ -875,15 +866,6 @@ async function openNewMainWindowWithOptions(input: {
                   worktreeId: input.worktreeId,
               },
     );
-
-    const workspaceId = snapshot.windowContext?.workspaceId;
-    if (input.workspaceSnapshot) {
-        if (!workspaceService || !workspaceId) {
-            throw new Error("The workspace service is unavailable.");
-        }
-        // Persist before the renderer hydrates so it restores the transferred layout.
-        await workspaceService.saveSnapshot(workspaceId, input.workspaceSnapshot);
-    }
 
     createTrackedMainWindow(snapshot);
 }
@@ -995,132 +977,39 @@ async function moveWorkspaceContext(
     if (!persistenceService || !workspaceService) {
         throw new Error("The workspace service is unavailable.");
     }
-
-    const sourceLocation = workspaceSurfaceManager
-        .listOpenWorkspaceLocations()
-        .find(
-            (location) =>
-                location.hostWindowId === sourceWindowId &&
-                location.contextKey === input.contextKey,
-        );
-    if (
-        !sourceLocation ||
-        !areWorkspaceScopesEquivalent(sourceLocation, input)
-    ) {
-        throw new Error("The workspace is no longer open in this window.");
-    }
-
-    const sourceWindow = windowRegistry.getWindowByStableId(sourceWindowId);
-    const sourceContext = sourceWindow
-        ? windowRegistry.getContextByBrowserWindow(sourceWindow)
-        : null;
-    if (!sourceWindow || sourceContext?.windowKind !== "main") {
-        throw new Error("The source window is no longer available.");
-    }
-
-    const createdTarget = input.targetWindowId === null;
-    const targetContext = createdTarget
-        ? await createEmptyWorkspaceTransferWindow()
-        : windowRegistry
-              .listMainWindowContexts()
-              .find((context) => context.windowId === input.targetWindowId) ??
-          null;
-    const targetWindow = targetContext
-        ? windowRegistry.getWindowByStableId(targetContext.windowId)
-        : null;
-    if (
-        !targetContext ||
-        !targetWindow ||
-        targetContext.windowKind !== "main" ||
-        !targetContext.workspaceId
-    ) {
-        throw new Error("The destination window is no longer available.");
-    }
-    if (targetContext.windowId === sourceWindowId) {
-        throw new Error("The workspace is already in this window.");
-    }
-
-    const sourceWorkspaceId = sourceContext.workspaceId;
-    if (!sourceWorkspaceId) {
-        throw new Error("The source workspace is unavailable.");
-    }
-    const targetSnapshot =
-        workspaceSurfaceManager.getHostSnapshotForWindow(
-            targetContext.windowId,
-        );
-    if (!targetSnapshot) {
-        throw new Error("The destination window is still starting.");
-    }
-    if (
-        targetSnapshot.contexts.some((context) =>
-            areWorkspaceScopesEquivalent(context, input),
-        )
-    ) {
-        throw new Error("The destination already contains this workspace.");
-    }
-
-    await Promise.all([
-        requestWorkspaceFlushesForHost(sourceWindow, sourceWindowId),
-        ...(createdTarget
-            ? []
-            : [
-                  requestWorkspaceFlushesForHost(
-                      targetWindow,
-                      targetContext.windowId,
-                  ),
-              ]),
-    ]);
-    const capturedSourceSnapshot =
-        await requestWorkspaceSurfaceContextCapture(
-            sourceWindowId,
-            input.contextKey,
-        );
-    const latestTargetSnapshot =
-        workspaceSurfaceManager.getHostSnapshotForWindow(
-            targetContext.windowId,
-        );
-    if (!capturedSourceSnapshot || !latestTargetSnapshot) {
-        throw new Error("Could not capture the workspace before moving it.");
-    }
-
-    await workspaceService.saveSnapshot(
-        sourceWorkspaceId,
-        capturedSourceSnapshot,
-    );
-    await workspaceService.saveSnapshot(
-        targetContext.workspaceId,
-        latestTargetSnapshot,
-    );
-    const [sourceRestore, targetRestore] = await Promise.all([
-        workspaceService.loadSnapshot(sourceWorkspaceId),
-        workspaceService.loadSnapshot(targetContext.workspaceId),
-    ]);
-
-    const transfer = await workspaceSurfaceManager.transferSurface({
-        commit: () =>
-            Promise.resolve(
-                workspaceService!.transferContext({
-                    contextKey: input.contextKey,
-                    sourceRevision: sourceRestore.revision,
-                    sourceWorkspaceId,
-                    targetRevision: targetRestore.revision,
-                    targetWorkspaceId: targetContext.workspaceId!,
-                }),
-            ),
-        contextKey: input.contextKey,
-        sourceHostWindowId: sourceWindowId,
-        targetHostWindowId: targetContext.windowId,
+    await moveWorkspaceBetweenWindows(sourceWindowId, input, {
+        captureContext: requestWorkspaceSurfaceContextCapture,
+        createEmptyTarget: createEmptyWorkspaceTransferWindow,
+        flushHost: async (windowId) => {
+            const window = windowRegistry.getWindowByStableId(windowId);
+            if (!window) {
+                throw new Error("A workspace window is no longer available.");
+            }
+            await requestWorkspaceFlushesForHost(window, windowId);
+        },
+        getWindowContext: (windowId) =>
+            windowRegistry
+                .listMainWindowContexts()
+                .find((context) => context.windowId === windowId) ?? null,
+        isWindowAvailable: (windowId) =>
+            Boolean(windowRegistry.getWindowByStableId(windowId)),
+        manager: workspaceSurfaceManager,
+        onTransferred: (sourceId, targetId, transfer) => {
+            applyTransferredWorkspaceWindowState(
+                sourceId,
+                transfer.sourceSnapshot,
+            );
+            applyTransferredWorkspaceWindowState(
+                targetId,
+                transfer.targetSnapshot,
+            );
+            const targetWindow = windowRegistry.getWindowByStableId(targetId);
+            if (targetWindow) {
+                focusExistingWindow(targetWindow);
+            }
+        },
+        workspaceService,
     });
-
-    applyTransferredWorkspaceWindowState(
-        sourceWindowId,
-        transfer.sourceSnapshot,
-    );
-    applyTransferredWorkspaceWindowState(
-        targetContext.windowId,
-        transfer.targetSnapshot,
-    );
-    focusExistingWindow(targetWindow);
 }
 
 async function createEmptyWorkspaceTransferWindow(): Promise<WindowContextSnapshot> {
