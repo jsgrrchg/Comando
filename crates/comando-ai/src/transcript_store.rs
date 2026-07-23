@@ -140,12 +140,23 @@ impl TranscriptStore {
             return Ok(());
         }
 
-        let connection = self.open(session_id, false)?;
+        let mut connection = self.open(session_id, false)?;
         // The JSONL writer can revise streaming messages in place, so retain
         // the earliest affected cursor instead of trusting a completed flag.
-        connection
-            .execute(
-                "UPDATE transcript_sessions
+        let obsolete_payload_files = (|| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| {
+                    transcript_sql("start legacy transcript invalidation transaction", error)
+                })?;
+            let obsolete_payload_files = purge_legacy_transcript_entries_from(
+                &transaction,
+                session_id,
+                first_changed_offset,
+            )?;
+            transaction
+                .execute(
+                    "UPDATE transcript_sessions
                  SET
                     legacy_transcript_backfill_complete = 0,
                     legacy_transcript_backfill_next_offset = MIN(
@@ -153,9 +164,15 @@ impl TranscriptStore {
                         ?2
                     )
                  WHERE session_id = ?1",
-                params![session_id.0, first_changed_offset as i64],
-            )
-            .map_err(|error| transcript_sql("invalidate legacy transcript backfill", error))?;
+                    params![session_id.0, first_changed_offset as i64],
+                )
+                .map_err(|error| transcript_sql("invalidate legacy transcript backfill", error))?;
+            transaction
+                .commit()
+                .map_err(|error| transcript_sql("commit legacy transcript invalidation", error))?;
+            Ok(obsolete_payload_files)
+        })()?;
+        self.remove_unreferenced_payload_files(&connection, session_id, &obsolete_payload_files);
 
         Ok(())
     }
@@ -1573,6 +1590,122 @@ fn refresh_block_metadata(
         ));
     }
     Ok(())
+}
+
+fn purge_legacy_transcript_entries_from(
+    transaction: &Transaction<'_>,
+    session_id: &SessionId,
+    first_changed_offset: usize,
+) -> AiResult<Vec<String>> {
+    let affected_blocks = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT entries.block_id
+                 FROM transcript_entries AS entries
+                 JOIN transcript_blocks AS blocks
+                    ON blocks.session_id = entries.session_id
+                    AND blocks.block_id = entries.block_id
+                 WHERE entries.session_id = ?1
+                    AND blocks.turn_id GLOB 'legacy-transcript:*'
+                 ORDER BY entries.sequence ASC
+                 LIMIT -1 OFFSET ?2",
+            )
+            .map_err(|error| transcript_sql("prepare legacy transcript purge blocks", error))?;
+        statement
+            .query_map(params![session_id.0, first_changed_offset as i64], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| transcript_sql("query legacy transcript purge blocks", error))?
+            .collect::<Result<BTreeSet<_>, _>>()
+            .map_err(|error| transcript_sql("read legacy transcript purge block", error))?
+    };
+
+    if affected_blocks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Only backfill turns participate here so native transcript entries keep
+    // their own lifecycle when the compatibility transcript is reconciled.
+    transaction
+        .execute(
+            "DELETE FROM transcript_entries
+             WHERE session_id = ?1
+                AND entry_id IN (
+                    SELECT entry_id FROM (
+                        SELECT entries.entry_id
+                        FROM transcript_entries AS entries
+                        JOIN transcript_blocks AS blocks
+                            ON blocks.session_id = entries.session_id
+                            AND blocks.block_id = entries.block_id
+                        WHERE entries.session_id = ?1
+                            AND blocks.turn_id GLOB 'legacy-transcript:*'
+                        ORDER BY entries.sequence ASC
+                        LIMIT -1 OFFSET ?2
+                    )
+                )",
+            params![session_id.0, first_changed_offset as i64],
+        )
+        .map_err(|error| transcript_sql("remove stale legacy transcript entries", error))?;
+
+    for block_id in affected_blocks {
+        let has_entries = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM transcript_entries
+                    WHERE session_id = ?1 AND block_id = ?2
+                )",
+                params![session_id.0, block_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| transcript_sql("check legacy transcript block after purge", error))?
+            == 1;
+        if has_entries {
+            refresh_block_metadata(transaction, session_id, &block_id)?;
+        } else {
+            transaction
+                .execute(
+                    "DELETE FROM transcript_blocks
+                     WHERE session_id = ?1 AND block_id = ?2",
+                    params![session_id.0, block_id],
+                )
+                .map_err(|error| transcript_sql("remove empty legacy transcript block", error))?;
+        }
+    }
+
+    let obsolete_payload_files = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT file_name
+                 FROM transcript_payloads AS payloads
+                 WHERE payloads.session_id = ?1
+                    AND payloads.file_name IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM transcript_entries AS entries
+                        WHERE entries.session_id = payloads.session_id
+                            AND entries.payload_ref = payloads.payload_ref
+                    )",
+            )
+            .map_err(|error| transcript_sql("prepare stale transcript payload cleanup", error))?;
+        statement
+            .query_map(params![session_id.0], |row| row.get::<_, String>(0))
+            .map_err(|error| transcript_sql("query stale transcript payload files", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| transcript_sql("read stale transcript payload file", error))?
+    };
+    transaction
+        .execute(
+            "DELETE FROM transcript_payloads
+             WHERE session_id = ?1
+                AND NOT EXISTS (
+                    SELECT 1 FROM transcript_entries AS entries
+                    WHERE entries.session_id = transcript_payloads.session_id
+                        AND entries.payload_ref = transcript_payloads.payload_ref
+                )",
+            params![session_id.0],
+        )
+        .map_err(|error| transcript_sql("remove stale transcript payloads", error))?;
+
+    Ok(obsolete_payload_files)
 }
 
 #[derive(Debug)]

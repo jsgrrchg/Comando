@@ -4270,6 +4270,119 @@ mod tests {
     }
 
     #[test]
+    fn transcript_storage_state_removes_entries_truncated_from_legacy_history() {
+        let (_temp, store) = store();
+        let session_id = SessionId("truncate_legacy_transcript".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(
+                &session_id,
+                vec![message("legacy-1", "first"), message("legacy-2", "removed")],
+            )
+            .unwrap();
+        store.transcript_storage_state(&session_id).unwrap();
+        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        let obsolete_payload_ref = store
+            .load_transcript_block(&session_id, &metadata[0].block_id)
+            .unwrap()
+            .unwrap()
+            .entries
+            .into_iter()
+            .find(|entry| entry.id == "message:legacy-2")
+            .unwrap()
+            .payload_ref
+            .unwrap();
+
+        store
+            .save_transcript_window(&session_id, vec![message("legacy-1", "first")])
+            .unwrap();
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+
+        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        let entries = metadata
+            .iter()
+            .flat_map(|block| {
+                store
+                    .load_transcript_block(&session_id, &block.block_id)
+                    .unwrap()
+                    .unwrap()
+                    .entries
+            })
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec!["message:legacy-1"]);
+        assert!(
+            store
+                .load_native_transcript_payload(&session_id, &obsolete_payload_ref, 1024)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn transcript_storage_state_replaces_legacy_entries_with_new_ids() {
+        let (_temp, store) = store();
+        let session_id = SessionId("replace_legacy_transcript_id".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(
+                &session_id,
+                vec![
+                    message("legacy-1", "first"),
+                    message("legacy-2", "replaced"),
+                ],
+            )
+            .unwrap();
+        store.transcript_storage_state(&session_id).unwrap();
+        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        let obsolete_payload_ref = store
+            .load_transcript_block(&session_id, &metadata[0].block_id)
+            .unwrap()
+            .unwrap()
+            .entries
+            .into_iter()
+            .find(|entry| entry.id == "message:legacy-2")
+            .unwrap()
+            .payload_ref
+            .unwrap();
+
+        store
+            .save_transcript_window(
+                &session_id,
+                vec![
+                    message("legacy-1", "first"),
+                    message("legacy-3", "replacement"),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+
+        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        let entries = metadata
+            .iter()
+            .flat_map(|block| {
+                store
+                    .load_transcript_block(&session_id, &block.block_id)
+                    .unwrap()
+                    .unwrap()
+                    .entries
+            })
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec!["message:legacy-1", "message:legacy-3"]);
+        assert!(
+            store
+                .load_native_transcript_payload(&session_id, &obsolete_payload_ref, 1024)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn transcript_storage_state_resumes_a_partial_legacy_backfill() {
         let (_temp, store) = store();
         let session_id = SessionId("resume_legacy_transcript_backfill".to_string());
