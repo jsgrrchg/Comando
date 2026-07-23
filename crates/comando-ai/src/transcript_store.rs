@@ -120,6 +120,17 @@ impl TranscriptStore {
             .map(|offset| offset.unwrap_or(0).max(0) as usize)
     }
 
+    pub(crate) fn legacy_transcript_backfill_is_current(
+        &self,
+        session_id: &SessionId,
+        legacy_record_count: usize,
+    ) -> AiResult<bool> {
+        if !self.legacy_transcript_backfill_complete(session_id)? {
+            return Ok(false);
+        }
+        Ok(self.legacy_transcript_backfill_next_offset(session_id)? >= legacy_record_count)
+    }
+
     pub(crate) fn advance_legacy_transcript_backfill(
         &self,
         session_id: &SessionId,

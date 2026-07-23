@@ -828,6 +828,26 @@ impl AiHistoryStore {
         transcript_store.advance_legacy_transcript_backfill(session_id, end, end == index.len())
     }
 
+    fn has_current_block_native_transcript(
+        &self,
+        session_id: &SessionId,
+        transcript_store: &TranscriptStore,
+    ) -> AiResult<bool> {
+        if !transcript_store.has_data_source()
+            || !transcript_store.legacy_transcript_backfill_complete(session_id)?
+        {
+            return Ok(false);
+        }
+        if !self.transcript_path(session_id).exists() {
+            return Ok(true);
+        }
+
+        // A completed flag alone is stale when the compatibility transcript
+        // continues growing after its initial backfill.
+        let index = self.load_or_repair_index(session_id)?;
+        transcript_store.legacy_transcript_backfill_is_current(session_id, index.len())
+    }
+
     pub fn load_session_snapshot(
         &self,
         session_id: &SessionId,
@@ -838,8 +858,8 @@ impl AiHistoryStore {
         let metadata = self.load_metadata(session_id)?;
         let state = self.load_session_state(session_id)?;
         let transcript_store = self.transcript_store(session_id);
-        let is_block_native = transcript_store.has_data_source()
-            && transcript_store.legacy_transcript_backfill_complete(session_id)?;
+        let is_block_native =
+            self.has_current_block_native_transcript(session_id, &transcript_store)?;
         // Block-native sessions expose their sealed history through the paged
         // transcript APIs. Loading it here would reintroduce an O(history)
         // startup path before the renderer can hydrate its bounded window.
@@ -4106,6 +4126,35 @@ mod tests {
         let snapshot = store.load_session_snapshot(&session_id).unwrap().unwrap();
         assert!(snapshot.messages.is_empty());
         assert!(snapshot.tool_activity.is_empty());
+    }
+
+    #[test]
+    fn snapshot_keeps_a_legacy_transcript_visible_when_a_completed_backfill_is_stale() {
+        let (_temp, store) = store();
+        let session_id = SessionId("stale_legacy_backfill_snapshot".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, vec![message("legacy-1", "first")])
+            .unwrap();
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+
+        store
+            .save_transcript_window(
+                &session_id,
+                vec![
+                    message("legacy-1", "first"),
+                    message("legacy-2", "second"),
+                    message("legacy-3", "third"),
+                ],
+            )
+            .unwrap();
+
+        let snapshot = store.load_session_snapshot(&session_id).unwrap().unwrap();
+        assert_eq!(snapshot.messages.len(), 3);
+        assert_eq!(snapshot.messages[2]["id"], "legacy-3");
     }
 
     #[test]
