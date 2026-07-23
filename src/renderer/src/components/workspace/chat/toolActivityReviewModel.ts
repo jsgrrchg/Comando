@@ -298,7 +298,7 @@ export function deriveChangeReviewItems(
         }
 
         return createChangeReviewItem(
-            file ? createDiffFromTrackedFile(file) : diff,
+            selectChangeReviewDiff(diff, file),
             file,
             index,
         );
@@ -315,6 +315,35 @@ export function deriveChangeReviewItems(
     );
 
     return [...items, ...fallbackItems];
+}
+
+function selectChangeReviewDiff(
+    activityDiff: AiFileDiff,
+    trackedFile: AiTrackedFile | null,
+): AiFileDiff {
+    if (!trackedFile) {
+        return activityDiff;
+    }
+
+    const trackedDiff = createDiffFromTrackedFile(trackedFile);
+    // Review state remains authoritative when it has usable content. An
+    // unavailable review file must not hide evidence already emitted by the tool.
+    if (
+        hasRenderableDiffEvidence(trackedDiff) ||
+        !hasRenderableDiffEvidence(activityDiff)
+    ) {
+        return trackedDiff;
+    }
+
+    return activityDiff;
+}
+
+function hasRenderableDiffEvidence(diff: AiFileDiff): boolean {
+    return (
+        diff.hunks.length > 0 ||
+        diff.oldText !== null ||
+        diff.newText !== null
+    );
 }
 
 export function deriveChangeReviewSummary(
