@@ -146,13 +146,42 @@ describe("createNativeAppDataClient", () => {
         if (!sourceWorkspaceId || !targetWorkspaceId) {
             throw new Error("Expected transfer workspace ids.");
         }
+        const sourceNavigation = workspaceNavigation(
+            "project-1",
+            null,
+            "pane-source",
+        );
         await client.workspace.saveSnapshot(
             sourceWorkspaceId,
-            workspaceNavigation("project-1", null, "pane-source"),
+            sourceNavigation,
+        );
+        const targetNavigation = workspaceNavigation(
+            "project-2",
+            null,
+            "pane-target",
         );
         await client.workspace.saveSnapshot(
             targetWorkspaceId,
-            workspaceNavigation("project-2", null, "pane-target"),
+            {
+                ...targetNavigation,
+                // Closed contexts retain their layout but are not live duplicates.
+                contexts: [
+                    ...targetNavigation.contexts,
+                    {
+                        ...sourceNavigation.contexts[0],
+                        workspace: {
+                            ...sourceNavigation.contexts[0].workspace,
+                            activePaneId: "pane-stale",
+                            rootNode: {
+                                activeTabId: null,
+                                id: "pane-stale",
+                                tabIds: [],
+                                type: "pane",
+                            },
+                        },
+                    },
+                ],
+            },
         );
         const sourceBefore = await client.workspace.loadSnapshot(
             sourceWorkspaceId,
@@ -183,6 +212,13 @@ describe("createNativeAppDataClient", () => {
                 ],
             },
         });
+        const transferredContexts = transfer.target.snapshot.contexts.filter(
+            (context) => context.key === "project-1::__primary__",
+        );
+        expect(transferredContexts).toHaveLength(1);
+        expect(transferredContexts[0]?.workspace.activePaneId).toBe(
+            "pane-source",
+        );
         await expect(
             client.workspace.transferContext({
                 contextKey: "project-2::__primary__",

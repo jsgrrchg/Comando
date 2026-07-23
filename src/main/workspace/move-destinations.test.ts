@@ -79,4 +79,48 @@ describe("buildWorkspaceMoveDestinations", () => {
             },
         ]);
     });
+
+    it("enables a destination that only retains a closed equivalent scope", () => {
+        const retainedContext = {
+            key: "project-a::__primary__",
+            lastActivatedAt: "2026-07-22T12:00:00.000Z",
+            projectId: "project-a",
+            workspace: {
+                activePaneId: "pane-retained",
+                rootNode: {
+                    activeTabId: null,
+                    id: "pane-retained",
+                    tabIds: [],
+                    type: "pane" as const,
+                },
+                tabs: [],
+            },
+            worktreeId: null,
+        };
+
+        expect(
+            buildWorkspaceMoveDestinations({
+                candidates: [
+                    {
+                        snapshot: {
+                            activeContextKey: null,
+                            contexts: [retainedContext],
+                            openContextKeys: [],
+                            version: 3,
+                        },
+                        windowId: "target",
+                        windowTitle: "Comando",
+                    },
+                ],
+                scope: { projectId: "project-a", worktreeId: null },
+                sourceWindowId: "source",
+            }),
+        ).toEqual([
+            {
+                enabled: true,
+                label: "Window 1",
+                targetWindowId: "target",
+            },
+        ]);
+    });
 });

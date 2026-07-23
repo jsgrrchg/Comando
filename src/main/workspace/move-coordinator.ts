@@ -3,7 +3,10 @@ import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
-import { areWorkspaceScopesEquivalent } from "@shared/workspace-context";
+import {
+    areWorkspaceScopesEquivalent,
+    hasOpenWorkspaceScope,
+} from "@shared/workspace-context";
 
 import type { WorkspaceGateway } from "./service";
 import type {
@@ -92,11 +95,7 @@ export async function moveWorkspaceBetweenWindows(
     if (!targetSnapshot) {
         throw new Error("The destination window is still starting.");
     }
-    if (
-        targetSnapshot.contexts.some((context) =>
-            areWorkspaceScopesEquivalent(context, input),
-        )
-    ) {
+    if (hasOpenWorkspaceScope(targetSnapshot, input)) {
         throw new Error("The destination already contains this workspace.");
     }
 

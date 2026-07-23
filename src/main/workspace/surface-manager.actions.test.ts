@@ -403,10 +403,21 @@ describe("WorkspaceSurfaceManager action routing", () => {
         const sourceHost = createHostWindow();
         const targetHost = createHostWindow();
         const sourceSnapshot = createSnapshot();
-        const targetSnapshot = singleContextSnapshot(
+        const targetOpenSnapshot = singleContextSnapshot(
             "project-c::__primary__",
             "project-c",
         );
+        const retainedClosedContext = sourceSnapshot.contexts[0];
+        if (!retainedClosedContext) {
+            throw new Error("Expected a retained source context.");
+        }
+        const targetSnapshot: WorkspaceNavigationSnapshot = {
+            ...targetOpenSnapshot,
+            contexts: [
+                ...targetOpenSnapshot.contexts,
+                retainedClosedContext,
+            ],
+        };
         manager.syncHost(
             sourceHost.window,
             createHostContext(),
@@ -437,7 +448,12 @@ describe("WorkspaceSurfaceManager action routing", () => {
         }
         const committedTarget: WorkspaceNavigationSnapshot = {
             activeContextKey: movedContext.key,
-            contexts: [...targetSnapshot.contexts, movedContext],
+            contexts: [
+                ...targetSnapshot.contexts.filter(
+                    (context) => context.key !== movedContext.key,
+                ),
+                movedContext,
+            ],
             openContextKeys: [
                 ...targetSnapshot.openContextKeys,
                 movedContext.key,
@@ -479,6 +495,11 @@ describe("WorkspaceSurfaceManager action routing", () => {
             "project-b::__primary__",
         );
         expect(result.targetSnapshot.activeContextKey).toBe(movedContext.key);
+        expect(
+            result.targetSnapshot.contexts.filter(
+                (context) => context.key === movedContext.key,
+            ),
+        ).toHaveLength(1);
         expect(onSurfaceDestroyed).not.toHaveBeenCalled();
     });
 

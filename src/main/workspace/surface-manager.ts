@@ -10,6 +10,7 @@ import { IPC_EVENTS } from "@shared/ipc";
 import {
     areWorkspaceScopesEquivalent,
     areWorkspaceWorktreeIdsEquivalent,
+    hasOpenWorkspaceScope,
     type WorkspaceLocation,
     type WorkspaceScope,
 } from "@shared/workspace-context";
@@ -674,9 +675,7 @@ export class WorkspaceSurfaceManager {
             throw new Error("The workspace context is no longer available.");
         }
         if (
-            targetHost.snapshot.contexts.some((context) =>
-                areWorkspaceScopesEquivalent(context, movingContext),
-            ) ||
+            hasOpenWorkspaceScope(targetHost.snapshot, movingContext) ||
             targetHost.surfaceIdsByContextKey.has(input.contextKey)
         ) {
             throw new Error("The destination already contains this workspace.");
