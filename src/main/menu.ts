@@ -9,7 +9,6 @@ interface InstallApplicationMenuOptions {
         direction: "decrease" | "increase" | "reset",
     ) => void;
     readonly closeFocusedWindowSurface: () => void;
-    readonly focusProjectWindow: (projectId: string) => boolean;
     readonly getFocusedMainWindowContext: () => WindowContextSnapshot | null;
     readonly openNewMainWindow: (
         projectId?: string | null,
@@ -65,22 +64,6 @@ function buildMenuTemplate(
                     void options.openNewMainWindow(null);
                 },
                 label: "New Window",
-            },
-            {
-                accelerator: "CmdOrCtrl+Alt+N",
-                click: () => {
-                    const context = options.getFocusedMainWindowContext();
-                    const projectId = context?.projectId ?? null;
-                    if (!projectId) {
-                        void options.openNewMainWindow(null);
-                        return;
-                    }
-
-                    if (!options.focusProjectWindow(projectId)) {
-                        void options.openNewMainWindow(projectId);
-                    }
-                },
-                label: "Open Current Project In New Window",
             },
             {
                 accelerator: "CmdOrCtrl+Shift+O",
