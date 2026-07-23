@@ -3032,6 +3032,74 @@ describe("workspace file opening", () => {
         });
     });
 
+    it("discards an older manual reload after a newer watcher read", async () => {
+        const relativePath = "src/app.ts";
+        const manualLoad = createDeferred<ProjectFileDocument>();
+        const watcherLoad = createDeferred<ProjectFileDocument>();
+        openProjectFileMock
+            .mockImplementationOnce(() => manualLoad.promise)
+            .mockImplementationOnce(() => watcherLoad.promise);
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-1",
+                id: "pane-root",
+                tabIds: ["file-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": createLoadedWorkspaceFileTab(
+                    "file-1",
+                    relativePath,
+                    "export const value = 1;\n",
+                ),
+            },
+        }));
+
+        const manualReload = useWorkspaceStore
+            .getState()
+            .reloadFileTab("file-1");
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+
+        const watcherRefresh = useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-1", null, [relativePath]);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(2);
+        });
+
+        watcherLoad.resolve(
+            createProjectFileDocument(
+                relativePath,
+                "export const value = 3;\n",
+                3,
+            ),
+        );
+        await watcherRefresh;
+
+        manualLoad.resolve(
+            createProjectFileDocument(
+                relativePath,
+                "export const value = 2;\n",
+                2,
+            ),
+        );
+        await manualReload;
+
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
+            document: { content: "export const value = 3;\n", modifiedAtMs: 3 },
+            draftContent: "export const value = 3;\n",
+            isDirty: false,
+            isLoading: false,
+            savedContent: "export const value = 3;\n",
+        });
+    });
+
     it("allows a manual reload to replace a dirty draft", async () => {
         const relativePath = "src/app.ts";
         const externalDocument = createProjectFileDocument(

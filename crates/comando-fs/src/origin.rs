@@ -48,6 +48,10 @@ impl WriteTracker {
         );
     }
 
+    pub(crate) fn track_hash(&self, path: PathBuf, hash: u64) {
+        self.track_entry(path, TrackedWriteKind::Content { hash });
+    }
+
     pub fn track_any(&self, path: PathBuf) {
         self.track_entry(path, TrackedWriteKind::Any);
     }

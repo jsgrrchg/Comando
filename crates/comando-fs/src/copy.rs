@@ -1,6 +1,9 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, hash_map::DefaultHasher};
 use std::fs;
+use std::hash::{Hash, Hasher};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use comando_types::fs::{
     NativeFsCopyEntriesInput, NativeFsCopyExternalEntriesInput, NativeFsEntryKind,
@@ -15,6 +18,8 @@ use crate::path::{
     resolve_scoped_path, validate_entry_name,
 };
 use crate::registry::ProjectRoot;
+
+const COPY_TRACKER_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone)]
 struct CopySourceEntry {
@@ -57,13 +62,12 @@ pub fn copy_entries(
         let destination_name =
             resolve_copy_destination_name(&source.name, source.kind, &mut reserved_names);
         let destination_path = destination_parent.join(destination_name);
-        track_copy_destination(
+        copy_source_to_destination(
             &source.absolute_path,
             &destination_path,
             source.kind,
             write_tracker,
         )?;
-        copy_source_to_destination(&source.absolute_path, &destination_path, source.kind)?;
         copied.push(mutation_result_for_path(root, &destination_path, None)?);
     }
 
@@ -97,13 +101,12 @@ pub fn copy_external_entries(
         let destination_name =
             resolve_copy_destination_name(&source.name, source.kind, &mut reserved_names);
         let destination_path = destination_parent.join(destination_name);
-        track_copy_destination(
+        copy_source_to_destination(
             &source.absolute_path,
             &destination_path,
             source.kind,
             write_tracker,
         )?;
-        copy_source_to_destination(&source.absolute_path, &destination_path, source.kind)?;
         copied.push(mutation_result_for_path(root, &destination_path, None)?);
     }
 
@@ -296,41 +299,61 @@ fn copy_source_to_destination(
     source: &Path,
     destination: &Path,
     kind: NativeFsEntryKind,
-) -> Result<(), FsError> {
-    match kind {
-        NativeFsEntryKind::File => {
-            fs::copy(source, destination)?;
-        }
-        NativeFsEntryKind::Directory => {
-            fs::create_dir(destination)?;
-            copy_dir_recursive(source, destination)?;
-        }
-        _ => return Err(FsError::InvalidPath),
-    }
-    Ok(())
-}
-
-fn track_copy_destination(
-    source: &Path,
-    destination: &Path,
-    kind: NativeFsEntryKind,
     write_tracker: &WriteTracker,
 ) -> Result<(), FsError> {
     match kind {
         NativeFsEntryKind::File => {
-            write_tracker.track_bytes(destination.to_path_buf(), &fs::read(source)?);
+            copy_file_tracked(source, destination, write_tracker)?;
         }
         NativeFsEntryKind::Directory => {
+            // Track each directory immediately before creation so long copies
+            // do not exhaust the self-write window before events are emitted.
             write_tracker.track_any(destination.to_path_buf());
-            track_copy_directory_descendants(source, destination, write_tracker)?;
+            fs::create_dir(destination)?;
+            copy_dir_recursive(source, destination, write_tracker)?;
         }
         _ => return Err(FsError::InvalidPath),
     }
-
     Ok(())
 }
 
-fn track_copy_directory_descendants(
+fn copy_file_tracked(
+    source: &Path,
+    destination: &Path,
+    write_tracker: &WriteTracker,
+) -> Result<(), FsError> {
+    let mut source_file = fs::File::open(source)?;
+    let metadata = source_file.metadata()?;
+    let content_len = usize::try_from(metadata.len()).map_err(|_| FsError::InvalidPath)?;
+    let mut hasher = DefaultHasher::new();
+    content_len.hash(&mut hasher);
+    let mut buffer = [0_u8; 64 * 1024];
+
+    // Any-content tracking covers watcher events emitted while the stream is
+    // still being copied; the exact hash replaces it once the file is complete.
+    write_tracker.track_any(destination.to_path_buf());
+    let mut last_tracker_refresh = Instant::now();
+    let mut destination_file = fs::File::create(destination)?;
+    loop {
+        let bytes_read = source_file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        destination_file.write_all(&buffer[..bytes_read])?;
+        hasher.write(&buffer[..bytes_read]);
+        if last_tracker_refresh.elapsed() >= COPY_TRACKER_REFRESH_INTERVAL {
+            // A single large file can outlive the tracker window too.
+            write_tracker.track_any(destination.to_path_buf());
+            last_tracker_refresh = Instant::now();
+        }
+    }
+    destination_file.flush()?;
+    fs::set_permissions(destination, metadata.permissions())?;
+    write_tracker.track_hash(destination.to_path_buf(), hasher.finish());
+    Ok(())
+}
+
+fn copy_dir_recursive(
     source: &Path,
     destination: &Path,
     write_tracker: &WriteTracker,
@@ -341,30 +364,12 @@ fn track_copy_directory_descendants(
         let destination_path = destination.join(entry.file_name());
         let metadata = fs::symlink_metadata(&source_path)?;
         reject_symlink_metadata(&metadata)?;
-
         if metadata.is_dir() {
             write_tracker.track_any(destination_path.clone());
-            track_copy_directory_descendants(&source_path, &destination_path, write_tracker)?;
-        } else if metadata.is_file() {
-            write_tracker.track_bytes(destination_path, &fs::read(source_path)?);
-        }
-    }
-
-    Ok(())
-}
-
-fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), FsError> {
-    for entry_result in fs::read_dir(source)? {
-        let entry = entry_result?;
-        let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
-        let metadata = fs::symlink_metadata(&source_path)?;
-        reject_symlink_metadata(&metadata)?;
-        if metadata.is_dir() {
             fs::create_dir(&destination_path)?;
-            copy_dir_recursive(&source_path, &destination_path)?;
+            copy_dir_recursive(&source_path, &destination_path, write_tracker)?;
         } else if metadata.is_file() {
-            fs::copy(&source_path, &destination_path)?;
+            copy_file_tracked(&source_path, &destination_path, write_tracker)?;
         }
     }
     Ok(())
@@ -394,6 +399,7 @@ mod tests {
         let temp = TempDir::new().expect("temp");
         fs::write(temp.path().join("a.txt"), "a").expect("a");
         let root = project_root(temp.path());
+        let write_tracker = WriteTracker::new();
 
         let copied = copy_entries(
             &root,
@@ -404,7 +410,7 @@ mod tests {
                 destination_parent_relative_path: None,
                 origin: NativeFsMutationOrigin::User,
             },
-            &WriteTracker::new(),
+            &write_tracker,
         )
         .expect("copy");
 
@@ -413,6 +419,10 @@ mod tests {
             fs::read_to_string(temp.path().join("a copy.txt")).unwrap(),
             "a"
         );
+        assert!(write_tracker.has_recent_match(
+            &temp.path().join("a copy.txt"),
+            Some(crate::origin::hash_bytes(b"a")),
+        ));
     }
 
     #[test]
@@ -422,6 +432,7 @@ mod tests {
         fs::create_dir(external.path().join("pkg")).expect("pkg");
         fs::write(external.path().join("pkg/lib.rs"), "lib").expect("lib");
         let root = project_root(temp.path());
+        let write_tracker = WriteTracker::new();
 
         let copied = copy_external_entries(
             &root,
@@ -432,7 +443,7 @@ mod tests {
                 destination_parent_relative_path: None,
                 origin: NativeFsMutationOrigin::User,
             },
-            &WriteTracker::new(),
+            &write_tracker,
         )
         .expect("copy");
 
@@ -441,6 +452,10 @@ mod tests {
             fs::read_to_string(temp.path().join("pkg/lib.rs")).unwrap(),
             "lib"
         );
+        assert!(write_tracker.has_recent_match(
+            &temp.path().join("pkg/lib.rs"),
+            Some(crate::origin::hash_bytes(b"lib")),
+        ));
     }
 
     #[test]

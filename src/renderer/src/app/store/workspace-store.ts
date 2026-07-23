@@ -4044,18 +4044,24 @@ function shouldApplyFileLoad(
     tabId: string,
     snapshot: FileLoadSnapshot,
 ): boolean {
-    if (snapshot.origin !== "watcher") {
-        return true;
-    }
-
     const tab = state.tabsById[tabId];
     if (!tab || tab.kind !== "file") {
         return false;
     }
 
+    // Request ordering applies to every origin so an older open or manual read
+    // cannot overwrite a newer watcher result.
+    if (
+        latestFileLoadRequestIds.get(snapshot.requestKey) !== snapshot.requestId
+    ) {
+        return false;
+    }
+
+    if (snapshot.origin !== "watcher") {
+        return true;
+    }
+
     return (
-        latestFileLoadRequestIds.get(snapshot.requestKey) ===
-            snapshot.requestId &&
         getFileContentRevision(tab) === snapshot.contentRevision &&
         tab.document?.modifiedAtMs === snapshot.documentModifiedAtMs &&
         !tab.isDirty &&
