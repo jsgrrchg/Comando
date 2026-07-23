@@ -43,6 +43,7 @@ import {
     type AiTrackedFileHunkMutationInput,
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
+    type ActivateWorkspaceLocationInput,
     type ClaudeRuntimeSettingsInput,
     type ClearProjectAppDataInput,
     type ClearProjectAppDataResult,
@@ -66,6 +67,7 @@ import {
     type ListAiSessionHistoryInput,
     type ListProjectTreeInput,
     type OpenProjectWindowInput,
+    type OpenWorkspaceLocationSummary,
     type OpenProjectEntryExternallyInput,
     type OpenProjectFileInput,
     type OpenSettingsWindowInput,
@@ -1123,6 +1125,13 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
     activateWorkspaceSurface: (contextKey: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
+    listOpenWorkspaceLocations: async () =>
+        assertIpcArray<OpenWorkspaceLocationSummary>(
+            IPC_CHANNELS.listOpenWorkspaceLocations,
+            await ipcRenderer.invoke(IPC_CHANNELS.listOpenWorkspaceLocations),
+        ),
+    activateWorkspaceLocation: (input: ActivateWorkspaceLocationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceLocation, input),
     captureWorkspaceSurfaceContext: (contextKey: string) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.captureWorkspaceSurfaceContext,

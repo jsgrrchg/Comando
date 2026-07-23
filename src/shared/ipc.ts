@@ -2,6 +2,7 @@ import type { AppIdentity } from "@shared/app-identity";
 import type { AiReviewActionLogState } from "./ai-review-action-log";
 import type { AppTerminalSettings } from "./terminal-settings";
 import type { ChatFontFamily, EditorFontFamily } from "./typography";
+import type { WorkspaceLocation } from "./workspace-context";
 
 export type { AppTerminalSettings } from "./terminal-settings";
 export type { ChatFontFamily, EditorFontFamily } from "./typography";
@@ -129,6 +130,8 @@ export const IPC_CHANNELS = {
     saveWorkspaceSnapshot: "workspace:save-snapshot",
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
+    listOpenWorkspaceLocations: "workspace:list-open-locations",
+    activateWorkspaceLocation: "workspace:activate-location",
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
     dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
     dispatchWorkspaceSurfaceAction: "workspace:dispatch-surface-action",
@@ -2188,6 +2191,15 @@ export interface WorkspaceNavigationSnapshot {
     readonly version: 3;
 }
 
+export interface OpenWorkspaceLocationSummary extends WorkspaceLocation {
+    readonly isActive: boolean;
+    readonly isCurrentWindow: boolean;
+    readonly lastActivatedAt: string;
+    readonly windowTitle: string;
+}
+
+export type ActivateWorkspaceLocationInput = WorkspaceLocation;
+
 export interface WorkspaceSurfaceContextRequest {
     readonly emptyLayout?: boolean;
     readonly projectId: string;
@@ -3434,6 +3446,12 @@ export interface ComandoApi {
         snapshot: WorkspaceNavigationSnapshot,
     ) => Promise<void>;
     activateWorkspaceSurface: (contextKey: string) => Promise<void>;
+    listOpenWorkspaceLocations: () => Promise<
+        readonly OpenWorkspaceLocationSummary[]
+    >;
+    activateWorkspaceLocation: (
+        input: ActivateWorkspaceLocationInput,
+    ) => Promise<boolean>;
     requestWorkspaceSurfaceContext: (
         input: WorkspaceSurfaceContextRequest,
     ) => Promise<void>;

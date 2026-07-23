@@ -133,6 +133,7 @@ import {
     type GitWorktreeDiffSection,
     type GitWorktreeListInput,
     type GitWorktreeSummary as SharedGitWorktreeSummary,
+    type ActivateWorkspaceLocationInput,
     type ListAiSessionHistoryInput,
     type ListProjectEntriesInput,
     type ListProjectTreeInput,
@@ -140,6 +141,7 @@ import {
     type OpenProjectFileInput,
     type OpenProjectWindowInput,
     type OpenSettingsWindowInput,
+    type OpenWorkspaceLocationSummary,
     type PrepareAiSessionInput,
     type PersistedShellState,
     type PersistenceSnapshot,
@@ -232,6 +234,7 @@ import {
 import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
+import { activateOpenWorkspaceLocation } from "@main/workspace/location-navigation";
 import {
     activateWorkspaceSurfaceAndNotifyHost,
     persistWorkspaceSurfaceSnapshot,
@@ -373,6 +376,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
+    ipcMain.removeHandler(IPC_CHANNELS.listOpenWorkspaceLocations);
+    ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceLocation);
     ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceAction);
@@ -2056,6 +2061,90 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             }
         },
     );
+    ipcMain.handle(IPC_CHANNELS.listOpenWorkspaceLocations, (event) => {
+        const sourceContext = requireWindowContext(event.sender, "main");
+        if (workspaceSurfaceManager.isSurface(event.sender)) {
+            return [];
+        }
+        return workspaceSurfaceManager.listOpenWorkspaceLocations().map(
+            (location): OpenWorkspaceLocationSummary => ({
+                ...location,
+                isCurrentWindow:
+                    location.hostWindowId === sourceContext.windowId,
+                windowTitle:
+                    windowRegistry
+                        .getWindowByStableId(location.hostWindowId)
+                        ?.getTitle() ?? "Comando",
+            }),
+        );
+    });
+    ipcMain.handle(
+        IPC_CHANNELS.activateWorkspaceLocation,
+        async (event, input: ActivateWorkspaceLocationInput) => {
+            requireWindowContext(event.sender, "main");
+            if (
+                workspaceSurfaceManager.isSurface(event.sender) ||
+                !isActivateWorkspaceLocationInput(input)
+            ) {
+                return false;
+            }
+            return activateOpenWorkspaceLocation({
+                focusWindow: focusWorkspaceWindow,
+                location: input,
+                manager: workspaceSurfaceManager,
+                notifyChannel: IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                onActivated: async (location, snapshot) => {
+                    const targetContext = windowRegistry
+                        .listMainWindowContexts()
+                        .find(
+                            (candidate) =>
+                                candidate.windowId === location.hostWindowId,
+                        );
+                    if (!targetContext?.workspaceId) {
+                        throw new Error(
+                            "The target workspace window is unavailable.",
+                        );
+                    }
+                    await options.workspaceService.saveSnapshot(
+                        targetContext.workspaceId,
+                        snapshot,
+                    );
+                    const latestSnapshot =
+                        workspaceSurfaceManager.getHostSnapshotForWindow(
+                            location.hostWindowId,
+                        );
+                    if (
+                        latestSnapshot &&
+                        latestSnapshot.activeContextKey !==
+                            snapshot.activeContextKey
+                    ) {
+                        await options.workspaceService.saveSnapshot(
+                            targetContext.workspaceId,
+                            latestSnapshot,
+                        );
+                    }
+                    options.persistenceService.saveActiveProjectId(
+                        location.hostWindowId,
+                        location.projectId,
+                        location.worktreeId,
+                    );
+                    windowRegistry.updateMainWindowProjectId(
+                        location.hostWindowId,
+                        location.projectId,
+                        location.worktreeId,
+                    );
+                    windowRegistry
+                        .getWindowByStableId(location.hostWindowId)
+                        ?.setTitle(
+                            buildMainWindowTitle(
+                                options.projectService,
+                                location.projectId,
+                            ),
+                        );
+                },
+            });
+        },
+    );
     ipcMain.handle(
         IPC_CHANNELS.requestWorkspaceSurfaceContext,
         (event, input: WorkspaceSurfaceContextRequest) => {
@@ -2645,6 +2734,33 @@ function requireWindowContext(
 
 function getPersistenceOwnerId(context: WindowContextSnapshot): string {
     return context.hostWindowId ?? context.windowId;
+}
+
+function isActivateWorkspaceLocationInput(
+    input: ActivateWorkspaceLocationInput,
+): input is ActivateWorkspaceLocationInput {
+    return (
+        Boolean(input) &&
+        typeof input.contextKey === "string" &&
+        input.contextKey.length > 0 &&
+        typeof input.hostWindowId === "string" &&
+        input.hostWindowId.length > 0 &&
+        typeof input.projectId === "string" &&
+        input.projectId.length > 0 &&
+        (input.worktreeId === null || typeof input.worktreeId === "string")
+    );
+}
+
+function focusWorkspaceWindow(windowId: string): void {
+    const window = windowRegistry.getWindowByStableId(windowId);
+    if (!window || window.isDestroyed()) {
+        return;
+    }
+    if (window.isMinimized()) {
+        window.restore();
+    }
+    window.show();
+    window.focus();
 }
 
 function buildMainWindowTitle(
