@@ -578,11 +578,13 @@ impl AiHistoryStore {
         metadata.message_count = records.len();
         metadata.preview = derive_session_preview(records.iter().map(|record| &record.payload));
         metadata.updated_at = now_iso8601();
-        self.save_index(session_id, &next_index)?;
         if reuse_len < index.len() || reuse_len < records.len() {
+            // Keep the previous index visible until SQLite has acknowledged
+            // the invalidation, so a retry recomputes the same changed tail.
             self.transcript_store(session_id)
                 .invalidate_legacy_transcript_backfill_from(session_id, reuse_len)?;
         }
+        self.save_index(session_id, &next_index)?;
         self.save_metadata(&metadata)?;
         self.compact_transcript_if_needed(session_id)?;
         Ok(())
@@ -4291,6 +4293,58 @@ mod tests {
         let fallback = store.load_session_snapshot(&session_id).unwrap().unwrap();
         assert_eq!(fallback.messages[0]["content"], "complete");
 
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        let block = store
+            .load_transcript_block(&session_id, &metadata[0].block_id)
+            .unwrap()
+            .unwrap();
+        let payload = store
+            .load_native_transcript_payload(
+                &session_id,
+                block.entries[0].payload_ref.as_deref().unwrap(),
+                1024,
+            )
+            .unwrap();
+        assert_eq!(payload.value["message"]["content"], "complete");
+    }
+
+    #[test]
+    fn transcript_save_retries_invalidation_after_a_sqlite_failure() {
+        let (_temp, store) = store();
+        let session_id = SessionId("retry_legacy_invalidation".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, vec![message("legacy-1", "draft")])
+            .unwrap();
+        store.transcript_storage_state(&session_id).unwrap();
+
+        let database_path = store.session_dir(&session_id).join("transcript-v2.sqlite3");
+        let original_permissions = fs::metadata(&database_path).unwrap().permissions();
+        let mut read_only_permissions = original_permissions.clone();
+        read_only_permissions.set_readonly(true);
+        fs::set_permissions(&database_path, read_only_permissions).unwrap();
+        let failed_save =
+            store.save_transcript_window(&session_id, vec![message("legacy-1", "complete")]);
+        fs::set_permissions(&database_path, original_permissions).unwrap();
+        assert!(failed_save.is_err());
+
+        let stale_page = store
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id: session_id.clone(),
+                offset: 0,
+                limit: 1,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(stale_page.messages[0]["content"], "draft");
+
+        store
+            .save_transcript_window(&session_id, vec![message("legacy-1", "complete")])
+            .unwrap();
         assert_eq!(
             store.transcript_storage_state(&session_id).unwrap().mode,
             NativeAiTranscriptStorageMode::BlockNative
