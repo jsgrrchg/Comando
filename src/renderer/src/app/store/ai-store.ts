@@ -228,6 +228,7 @@ interface AiSessionClientState {
     readonly draftFileContexts: readonly AiFileContextAttachment[];
     readonly dismissedPlanUpdatedAt: string | null;
     readonly isPlanCollapsed: boolean;
+    readonly isPendingReviewCollapsed: boolean;
     readonly diffZoom: number | null;
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
@@ -298,6 +299,10 @@ interface AiStore {
     clearDraftAttachments: (sessionId: string) => void;
     dismissSessionPlan: (sessionId: string, planUpdatedAt: string) => void;
     setSessionPlanCollapsed: (sessionId: string, collapsed: boolean) => void;
+    setSessionPendingReviewCollapsed: (
+        sessionId: string,
+        collapsed: boolean,
+    ) => void;
     attachSelectionMention: (
         sessionId: string,
         selection: {
@@ -1720,6 +1725,26 @@ export const useAiStore = create<AiStore>((set, get) => ({
         });
     },
 
+    setSessionPendingReviewCollapsed: (sessionId, collapsed) => {
+        set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session || session.isPendingReviewCollapsed === collapsed) {
+                return state;
+            }
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                        ...session,
+                        // Keep this UI preference with the session when its view is cooled.
+                        isPendingReviewCollapsed: collapsed,
+                    },
+                },
+            };
+        });
+    },
+
     ensureSession: async (tab, options) => {
         const currentSession = get().sessions[tab.sessionId] ?? null;
         const shouldHydratePassively =
@@ -2912,6 +2937,7 @@ function createSessionState(
         draftFileContexts: [],
         dismissedPlanUpdatedAt: null,
         isPlanCollapsed: false,
+        isPendingReviewCollapsed: true,
         diffZoom: preferences?.diffZoom ?? null,
         editingQueuedPromptState: null,
         editingQueuedPrompt: null,
