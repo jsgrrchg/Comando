@@ -850,13 +850,25 @@ impl AiHistoryStore {
             .into_iter()
             .map(|message| legacy_transcript_entry(session_id, message))
             .collect::<AiResult<Vec<_>>>()?;
-        let (entries, payloads): (Vec<_>, Vec<_>) = entries_and_payloads.into_iter().unzip();
-        transcript_store.seal_turn(
-            session_id,
-            &format!("legacy-transcript:{offset}"),
-            entries,
-            payloads,
-        )?;
+        let candidate_entry_ids = entries_and_payloads
+            .iter()
+            .map(|(entry, _)| entry.id.clone())
+            .collect::<Vec<_>>();
+        let native_entry_ids =
+            transcript_store.native_transcript_entry_ids(session_id, &candidate_entry_ids)?;
+        let (entries, payloads): (Vec<_>, Vec<_>) = entries_and_payloads
+            .into_iter()
+            .filter(|(entry, _)| !native_entry_ids.contains(&entry.id))
+            .unzip();
+        if !entries.is_empty() {
+            // Native entries already cover their matching JSONL records.
+            transcript_store.seal_turn(
+                session_id,
+                &format!("legacy-transcript:{offset}"),
+                entries,
+                payloads,
+            )?;
+        }
         transcript_store.advance_legacy_transcript_backfill(session_id, end, end == index.len())
     }
 
@@ -4599,6 +4611,68 @@ mod tests {
                 .sum::<usize>(),
             300
         );
+    }
+
+    #[test]
+    fn schema_upgrade_keeps_an_incomplete_legacy_backfill_with_native_entries() {
+        let (_temp, store) = store();
+        let session_id = SessionId("schema_upgrade_partial_legacy_backfill".to_string());
+        let mut messages = (0..300)
+            .map(|index| message(&format!("legacy-{index}"), "legacy content"))
+            .collect::<Vec<_>>();
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, messages.clone())
+            .unwrap();
+
+        let transcript_store = store.transcript_store(&session_id);
+        transcript_store
+            .begin_legacy_transcript_backfill(&session_id)
+            .unwrap();
+        let first_page = messages[..256]
+            .iter()
+            .cloned()
+            .map(|message| legacy_transcript_entry(&session_id, message))
+            .collect::<AiResult<Vec<_>>>()
+            .unwrap();
+        let (entries, payloads): (Vec<_>, Vec<_>) = first_page.into_iter().unzip();
+        transcript_store
+            .seal_turn(&session_id, "legacy-transcript:0", entries, payloads)
+            .unwrap();
+        transcript_store
+            .advance_legacy_transcript_backfill(&session_id, 256, false)
+            .unwrap();
+
+        let native_message = message("native-1", "native content");
+        let (entry, payload) =
+            legacy_transcript_entry(&session_id, native_message.clone()).unwrap();
+        transcript_store
+            .seal_turn(&session_id, "native-turn", vec![entry], vec![payload])
+            .unwrap();
+        messages.push(native_message);
+        store.save_transcript_window(&session_id, messages).unwrap();
+
+        let database_path = store.session_dir(&session_id).join("transcript-v2.sqlite3");
+        let connection = Connection::open(database_path).unwrap();
+        connection
+            .execute_batch(
+                "ALTER TABLE transcript_sessions DROP COLUMN transcript_origin;
+                 PRAGMA user_version = 5;",
+            )
+            .unwrap();
+        drop(connection);
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        let entry_count = store
+            .load_transcript_block_metadata(&session_id)
+            .unwrap()
+            .into_iter()
+            .map(|block| block.entry_count)
+            .sum::<usize>();
+        assert_eq!(entry_count, 301);
     }
 
     #[test]

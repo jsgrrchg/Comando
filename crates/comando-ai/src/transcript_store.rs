@@ -11,7 +11,9 @@ use comando_types::ai::{
     NativeAiTranscriptPayloadWrite, NativeAiTranscriptTerminalStatus,
 };
 use comando_types::ids::SessionId;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OptionalExtension, Transaction, TransactionBehavior, params, params_from_iter,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -89,6 +91,22 @@ impl TranscriptStore {
             return Ok(true);
         }
         let connection = self.open(session_id, false)?;
+        let backfill_incomplete = connection
+            .query_row(
+                "SELECT
+                    transcript_origin = 'legacy_backfill'
+                    AND legacy_transcript_backfill_complete = 0
+                 FROM transcript_sessions
+                 WHERE session_id = ?1",
+                params![session_id.0],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| transcript_sql("load transcript backfill origin", error))?
+            == Some(1);
+        if backfill_incomplete {
+            return Ok(true);
+        }
         let has_native_entries = connection
             .query_row(
                 "SELECT EXISTS(
@@ -108,6 +126,41 @@ impl TranscriptStore {
         // Native entries are authoritative even when the session began as a
         // legacy backfill. An empty native-default row is not sufficient.
         Ok(!has_native_entries)
+    }
+
+    pub(crate) fn native_transcript_entry_ids(
+        &self,
+        session_id: &SessionId,
+        entry_ids: &[String],
+    ) -> AiResult<BTreeSet<String>> {
+        if !self.database_path.exists() || entry_ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let connection = self.open(session_id, false)?;
+        let placeholders = std::iter::repeat_n("?", entry_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT entries.entry_id
+             FROM transcript_entries AS entries
+             JOIN transcript_blocks AS blocks
+                ON blocks.session_id = entries.session_id
+                AND blocks.block_id = entries.block_id
+             WHERE entries.session_id = ?
+                AND entries.entry_id IN ({placeholders})
+                AND (blocks.turn_id IS NULL
+                    OR blocks.turn_id NOT GLOB 'legacy-transcript:*')"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| transcript_sql("prepare native transcript entry lookup", error))?;
+        let parameters =
+            std::iter::once(session_id.0.as_str()).chain(entry_ids.iter().map(String::as_str));
+        statement
+            .query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))
+            .map_err(|error| transcript_sql("query native transcript entries", error))?
+            .collect::<Result<BTreeSet<_>, _>>()
+            .map_err(|error| transcript_sql("read native transcript entry", error))
     }
 
     pub(crate) fn begin_legacy_transcript_backfill(&self, session_id: &SessionId) -> AiResult<()> {
@@ -1208,20 +1261,20 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
             .execute_batch(
                 "UPDATE transcript_sessions AS sessions
                  SET transcript_origin = 'legacy_backfill'
-                 WHERE (
-                    sessions.legacy_transcript_backfill_complete = 0
-                    OR EXISTS (
+                 WHERE sessions.legacy_transcript_backfill_complete = 0
+                    OR (
+                        EXISTS (
                         SELECT 1 FROM transcript_blocks AS blocks
                         WHERE blocks.session_id = sessions.session_id
                             AND blocks.turn_id GLOB 'legacy-transcript:*'
-                    )
-                 )
-                 AND NOT EXISTS (
-                    SELECT 1 FROM transcript_blocks AS blocks
-                    WHERE blocks.session_id = sessions.session_id
-                        AND (blocks.turn_id IS NULL
-                            OR blocks.turn_id NOT GLOB 'legacy-transcript:*')
-                 );",
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM transcript_blocks AS blocks
+                            WHERE blocks.session_id = sessions.session_id
+                                AND (blocks.turn_id IS NULL
+                                    OR blocks.turn_id NOT GLOB 'legacy-transcript:*')
+                        )
+                    );",
             )
             .map_err(|error| transcript_sql("classify transcript origins", error))?;
     }
