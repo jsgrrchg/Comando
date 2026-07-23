@@ -56,6 +56,7 @@ const originalEnsureSession = useAiStore.getState().ensureSession;
 function createWorkspaceFileTab(id: string, relativePath: string) {
     return {
         createdAt: "2026-04-14T00:00:00.000Z",
+        contentRevision: 0,
         document: null,
         draftContent: "",
         hasExternalChange: false,
@@ -2821,6 +2822,7 @@ describe("workspace file opening", () => {
             worktreeId: null,
         });
         expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
             document: { content: externalDocument.content, modifiedAtMs: 2 },
             draftContent: externalDocument.content,
             isDirty: false,
@@ -2862,7 +2864,7 @@ describe("workspace file opening", () => {
                         contributionsState: [],
                         cursorState: [],
                         viewState: { scrollTop: 360 },
-                    } as MonacoEditor.ICodeEditorViewState,
+                    } as unknown as MonacoEditor.ICodeEditorViewState,
                 },
             },
         }));
@@ -2874,6 +2876,7 @@ describe("workspace file opening", () => {
         expect(openProjectFileMock).toHaveBeenCalledTimes(1);
         for (const tabId of ["file-left", "file-right"]) {
             expect(useWorkspaceStore.getState().tabsById[tabId]).toMatchObject({
+                contentRevision: 1,
                 document: { content: externalDocument.content, modifiedAtMs: 2 },
                 draftContent: externalDocument.content,
                 isDirty: false,
@@ -2936,9 +2939,81 @@ describe("workspace file opening", () => {
         await refreshPromise;
 
         expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
             draftContent: "export const value = 3;\n",
             isDirty: true,
             savedContent: "export const value = 1;\n",
+        });
+    });
+
+    it("uses the newest watcher read after consecutive invalidations", async () => {
+        const relativePath = "src/app.ts";
+        const firstExternalLoad = createDeferred<ProjectFileDocument>();
+        const secondExternalLoad = createDeferred<ProjectFileDocument>();
+        openProjectFileMock
+            .mockImplementationOnce(() => firstExternalLoad.promise)
+            .mockImplementationOnce(() => secondExternalLoad.promise);
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-1",
+                id: "pane-root",
+                tabIds: ["file-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": createLoadedWorkspaceFileTab(
+                    "file-1",
+                    relativePath,
+                    "export const value = 1;\n",
+                ),
+            },
+        }));
+
+        const firstRefresh = useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-1", null, [relativePath]);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+
+        const secondRefresh = useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-1", null, [relativePath]);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(2);
+        });
+
+        firstExternalLoad.resolve(
+            createProjectFileDocument(
+                relativePath,
+                "export const value = 2;\n",
+                2,
+            ),
+        );
+        await firstRefresh;
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            draftContent: "export const value = 1;\n",
+            isLoading: true,
+        });
+
+        secondExternalLoad.resolve(
+            createProjectFileDocument(
+                relativePath,
+                "export const value = 3;\n",
+                3,
+            ),
+        );
+        await secondRefresh;
+
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
+            document: { content: "export const value = 3;\n", modifiedAtMs: 3 },
+            draftContent: "export const value = 3;\n",
+            isDirty: false,
+            isLoading: false,
         });
     });
 
@@ -2976,6 +3051,7 @@ describe("workspace file opening", () => {
         await useWorkspaceStore.getState().reloadFileTab("file-1");
 
         expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
             document: { content: externalDocument.content, modifiedAtMs: 2 },
             draftContent: externalDocument.content,
             isDirty: false,

@@ -52,6 +52,7 @@ function makeFileTab(
 ): RuntimeWorkspaceFileTab {
     return {
         createdAt: "2026-04-12T00:00:00.000Z",
+        contentRevision: 0,
         document: {
             absolutePath: `/tmp/${relativePath}`,
             content: "",
@@ -443,11 +444,13 @@ describe("workspace tree helpers", () => {
         const withDraft = updateFileDraft(baseState, "file-1", "next draft");
 
         expect(withDraft.tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
             draftContent: "next draft",
             isDirty: true,
             viewState: sourceViewState,
         });
         expect(withDraft.tabsById["file-2"]).toMatchObject({
+            contentRevision: 1,
             draftContent: "next draft",
             isDirty: true,
             reviewContext: {
@@ -477,6 +480,7 @@ describe("workspace tree helpers", () => {
         });
 
         expect(withSavedDocument.tabsById["file-1"]).toMatchObject({
+            contentRevision: 2,
             document: { content: "saved content", modifiedAtMs: 2 },
             draftContent: "saved content",
             isDirty: false,
@@ -485,6 +489,7 @@ describe("workspace tree helpers", () => {
             viewState: sourceViewState,
         });
         expect(withSavedDocument.tabsById["file-2"]).toMatchObject({
+            contentRevision: 2,
             document: { content: "saved content", modifiedAtMs: 2 },
             draftContent: "saved content",
             isDirty: false,
