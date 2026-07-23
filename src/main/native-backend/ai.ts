@@ -1462,6 +1462,7 @@ function nativeSnapshotToIpc(snapshot: NativeAiSessionSnapshot): AiSessionSnapsh
             "Native AI snapshot configOptions",
         ) as AiSessionSnapshot["configOptions"],
         lastError: nullableString(snapshot.lastError),
+        manualTitle: nullableString(snapshot.manualTitle),
         messages: requireRecordArray(
             snapshot.messages,
             "Native AI snapshot messages",

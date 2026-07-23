@@ -20,6 +20,7 @@ import {
     ACTIVE_AI_RUNTIME_IDS,
     type ActiveAiRuntimeId,
 } from "@shared/ai-runtimes";
+import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
 
 import { useAiStore } from "@renderer/app/store/ai-store";
 import { areGitWorktreeIdsEquivalent } from "@renderer/app/git/context-key";
@@ -70,6 +71,7 @@ import { releaseCachedChatTimeline } from "@renderer/components/workspace/chat/c
 
 import {
     applySessionUpdateToSidebarHistory,
+    mergeOpenSessionFallbacks,
     SIDEBAR_AGENTS_HISTORY_LIMIT,
     type SidebarAgentsHistoryUnknownSessionSeed,
 } from "./sidebarAgentsHistory";
@@ -173,6 +175,7 @@ export function SidebarAgentsPanel({
         (state) => state.updateSessionTabTitles,
     );
     const tabsById = useWorkspaceStore((state) => state.tabsById);
+    const aiSessions = useAiStore((state) => state.sessions);
     const activePaneSessionId = useWorkspaceStore((state) => {
         const activePane = collectPaneNodes(state.rootNode).find(
             (pane) => pane.id === state.activePaneId,
@@ -279,10 +282,75 @@ export function SidebarAgentsPanel({
             }),
         [visibleFolderState.folderOrder, visibleFolderState.folders],
     );
-    const visibleHistorySessions =
+    const cachedHistorySessions =
         loadedHistoryScopeKey === historyScopeKey
             ? sessions
             : pendingHistoryCache?.sessions ?? EMPTY_AGENTS_SESSIONS;
+    const openSessionFallbacks = useMemo(() => {
+        const fallbacks = new Map<string, AiHistorySessionSummary>();
+        const sourceKinds = new Map<string, "chat" | "review">();
+
+        for (const tab of Object.values(tabsById)) {
+            if (tab.kind !== "chat" && tab.kind !== "review") {
+                continue;
+            }
+            const tabWorktreeId = tab.worktreeId ?? null;
+            const isInScope =
+                tab.projectId === projectId &&
+                (projectId
+                    ? areGitWorktreeIdsEquivalent(
+                          projectId,
+                          tabWorktreeId,
+                          worktreeId ?? null,
+                      )
+                    : tabWorktreeId === (worktreeId ?? null));
+            if (!isInScope) {
+                continue;
+            }
+
+            const existingKind = sourceKinds.get(tab.sessionId);
+            if (
+                existingKind === "chat" ||
+                (existingKind === "review" && tab.kind === "review")
+            ) {
+                continue;
+            }
+
+            const snapshot = aiSessions[tab.sessionId]?.snapshot ?? null;
+            const snapshotTitle = snapshot
+                ? getAiSessionDisplayTitle(snapshot).trim()
+                : "";
+            const title = snapshotTitle || tab.title.trim() || "AI Session";
+            fallbacks.set(tab.sessionId, {
+                createdAt: tab.createdAt,
+                messageCount: snapshot?.messages.length ?? 0,
+                parentSessionId: snapshot?.parentSessionId ?? null,
+                pinnedAt: null,
+                preview: null,
+                projectId: tab.projectId,
+                runtimeId: snapshot?.runtimeId ?? tab.runtimeId,
+                runtimeSessionId: snapshot?.runtimeSessionId ?? null,
+                sessionId: tab.sessionId,
+                title,
+                updatedAt: snapshot?.updatedAt ?? tab.createdAt,
+                worktreeId: tabWorktreeId,
+            });
+            sourceKinds.set(tab.sessionId, tab.kind);
+        }
+
+        return [...fallbacks.values()];
+    }, [aiSessions, projectId, tabsById, worktreeId]);
+    const visibleHistorySessions = useMemo(
+        () =>
+            mergeOpenSessionFallbacks(
+                cachedHistorySessions,
+                openSessionFallbacks.filter(
+                    (session) =>
+                        !deletedSessionIdsRef.current.has(session.sessionId),
+                ),
+            ),
+        [cachedHistorySessions, openSessionFallbacks],
+    );
     const scopedTerminalAgentSessions = useMemo(
         () =>
             terminalAgentSessions.filter(
@@ -1133,7 +1201,6 @@ export function SidebarAgentsPanel({
         return ids;
     }, [tabsById, terminalAgentSessionByTerminalId]);
 
-    const aiSessions = useAiStore((state) => state.sessions);
     const workingOrderRef = useRef<Map<string, number>>(new Map());
     const workingCounterRef = useRef(0);
     const [workingOrderRevision, setWorkingOrderRevision] = useState(0);
@@ -2508,7 +2575,9 @@ function buildUnknownSessionSeed(
         return null;
     }
 
-    const title = entry.snapshot?.title ?? entry.meta?.title ?? "";
+    const title = entry.snapshot
+        ? getAiSessionDisplayTitle(entry.snapshot)
+        : entry.meta?.title ?? "";
     if (title.trim().length === 0) {
         return null;
     }

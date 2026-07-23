@@ -769,6 +769,8 @@ pub struct NativeAiSessionSnapshot {
     pub project_id: Option<ProjectId>,
     pub worktree_id: Option<WorktreeId>,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manual_title: Option<String>,
     pub status: NativeAiSessionStatus,
     pub updated_at: String,
     pub active_turn_started_at: Option<String>,

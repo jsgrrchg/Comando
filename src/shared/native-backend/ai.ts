@@ -472,6 +472,7 @@ export type NativeAiSessionSnapshot = {
     readonly projectId: NativeProjectId | null;
     readonly worktreeId: NativeWorktreeId | null;
     readonly title: string;
+    readonly manualTitle?: string | null;
     readonly status: NativeAiSessionStatus;
     readonly updatedAt: string;
     readonly activeTurnStartedAt: string | null;

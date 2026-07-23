@@ -78,6 +78,7 @@ describe("AiService prepareSession", () => {
             runtimeSessionId: "runtime-session-1",
             sessionId: "session-1",
             status: "error",
+            manualTitle: "Manual title",
             title: "Codex 1",
             tokenUsage: null,
             toolActivity: [],
@@ -160,7 +161,7 @@ describe("AiService prepareSession", () => {
                 projectId: null,
                 runtimeId: "codex",
                 sessionId: "session-1",
-                title: "Codex 1",
+                title: "Manual title",
                 worktreeId: null,
             },
             "window-1",
@@ -1233,7 +1234,6 @@ describe("AiService prepareSession", () => {
             patch: {
                 changes: {
                     manualTitle: "Manual title",
-                    title: "Manual title",
                 },
                 sessionId: "session-1",
             },
@@ -1241,7 +1241,7 @@ describe("AiService prepareSession", () => {
         expect(await service.getSessionSnapshot("session-1")).toMatchObject({
             manualTitle: "Manual title",
             sessionId: "session-1",
-            title: "Manual title",
+            title: "Codex 1",
         });
     });
 
@@ -1290,14 +1290,14 @@ describe("AiService prepareSession", () => {
 
         expect(await service.getSessionSnapshot("session-1")).toMatchObject({
             manualTitle: "Manual title",
-            title: "Manual title",
+            title: "Late runtime title",
             updatedAt: "2026-04-15T22:24:00.000Z",
         });
         const update = onSessionSnapshot.mock.lastCall?.[1] as
             | AiSessionUpdate
             | undefined;
         expect(update?.kind).toBe("patch");
-        expect(update?.kind === "patch" ? update.patch.changes.title : null).not.toBe(
+        expect(update?.kind === "patch" ? update.patch.changes.title : null).toBe(
             "Late runtime title",
         );
     });
@@ -1341,7 +1341,7 @@ describe("AiService prepareSession", () => {
 
         expect(await service.getSessionSnapshot("session-1")).toMatchObject({
             manualTitle: "Manual title",
-            title: "Manual title",
+            title: "Late runtime title",
             updatedAt: "2026-04-15T22:25:00.000Z",
         });
     });

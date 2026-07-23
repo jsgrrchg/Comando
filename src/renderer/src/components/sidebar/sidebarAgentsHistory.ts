@@ -6,6 +6,7 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
 } from "@shared/ipc";
+import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
 import { areGitWorktreeIdsEquivalent } from "@renderer/app/git/context-key";
 
 export interface SidebarAgentsHistoryScope {
@@ -29,6 +30,27 @@ export interface SidebarAgentsHistoryUnknownSessionSeed {
 }
 
 export const SIDEBAR_AGENTS_HISTORY_LIMIT = 250;
+
+export function mergeOpenSessionFallbacks(
+    historySessions: readonly AiHistorySessionSummary[],
+    openSessions: readonly AiHistorySessionSummary[],
+): readonly AiHistorySessionSummary[] {
+    const knownSessionIds = new Set(
+        historySessions.map((session) => session.sessionId),
+    );
+    const missingOpenSessions = openSessions.filter(
+        (session) => !knownSessionIds.has(session.sessionId),
+    );
+    if (missingOpenSessions.length === 0) {
+        return historySessions;
+    }
+
+    // Open sessions are never capped by the history limit. A live tab must
+    // remain reachable even before its first history record is persisted.
+    return [...historySessions, ...missingOpenSessions].sort(
+        compareHistorySummariesByUpdatedAtDesc,
+    );
+}
 
 export function applySessionUpdateToSidebarHistory({
     deletedSessionIds,
@@ -196,17 +218,24 @@ function createHistorySummaryFromSnapshot(
     snapshot: AiSessionSnapshot,
     existing: AiHistorySessionSummary | null,
 ): AiHistorySessionSummary {
+    const hasSnapshotMessages = snapshot.messages.length > 0;
     return {
         createdAt: existing?.createdAt ?? snapshot.updatedAt,
-        messageCount: snapshot.messages.length,
+        // Block-native snapshots intentionally omit paged transcript messages.
+        // An empty payload must not erase history metadata already loaded.
+        messageCount: hasSnapshotMessages
+            ? snapshot.messages.length
+            : existing?.messageCount ?? 0,
         parentSessionId: snapshot.parentSessionId ?? null,
         pinnedAt: existing?.pinnedAt ?? null,
-        preview: deriveSessionPreview(snapshot.messages),
+        preview: hasSnapshotMessages
+            ? deriveSessionPreview(snapshot.messages)
+            : existing?.preview ?? null,
         projectId: snapshot.projectId,
         runtimeId: snapshot.runtimeId,
         runtimeSessionId: snapshot.runtimeSessionId,
         sessionId: snapshot.sessionId,
-        title: snapshot.title,
+        title: getAiSessionDisplayTitle(snapshot),
         updatedAt: snapshot.updatedAt,
         worktreeId: snapshot.worktreeId ?? null,
     };
@@ -218,22 +247,22 @@ function applyPatchToHistorySummary(
 ): AiHistorySessionSummary {
     const changes = patch.changes;
     const nextMessages = resolvePatchedMessages(changes);
+    const hasPatchedMessages =
+        nextMessages !== null && nextMessages.length > 0;
 
     return {
         createdAt: existing.createdAt,
-        messageCount:
-            nextMessages?.length !== undefined
-                ? nextMessages.length
-                : existing.messageCount,
+        messageCount: hasPatchedMessages
+            ? nextMessages.length
+            : existing.messageCount,
         parentSessionId:
             changes.parentSessionId === undefined
                 ? existing.parentSessionId ?? null
                 : changes.parentSessionId,
         pinnedAt: existing.pinnedAt ?? null,
-        preview:
-            nextMessages !== null
-                ? deriveSessionPreview(nextMessages)
-                : existing.preview,
+        preview: hasPatchedMessages
+            ? deriveSessionPreview(nextMessages)
+            : existing.preview,
         projectId:
             changes.projectId === undefined
                 ? existing.projectId
@@ -245,7 +274,12 @@ function applyPatchToHistorySummary(
                 : changes.runtimeSessionId,
         sessionId: existing.sessionId,
         title:
-            typeof changes.title === "string" ? changes.title : existing.title,
+            typeof changes.manualTitle === "string" &&
+            changes.manualTitle.trim().length > 0
+                ? changes.manualTitle.trim()
+                : typeof changes.title === "string"
+                  ? changes.title
+                  : existing.title,
         updatedAt:
             typeof changes.updatedAt === "string"
                 ? changes.updatedAt

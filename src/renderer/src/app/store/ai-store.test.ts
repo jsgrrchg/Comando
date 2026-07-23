@@ -2463,7 +2463,7 @@ describe("ai-store queue", () => {
         ).toBe("high");
     });
 
-    it("applies inferred titles from status events", () => {
+    it("does not treat status summaries as session titles", () => {
         useAiStore.getState().applySessionSnapshot(
             createSnapshot({ title: "Codex 1" }),
         );
@@ -2479,7 +2479,38 @@ describe("ai-store queue", () => {
 
         expect(
             useAiStore.getState().sessions[TAB.sessionId]?.snapshot?.title,
-        ).toBe("Revisa login");
+        ).toBe("Codex 1");
+    });
+
+    it("keeps a manual display title when session info updates the runtime title", () => {
+        useAiStore.getState().registerSessionTab({
+            ...TAB,
+            title: "Manual title",
+        });
+        useAiStore.getState().applySessionSnapshot(
+            createSnapshot({
+                manualTitle: "Manual title",
+                title: "Codex 1",
+            }),
+        );
+
+        useAiStore.getState().applySessionEvent(
+            createSessionEvent({
+                kind: "session-info",
+                parentSessionId: null,
+                projectId: TAB.projectId,
+                title: "Late runtime title",
+                updatedAt: "2026-04-14T00:00:01.000Z",
+                worktreeId: null,
+            }),
+        );
+
+        const session = useAiStore.getState().sessions[TAB.sessionId];
+        expect(session?.snapshot).toMatchObject({
+            manualTitle: "Manual title",
+            title: "Late runtime title",
+        });
+        expect(session?.meta?.title).toBe("Manual title");
     });
 
     it("preserves the root chat title when cancellation only changes status", () => {

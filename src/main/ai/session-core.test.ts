@@ -5,6 +5,7 @@ import type { AiSessionSnapshot } from "@shared/ipc";
 import {
     applyNormalizedSessionCatalogToSnapshot,
     applySessionCatalogToSnapshot,
+    getSessionDisplayTitle,
     isPathInsideRoot,
     isSamePath,
     normalizeAdditionalRoots,
@@ -72,13 +73,16 @@ describe("restored Codex activity normalization", () => {
 
         expect(normalizeAiSessionHierarchy(snapshot)).toMatchObject({
             closedAt: null,
+            manualTitle: "Original parent title",
             parentSessionId: null,
             sessionId: "session-codex",
-            title: "Original parent title",
+            title: "root",
         });
         expect(normalizeRestoredAiSessionSnapshot(snapshot)).toMatchObject({
             closedAt: null,
+            manualTitle: "Original parent title",
             parentSessionId: null,
+            title: "root",
         });
     });
 
@@ -737,9 +741,10 @@ describe("session-core model reconciliation", () => {
 
         expect(updated).toMatchObject({
             manualTitle: "Manual title",
-            title: "Manual title",
+            title: "Late Claude title",
             updatedAt: "2026-04-23T00:02:00.000Z",
         });
+        expect(getSessionDisplayTitle(updated)).toBe("Manual title");
     });
 
     it("applies runtime titles when the session was not manually renamed", () => {

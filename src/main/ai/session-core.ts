@@ -11,6 +11,7 @@ import {
     applyReasoningEffortToConfigOptions,
     isReasoningEffortConfigOption,
 } from "@shared/ai-config-options";
+import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
 import {
     serializeComposerMessagePartsForDisplay,
 } from "@shared/composer-display-markers";
@@ -137,12 +138,9 @@ export function normalizeAiSessionHierarchy(
 
     return {
         ...snapshot,
-        // A session cannot be its own subagent. Clear the derived close state
-        // and restore a manual title overwritten by the same bad mapping.
+        // A session cannot be its own subagent.
         closedAt: null,
         parentSessionId: null,
-        title:
-            snapshot.manualTitle?.trim() || snapshot.title,
     };
 }
 
@@ -887,8 +885,7 @@ export function setTitleOnSnapshot(
 }
 
 export function getSessionDisplayTitle(snapshot: AiSessionSnapshot): string {
-    const manualTitle = snapshot.manualTitle?.trim();
-    return manualTitle || snapshot.title;
+    return getAiSessionDisplayTitle(snapshot);
 }
 
 export function setManualTitleOnSnapshot(
@@ -900,7 +897,6 @@ export function setManualTitleOnSnapshot(
     return {
         ...snapshot,
         manualTitle: manualTitle || null,
-        title: manualTitle || snapshot.title,
         updatedAt,
     };
 }
@@ -913,12 +909,6 @@ export function setRuntimeTitleOnSnapshot(
     const trimmedTitle = title.trim();
     if (!trimmedTitle) {
         return snapshot;
-    }
-    if (snapshot.manualTitle?.trim()) {
-        return {
-            ...snapshot,
-            updatedAt,
-        };
     }
     return {
         ...snapshot,

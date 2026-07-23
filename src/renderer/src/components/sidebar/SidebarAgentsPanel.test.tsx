@@ -8,6 +8,7 @@ import type {
     AiHistorySessionSummary,
     AiSessionSnapshot,
     ComandoApi,
+    WorkspaceChatTab,
 } from "@shared/ipc";
 import {
     registerClaudeCodeSidebarSession,
@@ -17,6 +18,7 @@ import {
     resetAiStoreRuntimeBuffersForTests,
     useAiStore,
 } from "@renderer/app/store/ai-store";
+import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 
 import {
     buildSidebarAgentsNewAgentMenuEntries,
@@ -41,6 +43,13 @@ import {
 
 const mountedRoots: Root[] = [];
 const mountedContainers: HTMLDivElement[] = [];
+
+beforeEach(() => {
+    useWorkspaceStore.setState((state) => ({
+        ...state,
+        tabsById: {},
+    }));
+});
 
 class MemoryStorage implements Storage {
     private readonly values = new Map<string, string>();
@@ -344,6 +353,34 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).toContain("Cached Session");
         expect(markup).toContain("1 thread");
         expect(markup).not.toContain("Loading...");
+    });
+
+    it("renders an open chat even before it appears in history", async () => {
+        const openTab: WorkspaceChatTab = {
+            createdAt: "2026-04-19T11:00:00.000Z",
+            draft: "",
+            id: "open-tab",
+            kind: "chat",
+            projectId: "project-1",
+            runtimeId: "claude",
+            sessionId: "open-session",
+            title: "Open Session",
+            worktreeId: "worktree-1",
+        };
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            tabsById: {
+                [openTab.id]: openTab,
+            },
+        }));
+
+        const container = await mountSidebarAgentsPanel([]);
+
+        expect(
+            container.querySelector(
+                '.sidebar-agents-row[title="Open Session"]',
+            ),
+        ).not.toBeNull();
     });
 
     it("queries the canonical primary worktree supplied by the host", async () => {

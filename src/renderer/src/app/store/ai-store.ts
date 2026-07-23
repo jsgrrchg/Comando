@@ -46,7 +46,7 @@ import { serializeComposerMessagePartsForDisplay } from "@shared/composer-displa
 import {
     attachNativeReviewDeltaToTrackedFile,
 } from "@shared/ai-review-delta";
-import { normalizeAiSessionStatusTitle } from "@shared/ai-session-events";
+import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
 import { getAiTranscriptToolEntryId } from "@shared/ai-transcript";
 import {
     deriveTrackedFilesFromActionLog,
@@ -1361,13 +1361,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 applySessionDomainEventToSnapshot(baseSnapshot, normalizedEvent),
                 nextTranscript,
             );
+            const displayTitle = getAiSessionDisplayTitle(nextSnapshot);
             const nextMeta = session.meta
-                ? session.meta.title === nextSnapshot.title
+                ? session.meta.title === displayTitle
                     ? session.meta
-                    : { ...session.meta, title: nextSnapshot.title }
+                    : { ...session.meta, title: displayTitle }
                 : createSessionMetaFromSnapshot(nextSnapshot);
             if (nextMeta !== session.meta) {
-                syncedTitle = nextSnapshot.title;
+                syncedTitle = displayTitle;
             }
 
             return {
@@ -1481,7 +1482,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
                     const nextSnapshot = resolved.snapshot;
                     const nextTranscript = resolved.transcript;
                     const nextMeta = createSessionMetaFromSnapshot(nextSnapshot);
-                    syncedTitle = nextSnapshot.title;
+                    syncedTitle = getAiSessionDisplayTitle(nextSnapshot);
 
                     return {
                         runtimeCatalogById:
@@ -1542,13 +1543,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             const nextSnapshot = resolved.snapshot;
             const nextTranscript = resolved.transcript;
             const resolvedCatalog = nextCatalog;
+            const displayTitle = getAiSessionDisplayTitle(nextSnapshot);
             const nextMeta = session.meta
-                ? session.meta.title === nextSnapshot.title
+                ? session.meta.title === displayTitle
                     ? session.meta
-                    : { ...session.meta, title: nextSnapshot.title }
+                    : { ...session.meta, title: displayTitle }
                 : session.meta;
             if (nextMeta !== session.meta) {
-                syncedTitle = nextSnapshot.title;
+                syncedTitle = displayTitle;
             }
 
             return {
@@ -1614,13 +1616,14 @@ export const useAiStore = create<AiStore>((set, get) => ({
             );
             const resolvedSnapshot = resolved.snapshot;
             const resolvedTranscript = resolved.transcript;
+            const displayTitle = getAiSessionDisplayTitle(resolvedSnapshot);
             const nextMeta = session.meta
-                ? session.meta.title === resolvedSnapshot.title
+                ? session.meta.title === displayTitle
                     ? session.meta
-                    : { ...session.meta, title: resolvedSnapshot.title }
+                    : { ...session.meta, title: displayTitle }
                 : session.meta;
             if (nextMeta !== session.meta) {
-                syncedTitle = resolvedSnapshot.title;
+                syncedTitle = displayTitle;
             }
             shouldRefreshSealedTranscript =
                 shouldRefreshSealedTranscript ||
@@ -2785,13 +2788,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 return {
                     ...snapshot,
                     manualTitle,
-                    title: manualTitle || snapshot.title,
                     updatedAt: new Date().toISOString(),
                 };
             },
             () => getComandoApi().renameAiSession(input),
             set,
             get,
+            {
+                conflictKey: "manualTitle",
+                preserveDuringIncomingSnapshots: true,
+            },
         );
     },
 
@@ -3582,8 +3588,6 @@ function createSessionSnapshotFromEvent(
     const title =
         event.kind === "session-info" || event.kind === "subagent-created"
             ? event.title
-            : event.kind === "status"
-              ? (normalizeAiSessionStatusTitle(event.title) ?? "AI Session")
             : "AI Session";
     const modelId =
         event.kind === "subagent-created"
@@ -3704,7 +3708,6 @@ function applySessionDomainEventToSnapshot(
                 updatedAt: event.updatedAt,
             };
         case "status": {
-            const title = normalizeAiSessionStatusTitle(event.title);
             return {
                 ...snapshot,
                 activeTurnStartedAt: event.activeTurnStartedAt,
@@ -3712,7 +3715,6 @@ function applySessionDomainEventToSnapshot(
                 runtimeSessionId:
                     event.runtimeSessionId ?? snapshot.runtimeSessionId,
                 status: event.status,
-                title: title ?? snapshot.title,
                 updatedAt: event.updatedAt,
             };
         }
@@ -4115,7 +4117,7 @@ function createSessionMetaFromSnapshot(
     return {
         projectId: snapshot.projectId,
         runtimeId: snapshot.runtimeId,
-        title: snapshot.title,
+        title: getAiSessionDisplayTitle(snapshot),
         worktreeId: snapshot.worktreeId ?? null,
     };
 }
