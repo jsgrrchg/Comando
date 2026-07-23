@@ -160,7 +160,7 @@ impl ProjectFsService {
 
     #[cfg(feature = "test-hooks")]
     pub fn queue_test_invalidation_after_delay(
-        &self,
+        &mut self,
         root: ProjectRoot,
         relative_path: String,
         delay: std::time::Duration,
