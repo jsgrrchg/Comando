@@ -94,6 +94,10 @@ import {
     useLifecycleProbe,
     useRenderProbe,
 } from "@renderer/app/debug/renderProbe";
+import {
+    recordFileSyncTrace,
+    type FileSyncTraceEventName,
+} from "@renderer/app/debug/fileSyncProbe";
 import { recordWorkspacePerformanceEvent } from "@renderer/app/debug/workspacePerformanceProbe";
 import {
     applyAiTranscriptMemoryPressure,
@@ -4455,6 +4459,8 @@ function FileTabView({
         readonly tabId: string;
     } | null>(null);
     const fileTabIdRef = useRef(tab.id);
+    const fileSyncTabRef = useRef(tab);
+    const lastEditorScrollTopRef = useRef<number | null>(null);
     const inlineReviewActiveRef = useRef(false);
     const inlineReviewSignatureRef = useRef<string | null>(null);
     const latestDraftContentRef = useRef(tab.draftContent);
@@ -4478,6 +4484,26 @@ function FileTabView({
         isInlineReviewFindWidgetVisible,
         setIsInlineReviewFindWidgetVisible,
     ] = useState(false);
+    const recordEditorFileSyncTrace = useCallback(
+        (event: FileSyncTraceEventName, origin: string) => {
+            const traceTab = fileSyncTabRef.current;
+            recordFileSyncTrace({
+                content: latestDraftContentRef.current,
+                contentRevision: traceTab.contentRevision,
+                event,
+                flags: {
+                    hasExternalChange: traceTab.hasExternalChange,
+                    isDirty: traceTab.isDirty,
+                    isLoading: traceTab.isLoading,
+                    isSaving: traceTab.isSaving,
+                },
+                origin,
+                path: traceTab.relativePath,
+                tabId: traceTab.id,
+            });
+        },
+        [],
+    );
     const [hoveredInlineReviewHunkState, setHoveredInlineReviewHunkState] =
         useState<{
             readonly hunkId: string;
@@ -5486,7 +5512,8 @@ function FileTabView({
 
     useLayoutEffect(() => {
         latestDraftContentRef.current = tab.draftContent;
-    }, [tab.draftContent]);
+        fileSyncTabRef.current = tab;
+    }, [tab]);
 
     useLayoutEffect(() => {
         if (
@@ -5529,6 +5556,10 @@ function FileTabView({
         }
         previousLease?.release();
 
+        if (didChangeContent) {
+            recordEditorFileSyncTrace("model_changed", "monaco");
+        }
+
         if (!isVisible || inlineReviewTrackedFile) {
             return;
         }
@@ -5558,6 +5589,7 @@ function FileTabView({
         inlineReviewTrackedFile,
         isVisible,
         monacoLanguageId,
+        recordEditorFileSyncTrace,
         restorePortableEditorState,
         restoreEditorViewStateForTab,
         runWithoutEditorChangeNotification,
@@ -6882,12 +6914,32 @@ function FileTabView({
                                 () => {
                                     captureEditorStateForInlineReview(editor);
                                     scheduleEditorViewStatePersist(editor);
+                                    const nextScrollTop = editor.getScrollTop();
+                                    const previousScrollTop =
+                                        lastEditorScrollTopRef.current;
+                                    lastEditorScrollTopRef.current =
+                                        nextScrollTop;
+                                    if (
+                                        previousScrollTop !== null &&
+                                        Math.abs(
+                                            nextScrollTop - previousScrollTop,
+                                        ) >= 240
+                                    ) {
+                                        recordEditorFileSyncTrace(
+                                            "scroll_jump",
+                                            "monaco",
+                                        );
+                                    }
                                 },
                             );
                             const cursorListener =
                                 editor.onDidChangeCursorSelection(() => {
                                     captureEditorStateForInlineReview(editor);
                                     scheduleEditorViewStatePersist(editor);
+                                    recordEditorFileSyncTrace(
+                                        "selection_changed",
+                                        "monaco",
+                                    );
                                 });
                             const hiddenAreasListener =
                                 editor.onDidChangeHiddenAreas(() => {

@@ -2894,9 +2894,20 @@ describe("workspace file opening", () => {
         });
     });
 
-    it("does not overwrite edits made while a watcher refresh is in flight", async () => {
+    it("keeps the draft and view state when a stale watcher refresh resolves", async () => {
         const relativePath = "src/app.ts";
         const staleExternalLoad = createDeferred<ProjectFileDocument>();
+        const preservedViewState = {
+            contributionsState: [],
+            cursorState: [
+                {
+                    inSelectionMode: false,
+                    position: { column: 7, lineNumber: 3 },
+                    selectionStart: { column: 7, lineNumber: 3 },
+                },
+            ],
+            viewState: { scrollLeft: 18, scrollTop: 640 },
+        } as unknown as MonacoEditor.ICodeEditorViewState;
         openProjectFileMock.mockImplementationOnce(
             () => staleExternalLoad.promise,
         );
@@ -2911,11 +2922,14 @@ describe("workspace file opening", () => {
                 type: "pane",
             },
             tabsById: {
-                "file-1": createLoadedWorkspaceFileTab(
-                    "file-1",
-                    relativePath,
-                    "export const value = 1;\n",
-                ),
+                "file-1": {
+                    ...createLoadedWorkspaceFileTab(
+                        "file-1",
+                        relativePath,
+                        "export const value = 1;\n",
+                    ),
+                    viewState: preservedViewState,
+                },
             },
         }));
 
@@ -2943,6 +2957,7 @@ describe("workspace file opening", () => {
             draftContent: "export const value = 3;\n",
             isDirty: true,
             savedContent: "export const value = 1;\n",
+            viewState: preservedViewState,
         });
     });
 
