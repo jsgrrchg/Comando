@@ -7,7 +7,12 @@ import {
 } from "electron";
 
 import { IPC_EVENTS } from "@shared/ipc";
-import { areWorkspaceWorktreeIdsEquivalent } from "@shared/workspace-context";
+import {
+    areWorkspaceScopesEquivalent,
+    areWorkspaceWorktreeIdsEquivalent,
+    type WorkspaceLocation,
+    type WorkspaceScope,
+} from "@shared/workspace-context";
 import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
@@ -78,6 +83,11 @@ interface WorkspaceSurfaceLifecycleHandlers {
         ownerId: string,
     ) => void;
     readonly onSurfaceDestroyed?: (ownerId: string) => void;
+}
+
+export interface OpenWorkspaceSurfaceLocation extends WorkspaceLocation {
+    readonly isActive: boolean;
+    readonly lastActivatedAt: string;
 }
 
 /**
@@ -529,6 +539,62 @@ export class WorkspaceSurfaceManager {
         return surface
             ? this.getHostWebContents(surface.hostWindowId)
             : null;
+    }
+
+    listOpenWorkspaceLocations(): readonly OpenWorkspaceSurfaceLocation[] {
+        return [...this.#hostsByWindowId.values()].flatMap((host) =>
+            host.snapshot.openContextKeys.flatMap((contextKey) => {
+                const context = host.snapshot.contexts.find(
+                    (candidate) => candidate.key === contextKey,
+                );
+                if (!context || !host.surfaceIdsByContextKey.has(contextKey)) {
+                    return [];
+                }
+                return [
+                    {
+                        contextKey,
+                        hostWindowId: host.hostWindowId,
+                        isActive: host.activeContextKey === contextKey,
+                        lastActivatedAt: context.lastActivatedAt,
+                        projectId: context.projectId,
+                        worktreeId: context.worktreeId,
+                    },
+                ];
+            }),
+        );
+    }
+
+    findWorkspaceLocations(
+        scope: WorkspaceScope,
+    ): readonly OpenWorkspaceSurfaceLocation[] {
+        return this.listOpenWorkspaceLocations().filter((location) =>
+            areWorkspaceScopesEquivalent(location, scope),
+        );
+    }
+
+    findPreferredWorkspaceLocation(
+        scope: WorkspaceScope,
+        preferredHostWindowId = windowRegistry.getLastFocusedMainWindowId(),
+    ): OpenWorkspaceSurfaceLocation | null {
+        return (
+            [...this.findWorkspaceLocations(scope)].sort((left, right) => {
+                if (left.isActive !== right.isActive) {
+                    return left.isActive ? -1 : 1;
+                }
+                const leftIsPreferred =
+                    left.hostWindowId === preferredHostWindowId;
+                const rightIsPreferred =
+                    right.hostWindowId === preferredHostWindowId;
+                if (leftIsPreferred !== rightIsPreferred) {
+                    return leftIsPreferred ? -1 : 1;
+                }
+                const activationOrder =
+                    Date.parse(right.lastActivatedAt) -
+                    Date.parse(left.lastActivatedAt);
+                return activationOrder ||
+                    left.hostWindowId.localeCompare(right.hostWindowId);
+            })[0] ?? null
+        );
     }
 
     activateProject(

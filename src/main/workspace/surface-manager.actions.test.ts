@@ -272,6 +272,114 @@ describe("WorkspaceSurfaceManager action routing", () => {
             ),
         ).toEqual({ delivered: true });
     });
+
+    it("indexes open workspaces without changing host activation", () => {
+        const manager = new WorkspaceSurfaceManager();
+        const firstHost = createHostWindow();
+        const secondHost = createHostWindow();
+        const firstSnapshot = createSnapshot();
+        const secondSnapshot: WorkspaceNavigationSnapshot = {
+            activeContextKey: "project-a::worktree-feature",
+            contexts: [
+                {
+                    ...createPersistedContext(
+                        "project-a::worktree-feature",
+                        "project-a",
+                    ),
+                    lastActivatedAt: "2026-07-20T00:00:00.000Z",
+                    worktreeId: "worktree-feature",
+                },
+            ],
+            openContextKeys: ["project-a::worktree-feature"],
+            version: 3,
+        };
+        manager.syncHost(firstHost.window, createHostContext(), firstSnapshot);
+        manager.syncHost(
+            secondHost.window,
+            {
+                ...createHostContext(),
+                windowId: "host-2",
+                workspaceId: "workspace-2",
+                workspaceSessionId: "workspace-session-2",
+            },
+            secondSnapshot,
+        );
+
+        expect(manager.listOpenWorkspaceLocations()).toEqual([
+            expect.objectContaining({
+                contextKey: "project-a::__primary__",
+                hostWindowId: "host-1",
+                isActive: true,
+            }),
+            expect.objectContaining({
+                contextKey: "project-b::__primary__",
+                hostWindowId: "host-1",
+                isActive: false,
+            }),
+            expect.objectContaining({
+                contextKey: "project-a::worktree-feature",
+                hostWindowId: "host-2",
+                isActive: true,
+            }),
+        ]);
+        expect(manager.getActiveContext("host-1")?.key).toBe(
+            "project-a::__primary__",
+        );
+        expect(manager.getActiveContext("host-2")?.key).toBe(
+            "project-a::worktree-feature",
+        );
+    });
+
+    it("resolves historical duplicates deterministically", () => {
+        const manager = new WorkspaceSurfaceManager();
+        const firstHost = createHostWindow();
+        const secondHost = createHostWindow();
+        const firstSnapshot = createSnapshot();
+        const duplicateContext = {
+            ...createPersistedContext(
+                "project-a::project-a:primary",
+                "project-a",
+            ),
+            lastActivatedAt: "2026-07-21T00:00:00.000Z",
+            worktreeId: "project-a:primary",
+        };
+        manager.syncHost(firstHost.window, createHostContext(), firstSnapshot);
+        manager.syncHost(
+            secondHost.window,
+            {
+                ...createHostContext(),
+                windowId: "host-2",
+                workspaceId: "workspace-2",
+                workspaceSessionId: "workspace-session-2",
+            },
+            {
+                activeContextKey: duplicateContext.key,
+                contexts: [duplicateContext],
+                openContextKeys: [duplicateContext.key],
+                version: 3,
+            },
+        );
+
+        const locations = manager.findWorkspaceLocations({
+            projectId: "project-a",
+            worktreeId: null,
+        });
+        expect(locations).toHaveLength(2);
+        expect(
+            manager.findPreferredWorkspaceLocation(
+                { projectId: "project-a", worktreeId: null },
+                "host-2",
+            )?.hostWindowId,
+        ).toBe("host-2");
+
+        manager.activate("host-1", "project-b::__primary__");
+        expect(
+            manager.findPreferredWorkspaceLocation(
+                { projectId: "project-a", worktreeId: null },
+                "host-1",
+            )?.hostWindowId,
+        ).toBe("host-2");
+    });
 });
 
 function createHostWindow(): {
