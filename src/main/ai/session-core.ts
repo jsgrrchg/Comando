@@ -316,6 +316,11 @@ function createAiSessionPatchChanges(
         }
     }
 
+    if ("title" in changes) {
+        // Consumers need both title owners to derive the display title safely.
+        changes.manualTitle = nextSnapshot.manualTitle ?? null;
+    }
+
     return changes;
 }
 

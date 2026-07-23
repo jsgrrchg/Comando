@@ -1300,6 +1300,11 @@ describe("AiService prepareSession", () => {
         expect(update?.kind === "patch" ? update.patch.changes.title : null).toBe(
             "Late runtime title",
         );
+        expect(
+            update?.kind === "patch"
+                ? update.patch.changes.manualTitle
+                : null,
+        ).toBe("Manual title");
     });
 
     it("keeps manual titles when full native snapshots arrive later", async () => {

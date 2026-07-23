@@ -335,6 +335,37 @@ describe("applySessionUpdateToSidebarHistory", () => {
         });
     });
 
+    it("keeps the manual title when a runtime title patch arrives", () => {
+        const sessions = [
+            createSummary({
+                title: "Manual title",
+            }),
+        ] as const;
+
+        const result = applySessionUpdateToSidebarHistory({
+            limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+            scope: DEFAULT_SCOPE,
+            sessions,
+            update: {
+                kind: "patch",
+                patch: {
+                    changes: {
+                        manualTitle: "Manual title",
+                        title: "Late runtime title",
+                        updatedAt: "2026-04-19T12:30:00.000Z",
+                    },
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                },
+            },
+        });
+
+        expect(result.sessions[0]).toMatchObject({
+            title: "Manual title",
+            updatedAt: "2026-04-19T12:30:00.000Z",
+        });
+    });
+
     it("removes a known session when a patch moves it outside the active scope", () => {
         const sessions = [createSummary()] as const;
         const update: AiSessionUpdate = {
