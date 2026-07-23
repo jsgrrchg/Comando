@@ -65,9 +65,11 @@ interface WorkspaceSurfaceHostRecord {
     activeContextKey: string | null;
     contentInset: number;
     contentLeftInset: number;
+    disposalScheduled: boolean;
     readonly hostWindow: BrowserWindow;
     readonly hostWindowId: string;
     context: WindowContextSnapshot;
+    isClosing: boolean;
     pendingLayoutTimer: NodeJS.Timeout | null;
     snapshot: WorkspaceNavigationSnapshot;
     readonly surfaceIdsByContextKey: Map<string, string>;
@@ -109,6 +111,10 @@ export class WorkspaceSurfaceManager {
         string,
         Set<(ready: boolean) => void>
     >();
+    readonly #pendingTransfersByHost = new Map<
+        WorkspaceSurfaceHostRecord,
+        Set<Promise<void>>
+    >();
     readonly #surfaceIdsByWebContentsId = new Map<number, string>();
     readonly #surfacesById = new Map<string, WorkspaceSurfaceRecord>();
     readonly #actionsById = new Map<
@@ -127,14 +133,21 @@ export class WorkspaceSurfaceManager {
         snapshot: WorkspaceNavigationSnapshot,
     ): WorkspaceNavigationSnapshot {
         let host = this.#hostsByWindowId.get(hostContext.windowId);
+        if (host && host.hostWindow !== hostWindow) {
+            // Stable window ids can be reused by a newly opened BrowserWindow.
+            this.#scheduleHostDisposal(host);
+            host = undefined;
+        }
         if (!host) {
             host = {
                 activeContextKey: null,
                 contentInset: DESKTOP_TITLE_BAR_HEIGHT,
                 contentLeftInset: 0,
+                disposalScheduled: false,
                 hostWindow,
                 hostWindowId: hostContext.windowId,
                 context: hostContext,
+                isClosing: false,
                 pendingLayoutTimer: null,
                 snapshot,
                 surfaceIdsByContextKey: new Map(),
@@ -643,23 +656,51 @@ export class WorkspaceSurfaceManager {
             readonly target: WindowWorkspaceRestoreRecord;
         }>;
         readonly contextKey: string;
+        readonly onCommitted?: (
+            transfer: WorkspaceSurfaceTransferResult,
+        ) => void;
         readonly sourceHostWindowId: string;
         readonly targetHostWindowId: string;
     }): Promise<WorkspaceSurfaceTransferResult> {
         if (input.sourceHostWindowId === input.targetHostWindowId) {
             throw new Error("The workspace is already in the target window.");
         }
-        const sourceHost = this.#hostsByWindowId.get(
+        const reservation = this.#reserveTransfer(
             input.sourceHostWindowId,
-        );
-        const targetHost = this.#hostsByWindowId.get(
             input.targetHostWindowId,
         );
-        const surfaceId = sourceHost?.surfaceIdsByContextKey.get(
+        try {
+            return await this.#transferSurfaceNow(
+                input,
+                reservation.sourceHost,
+                reservation.targetHost,
+            );
+        } finally {
+            reservation.release();
+        }
+    }
+
+    async #transferSurfaceNow(
+        input: {
+            readonly commit: () => Promise<{
+                readonly source: WindowWorkspaceRestoreRecord;
+                readonly target: WindowWorkspaceRestoreRecord;
+            }>;
+            readonly contextKey: string;
+            readonly onCommitted?: (
+                transfer: WorkspaceSurfaceTransferResult,
+            ) => void;
+            readonly sourceHostWindowId: string;
+            readonly targetHostWindowId: string;
+        },
+        sourceHost: WorkspaceSurfaceHostRecord,
+        targetHost: WorkspaceSurfaceHostRecord,
+    ): Promise<WorkspaceSurfaceTransferResult> {
+        const surfaceId = sourceHost.surfaceIdsByContextKey.get(
             input.contextKey,
         );
         const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
-        if (!sourceHost || !targetHost || !surface) {
+        if (!surface) {
             throw new Error("The workspace surface is no longer available.");
         }
         if (
@@ -684,6 +725,12 @@ export class WorkspaceSurfaceManager {
         const previousContext = surface.context;
         const previousActionHostIds = new Map<string, string>();
         let attachedToTarget = false;
+        let committed:
+            | {
+                  readonly source: WindowWorkspaceRestoreRecord;
+                  readonly target: WindowWorkspaceRestoreRecord;
+              }
+            | undefined;
         surface.view.setVisible(false);
         surface.isVisible = false;
         surface.bounds = null;
@@ -712,26 +759,7 @@ export class WorkspaceSurfaceManager {
                 action.hostWindowId = targetHost.hostWindowId;
             }
 
-            const committed = await input.commit();
-            sourceHost.snapshot = committed.source.snapshot;
-            sourceHost.activeContextKey =
-                committed.source.snapshot.activeContextKey;
-            targetHost.snapshot = committed.target.snapshot;
-            targetHost.activeContextKey =
-                committed.target.snapshot.activeContextKey;
-            surface.snapshot = toSurfaceSnapshot(
-                committed.target.snapshot,
-                input.contextKey,
-            );
-            this.#rejectInactiveActions(sourceHost);
-            this.#rejectInactiveActions(targetHost);
-            this.#applyVisibility(sourceHost);
-            this.#applyVisibility(targetHost, { focusActive: true });
-            return {
-                sourceSnapshot: sourceHost.snapshot,
-                surfaceId: surface.id,
-                targetSnapshot: targetHost.snapshot,
-            };
+            committed = await input.commit();
         } catch (error) {
             if (attachedToTarget && !targetHost.hostWindow.isDestroyed()) {
                 targetHost.hostWindow.contentView.removeChildView(surface.view);
@@ -759,6 +787,43 @@ export class WorkspaceSurfaceManager {
             });
             throw error;
         }
+
+        // Persistence is now canonical. Never visually roll back beyond this point.
+        sourceHost.snapshot = committed.source.snapshot;
+        sourceHost.activeContextKey = committed.source.snapshot.activeContextKey;
+        targetHost.snapshot = committed.target.snapshot;
+        targetHost.activeContextKey = committed.target.snapshot.activeContextKey;
+        surface.snapshot = toSurfaceSnapshot(
+            committed.target.snapshot,
+            input.contextKey,
+        );
+        const result = {
+            sourceSnapshot: sourceHost.snapshot,
+            surfaceId: surface.id,
+            targetSnapshot: targetHost.snapshot,
+        };
+        try {
+            // Notify host renderers before a waiting window close can flush them.
+            input.onCommitted?.(result);
+        } catch (error) {
+            console.error(
+                "[workspace] Failed to notify hosts after a committed transfer",
+                error,
+            );
+        }
+        try {
+            this.#rejectInactiveActions(sourceHost);
+            this.#rejectInactiveActions(targetHost);
+            this.#applyVisibility(sourceHost);
+            this.#applyVisibility(targetHost, { focusActive: true });
+        } catch (error) {
+            // A later host sync can repair presentation; ownership must remain committed.
+            console.error(
+                "[workspace] Failed to refresh surfaces after a committed transfer",
+                error,
+            );
+        }
+        return result;
     }
 
     activateProject(
@@ -785,11 +850,56 @@ export class WorkspaceSurfaceManager {
         return null;
     }
 
-    disposeHost(hostWindowId: string): void {
-        this.#resolveHostReadyWaiters(hostWindowId, false);
+    async prepareHostForClose(
+        hostWindowId: string,
+        hostWindow?: BrowserWindow,
+    ): Promise<void> {
+        const host = this.#hostsByWindowId.get(hostWindowId);
+        if (!host || (hostWindow && host.hostWindow !== hostWindow)) {
+            return;
+        }
+        // Mark this host generation before existing transfers drain.
+        host.isClosing = true;
+        const pendingTransfers = this.#pendingTransfersByHost.get(host);
+        if (pendingTransfers) {
+            await Promise.allSettled([...pendingTransfers]);
+        }
+    }
+
+    disposeHost(hostWindowId: string, hostWindow?: BrowserWindow): void {
         const host = this.#hostsByWindowId.get(hostWindowId);
         if (!host) {
+            this.#resolveHostReadyWaiters(hostWindowId, false);
             return;
+        }
+        if (hostWindow && host.hostWindow !== hostWindow) {
+            return;
+        }
+        this.#scheduleHostDisposal(host);
+    }
+
+    #scheduleHostDisposal(host: WorkspaceSurfaceHostRecord): void {
+        host.isClosing = true;
+        if (host.disposalScheduled) {
+            return;
+        }
+        host.disposalScheduled = true;
+        const pendingTransfers = this.#pendingTransfersByHost.get(host);
+        if (pendingTransfers?.size) {
+            // Forced window destruction still waits for the atomic move boundary.
+            void Promise.allSettled([...pendingTransfers]).then(() => {
+                this.#disposeHostNow(host);
+            });
+            return;
+        }
+        this.#disposeHostNow(host);
+    }
+
+    #disposeHostNow(host: WorkspaceSurfaceHostRecord): void {
+        const isCurrentHost =
+            this.#hostsByWindowId.get(host.hostWindowId) === host;
+        if (isCurrentHost) {
+            this.#resolveHostReadyWaiters(host.hostWindowId, false);
         }
         if (host.pendingLayoutTimer) {
             clearTimeout(host.pendingLayoutTimer);
@@ -797,7 +907,62 @@ export class WorkspaceSurfaceManager {
         for (const surfaceId of [...host.surfaceIdsByContextKey.values()]) {
             this.#destroySurface(host, surfaceId);
         }
-        this.#hostsByWindowId.delete(hostWindowId);
+        this.#pendingTransfersByHost.delete(host);
+        if (isCurrentHost) {
+            this.#hostsByWindowId.delete(host.hostWindowId);
+        }
+    }
+
+    #reserveTransfer(
+        sourceHostWindowId: string,
+        targetHostWindowId: string,
+    ): {
+        readonly release: () => void;
+        readonly sourceHost: WorkspaceSurfaceHostRecord;
+        readonly targetHost: WorkspaceSurfaceHostRecord;
+    } {
+        const sourceHost = this.#hostsByWindowId.get(sourceHostWindowId);
+        const targetHost = this.#hostsByWindowId.get(targetHostWindowId);
+        if (!sourceHost || !targetHost) {
+            throw new Error("The workspace surface is no longer available.");
+        }
+        if (sourceHost.isClosing || targetHost.isClosing) {
+            throw new Error("A workspace transfer window is closing.");
+        }
+
+        let resolveTransfer: (() => void) | undefined;
+        const transfer = new Promise<void>((resolve) => {
+            resolveTransfer = resolve;
+        });
+        const hosts = [sourceHost, targetHost];
+        for (const host of hosts) {
+            const pendingTransfers =
+                this.#pendingTransfersByHost.get(host) ??
+                new Set<Promise<void>>();
+            pendingTransfers.add(transfer);
+            this.#pendingTransfersByHost.set(host, pendingTransfers);
+        }
+
+        let released = false;
+        return {
+            release: () => {
+                if (released) {
+                    return;
+                }
+                released = true;
+                for (const host of hosts) {
+                    const pendingTransfers =
+                        this.#pendingTransfersByHost.get(host);
+                    pendingTransfers?.delete(transfer);
+                    if (pendingTransfers?.size === 0) {
+                        this.#pendingTransfersByHost.delete(host);
+                    }
+                }
+                resolveTransfer?.();
+            },
+            sourceHost,
+            targetHost,
+        };
     }
 
     #resolveHostReadyWaiters(hostWindowId: string, ready: boolean): void {

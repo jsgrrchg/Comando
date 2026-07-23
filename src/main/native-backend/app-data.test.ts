@@ -160,28 +160,55 @@ describe("createNativeAppDataClient", () => {
             null,
             "pane-target",
         );
+        const retainedTargetNavigation = {
+            ...targetNavigation,
+            contexts: [
+                ...targetNavigation.contexts,
+                {
+                    ...sourceNavigation.contexts[0],
+                    workspace: {
+                        ...sourceNavigation.contexts[0].workspace,
+                        activePaneId: "pane-stale",
+                        rootNode: {
+                            activeTabId: null,
+                            id: "pane-stale",
+                            tabIds: [],
+                            type: "pane" as const,
+                        },
+                    },
+                },
+            ],
+        };
         await client.workspace.saveSnapshot(
             targetWorkspaceId,
             {
-                ...targetNavigation,
-                // Closed contexts retain their layout but are not live duplicates.
-                contexts: [
-                    ...targetNavigation.contexts,
-                    {
-                        ...sourceNavigation.contexts[0],
-                        workspace: {
-                            ...sourceNavigation.contexts[0].workspace,
-                            activePaneId: "pane-stale",
-                            rootNode: {
-                                activeTabId: null,
-                                id: "pane-stale",
-                                tabIds: [],
-                                type: "pane",
-                            },
-                        },
-                    },
+                ...retainedTargetNavigation,
+                openContextKeys: [
+                    ...targetNavigation.openContextKeys,
+                    "project-1::__primary__",
                 ],
             },
+        );
+        const sourceWithDuplicate = await client.workspace.loadSnapshot(
+            sourceWorkspaceId,
+        );
+        const targetWithDuplicate = await client.workspace.loadSnapshot(
+            targetWorkspaceId,
+        );
+        await expect(
+            client.workspace.transferContext({
+                contextKey: "project-1::__primary__",
+                sourceRevision: sourceWithDuplicate.revision,
+                sourceWorkspaceId,
+                targetRevision: targetWithDuplicate.revision,
+                targetWorkspaceId,
+            }),
+        ).rejects.toThrow("destination already contains this workspace");
+
+        // Closed contexts retain their layout but are not live duplicates.
+        await client.workspace.saveSnapshot(
+            targetWorkspaceId,
+            retainedTargetNavigation,
         );
         const sourceBefore = await client.workspace.loadSnapshot(
             sourceWorkspaceId,

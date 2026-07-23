@@ -35,11 +35,13 @@ describe("moveWorkspaceBetweenWindows", () => {
         const onTransferred = vi.fn();
         const transferSurface = vi.fn(async (input: TransferSurfaceInput) => {
             const committed = await input.commit();
-            return {
+            const transfer = {
                 sourceSnapshot: committed.source.snapshot,
                 surfaceId: "surface-primary",
                 targetSnapshot: committed.target.snapshot,
             };
+            input.onCommitted?.(transfer);
+            return transfer;
         });
 
         await moveWorkspaceBetweenWindows(
@@ -112,11 +114,13 @@ describe("moveWorkspaceBetweenWindows", () => {
         const targetContext = createWindowContext("window-new");
         const transferSurface = vi.fn(async (input: TransferSurfaceInput) => {
             const committed = await input.commit();
-            return {
+            const transfer = {
                 sourceSnapshot: committed.source.snapshot,
                 surfaceId: "surface-primary",
                 targetSnapshot: committed.target.snapshot,
             };
+            input.onCommitted?.(transfer);
+            return transfer;
         });
 
         await moveWorkspaceBetweenWindows(
@@ -192,11 +196,13 @@ describe("moveWorkspaceBetweenWindows", () => {
         const committedTarget = createSnapshot(primary.key, [other, primary]);
         const transferSurface = vi.fn(async (input: TransferSurfaceInput) => {
             const committed = await input.commit();
-            return {
+            const transfer = {
                 sourceSnapshot: committed.source.snapshot,
                 surfaceId: "surface-primary",
                 targetSnapshot: committed.target.snapshot,
             };
+            input.onCommitted?.(transfer);
+            return transfer;
         });
 
         await moveWorkspaceBetweenWindows(

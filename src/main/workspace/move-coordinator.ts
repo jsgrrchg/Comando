@@ -127,7 +127,7 @@ export async function moveWorkspaceBetweenWindows(
         dependencies.workspaceService.loadSnapshot(sourceContext.workspaceId),
         dependencies.workspaceService.loadSnapshot(targetContext.workspaceId),
     ]);
-    const transfer = await dependencies.manager.transferSurface({
+    await dependencies.manager.transferSurface({
         commit: () =>
             Promise.resolve(
                 dependencies.workspaceService.transferContext({
@@ -139,12 +139,14 @@ export async function moveWorkspaceBetweenWindows(
                 }),
             ),
         contextKey: input.contextKey,
+        onCommitted: (transfer) => {
+            dependencies.onTransferred(
+                sourceWindowId,
+                targetContext.windowId,
+                transfer,
+            );
+        },
         sourceHostWindowId: sourceWindowId,
         targetHostWindowId: targetContext.windowId,
     });
-    dependencies.onTransferred(
-        sourceWindowId,
-        targetContext.windowId,
-        transfer,
-    );
 }
