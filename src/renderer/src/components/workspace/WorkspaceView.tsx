@@ -171,7 +171,7 @@ import {
     acquireWorkspaceFileModel,
     buildWorkspaceEditorModelPath,
     buildWorkspaceFileEditorModelPath,
-    getOrCreateWorkspaceFileModel,
+    syncWorkspaceFileModel,
     type WorkspaceFileModelLease,
 } from "@renderer/components/workspace/editorModelPath";
 import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
@@ -4798,6 +4798,7 @@ function FileTabView({
             readonly monaco: MonacoNamespace;
             readonly value: string;
         }): {
+            readonly didChangeContent: boolean;
             readonly model: MonacoEditor.ITextModel;
             readonly previousLease: WorkspaceFileModelLease | null;
         } => {
@@ -4810,9 +4811,13 @@ function FileTabView({
                 currentLease?.modelPath === modelPath &&
                 !currentLease.model.isDisposed()
             ) {
-                const model = getOrCreateWorkspaceFileModel(input);
-                if (model === currentLease.model) {
-                    return { model, previousLease: null };
+                const syncResult = syncWorkspaceFileModel(input);
+                if (syncResult.model === currentLease.model) {
+                    return {
+                        didChangeContent: syncResult.didChangeContent,
+                        model: syncResult.model,
+                        previousLease: null,
+                    };
                 }
             }
 
@@ -4820,6 +4825,7 @@ function FileTabView({
             workspaceFileModelLeaseRef.current = nextLease;
 
             return {
+                didChangeContent: nextLease.didChangeContent,
                 model: nextLease.model,
                 previousLease: currentLease,
             };
@@ -5497,14 +5503,24 @@ function FileTabView({
             return;
         }
 
-        const { model, previousLease } = runWithoutEditorChangeNotification(() =>
-            acquireFileEditorModel({
-                absolutePath: document.absolutePath,
-                language: monacoLanguageId,
-                monaco,
-                value: latestDraftContentRef.current,
-            }),
-        );
+        const currentLease = workspaceFileModelLeaseRef.current;
+        const capturedEditorState =
+            isVisible &&
+            !inlineReviewTrackedFile &&
+            currentLease?.modelPath ===
+                buildWorkspaceFileEditorModelPath(document.absolutePath) &&
+            editor.getModel() === currentLease.model
+                ? capturePortableEditorRestoreState(editor)
+                : null;
+        const { didChangeContent, model, previousLease } =
+            runWithoutEditorChangeNotification(() =>
+                acquireFileEditorModel({
+                    absolutePath: document.absolutePath,
+                    language: monacoLanguageId,
+                    monaco,
+                    value: latestDraftContentRef.current,
+                }),
+            );
 
         if (editor.getModel() !== model) {
             runWithoutEditorChangeNotification(() => {
@@ -5518,6 +5534,13 @@ function FileTabView({
         }
 
         if (consumePendingOpenLocation(editor)) {
+            return;
+        }
+
+        if (didChangeContent && capturedEditorState) {
+            // A disk refresh resets Monaco's viewport, so restore only the
+            // current editor's portable state after a same-model replacement.
+            restorePortableEditorState(editor, capturedEditorState);
             return;
         }
 
@@ -5535,6 +5558,7 @@ function FileTabView({
         inlineReviewTrackedFile,
         isVisible,
         monacoLanguageId,
+        restorePortableEditorState,
         restoreEditorViewStateForTab,
         runWithoutEditorChangeNotification,
         tab.id,
