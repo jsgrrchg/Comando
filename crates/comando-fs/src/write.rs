@@ -56,8 +56,11 @@ pub fn write_file(
     }
 
     let content = preserve_line_ending_if_needed(&current_bytes, &input.content);
-    fs::write(&resolved.absolute_path, content.as_bytes())?;
     write_tracker.track_content(resolved.absolute_path.clone(), &content);
+    if let Err(error) = fs::write(&resolved.absolute_path, content.as_bytes()) {
+        write_tracker.forget(&resolved.absolute_path);
+        return Err(error.into());
+    }
 
     let read_input = comando_types::fs::NativeFsReadFileInput {
         project_id: input.project_id.clone(),

@@ -57,8 +57,13 @@ pub fn copy_entries(
         let destination_name =
             resolve_copy_destination_name(&source.name, source.kind, &mut reserved_names);
         let destination_path = destination_parent.join(destination_name);
+        track_copy_destination(
+            &source.absolute_path,
+            &destination_path,
+            source.kind,
+            write_tracker,
+        )?;
         copy_source_to_destination(&source.absolute_path, &destination_path, source.kind)?;
-        write_tracker.track_any(destination_path.clone());
         copied.push(mutation_result_for_path(root, &destination_path, None)?);
     }
 
@@ -92,8 +97,13 @@ pub fn copy_external_entries(
         let destination_name =
             resolve_copy_destination_name(&source.name, source.kind, &mut reserved_names);
         let destination_path = destination_parent.join(destination_name);
+        track_copy_destination(
+            &source.absolute_path,
+            &destination_path,
+            source.kind,
+            write_tracker,
+        )?;
         copy_source_to_destination(&source.absolute_path, &destination_path, source.kind)?;
-        write_tracker.track_any(destination_path.clone());
         copied.push(mutation_result_for_path(root, &destination_path, None)?);
     }
 
@@ -297,6 +307,49 @@ fn copy_source_to_destination(
         }
         _ => return Err(FsError::InvalidPath),
     }
+    Ok(())
+}
+
+fn track_copy_destination(
+    source: &Path,
+    destination: &Path,
+    kind: NativeFsEntryKind,
+    write_tracker: &WriteTracker,
+) -> Result<(), FsError> {
+    match kind {
+        NativeFsEntryKind::File => {
+            write_tracker.track_bytes(destination.to_path_buf(), &fs::read(source)?);
+        }
+        NativeFsEntryKind::Directory => {
+            write_tracker.track_any(destination.to_path_buf());
+            track_copy_directory_descendants(source, destination, write_tracker)?;
+        }
+        _ => return Err(FsError::InvalidPath),
+    }
+
+    Ok(())
+}
+
+fn track_copy_directory_descendants(
+    source: &Path,
+    destination: &Path,
+    write_tracker: &WriteTracker,
+) -> Result<(), FsError> {
+    for entry_result in fs::read_dir(source)? {
+        let entry = entry_result?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&source_path)?;
+        reject_symlink_metadata(&metadata)?;
+
+        if metadata.is_dir() {
+            write_tracker.track_any(destination_path.clone());
+            track_copy_directory_descendants(&source_path, &destination_path, write_tracker)?;
+        } else if metadata.is_file() {
+            write_tracker.track_bytes(destination_path, &fs::read(source_path)?);
+        }
+    }
+
     Ok(())
 }
 

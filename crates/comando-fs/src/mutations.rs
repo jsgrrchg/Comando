@@ -89,9 +89,13 @@ pub fn rename_entry(
     }
 
     if current.absolute_path != next_absolute_path {
-        fs::rename(&current.absolute_path, &next_absolute_path)?;
-        write_tracker.track_any(current.absolute_path);
+        write_tracker.track_any(current.absolute_path.clone());
         write_tracker.track_any(next_absolute_path.clone());
+        if let Err(error) = fs::rename(&current.absolute_path, &next_absolute_path) {
+            write_tracker.forget(&current.absolute_path);
+            write_tracker.forget(&next_absolute_path);
+            return Err(error.into());
+        }
     }
 
     mutation_result_for_path(root, &next_absolute_path, Some(next_parent_relative_path))
@@ -114,12 +118,16 @@ pub fn delete_entry(
     )?;
     let result = mutation_result_for_path(root, &resolved.absolute_path, None)?;
     let metadata = fs::metadata(&resolved.absolute_path)?;
-    if metadata.is_dir() {
-        fs::remove_dir_all(&resolved.absolute_path)?;
+    write_tracker.track_any(resolved.absolute_path.clone());
+    let deletion_result = if metadata.is_dir() {
+        fs::remove_dir_all(&resolved.absolute_path)
     } else {
-        fs::remove_file(&resolved.absolute_path)?;
+        fs::remove_file(&resolved.absolute_path)
+    };
+    if let Err(error) = deletion_result {
+        write_tracker.forget(&resolved.absolute_path);
+        return Err(error.into());
     }
-    write_tracker.track_any(resolved.absolute_path);
 
     Ok(result)
 }
@@ -194,17 +202,25 @@ fn create_entry(
         return Err(FsError::AlreadyExists);
     }
 
-    match kind {
-        NativeFsEntryKind::Directory => fs::create_dir(&absolute_path)?,
+    let creation_result = match kind {
+        NativeFsEntryKind::Directory => {
+            write_tracker.track_any(absolute_path.clone());
+            fs::create_dir(&absolute_path)
+        }
         NativeFsEntryKind::File => {
+            write_tracker.track_content(absolute_path.clone(), "");
             fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(&absolute_path)?;
+                .open(&absolute_path)
+                .map(|_| ())
         }
         _ => return Err(FsError::InvalidPath),
+    };
+    if let Err(error) = creation_result {
+        write_tracker.forget(&absolute_path);
+        return Err(error.into());
     }
-    write_tracker.track_any(absolute_path.clone());
 
     mutation_result_for_path(
         root,
