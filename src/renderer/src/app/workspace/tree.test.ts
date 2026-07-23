@@ -477,6 +477,7 @@ describe("workspace tree helpers", () => {
         });
 
         expect(withSavedDocument.tabsById["file-1"]).toMatchObject({
+            document: { content: "saved content", modifiedAtMs: 2 },
             draftContent: "saved content",
             isDirty: false,
             isSaving: false,
@@ -484,6 +485,7 @@ describe("workspace tree helpers", () => {
             viewState: sourceViewState,
         });
         expect(withSavedDocument.tabsById["file-2"]).toMatchObject({
+            document: { content: "saved content", modifiedAtMs: 2 },
             draftContent: "saved content",
             isDirty: false,
             isSaving: false,
