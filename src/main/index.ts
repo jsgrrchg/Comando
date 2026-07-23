@@ -1182,7 +1182,10 @@ function attachMainWindowLifecycle(
             event.preventDefault();
             if (!closeFlushInFlight) {
                 closeFlushInFlight = true;
-                void requestWorkspaceFlushesForHost(window, context.windowId).finally(() => {
+                void prepareWorkspaceHostForClose(
+                    window,
+                    context.windowId,
+                ).finally(() => {
                     closeFlushComplete = true;
                     closeFlushInFlight = false;
                     if (!window.isDestroyed()) {
@@ -1203,7 +1206,7 @@ function attachMainWindowLifecycle(
         }
 
         detachAiSessionStream(context.windowId);
-        workspaceSurfaceManager.disposeHost(context.windowId);
+        workspaceSurfaceManager.disposeHost(context.windowId, window);
 
         if (!isQuitting) {
             persistenceService?.markWindowClosed(context.windowId);
@@ -1264,6 +1267,14 @@ async function requestWorkspaceFlushesForHost(
     ]);
 }
 
+async function prepareWorkspaceHostForClose(
+    window: BrowserWindow,
+    hostWindowId: string,
+): Promise<void> {
+    await workspaceSurfaceManager.prepareHostForClose(hostWindowId, window);
+    await requestWorkspaceFlushesForHost(window, hostWindowId);
+}
+
 async function requestWorkspaceSurfaceContextCapture(
     hostWindowId: string,
     contextKey: string,
@@ -1312,6 +1323,15 @@ async function flushAllWorkspaceWindowsForQuit(): Promise<void> {
         }
         return windowRegistry.getContextByBrowserWindow(window)?.windowKind === "main";
     });
+    await Promise.all(
+        windows.map((window) => {
+            const context = windowRegistry.getContextByBrowserWindow(window);
+            return workspaceSurfaceManager.prepareHostForClose(
+                context?.windowId ?? `${window.id}`,
+                window,
+            );
+        }),
+    );
     await Promise.all(
         windows.map((window) => {
             const context = windowRegistry.getContextByBrowserWindow(window);

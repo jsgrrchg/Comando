@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     areWorkspaceScopesEquivalent,
     getWorkspaceContextKey,
+    hasOpenWorkspaceScope,
     normalizeWorkspaceWorktreeId,
     type WorkspaceLocation,
 } from "./workspace-context";
@@ -48,5 +49,32 @@ describe("workspace context identity", () => {
             contextKey: "project-1::__primary__",
             hostWindowId: "window-1",
         });
+    });
+
+    it("does not treat retained closed contexts as open scopes", () => {
+        const retainedContext = {
+            key: "project-1::__primary__",
+            projectId: "project-1",
+            worktreeId: null,
+        };
+
+        expect(
+            hasOpenWorkspaceScope(
+                {
+                    contexts: [retainedContext],
+                    openContextKeys: [],
+                },
+                retainedContext,
+            ),
+        ).toBe(false);
+        expect(
+            hasOpenWorkspaceScope(
+                {
+                    contexts: [retainedContext],
+                    openContextKeys: [retainedContext.key],
+                },
+                retainedContext,
+            ),
+        ).toBe(true);
     });
 });

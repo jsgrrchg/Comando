@@ -12,6 +12,11 @@ export interface WorkspaceLocation extends WorkspaceScope {
     readonly hostWindowId: string;
 }
 
+export interface WorkspaceContextCollection {
+    readonly contexts: readonly (WorkspaceScope & { readonly key: string })[];
+    readonly openContextKeys: readonly string[];
+}
+
 export function normalizeWorkspaceWorktreeId(
     projectId: string,
     worktreeId: string | null | undefined,
@@ -58,5 +63,17 @@ export function areWorkspaceScopesEquivalent(
             left.worktreeId,
             right.worktreeId,
         )
+    );
+}
+
+export function hasOpenWorkspaceScope(
+    collection: WorkspaceContextCollection,
+    scope: WorkspaceScope,
+): boolean {
+    const openContextKeys = new Set(collection.openContextKeys);
+    return collection.contexts.some(
+        (context) =>
+            openContextKeys.has(context.key) &&
+            areWorkspaceScopesEquivalent(context, scope),
     );
 }
