@@ -456,6 +456,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use comando_types::ids::{ProjectId, WorktreeId};
     use tempfile::TempDir;
 
     use super::*;
@@ -637,5 +638,73 @@ mod tests {
             drain.git_invalidations[0].root_path.as_deref(),
             Some(temp.path().to_string_lossy().as_ref()),
         );
+    }
+
+    #[test]
+    fn discards_events_from_a_worktree_removed_before_its_callback_runs() {
+        let temp = TempDir::new().expect("temp");
+        let active_path = temp.path().join("active");
+        let removed_path = temp.path().join("removed");
+        fs::create_dir(&active_path).expect("active directory");
+        fs::create_dir(&removed_path).expect("removed directory");
+        let removed_file = removed_path.join("stale.txt");
+        fs::write(&removed_file, "stale").expect("stale file");
+
+        let active_root = worktree_root(&active_path, "worktree-active");
+        let removed_root = worktree_root(&removed_path, "worktree-removed");
+        let mut watchers = WatcherRegistry::new();
+        let active_key = watch_key(&active_root);
+        let removed_key = watch_key(&removed_root);
+        watchers
+            .roots
+            .insert(active_key.clone(), active_root.clone());
+        watchers
+            .roots
+            .insert(removed_key.clone(), removed_root.clone());
+
+        watchers.stop(&removed_root);
+
+        let tracker = watchers.write_tracker();
+        let mut event = Event::new(EventKind::Modify(ModifyKind::Any));
+        event.paths.push(removed_file);
+        handle_notify_event(
+            NotifyEventContext {
+                key: &removed_key,
+                root: &removed_root,
+                watch_root: &removed_path,
+                write_tracker: &tracker,
+                pending: &watchers.pending,
+                pending_git_invalidations: &watchers.pending_git_invalidations,
+                fs_events: &watchers.fs_events,
+            },
+            event,
+        );
+        record_pending_git_invalidation(
+            &removed_key,
+            &removed_root,
+            GitWatchInvalidationReason::Status,
+            &watchers.pending_git_invalidations,
+        );
+        record_pending_invalidation(
+            &active_key,
+            &active_root,
+            "still-active.txt",
+            &watchers.pending,
+        );
+
+        let drain = watchers.drain(true);
+
+        assert_eq!(drain.invalidations.len(), 1);
+        assert_eq!(drain.invalidations[0].worktree_id, active_root.worktree_id,);
+        assert!(drain.git_invalidations.is_empty());
+        assert!(drain.fs_events.is_empty());
+    }
+
+    fn worktree_root(path: &Path, worktree_id: &str) -> ProjectRoot {
+        ProjectRoot {
+            project_id: ProjectId("project_1".to_string()),
+            worktree_id: Some(WorktreeId(worktree_id.to_string())),
+            root_path: path.to_path_buf(),
+        }
     }
 }
