@@ -764,14 +764,17 @@ impl AiHistoryStore {
         let migration_manifest_exists = self.history_root().join("migrations").exists();
         let legacy_fallback_available = self.transcript_path(session_id).exists();
         let legacy_transcript_pending = legacy_fallback_available
-            && !transcript_store.legacy_transcript_backfill_complete(session_id)?
             && self.with_legacy_transcript_backfill_index(session_id, |index| {
-                if index.len() > 0 {
-                    self.backfill_legacy_transcript_page(session_id, index)?;
-                    Ok(true)
-                } else {
-                    Ok(false)
+                if transcript_store
+                    .legacy_transcript_backfill_is_current(session_id, index.len())?
+                {
+                    return Ok(false);
                 }
+                self.backfill_legacy_transcript_page(session_id, index)?;
+                // A single invocation can finish a small transcript. Keep the
+                // caller in migrating mode only while more pages remain.
+                Ok(!transcript_store
+                    .legacy_transcript_backfill_is_current(session_id, index.len())?)
             })?;
         let mode = if transcript_store.has_data_source()
             && transcript_store.legacy_transcript_backfill_complete(session_id)?
@@ -801,7 +804,12 @@ impl AiHistoryStore {
         index: &AiTranscriptIndex,
     ) -> AiResult<()> {
         let transcript_store = self.transcript_store(session_id);
-        if transcript_store.legacy_transcript_backfill_complete(session_id)? {
+        let offset = transcript_store
+            .legacy_transcript_backfill_next_offset(session_id)?
+            .min(index.len());
+        if transcript_store.legacy_transcript_backfill_complete(session_id)?
+            && offset >= index.len()
+        {
             return Ok(());
         }
 
@@ -4155,6 +4163,52 @@ mod tests {
         let snapshot = store.load_session_snapshot(&session_id).unwrap().unwrap();
         assert_eq!(snapshot.messages.len(), 3);
         assert_eq!(snapshot.messages[2]["id"], "legacy-3");
+    }
+
+    #[test]
+    fn transcript_storage_state_resumes_a_completed_backfill_when_legacy_history_grows() {
+        let (_temp, store) = store();
+        let session_id = SessionId("resume_completed_legacy_backfill".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, vec![message("legacy-1", "first")])
+            .unwrap();
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+
+        store
+            .save_transcript_window(
+                &session_id,
+                vec![
+                    message("legacy-1", "first"),
+                    message("legacy-2", "second"),
+                    message("legacy-3", "third"),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        assert_eq!(
+            metadata
+                .iter()
+                .map(|block| block.entry_count)
+                .sum::<usize>(),
+            3
+        );
+        assert!(
+            store
+                .load_session_snapshot(&session_id)
+                .unwrap()
+                .unwrap()
+                .messages
+                .is_empty()
+        );
     }
 
     #[test]
