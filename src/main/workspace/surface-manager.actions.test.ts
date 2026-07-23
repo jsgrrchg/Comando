@@ -8,6 +8,7 @@ import type {
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
+import { createWindowWorkspaceRestoreRecord } from "@shared/workspace-restore";
 
 const electronMocks = vi.hoisted(() => {
     let nextWebContentsId = 100;
@@ -380,6 +381,141 @@ describe("WorkspaceSurfaceManager action routing", () => {
             )?.hostWindowId,
         ).toBe("host-2");
     });
+
+    it("moves a live surface without changing its owner identity", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const onSurfaceDestroyed = vi.fn();
+        manager.setLifecycleHandlers({ onSurfaceDestroyed });
+        const sourceHost = createHostWindow();
+        const targetHost = createHostWindow();
+        const sourceSnapshot = createSnapshot();
+        const targetSnapshot = singleContextSnapshot(
+            "project-c::__primary__",
+            "project-c",
+        );
+        manager.syncHost(
+            sourceHost.window,
+            createHostContext(),
+            sourceSnapshot,
+        );
+        manager.syncHost(
+            targetHost.window,
+            {
+                ...createHostContext(),
+                projectId: "project-c",
+                windowId: "host-2",
+                workspaceId: "workspace-2",
+                workspaceSessionId: "workspace-session-2",
+            },
+            targetSnapshot,
+        );
+        const originalWebContents = manager.getSurfaceWebContents(
+            "host-1",
+            "project-a::__primary__",
+        );
+        const committedSource = singleContextSnapshot(
+            "project-b::__primary__",
+            "project-b",
+        );
+        const movedContext = sourceSnapshot.contexts[0];
+        if (!originalWebContents || !movedContext) {
+            throw new Error("Expected a live source surface.");
+        }
+        const committedTarget: WorkspaceNavigationSnapshot = {
+            activeContextKey: movedContext.key,
+            contexts: [...targetSnapshot.contexts, movedContext],
+            openContextKeys: [
+                ...targetSnapshot.openContextKeys,
+                movedContext.key,
+            ],
+            version: 3,
+        };
+
+        const result = await manager.transferSurface({
+            commit: vi.fn(() =>
+                Promise.resolve({
+                    source: createWindowWorkspaceRestoreRecord(
+                        committedSource,
+                        2,
+                    ),
+                    target: createWindowWorkspaceRestoreRecord(
+                        committedTarget,
+                        2,
+                    ),
+                }),
+            ),
+            contextKey: movedContext.key,
+            sourceHostWindowId: "host-1",
+            targetHostWindowId: "host-2",
+        });
+
+        expect(
+            manager.getSurfaceWebContents("host-1", movedContext.key),
+        ).toBeNull();
+        expect(
+            manager.getSurfaceWebContents("host-2", movedContext.key),
+        ).toBe(originalWebContents);
+        expect(manager.getSurfaceContext(originalWebContents)).toMatchObject({
+            hostWindowId: "host-2",
+            windowId: result.surfaceId,
+            workspaceId: "workspace-2",
+            workspaceSessionId: "workspace-session-2",
+        });
+        expect(result.sourceSnapshot.activeContextKey).toBe(
+            "project-b::__primary__",
+        );
+        expect(result.targetSnapshot.activeContextKey).toBe(movedContext.key);
+        expect(onSurfaceDestroyed).not.toHaveBeenCalled();
+    });
+
+    it("rolls a live surface back when persistence fails", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const sourceHost = createHostWindow();
+        const targetHost = createHostWindow();
+        manager.syncHost(sourceHost.window, createHostContext(), createSnapshot());
+        manager.syncHost(
+            targetHost.window,
+            {
+                ...createHostContext(),
+                projectId: "project-c",
+                windowId: "host-2",
+                workspaceId: "workspace-2",
+                workspaceSessionId: "workspace-session-2",
+            },
+            singleContextSnapshot("project-c::__primary__", "project-c"),
+        );
+        const originalWebContents = manager.getSurfaceWebContents(
+            "host-1",
+            "project-a::__primary__",
+        );
+
+        await expect(
+            manager.transferSurface({
+                commit: vi.fn(() => Promise.reject(new Error("write failed"))),
+                contextKey: "project-a::__primary__",
+                sourceHostWindowId: "host-1",
+                targetHostWindowId: "host-2",
+            }),
+        ).rejects.toThrow("write failed");
+
+        expect(
+            manager.getSurfaceWebContents(
+                "host-1",
+                "project-a::__primary__",
+            ),
+        ).toBe(originalWebContents);
+        expect(
+            manager.getSurfaceWebContents(
+                "host-2",
+                "project-a::__primary__",
+            ),
+        ).toBeNull();
+        expect(
+            originalWebContents
+                ? manager.getSurfaceContext(originalWebContents)
+                : null,
+        ).toMatchObject({ hostWindowId: "host-1", workspaceId: "workspace-1" });
+    });
 });
 
 function createHostWindow(): {
@@ -427,6 +563,18 @@ function createSnapshot(): WorkspaceNavigationSnapshot {
             "project-a::__primary__",
             "project-b::__primary__",
         ],
+        version: 3,
+    };
+}
+
+function singleContextSnapshot(
+    contextKey: string,
+    projectId: string,
+): WorkspaceNavigationSnapshot {
+    return {
+        activeContextKey: contextKey,
+        contexts: [createPersistedContext(contextKey, projectId)],
+        openContextKeys: [contextKey],
         version: 3,
     };
 }
