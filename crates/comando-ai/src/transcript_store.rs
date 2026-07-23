@@ -22,7 +22,7 @@ use crate::events::now_iso8601;
 const TRANSCRIPT_DATABASE_FILE: &str = "transcript-v2.sqlite3";
 const LEGACY_TRANSCRIPT_ENTRIES_FILE: &str = "transcript-entries.json";
 const TRANSCRIPT_PAYLOADS_DIR: &str = "transcript-payloads";
-pub(crate) const TRANSCRIPT_SCHEMA_VERSION: u32 = 5;
+pub(crate) const TRANSCRIPT_SCHEMA_VERSION: u32 = 6;
 const TRANSCRIPT_BLOCK_SIZE: usize = 256;
 const INLINE_PAYLOAD_MAX_BYTES: usize = 64 * 1024;
 const TRANSCRIPT_PAYLOAD_REF_MAX_BYTES: usize = 512;
@@ -84,7 +84,52 @@ impl TranscriptStore {
         Ok(state.unwrap_or(1) == 1)
     }
 
+    pub(crate) fn uses_legacy_transcript_backfill(&self, session_id: &SessionId) -> AiResult<bool> {
+        if !self.database_path.exists() {
+            return Ok(true);
+        }
+        let connection = self.open(session_id, false)?;
+        let origin = connection
+            .query_row(
+                "SELECT transcript_origin
+                 FROM transcript_sessions
+                 WHERE session_id = ?1",
+                params![session_id.0],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| transcript_sql("load transcript origin", error))?;
+        if origin.as_deref() != Some("native") {
+            return Ok(true);
+        }
+
+        let has_native_entries = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM transcript_entries AS entries
+                    LEFT JOIN transcript_blocks AS blocks
+                        ON blocks.session_id = entries.session_id
+                        AND blocks.block_id = entries.block_id
+                    WHERE entries.session_id = ?1
+                        AND (blocks.turn_id IS NULL
+                            OR blocks.turn_id NOT GLOB 'legacy-transcript:*')
+                )",
+                params![session_id.0],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| transcript_sql("detect native transcript entries", error))?
+            == 1;
+        // Opening the store creates an empty native-default row. It must not
+        // suppress a JSONL backfill until actual native content exists.
+        Ok(!has_native_entries)
+    }
+
     pub(crate) fn begin_legacy_transcript_backfill(&self, session_id: &SessionId) -> AiResult<()> {
+        if !self.uses_legacy_transcript_backfill(session_id)? {
+            return Err(AiError::InvalidInput(
+                "A native transcript cannot start a legacy backfill".to_string(),
+            ));
+        }
         let connection = self.open(session_id, true)?;
         connection
             .execute(
@@ -92,10 +137,12 @@ impl TranscriptStore {
                     session_id,
                     next_sequence,
                     legacy_entries_imported,
-                    legacy_transcript_backfill_complete
-                 ) VALUES (?1, 1, 1, 0)
+                    legacy_transcript_backfill_complete,
+                    transcript_origin
+                 ) VALUES (?1, 1, 1, 0, 'legacy_backfill')
                  ON CONFLICT (session_id) DO UPDATE SET
-                    legacy_transcript_backfill_complete = 0",
+                    legacy_transcript_backfill_complete = 0,
+                    transcript_origin = 'legacy_backfill'",
                 params![session_id.0],
             )
             .map_err(|error| transcript_sql("start legacy transcript backfill", error))?;
@@ -137,6 +184,9 @@ impl TranscriptStore {
         first_changed_offset: usize,
     ) -> AiResult<()> {
         if !self.database_path.exists() {
+            return Ok(());
+        }
+        if !self.uses_legacy_transcript_backfill(session_id)? {
             return Ok(());
         }
 
@@ -921,7 +971,9 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                 legacy_transcript_backfill_complete INTEGER NOT NULL DEFAULT 1
                     CHECK (legacy_transcript_backfill_complete IN (0, 1)),
                 legacy_transcript_backfill_next_offset INTEGER NOT NULL DEFAULT 0
-                    CHECK (legacy_transcript_backfill_next_offset >= 0)
+                    CHECK (legacy_transcript_backfill_next_offset >= 0),
+                transcript_origin TEXT NOT NULL DEFAULT 'native'
+                    CHECK (transcript_origin IN ('native', 'legacy_backfill'))
              ) STRICT;
 
              CREATE TABLE IF NOT EXISTS transcript_entries (
@@ -963,6 +1015,14 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                  CHECK (legacy_transcript_backfill_next_offset >= 0);",
             )
             .map_err(|error| transcript_sql("add legacy transcript backfill checkpoint", error))?;
+    } else if locked_version == 5 {
+        transaction
+            .execute_batch(
+                "ALTER TABLE transcript_sessions
+                 ADD COLUMN transcript_origin TEXT NOT NULL DEFAULT 'native'
+                 CHECK (transcript_origin IN ('native', 'legacy_backfill'));",
+            )
+            .map_err(|error| transcript_sql("add transcript origin", error))?;
     } else {
         return Err(AiError::Internal(format!(
             "Transcript database schema version {locked_version} cannot be migrated"
@@ -987,6 +1047,16 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                  CHECK (legacy_transcript_backfill_next_offset >= 0);",
             )
             .map_err(|error| transcript_sql("add legacy transcript backfill checkpoint", error))?;
+    }
+
+    if matches!(locked_version, 1..=4) {
+        transaction
+            .execute_batch(
+                "ALTER TABLE transcript_sessions
+                 ADD COLUMN transcript_origin TEXT NOT NULL DEFAULT 'native'
+                 CHECK (transcript_origin IN ('native', 'legacy_backfill'));",
+            )
+            .map_err(|error| transcript_sql("add transcript origin", error))?;
     }
 
     transaction
@@ -1144,6 +1214,30 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                 params![now_iso8601()],
             )
             .map_err(|error| transcript_sql("seal migrated transcript blocks", error))?;
+    }
+    if matches!(locked_version, 1..=5) {
+        // Existing backfills are identifiable by their own turns. A native
+        // block always wins so a failed legacy attempt cannot poison it.
+        transaction
+            .execute_batch(
+                "UPDATE transcript_sessions AS sessions
+                 SET transcript_origin = 'legacy_backfill'
+                 WHERE (
+                    sessions.legacy_transcript_backfill_complete = 0
+                    OR EXISTS (
+                        SELECT 1 FROM transcript_blocks AS blocks
+                        WHERE blocks.session_id = sessions.session_id
+                            AND blocks.turn_id GLOB 'legacy-transcript:*'
+                    )
+                 )
+                 AND NOT EXISTS (
+                    SELECT 1 FROM transcript_blocks AS blocks
+                    WHERE blocks.session_id = sessions.session_id
+                        AND (blocks.turn_id IS NULL
+                            OR blocks.turn_id NOT GLOB 'legacy-transcript:*')
+                 );",
+            )
+            .map_err(|error| transcript_sql("classify transcript origins", error))?;
     }
     transaction
         .pragma_update(None, "user_version", i64::from(TRANSCRIPT_SCHEMA_VERSION))

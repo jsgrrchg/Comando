@@ -767,7 +767,10 @@ impl AiHistoryStore {
         let transcript_store = self.transcript_store(session_id);
         let migration_manifest_exists = self.history_root().join("migrations").exists();
         let legacy_fallback_available = self.transcript_path(session_id).exists();
-        let legacy_transcript_pending = legacy_fallback_available
+        let uses_legacy_transcript_backfill =
+            transcript_store.uses_legacy_transcript_backfill(session_id)?;
+        let legacy_transcript_pending = uses_legacy_transcript_backfill
+            && legacy_fallback_available
             && self.with_legacy_transcript_backfill_index(session_id, |index| {
                 // Every session starts with an empty compatibility file; it
                 // is not migration input until it contains a record.
@@ -786,7 +789,8 @@ impl AiHistoryStore {
                     .legacy_transcript_backfill_is_current(session_id, index.len())?)
             })?;
         let mode = if transcript_store.has_data_source()
-            && transcript_store.legacy_transcript_backfill_complete(session_id)?
+            && (!uses_legacy_transcript_backfill
+                || transcript_store.legacy_transcript_backfill_complete(session_id)?)
         {
             NativeAiTranscriptStorageMode::BlockNative
         } else if legacy_transcript_pending || migration_manifest_exists {
@@ -813,6 +817,9 @@ impl AiHistoryStore {
         index: &AiTranscriptIndex,
     ) -> AiResult<()> {
         let transcript_store = self.transcript_store(session_id);
+        if !transcript_store.uses_legacy_transcript_backfill(session_id)? {
+            return Ok(());
+        }
         let offset = transcript_store
             .legacy_transcript_backfill_next_offset(session_id)?
             .min(index.len());
@@ -850,9 +857,13 @@ impl AiHistoryStore {
         session_id: &SessionId,
         transcript_store: &TranscriptStore,
     ) -> AiResult<bool> {
-        if !transcript_store.has_data_source()
-            || !transcript_store.legacy_transcript_backfill_complete(session_id)?
-        {
+        if !transcript_store.has_data_source() {
+            return Ok(false);
+        }
+        if !transcript_store.uses_legacy_transcript_backfill(session_id)? {
+            return Ok(true);
+        }
+        if !transcript_store.legacy_transcript_backfill_complete(session_id)? {
             return Ok(false);
         }
         if !self.transcript_path(session_id).exists() {
@@ -4154,6 +4165,36 @@ mod tests {
         let snapshot = store.load_session_snapshot(&session_id).unwrap().unwrap();
         assert!(snapshot.messages.is_empty());
         assert!(snapshot.tool_activity.is_empty());
+    }
+
+    #[test]
+    fn transcript_storage_state_skips_legacy_backfill_for_native_transcripts() {
+        let (_temp, store) = store();
+        let session_id = SessionId("native_transcript_with_legacy_jsonl".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        let message = message("message-1", "native content");
+        store
+            .save_transcript_window(&session_id, vec![message.clone()])
+            .unwrap();
+        let (entry, payload) = legacy_transcript_entry(&session_id, message).unwrap();
+        store
+            .seal_transcript_turn(&session_id, "native-turn", vec![entry], vec![payload])
+            .unwrap();
+
+        let state = store.transcript_storage_state(&session_id).unwrap();
+
+        assert_eq!(state.mode, NativeAiTranscriptStorageMode::BlockNative);
+        let transcript_store = store.transcript_store(&session_id);
+        assert!(
+            !transcript_store
+                .uses_legacy_transcript_backfill(&session_id)
+                .unwrap()
+        );
+        assert!(
+            transcript_store
+                .legacy_transcript_backfill_complete(&session_id)
+                .unwrap()
+        );
     }
 
     #[test]
