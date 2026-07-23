@@ -41,7 +41,7 @@ pub struct WatcherRegistry {
     write_tracker: WriteTracker,
     pending: Arc<Mutex<HashMap<String, PendingInvalidation>>>,
     pending_git_invalidations: Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
-    fs_events: Arc<Mutex<Vec<(String, NativeFsWatchEvent)>>>,
+    fs_events: Arc<Mutex<Vec<PendingFsEvent>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +59,13 @@ struct PendingGitInvalidation {
     root_path: String,
     reason: GitWatchInvalidationReason,
     last_event_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct PendingFsEvent {
+    event_name: String,
+    event: NativeFsWatchEvent,
+    watch_key: String,
 }
 
 impl WatcherRegistry {
@@ -84,11 +91,10 @@ impl WatcherRegistry {
             .map(|root| (watch_key(&root), root))
             .collect::<HashMap<_, _>>();
 
-        let current_keys = self.watchers.keys().cloned().collect::<Vec<_>>();
+        let current_keys = self.roots.keys().cloned().collect::<Vec<_>>();
         for key in current_keys {
             if !desired.contains_key(&key) {
-                self.watchers.remove(&key);
-                self.roots.remove(&key);
+                self.remove_root(&key);
             }
         }
 
@@ -114,14 +120,16 @@ impl WatcherRegistry {
 
     pub fn stop(&mut self, root: &ProjectRoot) {
         let key = watch_key(root);
-        self.watchers.remove(&key);
-        self.roots.remove(&key);
+        self.remove_root(&key);
     }
 
     pub fn drain(&mut self, force: bool) -> WatcherDrain {
         let now = Instant::now();
+        let active_keys = self.roots.keys().cloned().collect::<HashSet<_>>();
         let mut invalidations = Vec::new();
         let mut pending = self.pending.lock().expect("watch pending lock");
+        // A notify callback can enqueue after a root is removed, so only active roots may publish.
+        pending.retain(|key, _| active_keys.contains(key));
         let ready_keys = pending
             .iter()
             .filter(|(_, pending)| {
@@ -151,6 +159,7 @@ impl WatcherRegistry {
             .pending_git_invalidations
             .lock()
             .expect("git watch pending lock");
+        pending_git_invalidations.retain(|key, _| active_keys.contains(key));
         let ready_git_keys = pending_git_invalidations
             .iter()
             .filter(|(_, pending)| {
@@ -175,6 +184,10 @@ impl WatcherRegistry {
         let fs_events = {
             let mut events = self.fs_events.lock().expect("watch events lock");
             std::mem::take(&mut *events)
+                .into_iter()
+                .filter(|event| active_keys.contains(&event.watch_key))
+                .map(|event| (event.event_name, event.event))
+                .collect()
         };
 
         WatcherDrain {
@@ -219,13 +232,28 @@ impl WatcherRegistry {
         Ok(())
     }
 
+    fn remove_root(&mut self, key: &str) {
+        self.watchers.remove(key);
+        self.roots.remove(key);
+        self.pending.lock().expect("watch pending lock").remove(key);
+        self.pending_git_invalidations
+            .lock()
+            .expect("git watch pending lock")
+            .remove(key);
+        self.fs_events
+            .lock()
+            .expect("watch events lock")
+            .retain(|event| event.watch_key != key);
+    }
+
     #[cfg(feature = "test-hooks")]
     pub fn queue_test_invalidation_after_delay(
-        &self,
+        &mut self,
         root: ProjectRoot,
         relative_path: String,
         delay: Duration,
     ) {
+        self.roots.insert(watch_key(&root), root.clone());
         let pending = Arc::clone(&self.pending);
         let pending_git_invalidations = Arc::clone(&self.pending_git_invalidations);
         std::thread::spawn(move || {
@@ -255,7 +283,7 @@ struct NotifyEventContext<'a> {
     write_tracker: &'a WriteTracker,
     pending: &'a Arc<Mutex<HashMap<String, PendingInvalidation>>>,
     pending_git_invalidations: &'a Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
-    fs_events: &'a Arc<Mutex<Vec<(String, NativeFsWatchEvent)>>>,
+    fs_events: &'a Arc<Mutex<Vec<PendingFsEvent>>>,
 }
 
 fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
@@ -318,17 +346,22 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
         }
 
         record_pending_invalidation(context.key, context.root, &relative_path, context.pending);
-        context.fs_events.lock().expect("watch events lock").push((
-            event_name.to_string(),
-            NativeFsWatchEvent {
-                project_id: context.root.project_id.clone(),
-                worktree_id: context.root.worktree_id.clone(),
-                relative_path: Some(RelativePath(relative_path)),
-                kind: event_kind.to_string(),
-                origin: NativeFsMutationOrigin::External,
-                occurred_at: now_rfc3339(),
-            },
-        ));
+        context
+            .fs_events
+            .lock()
+            .expect("watch events lock")
+            .push(PendingFsEvent {
+                event_name: event_name.to_string(),
+                event: NativeFsWatchEvent {
+                    project_id: context.root.project_id.clone(),
+                    worktree_id: context.root.worktree_id.clone(),
+                    relative_path: Some(RelativePath(relative_path)),
+                    kind: event_kind.to_string(),
+                    origin: NativeFsMutationOrigin::External,
+                    occurred_at: now_rfc3339(),
+                },
+                watch_key: context.key.to_string(),
+            });
     }
 }
 
@@ -456,6 +489,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use comando_types::ids::{ProjectId, WorktreeId};
     use tempfile::TempDir;
 
     use super::*;
@@ -466,19 +500,11 @@ mod tests {
         let temp = TempDir::new().expect("temp");
         let root = project_root(temp.path());
         let mut watchers = WatcherRegistry::new();
+        let key = watch_key(&root);
+        watchers.roots.insert(key.clone(), root.clone());
 
-        record_pending_invalidation(
-            "project_1:project_1:primary",
-            &root,
-            "a.txt",
-            &watchers.pending,
-        );
-        record_pending_invalidation(
-            "project_1:project_1:primary",
-            &root,
-            "b.txt",
-            &watchers.pending,
-        );
+        record_pending_invalidation(&key, &root, "a.txt", &watchers.pending);
+        record_pending_invalidation(&key, &root, "b.txt", &watchers.pending);
         thread::sleep(Duration::from_millis(160));
 
         let drain = watchers.drain(false);
@@ -498,6 +524,7 @@ mod tests {
         let root = project_root(temp.path());
         let mut watchers = WatcherRegistry::new();
         let tracker = watchers.write_tracker();
+        watchers.roots.insert(watch_key(&root), root.clone());
         tracker.track_content(path.clone(), "owned");
 
         watchers.start(root).expect("start");
@@ -517,6 +544,7 @@ mod tests {
         let root = project_root(temp.path());
         let mut watchers = WatcherRegistry::new();
         let tracker = watchers.write_tracker();
+        watchers.roots.insert(watch_key(&root), root.clone());
 
         tracker.track_content(path.clone(), "owned");
         fs::write(&path, "owned").expect("write same");
@@ -613,23 +641,24 @@ mod tests {
     fn coalesces_pending_git_events() {
         let temp = TempDir::new().expect("temp");
         let root = project_root(temp.path());
-        let watchers = WatcherRegistry::new();
+        let mut watchers = WatcherRegistry::new();
+        let key = watch_key(&root);
+        watchers.roots.insert(key.clone(), root.clone());
 
         record_pending_git_invalidation(
-            "project_1:project_1:primary",
+            &key,
             &root,
             GitWatchInvalidationReason::Status,
             &watchers.pending_git_invalidations,
         );
         record_pending_git_invalidation(
-            "project_1:project_1:primary",
+            &key,
             &root,
             GitWatchInvalidationReason::Branch,
             &watchers.pending_git_invalidations,
         );
         thread::sleep(Duration::from_millis(160));
 
-        let mut watchers = watchers;
         let drain = watchers.drain(false);
         assert_eq!(drain.git_invalidations.len(), 1);
         assert_eq!(drain.git_invalidations[0].reason, "branch");
@@ -637,5 +666,73 @@ mod tests {
             drain.git_invalidations[0].root_path.as_deref(),
             Some(temp.path().to_string_lossy().as_ref()),
         );
+    }
+
+    #[test]
+    fn discards_events_from_a_worktree_removed_before_its_callback_runs() {
+        let temp = TempDir::new().expect("temp");
+        let active_path = temp.path().join("active");
+        let removed_path = temp.path().join("removed");
+        fs::create_dir(&active_path).expect("active directory");
+        fs::create_dir(&removed_path).expect("removed directory");
+        let removed_file = removed_path.join("stale.txt");
+        fs::write(&removed_file, "stale").expect("stale file");
+
+        let active_root = worktree_root(&active_path, "worktree-active");
+        let removed_root = worktree_root(&removed_path, "worktree-removed");
+        let mut watchers = WatcherRegistry::new();
+        let active_key = watch_key(&active_root);
+        let removed_key = watch_key(&removed_root);
+        watchers
+            .roots
+            .insert(active_key.clone(), active_root.clone());
+        watchers
+            .roots
+            .insert(removed_key.clone(), removed_root.clone());
+
+        watchers.stop(&removed_root);
+
+        let tracker = watchers.write_tracker();
+        let mut event = Event::new(EventKind::Modify(ModifyKind::Any));
+        event.paths.push(removed_file);
+        handle_notify_event(
+            NotifyEventContext {
+                key: &removed_key,
+                root: &removed_root,
+                watch_root: &removed_path,
+                write_tracker: &tracker,
+                pending: &watchers.pending,
+                pending_git_invalidations: &watchers.pending_git_invalidations,
+                fs_events: &watchers.fs_events,
+            },
+            event,
+        );
+        record_pending_git_invalidation(
+            &removed_key,
+            &removed_root,
+            GitWatchInvalidationReason::Status,
+            &watchers.pending_git_invalidations,
+        );
+        record_pending_invalidation(
+            &active_key,
+            &active_root,
+            "still-active.txt",
+            &watchers.pending,
+        );
+
+        let drain = watchers.drain(true);
+
+        assert_eq!(drain.invalidations.len(), 1);
+        assert_eq!(drain.invalidations[0].worktree_id, active_root.worktree_id,);
+        assert!(drain.git_invalidations.is_empty());
+        assert!(drain.fs_events.is_empty());
+    }
+
+    fn worktree_root(path: &Path, worktree_id: &str) -> ProjectRoot {
+        ProjectRoot {
+            project_id: ProjectId("project_1".to_string()),
+            worktree_id: Some(WorktreeId(worktree_id.to_string())),
+            root_path: path.to_path_buf(),
+        }
     }
 }
