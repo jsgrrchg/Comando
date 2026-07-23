@@ -5,6 +5,7 @@ import {
     buildWorkspaceEditorModelPath,
     buildWorkspaceFileEditorModelPath,
     getOrCreateWorkspaceFileModel,
+    syncWorkspaceFileModel,
 } from "./editorModelPath";
 
 describe("buildWorkspaceEditorModelPath", () => {
@@ -167,6 +168,35 @@ describe("getOrCreateWorkspaceFileModel", () => {
         });
 
         expect(createdModels[0]?.setValueCalls).toEqual(["const a = 2;"]);
+    });
+});
+
+describe("syncWorkspaceFileModel", () => {
+    it("reports whether synchronizing replaced the model content", () => {
+        const { monaco } = createFakeMonaco();
+        const initial = syncWorkspaceFileModel({
+            absolutePath: "/workspace/comando/src/app.ts",
+            language: "typescript",
+            monaco,
+            value: "const a = 1;",
+        });
+        const matching = syncWorkspaceFileModel({
+            absolutePath: "/workspace/comando/src/app.ts",
+            language: "typescript",
+            monaco,
+            value: "const a = 1;",
+        });
+        const changed = syncWorkspaceFileModel({
+            absolutePath: "/workspace/comando/src/app.ts",
+            language: "typescript",
+            monaco,
+            value: "const a = 2;",
+        });
+
+        expect(initial.didChangeContent).toBe(false);
+        expect(matching.didChangeContent).toBe(false);
+        expect(changed.didChangeContent).toBe(true);
+        expect(changed.model).toBe(initial.model);
     });
 });
 

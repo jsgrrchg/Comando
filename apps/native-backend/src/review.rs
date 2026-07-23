@@ -1617,9 +1617,11 @@ impl NativeReviewService {
             fs::create_dir_all(parent)
                 .map_err(|error| review_io("create review parent directory", parent, error))?;
         }
-        fs::write(&resolved, text)
-            .map_err(|error| review_io("write review file", &resolved, error))?;
         write_tracker.track_content(resolved.clone(), text);
+        if let Err(error) = fs::write(&resolved, text) {
+            write_tracker.forget(&resolved);
+            return Err(review_io("write review file", &resolved, error));
+        }
         if let Some(buffer) = self.open_buffers.get_mut(&resolved) {
             buffer.content = text.to_string();
             buffer.content_hash = hash_content_bytes(text.as_bytes());
@@ -1641,14 +1643,20 @@ impl NativeReviewService {
             relative_path,
             ScopedPathIntent::ReadExisting,
         )?;
+        write_tracker.track_any(resolved.clone());
         match fs::remove_file(&resolved) {
             Ok(()) => {
-                write_tracker.track_any(resolved.clone());
                 self.open_buffers.remove(&resolved);
                 Ok(())
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(review_io("remove review file", &resolved, error)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                write_tracker.forget(&resolved);
+                Ok(())
+            }
+            Err(error) => {
+                write_tracker.forget(&resolved);
+                Err(review_io("remove review file", &resolved, error))
+            }
         }
     }
 
@@ -1699,19 +1707,23 @@ impl NativeReviewService {
                         review_io("restore review parent directory", parent, error)
                     })?;
                 }
-                fs::write(&backup.path, &content)
-                    .map_err(|error| review_io("restore review file", &backup.path, error))?;
                 write_tracker.track_bytes(backup.path.clone(), &content);
-            } else if let Err(error) = fs::remove_file(&backup.path)
-                && error.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(review_io(
-                    "remove restored review file",
-                    &backup.path,
-                    error,
-                ));
+                if let Err(error) = fs::write(&backup.path, &content) {
+                    write_tracker.forget(&backup.path);
+                    return Err(review_io("restore review file", &backup.path, error));
+                }
             } else {
                 write_tracker.track_any(backup.path.clone());
+                if let Err(error) = fs::remove_file(&backup.path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    write_tracker.forget(&backup.path);
+                    return Err(review_io(
+                        "remove restored review file",
+                        &backup.path,
+                        error,
+                    ));
+                }
             }
 
             if let Some(buffer) = backup.open_buffer {

@@ -56,6 +56,7 @@ const originalEnsureSession = useAiStore.getState().ensureSession;
 function createWorkspaceFileTab(id: string, relativePath: string) {
     return {
         createdAt: "2026-04-14T00:00:00.000Z",
+        contentRevision: 0,
         document: null,
         draftContent: "",
         hasExternalChange: false,
@@ -72,6 +73,43 @@ function createWorkspaceFileTab(id: string, relativePath: string) {
         savedContent: "",
         title: relativePath,
         worktreeId: null,
+    };
+}
+
+function createProjectFileDocument(
+    relativePath: string,
+    content: string,
+    modifiedAtMs = 1,
+): ProjectFileDocument {
+    return {
+        absolutePath: `/tmp/${relativePath}`,
+        content,
+        imageDataBase64: null,
+        isBinary: false,
+        isTooLarge: false,
+        kind: "text",
+        languageId: "typescript",
+        languageLabel: "TypeScript",
+        mimeType: "text/typescript",
+        modifiedAtMs,
+        name: relativePath.split("/").at(-1) ?? relativePath,
+        projectId: "project-1",
+        relativePath,
+        sizeBytes: content.length,
+    };
+}
+
+function createLoadedWorkspaceFileTab(
+    id: string,
+    relativePath: string,
+    content: string,
+) {
+    return {
+        ...createWorkspaceFileTab(id, relativePath),
+        document: createProjectFileDocument(relativePath, content),
+        draftContent: content,
+        savedContent: content,
+        title: relativePath.split("/").at(-1) ?? relativePath,
     };
 }
 
@@ -2744,6 +2782,363 @@ describe("workspace file opening", () => {
         expect(state.tabsById["file-clean-other"]).toMatchObject({
             draftContent: "export const other = 1;\n",
             isDirty: false,
+        });
+    });
+
+    it("applies a watcher refresh to a clean file", async () => {
+        const relativePath = "src/app.ts";
+        const externalDocument = createProjectFileDocument(
+            relativePath,
+            "export const value = 2;\n",
+            2,
+        );
+        openProjectFileMock.mockResolvedValueOnce(externalDocument);
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-1",
+                id: "pane-root",
+                tabIds: ["file-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": createLoadedWorkspaceFileTab(
+                    "file-1",
+                    relativePath,
+                    "export const value = 1;\n",
+                ),
+            },
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-1", null, [relativePath]);
+
+        expect(openProjectFileMock).toHaveBeenCalledWith({
+            projectId: "project-1",
+            relativePath,
+            worktreeId: null,
+        });
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
+            document: { content: externalDocument.content, modifiedAtMs: 2 },
+            draftContent: externalDocument.content,
+            isDirty: false,
+            savedContent: externalDocument.content,
+        });
+    });
+
+    it("keeps duplicate tabs synchronized after a clean watcher refresh", async () => {
+        const relativePath = "src/app.ts";
+        const externalDocument = createProjectFileDocument(
+            relativePath,
+            "export const value = 2;\n",
+            2,
+        );
+        openProjectFileMock.mockResolvedValueOnce(externalDocument);
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-left",
+                id: "pane-root",
+                tabIds: ["file-left", "file-right"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-left": createLoadedWorkspaceFileTab(
+                    "file-left",
+                    relativePath,
+                    "export const value = 1;\n",
+                ),
+                "file-right": {
+                    ...createLoadedWorkspaceFileTab(
+                        "file-right",
+                        relativePath,
+                        "export const value = 1;\n",
+                    ),
+                    viewState: {
+                        contributionsState: [],
+                        cursorState: [],
+                        viewState: { scrollTop: 360 },
+                    } as unknown as MonacoEditor.ICodeEditorViewState,
+                },
+            },
+        }));
+
+        await useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-1", null, [relativePath]);
+
+        expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        for (const tabId of ["file-left", "file-right"]) {
+            expect(useWorkspaceStore.getState().tabsById[tabId]).toMatchObject({
+                contentRevision: 1,
+                document: { content: externalDocument.content, modifiedAtMs: 2 },
+                draftContent: externalDocument.content,
+                isDirty: false,
+                savedContent: externalDocument.content,
+            });
+        }
+        expect(useWorkspaceStore.getState().tabsById["file-right"]?.kind).toBe(
+            "file",
+        );
+        const rightTab = useWorkspaceStore.getState().tabsById["file-right"];
+        expect(rightTab?.kind === "file" ? rightTab.viewState : null).toEqual({
+            contributionsState: [],
+            cursorState: [],
+            viewState: { scrollTop: 360 },
+        });
+    });
+
+    it("keeps the draft and view state when a stale watcher refresh resolves", async () => {
+        const relativePath = "src/app.ts";
+        const staleExternalLoad = createDeferred<ProjectFileDocument>();
+        const preservedViewState = {
+            contributionsState: [],
+            cursorState: [
+                {
+                    inSelectionMode: false,
+                    position: { column: 7, lineNumber: 3 },
+                    selectionStart: { column: 7, lineNumber: 3 },
+                },
+            ],
+            viewState: { scrollLeft: 18, scrollTop: 640 },
+        } as unknown as MonacoEditor.ICodeEditorViewState;
+        openProjectFileMock.mockImplementationOnce(
+            () => staleExternalLoad.promise,
+        );
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-1",
+                id: "pane-root",
+                tabIds: ["file-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": {
+                    ...createLoadedWorkspaceFileTab(
+                        "file-1",
+                        relativePath,
+                        "export const value = 1;\n",
+                    ),
+                    viewState: preservedViewState,
+                },
+            },
+        }));
+
+        const refreshPromise = useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-1", null, [relativePath]);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+
+        useWorkspaceStore
+            .getState()
+            .updateFileDraft("file-1", "export const value = 3;\n");
+        staleExternalLoad.resolve(
+            createProjectFileDocument(
+                relativePath,
+                "export const value = 2;\n",
+                2,
+            ),
+        );
+        await refreshPromise;
+
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
+            draftContent: "export const value = 3;\n",
+            isDirty: true,
+            savedContent: "export const value = 1;\n",
+            viewState: preservedViewState,
+        });
+    });
+
+    it("uses the newest watcher read after consecutive invalidations", async () => {
+        const relativePath = "src/app.ts";
+        const firstExternalLoad = createDeferred<ProjectFileDocument>();
+        const secondExternalLoad = createDeferred<ProjectFileDocument>();
+        openProjectFileMock
+            .mockImplementationOnce(() => firstExternalLoad.promise)
+            .mockImplementationOnce(() => secondExternalLoad.promise);
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-1",
+                id: "pane-root",
+                tabIds: ["file-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": createLoadedWorkspaceFileTab(
+                    "file-1",
+                    relativePath,
+                    "export const value = 1;\n",
+                ),
+            },
+        }));
+
+        const firstRefresh = useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-1", null, [relativePath]);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+
+        const secondRefresh = useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-1", null, [relativePath]);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(2);
+        });
+
+        firstExternalLoad.resolve(
+            createProjectFileDocument(
+                relativePath,
+                "export const value = 2;\n",
+                2,
+            ),
+        );
+        await firstRefresh;
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            draftContent: "export const value = 1;\n",
+            isLoading: true,
+        });
+
+        secondExternalLoad.resolve(
+            createProjectFileDocument(
+                relativePath,
+                "export const value = 3;\n",
+                3,
+            ),
+        );
+        await secondRefresh;
+
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
+            document: { content: "export const value = 3;\n", modifiedAtMs: 3 },
+            draftContent: "export const value = 3;\n",
+            isDirty: false,
+            isLoading: false,
+        });
+    });
+
+    it("discards an older manual reload after a newer watcher read", async () => {
+        const relativePath = "src/app.ts";
+        const manualLoad = createDeferred<ProjectFileDocument>();
+        const watcherLoad = createDeferred<ProjectFileDocument>();
+        openProjectFileMock
+            .mockImplementationOnce(() => manualLoad.promise)
+            .mockImplementationOnce(() => watcherLoad.promise);
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-1",
+                id: "pane-root",
+                tabIds: ["file-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": createLoadedWorkspaceFileTab(
+                    "file-1",
+                    relativePath,
+                    "export const value = 1;\n",
+                ),
+            },
+        }));
+
+        const manualReload = useWorkspaceStore
+            .getState()
+            .reloadFileTab("file-1");
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(1);
+        });
+
+        const watcherRefresh = useWorkspaceStore
+            .getState()
+            .refreshProjectTabs("project-1", null, [relativePath]);
+        await vi.waitFor(() => {
+            expect(openProjectFileMock).toHaveBeenCalledTimes(2);
+        });
+
+        watcherLoad.resolve(
+            createProjectFileDocument(
+                relativePath,
+                "export const value = 3;\n",
+                3,
+            ),
+        );
+        await watcherRefresh;
+
+        manualLoad.resolve(
+            createProjectFileDocument(
+                relativePath,
+                "export const value = 2;\n",
+                2,
+            ),
+        );
+        await manualReload;
+
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
+            document: { content: "export const value = 3;\n", modifiedAtMs: 3 },
+            draftContent: "export const value = 3;\n",
+            isDirty: false,
+            isLoading: false,
+            savedContent: "export const value = 3;\n",
+        });
+    });
+
+    it("allows a manual reload to replace a dirty draft", async () => {
+        const relativePath = "src/app.ts";
+        const externalDocument = createProjectFileDocument(
+            relativePath,
+            "export const value = 2;\n",
+            2,
+        );
+        openProjectFileMock.mockResolvedValueOnce(externalDocument);
+
+        useWorkspaceStore.setState((state) => ({
+            ...state,
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "file-1",
+                id: "pane-root",
+                tabIds: ["file-1"],
+                type: "pane",
+            },
+            tabsById: {
+                "file-1": {
+                    ...createLoadedWorkspaceFileTab(
+                        "file-1",
+                        relativePath,
+                        "export const value = 1;\n",
+                    ),
+                    draftContent: "export const value = 3;\n",
+                    isDirty: true,
+                },
+            },
+        }));
+
+        await useWorkspaceStore.getState().reloadFileTab("file-1");
+
+        expect(useWorkspaceStore.getState().tabsById["file-1"]).toMatchObject({
+            contentRevision: 1,
+            document: { content: externalDocument.content, modifiedAtMs: 2 },
+            draftContent: externalDocument.content,
+            isDirty: false,
+            savedContent: externalDocument.content,
         });
     });
 

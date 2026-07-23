@@ -7,9 +7,15 @@ export type WorkspaceEditorModelVariant =
 type MonacoNamespace = typeof import("monaco-editor");
 
 export interface WorkspaceFileModelLease {
+    readonly didChangeContent: boolean;
     readonly model: MonacoEditor.ITextModel;
     readonly modelPath: string;
     readonly release: () => void;
+}
+
+export interface WorkspaceFileModelSyncResult {
+    readonly didChangeContent: boolean;
+    readonly model: MonacoEditor.ITextModel;
 }
 
 const retainedWorkspaceFileModels = new Map<
@@ -89,20 +95,33 @@ export function getOrCreateWorkspaceFileModel(input: {
     readonly monaco: MonacoNamespace;
     readonly value: string;
 }): MonacoEditor.ITextModel {
+    return syncWorkspaceFileModel(input).model;
+}
+
+export function syncWorkspaceFileModel(input: {
+    readonly absolutePath: string;
+    readonly language: string;
+    readonly monaco: MonacoNamespace;
+    readonly value: string;
+}): WorkspaceFileModelSyncResult {
     const uri = input.monaco.Uri.parse(
         buildWorkspaceFileEditorModelPath(input.absolutePath),
     );
     const existingModel = input.monaco.editor.getModel(uri);
 
     if (existingModel) {
+        const didChangeContent = existingModel.getValue() !== input.value;
         if (existingModel.getValue() !== input.value) {
             existingModel.setValue(input.value);
         }
         input.monaco.editor.setModelLanguage(existingModel, input.language);
-        return existingModel;
+        return { didChangeContent, model: existingModel };
     }
 
-    return input.monaco.editor.createModel(input.value, input.language, uri);
+    return {
+        didChangeContent: false,
+        model: input.monaco.editor.createModel(input.value, input.language, uri),
+    };
 }
 
 export function acquireWorkspaceFileModel(input: {
@@ -112,7 +131,7 @@ export function acquireWorkspaceFileModel(input: {
     readonly value: string;
 }): WorkspaceFileModelLease {
     const modelPath = buildWorkspaceFileEditorModelPath(input.absolutePath);
-    const model = getOrCreateWorkspaceFileModel(input);
+    const { didChangeContent, model } = syncWorkspaceFileModel(input);
     const retainedModel = retainedWorkspaceFileModels.get(modelPath);
 
     if (retainedModel?.model === model) {
@@ -127,6 +146,7 @@ export function acquireWorkspaceFileModel(input: {
     let released = false;
 
     return {
+        didChangeContent,
         model,
         modelPath,
         release: () => {

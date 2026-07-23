@@ -1,6 +1,6 @@
 use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -48,8 +48,17 @@ impl WriteTracker {
         );
     }
 
+    pub(crate) fn track_hash(&self, path: PathBuf, hash: u64) {
+        self.track_entry(path, TrackedWriteKind::Content { hash });
+    }
+
     pub fn track_any(&self, path: PathBuf) {
         self.track_entry(path, TrackedWriteKind::Any);
+    }
+
+    pub fn forget(&self, path: &Path) {
+        let mut written = self.written.lock().expect("write tracker lock");
+        written.remove(path);
     }
 
     pub fn has_recent_match(&self, path: &PathBuf, current_hash: Option<u64>) -> bool {

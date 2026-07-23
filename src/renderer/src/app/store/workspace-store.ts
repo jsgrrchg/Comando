@@ -41,6 +41,7 @@ import {
     createDefaultWorkspaceState,
     findPaneById,
     getDefaultMarkdownFileViewMode,
+    getFileContentRevision,
     isMarkdownFilePath,
     moveActiveTabBetweenPanes,
     moveTabToPaneAtIndex,
@@ -93,6 +94,10 @@ import {
 } from "../workspace/pending-review";
 import { areGitWorktreeIdsEquivalent } from "../git/context-key";
 import { useTerminalRuntimeStore } from "@renderer/features/terminal/terminalRuntimeStore";
+import {
+    recordFileSyncTrace,
+    type FileSyncTraceEventName,
+} from "@renderer/app/debug/fileSyncProbe";
 import { useAiStore } from "./ai-store";
 import { useProjectsStore } from "./projects-store";
 import { getProjectContextKey } from "../projects/context-key";
@@ -1733,6 +1738,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
             const tab: RuntimeWorkspaceFileTab = {
                 createdAt: new Date().toISOString(),
+                contentRevision: 0,
                 document: null,
                 draftContent: "",
                 hasExternalChange: false,
@@ -1964,7 +1970,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             set,
             tabId,
             getCurrentWorkspaceScope(get),
-            { force: true },
+            { force: true, origin: "manual" },
         );
     },
 
@@ -2000,25 +2006,45 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             return;
         }
 
+        const refreshedFileKeys = new Set<string>();
         await Promise.all(
             fileTabs.map(async (tab) => {
-                if (
-                    !isFileTabAffectedByProjectInvalidation(
-                        tab.relativePath,
-                        invalidatedRelativePaths,
-                    ) ||
-                    tab.isDirty ||
-                    tab.isSaving
-                ) {
+                if (!isFileTabAffectedByProjectInvalidation(
+                    tab.relativePath,
+                    invalidatedRelativePaths,
+                )) {
                     return;
                 }
+
+                recordFileTabTrace("invalidation_received", tab, {
+                    origin: "watcher",
+                });
+                if (tab.isDirty || tab.isSaving) {
+                    recordFileTabTrace("reload_skipped", tab, {
+                        origin: "watcher",
+                    });
+                    return;
+                }
+
+                const fileKey = getWorkspaceFileLoadKey(tab);
+                if (refreshedFileKeys.has(fileKey)) {
+                    recordFileTabTrace("reload_skipped", tab, {
+                        origin: "watcher",
+                    });
+                    return;
+                }
+                refreshedFileKeys.add(fileKey);
+
+                recordFileTabTrace("reload_started", tab, {
+                    origin: "watcher",
+                });
 
                 await loadFileTabDocument(
                     get,
                     set,
                     tab.id,
                     getCurrentWorkspaceScope(get),
-                    { force: true },
+                    { force: true, origin: "watcher" },
                 );
             }),
         );
@@ -2171,6 +2197,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
 
         const savedDraftContent = tab.draftContent;
+        recordFileTabTrace("save_started", tab, {
+            content: savedDraftContent,
+            origin: options?.force ? "manual-force" : "manual",
+        });
 
         try {
             const document = await getComandoApi().saveProjectFile({
@@ -2188,6 +2218,12 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 error: null,
             }));
             const currentTab = get().tabsById[tabId];
+            if (currentTab?.kind === "file") {
+                recordFileTabTrace("save_completed", currentTab, {
+                    content: document.content,
+                    origin: options?.force ? "manual-force" : "manual",
+                });
+            }
             const currentBufferContent =
                 currentTab?.kind === "file" &&
                 currentTab.document?.absolutePath === document.absolutePath &&
@@ -2215,6 +2251,13 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     : setFileTabSaving(state, tabId, false, message)),
                 error: message,
             }));
+            const currentTab = get().tabsById[tabId];
+            if (currentTab?.kind === "file") {
+                recordFileTabTrace("save_failed", currentTab, {
+                    content: savedDraftContent,
+                    origin: options?.force ? "manual-force" : "manual",
+                });
+            }
         }
     },
 
@@ -2410,6 +2453,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
         const tab = get().tabsById[tabId];
         if (tab?.kind === "file" && tab.document) {
+            recordFileTabTrace("draft_changed", tab, { content: draft });
             void getComandoApi().notifyFileBuffer({
                 absolutePath: tab.document.absolutePath,
                 content: draft,
@@ -2548,6 +2592,43 @@ let workspacePersistGet: GetWorkspaceState | null = null;
 let workspacePersistInFlight: Promise<void> | null = null;
 let workspacePersistFailureCount = 0;
 const pendingFileDocumentLoads = new Map<string, Promise<ProjectFileDocument>>();
+const latestFileLoadRequestIds = new Map<string, number>();
+
+type FileLoadOrigin = "manual" | "open" | "watcher";
+
+interface FileLoadSnapshot {
+    readonly contentRevision: number;
+    readonly documentModifiedAtMs: number | null;
+    readonly origin: FileLoadOrigin;
+    readonly requestId: number;
+    readonly requestKey: string;
+}
+
+function recordFileTabTrace(
+    event: FileSyncTraceEventName,
+    tab: RuntimeWorkspaceFileTab,
+    options: {
+        readonly content?: string;
+        readonly origin?: string;
+        readonly requestId?: number;
+    } = {},
+): void {
+    recordFileSyncTrace({
+        content: options.content ?? tab.draftContent,
+        contentRevision: getFileContentRevision(tab),
+        event,
+        flags: {
+            hasExternalChange: tab.hasExternalChange,
+            isDirty: tab.isDirty,
+            isLoading: tab.isLoading,
+            isSaving: tab.isSaving,
+        },
+        origin: options.origin,
+        path: tab.relativePath,
+        requestId: options.requestId,
+        tabId: tab.id,
+    });
+}
 
 export function getWorkspaceTabRuntimeId(
     tab: RuntimeWorkspaceTab | null | undefined,
@@ -3487,6 +3568,7 @@ function createHydratedRuntimeTabs(
                 tab.id,
                 {
                     ...tab,
+                    contentRevision: 0,
                     document: null,
                     draftContent: "",
                     hasExternalChange: false,
@@ -3721,6 +3803,7 @@ export function resetWorkspacePersistenceForTests(): void {
     workspacePersistInFlight = null;
     workspacePersistFailureCount = 0;
     pendingFileDocumentLoads.clear();
+    latestFileLoadRequestIds.clear();
 }
 
 function scheduleWorkspacePersistence(get: GetWorkspaceState): void {
@@ -3833,6 +3916,7 @@ async function loadFileTabDocument(
     },
     options: {
         readonly force?: boolean;
+        readonly origin?: FileLoadOrigin;
     } = {},
 ): Promise<void> {
     if (!isWorkspaceScopeCurrent(get, scope)) {
@@ -3847,16 +3931,45 @@ async function loadFileTabDocument(
         return;
     }
 
+    const snapshot = createFileLoadSnapshot(tab, options.origin ?? "open");
+    recordFileTabTrace("read_started", tab, {
+        origin: snapshot.origin,
+        requestId: snapshot.requestId,
+    });
+
     try {
         set((state) => ({
             ...setFileTabLoading(state, tabId, true),
             error: null,
         }));
 
-        const document = await getOrCreateFileDocumentLoad(tab);
+        const document = await getOrCreateFileDocumentLoad(
+            tab,
+            snapshot.origin !== "watcher",
+        );
+        recordFileTabTrace("read_completed", tab, {
+            content: document.content,
+            origin: snapshot.origin,
+            requestId: snapshot.requestId,
+        });
 
         if (!isWorkspaceScopeCurrent(get, scope)) {
+            recordFileTabTrace("reload_discarded", tab, {
+                content: document.content,
+                origin: snapshot.origin,
+                requestId: snapshot.requestId,
+            });
             clearStaleFileTabLoading(set, tabId, scope);
+            return;
+        }
+
+        if (!shouldApplyFileLoad(get(), tabId, snapshot)) {
+            recordFileTabTrace("reload_discarded", tab, {
+                content: document.content,
+                origin: snapshot.origin,
+                requestId: snapshot.requestId,
+            });
+            clearDiscardedFileLoad(set, tabId, snapshot);
             return;
         }
 
@@ -3864,11 +3977,35 @@ async function loadFileTabDocument(
             ...replaceFileDocument(state, tabId, document),
             error: null,
         }));
+        const currentTab = get().tabsById[tabId];
+        if (currentTab?.kind === "file") {
+            recordFileTabTrace("reload_accepted", currentTab, {
+                content: document.content,
+                origin: snapshot.origin,
+                requestId: snapshot.requestId,
+            });
+        }
     } catch (error) {
         if (!isWorkspaceScopeCurrent(get, scope)) {
+            recordFileTabTrace("reload_discarded", tab, {
+                origin: snapshot.origin,
+                requestId: snapshot.requestId,
+            });
             clearStaleFileTabLoading(set, tabId, scope);
             return;
         }
+        if (!shouldApplyFileLoad(get(), tabId, snapshot)) {
+            recordFileTabTrace("reload_discarded", tab, {
+                origin: snapshot.origin,
+                requestId: snapshot.requestId,
+            });
+            clearDiscardedFileLoad(set, tabId, snapshot);
+            return;
+        }
+        recordFileTabTrace("read_failed", tab, {
+            origin: snapshot.origin,
+            requestId: snapshot.requestId,
+        });
         set((state) => ({
             ...setFileTabLoadError(
                 state,
@@ -3885,12 +4022,75 @@ async function loadFileTabDocument(
     }
 }
 
+function createFileLoadSnapshot(
+    tab: RuntimeWorkspaceFileTab,
+    origin: FileLoadOrigin,
+): FileLoadSnapshot {
+    const requestKey = getWorkspaceFileLoadKey(tab);
+    const requestId = (latestFileLoadRequestIds.get(requestKey) ?? 0) + 1;
+    latestFileLoadRequestIds.set(requestKey, requestId);
+
+    return {
+        contentRevision: getFileContentRevision(tab),
+        documentModifiedAtMs: tab.document?.modifiedAtMs ?? null,
+        origin,
+        requestId,
+        requestKey,
+    };
+}
+
+function shouldApplyFileLoad(
+    state: WorkspaceStore,
+    tabId: string,
+    snapshot: FileLoadSnapshot,
+): boolean {
+    const tab = state.tabsById[tabId];
+    if (!tab || tab.kind !== "file") {
+        return false;
+    }
+
+    // Request ordering applies to every origin so an older open or manual read
+    // cannot overwrite a newer watcher result.
+    if (
+        latestFileLoadRequestIds.get(snapshot.requestKey) !== snapshot.requestId
+    ) {
+        return false;
+    }
+
+    if (snapshot.origin !== "watcher") {
+        return true;
+    }
+
+    return (
+        getFileContentRevision(tab) === snapshot.contentRevision &&
+        tab.document?.modifiedAtMs === snapshot.documentModifiedAtMs &&
+        !tab.isDirty &&
+        !tab.isSaving
+    );
+}
+
+function clearDiscardedFileLoad(
+    set: WorkspaceSetState,
+    tabId: string,
+    snapshot: FileLoadSnapshot,
+): void {
+    if (latestFileLoadRequestIds.get(snapshot.requestKey) !== snapshot.requestId) {
+        return;
+    }
+
+    set((state) => ({
+        ...setFileTabLoading(state, tabId, false),
+        error: null,
+    }));
+}
+
 function getOrCreateFileDocumentLoad(
     tab: RuntimeWorkspaceFileTab,
+    reusePendingLoad = true,
 ): Promise<ProjectFileDocument> {
     const key = getWorkspaceFileLoadKey(tab);
     const existingLoad = pendingFileDocumentLoads.get(key);
-    if (existingLoad) {
+    if (existingLoad && reusePendingLoad) {
         return existingLoad;
     }
 
@@ -4092,6 +4292,7 @@ function buildChatImageTab(
 
     return {
         createdAt: new Date().toISOString(),
+        contentRevision: 0,
         document,
         draftContent: document.content,
         hasExternalChange: false,

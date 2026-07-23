@@ -40,6 +40,7 @@ export interface RuntimeWorkspaceFileOpenLocation {
 export type MarkdownFileViewMode = "edit" | "preview";
 
 export interface RuntimeWorkspaceFileTab extends WorkspaceFileTab {
+    readonly contentRevision?: number;
     readonly document: ProjectFileDocument | null;
     readonly draftContent: string;
     readonly hasExternalChange: boolean;
@@ -972,8 +973,19 @@ export function updateFileDraft(
     tabId: string,
     draftContent: string,
 ): WorkspaceTreeState {
+    const sourceTab = state.tabsById[tabId];
+    if (!sourceTab || sourceTab.kind !== "file") {
+        return state;
+    }
+
+    const contentRevision =
+        sourceTab.draftContent === draftContent
+            ? getFileContentRevision(sourceTab)
+            : getFileContentRevision(sourceTab) + 1;
+
     return updateMatchingFileTabs(state, tabId, (tab) => ({
         ...tab,
+        contentRevision,
         draftContent,
         isDirty: draftContent !== tab.savedContent,
         saveError: null,
@@ -1113,8 +1125,20 @@ export function replaceFileDocument(
     tabId: string,
     document: ProjectFileDocument,
 ): WorkspaceTreeState {
+    const sourceTab = state.tabsById[tabId];
+    if (!sourceTab || sourceTab.kind !== "file") {
+        return state;
+    }
+
+    const contentRevision =
+        sourceTab.draftContent === document.content &&
+        sourceTab.document?.modifiedAtMs === document.modifiedAtMs
+            ? getFileContentRevision(sourceTab)
+            : getFileContentRevision(sourceTab) + 1;
+
     return updateMatchingFileTabs(state, tabId, (tab) => ({
         ...tab,
+        contentRevision,
         document,
         draftContent: document.content,
         hasExternalChange: false,
@@ -1142,6 +1166,9 @@ export function completeFileSave(
 
         return {
             ...tab,
+            // Saving acknowledges an existing buffer revision; it must not
+            // make an older asynchronous response current again.
+            contentRevision: getFileContentRevision(tab),
             document,
             draftContent,
             hasExternalChange: false,
@@ -1154,6 +1181,11 @@ export function completeFileSave(
             title: document.name,
         };
     });
+}
+
+export function getFileContentRevision(tab: RuntimeWorkspaceFileTab): number {
+    // Persisted workspaces from before buffer versioning are revision zero.
+    return tab.contentRevision ?? 0;
 }
 
 export function setFileTabSaving(
@@ -1490,8 +1522,14 @@ function normalizeRuntimeTabsForWorkspace(
                 return [tabId, tab];
             }
 
+            const normalizedTab = {
+                ...tab,
+                contentRevision: getFileContentRevision(tab),
+            };
+
             if (!isMarkdownFilePath(tab.relativePath)) {
-                const { markdownViewMode: _markdownViewMode, ...nextTab } = tab;
+                const { markdownViewMode: _markdownViewMode, ...nextTab } =
+                    normalizedTab;
                 void _markdownViewMode;
                 return [tabId, nextTab];
             }
@@ -1499,7 +1537,7 @@ function normalizeRuntimeTabsForWorkspace(
             return [
                 tabId,
                 {
-                    ...tab,
+                    ...normalizedTab,
                     markdownViewMode:
                         tab.markdownViewMode === "preview" ? "preview" : "edit",
                 },

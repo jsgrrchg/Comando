@@ -1302,6 +1302,70 @@ describe("WorkspaceFileEditorHost", () => {
         );
     });
 
+    it("preserves and clamps the Monaco viewport after a valid disk refresh", async () => {
+        const initialContent = [
+            "first line",
+            "second line",
+            "third line",
+            "fourth line",
+        ].join("\n");
+        const refreshedContent = ["short", "tail"].join("\n");
+        const tab = createFileTab("file-1", "src/app.ts", initialContent);
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: tab,
+                    fileTabs: [tab],
+                }),
+            );
+        });
+        await flushEffects();
+
+        const editor = monacoHarness.codeEditors[0];
+        if (!editor) {
+            throw new Error("Expected Monaco editor to mount.");
+        }
+        editor.setPosition({ column: 12, lineNumber: 4 });
+        editor.setScrollLeft(15);
+        editor.setScrollTop(420);
+        vi.mocked(editor.setPosition).mockClear();
+        vi.mocked(editor.setScrollLeft).mockClear();
+        vi.mocked(editor.setScrollTop).mockClear();
+
+        const refreshedTab = {
+            ...tab,
+            document: {
+                ...tab.document!,
+                content: refreshedContent,
+                modifiedAtMs: 2,
+                sizeBytes: refreshedContent.length,
+            },
+            draftContent: refreshedContent,
+            savedContent: refreshedContent,
+        } satisfies RuntimeWorkspaceFileTab;
+
+        act(() => {
+            root.render(
+                renderHost({
+                    activeFileTab: refreshedTab,
+                    fileTabs: [refreshedTab],
+                }),
+            );
+        });
+        await flushEffects();
+        await flushAnimationFrame();
+
+        expect(editor.getModel()?.getValue()).toBe(refreshedContent);
+        expect(editor.getPosition()).toEqual({ column: 5, lineNumber: 2 });
+        expect(editor.getScrollLeft()).toBe(15);
+        expect(editor.getScrollTop()).toBe(420);
+        expect(editor.setPosition).toHaveBeenCalledWith({
+            column: 5,
+            lineNumber: 2,
+        });
+    });
+
     it("renders the Markdown view switch for .md and .markdown file tabs", async () => {
         const markdownTab = createFileTab("file-1", "README.md", "# Readme\n");
         const longMarkdownTab = createFileTab(

@@ -452,7 +452,7 @@ fn watch_key(root: &ProjectRoot) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::fs::{self, OpenOptions};
     use std::thread;
     use std::time::Duration;
 
@@ -507,6 +507,92 @@ mod tests {
 
         let drain = watchers.drain(true);
         assert!(drain.invalidations.is_empty());
+    }
+
+    #[test]
+    fn external_write_after_owned_write_still_invalidates_the_file() {
+        let temp = TempDir::new().expect("temp");
+        let path = temp.path().join("owned.txt");
+        fs::write(&path, "owned").expect("write");
+        let root = project_root(temp.path());
+        let mut watchers = WatcherRegistry::new();
+        let tracker = watchers.write_tracker();
+
+        tracker.track_content(path.clone(), "owned");
+        fs::write(&path, "owned").expect("write same");
+        fs::write(&path, "external").expect("write external");
+        let key = watch_key(&root);
+        let mut event = Event::new(EventKind::Modify(ModifyKind::Any));
+        event.paths.push(path);
+        handle_notify_event(
+            NotifyEventContext {
+                key: &key,
+                root: &root,
+                watch_root: temp.path(),
+                write_tracker: &tracker,
+                pending: &watchers.pending,
+                pending_git_invalidations: &watchers.pending_git_invalidations,
+                fs_events: &watchers.fs_events,
+            },
+            event,
+        );
+
+        let drain = watchers.drain(true);
+        assert!(drain.invalidations.iter().any(|invalidation| {
+            invalidation
+                .relative_paths
+                .as_ref()
+                .is_some_and(|paths| paths.iter().any(|path| path.0 == "owned.txt"))
+        }));
+        assert!(drain.fs_events.iter().any(|(_, event)| {
+            event
+                .relative_path
+                .as_ref()
+                .is_some_and(|path| path.0 == "owned.txt")
+                && event.origin == NativeFsMutationOrigin::External
+        }));
+    }
+
+    #[test]
+    fn waits_for_a_truncated_owned_write_to_settle_before_invalidating() {
+        let temp = TempDir::new().expect("temp");
+        let path = temp.path().join("owned.txt");
+        fs::write(&path, "owned").expect("write");
+        let root = project_root(temp.path());
+        let mut watchers = WatcherRegistry::new();
+        let tracker = watchers.write_tracker();
+
+        tracker.track_content(path.clone(), "owned");
+        let replacement_path = path.clone();
+        let replacement = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            fs::write(replacement_path, "owned").expect("restore owned content");
+        });
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .expect("truncate owned file");
+        let key = watch_key(&root);
+        let mut event = Event::new(EventKind::Modify(ModifyKind::Any));
+        event.paths.push(path);
+        handle_notify_event(
+            NotifyEventContext {
+                key: &key,
+                root: &root,
+                watch_root: temp.path(),
+                write_tracker: &tracker,
+                pending: &watchers.pending,
+                pending_git_invalidations: &watchers.pending_git_invalidations,
+                fs_events: &watchers.fs_events,
+            },
+            event,
+        );
+        replacement.join().expect("replacement thread");
+
+        let drain = watchers.drain(true);
+        assert!(drain.invalidations.is_empty());
+        assert!(drain.fs_events.is_empty());
     }
 
     #[test]

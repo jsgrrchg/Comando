@@ -94,6 +94,10 @@ import {
     useLifecycleProbe,
     useRenderProbe,
 } from "@renderer/app/debug/renderProbe";
+import {
+    recordFileSyncTrace,
+    type FileSyncTraceEventName,
+} from "@renderer/app/debug/fileSyncProbe";
 import { recordWorkspacePerformanceEvent } from "@renderer/app/debug/workspacePerformanceProbe";
 import {
     applyAiTranscriptMemoryPressure,
@@ -171,7 +175,7 @@ import {
     acquireWorkspaceFileModel,
     buildWorkspaceEditorModelPath,
     buildWorkspaceFileEditorModelPath,
-    getOrCreateWorkspaceFileModel,
+    syncWorkspaceFileModel,
     type WorkspaceFileModelLease,
 } from "@renderer/components/workspace/editorModelPath";
 import { appendSelectionMentionToRegisteredComposer } from "@renderer/components/workspace/chat/composerSelectionBridge";
@@ -4455,6 +4459,8 @@ function FileTabView({
         readonly tabId: string;
     } | null>(null);
     const fileTabIdRef = useRef(tab.id);
+    const fileSyncTabRef = useRef(tab);
+    const lastEditorScrollTopRef = useRef<number | null>(null);
     const inlineReviewActiveRef = useRef(false);
     const inlineReviewSignatureRef = useRef<string | null>(null);
     const latestDraftContentRef = useRef(tab.draftContent);
@@ -4478,6 +4484,26 @@ function FileTabView({
         isInlineReviewFindWidgetVisible,
         setIsInlineReviewFindWidgetVisible,
     ] = useState(false);
+    const recordEditorFileSyncTrace = useCallback(
+        (event: FileSyncTraceEventName, origin: string) => {
+            const traceTab = fileSyncTabRef.current;
+            recordFileSyncTrace({
+                content: latestDraftContentRef.current,
+                contentRevision: traceTab.contentRevision,
+                event,
+                flags: {
+                    hasExternalChange: traceTab.hasExternalChange,
+                    isDirty: traceTab.isDirty,
+                    isLoading: traceTab.isLoading,
+                    isSaving: traceTab.isSaving,
+                },
+                origin,
+                path: traceTab.relativePath,
+                tabId: traceTab.id,
+            });
+        },
+        [],
+    );
     const [hoveredInlineReviewHunkState, setHoveredInlineReviewHunkState] =
         useState<{
             readonly hunkId: string;
@@ -4798,6 +4824,7 @@ function FileTabView({
             readonly monaco: MonacoNamespace;
             readonly value: string;
         }): {
+            readonly didChangeContent: boolean;
             readonly model: MonacoEditor.ITextModel;
             readonly previousLease: WorkspaceFileModelLease | null;
         } => {
@@ -4810,9 +4837,13 @@ function FileTabView({
                 currentLease?.modelPath === modelPath &&
                 !currentLease.model.isDisposed()
             ) {
-                const model = getOrCreateWorkspaceFileModel(input);
-                if (model === currentLease.model) {
-                    return { model, previousLease: null };
+                const syncResult = syncWorkspaceFileModel(input);
+                if (syncResult.model === currentLease.model) {
+                    return {
+                        didChangeContent: syncResult.didChangeContent,
+                        model: syncResult.model,
+                        previousLease: null,
+                    };
                 }
             }
 
@@ -4820,6 +4851,7 @@ function FileTabView({
             workspaceFileModelLeaseRef.current = nextLease;
 
             return {
+                didChangeContent: nextLease.didChangeContent,
                 model: nextLease.model,
                 previousLease: currentLease,
             };
@@ -5480,7 +5512,8 @@ function FileTabView({
 
     useLayoutEffect(() => {
         latestDraftContentRef.current = tab.draftContent;
-    }, [tab.draftContent]);
+        fileSyncTabRef.current = tab;
+    }, [tab]);
 
     useLayoutEffect(() => {
         if (
@@ -5497,14 +5530,24 @@ function FileTabView({
             return;
         }
 
-        const { model, previousLease } = runWithoutEditorChangeNotification(() =>
-            acquireFileEditorModel({
-                absolutePath: document.absolutePath,
-                language: monacoLanguageId,
-                monaco,
-                value: latestDraftContentRef.current,
-            }),
-        );
+        const currentLease = workspaceFileModelLeaseRef.current;
+        const capturedEditorState =
+            isVisible &&
+            !inlineReviewTrackedFile &&
+            currentLease?.modelPath ===
+                buildWorkspaceFileEditorModelPath(document.absolutePath) &&
+            editor.getModel() === currentLease.model
+                ? capturePortableEditorRestoreState(editor)
+                : null;
+        const { didChangeContent, model, previousLease } =
+            runWithoutEditorChangeNotification(() =>
+                acquireFileEditorModel({
+                    absolutePath: document.absolutePath,
+                    language: monacoLanguageId,
+                    monaco,
+                    value: latestDraftContentRef.current,
+                }),
+            );
 
         if (editor.getModel() !== model) {
             runWithoutEditorChangeNotification(() => {
@@ -5513,11 +5556,22 @@ function FileTabView({
         }
         previousLease?.release();
 
+        if (didChangeContent) {
+            recordEditorFileSyncTrace("model_changed", "monaco");
+        }
+
         if (!isVisible || inlineReviewTrackedFile) {
             return;
         }
 
         if (consumePendingOpenLocation(editor)) {
+            return;
+        }
+
+        if (didChangeContent && capturedEditorState) {
+            // A disk refresh resets Monaco's viewport, so restore only the
+            // current editor's portable state after a same-model replacement.
+            restorePortableEditorState(editor, capturedEditorState);
             return;
         }
 
@@ -5535,6 +5589,8 @@ function FileTabView({
         inlineReviewTrackedFile,
         isVisible,
         monacoLanguageId,
+        recordEditorFileSyncTrace,
+        restorePortableEditorState,
         restoreEditorViewStateForTab,
         runWithoutEditorChangeNotification,
         tab.id,
@@ -6858,12 +6914,32 @@ function FileTabView({
                                 () => {
                                     captureEditorStateForInlineReview(editor);
                                     scheduleEditorViewStatePersist(editor);
+                                    const nextScrollTop = editor.getScrollTop();
+                                    const previousScrollTop =
+                                        lastEditorScrollTopRef.current;
+                                    lastEditorScrollTopRef.current =
+                                        nextScrollTop;
+                                    if (
+                                        previousScrollTop !== null &&
+                                        Math.abs(
+                                            nextScrollTop - previousScrollTop,
+                                        ) >= 240
+                                    ) {
+                                        recordEditorFileSyncTrace(
+                                            "scroll_jump",
+                                            "monaco",
+                                        );
+                                    }
                                 },
                             );
                             const cursorListener =
                                 editor.onDidChangeCursorSelection(() => {
                                     captureEditorStateForInlineReview(editor);
                                     scheduleEditorViewStatePersist(editor);
+                                    recordEditorFileSyncTrace(
+                                        "selection_changed",
+                                        "monaco",
+                                    );
                                 });
                             const hiddenAreasListener =
                                 editor.onDidChangeHiddenAreas(() => {
