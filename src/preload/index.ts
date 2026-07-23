@@ -64,6 +64,7 @@ import {
     type FileBufferNotificationInput,
     type EnqueueAiPromptInput,
     type GetAiSessionTranscriptPageInput,
+    type ImageClipboardInput,
     type ListAiSessionHistoryInput,
     type ListProjectTreeInput,
     type OpenProjectWindowInput,
@@ -180,6 +181,7 @@ import {
     type ResizeTerminalSessionInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
+    type SaveImageAsInput,
     type UpdateAiQueuedPromptInput,
     type SettingsSnapshot,
     type SettingsUpdatedEvent,
@@ -1092,6 +1094,10 @@ const comandoApi: ComandoApi = {
         ),
     saveProjectFile: (input: SaveProjectFileInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveProjectFile, input),
+    writeClipboardImage: (input: ImageClipboardInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.writeClipboardImage, input),
+    saveImageAs: (input: SaveImageAsInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.saveImageAs, input),
     createProjectEntry: (input: CreateProjectEntryInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.createProjectEntry, input),
     copyProjectEntries: async (input: CopyProjectEntriesInput) =>
