@@ -227,6 +227,7 @@ interface AiSessionClientState {
     readonly draftComposerParts: readonly AiComposerDraftPart[];
     readonly draftFileContexts: readonly AiFileContextAttachment[];
     readonly dismissedPlanUpdatedAt: string | null;
+    readonly isPlanCollapsed: boolean;
     readonly diffZoom: number | null;
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
@@ -296,6 +297,7 @@ interface AiStore {
     ) => readonly AiComposerDraftPart[] | null;
     clearDraftAttachments: (sessionId: string) => void;
     dismissSessionPlan: (sessionId: string, planUpdatedAt: string) => void;
+    setSessionPlanCollapsed: (sessionId: string, collapsed: boolean) => void;
     attachSelectionMention: (
         sessionId: string,
         selection: {
@@ -1699,6 +1701,25 @@ export const useAiStore = create<AiStore>((set, get) => ({
         });
     },
 
+    setSessionPlanCollapsed: (sessionId, collapsed) => {
+        set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session || session.isPlanCollapsed === collapsed) {
+                return state;
+            }
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                        ...session,
+                        isPlanCollapsed: collapsed,
+                    },
+                },
+            };
+        });
+    },
+
     ensureSession: async (tab, options) => {
         const currentSession = get().sessions[tab.sessionId] ?? null;
         const shouldHydratePassively =
@@ -2890,6 +2911,7 @@ function createSessionState(
         draftComposerParts: createEmptyComposerDraftParts(),
         draftFileContexts: [],
         dismissedPlanUpdatedAt: null,
+        isPlanCollapsed: false,
         diffZoom: preferences?.diffZoom ?? null,
         editingQueuedPromptState: null,
         editingQueuedPrompt: null,

@@ -4544,6 +4544,16 @@ describe("ai-store queue", () => {
         ).toBe("2026-04-15T12:00:00.000Z");
     });
 
+    it("stores the plan collapse preference per session", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+
+        useAiStore.getState().setSessionPlanCollapsed(TAB.sessionId, true);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.isPlanCollapsed,
+        ).toBe(true);
+    });
+
     it("merges incremental session patches without replacing the whole snapshot", () => {
         useAiStore.getState().registerSessionTab(TAB);
         useAiStore.getState().applySessionSnapshot(

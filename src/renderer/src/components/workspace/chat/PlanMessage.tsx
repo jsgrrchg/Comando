@@ -43,13 +43,18 @@ const PLAN_TONE_COLOR: Record<PlanTone, string> = {
 /* ─── Component ─── */
 
 export function PlanMessage({
+    expanded: controlledExpanded,
     onDismiss,
+    onExpandedChange,
     plan,
 }: {
+    readonly expanded?: boolean;
     readonly onDismiss?: () => void;
+    readonly onExpandedChange?: (expanded: boolean) => void;
     readonly plan: AiPlan;
 }) {
-    const [expanded, setExpanded] = useState(true);
+    const [uncontrolledExpanded, setUncontrolledExpanded] = useState(true);
+    const expanded = controlledExpanded ?? uncontrolledExpanded;
     const canExpand = plan.entries.length > 0;
 
     const completedCount = plan.entries.filter(
@@ -59,6 +64,12 @@ export function PlanMessage({
     const tone = getPlanTone(plan.entries);
     const toneColor = PLAN_TONE_COLOR[tone];
     const title = plan.title ?? "Plan";
+    const currentEntry =
+        plan.entries.find((entry) => entry.status === "in_progress") ??
+        plan.entries.find((entry) => entry.status === "pending");
+    const collapsedTitle = currentEntry
+        ? `${title} - ${currentEntry.content}`
+        : title;
 
     return (
         <div
@@ -76,7 +87,11 @@ export function PlanMessage({
                     className="flex min-w-0 flex-1 items-center gap-2 text-left"
                     onClick={() => {
                         if (canExpand) {
-                            setExpanded((current) => !current);
+                            if (onExpandedChange) {
+                                onExpandedChange(!expanded);
+                            } else {
+                                setUncontrolledExpanded(!expanded);
+                            }
                         }
                     }}
                     style={{
@@ -136,20 +151,22 @@ export function PlanMessage({
                             fontWeight: 600,
                         }}
                     >
-                        {title}
+                        {expanded ? title : collapsedTitle}
                     </span>
-                    <span
-                        className="shrink-0 rounded-full"
-                        style={{
-                            background: `color-mix(in srgb, ${toneColor} 16%, transparent)`,
-                            color: toneColor,
-                            fontSize: "0.7em",
-                            fontWeight: 500,
-                            padding: "2px 8px",
-                        }}
-                    >
-                        {PLAN_TONE_LABEL[tone]}
-                    </span>
+                    {expanded ? (
+                        <span
+                            className="shrink-0 rounded-full"
+                            style={{
+                                background: `color-mix(in srgb, ${toneColor} 16%, transparent)`,
+                                color: toneColor,
+                                fontSize: "0.7em",
+                                fontWeight: 500,
+                                padding: "2px 8px",
+                            }}
+                        >
+                            {PLAN_TONE_LABEL[tone]}
+                        </span>
+                    ) : null}
                 </button>
                 {onDismiss ? (
                     <button
