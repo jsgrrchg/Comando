@@ -37,6 +37,7 @@ const SESSION_STATE_FILE: &str = "session-state.json";
 const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_COMPACT_STATE_FILE: &str = "compact-state.json";
+const SESSION_TRANSCRIPT_WRITE_STATE_FILE: &str = "transcript-write-state.json";
 const SESSION_TOOL_DETAILS_FILE: &str = "tool-details.json";
 const SESSION_TOOL_DETAILS_DIR: &str = "tool-details";
 const DEFAULT_PAGE_LIMIT: usize = 50;
@@ -353,6 +354,15 @@ struct HistoryCompactionState {
     started_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptWriteState {
+    version: u32,
+    next_index: AiTranscriptIndex,
+    first_changed_offset: usize,
+    stale_legacy_entry_ids: Vec<String>,
+}
+
 impl AiHistoryStore {
     pub fn new(app_data_dir: impl Into<PathBuf>) -> AiResult<Self> {
         let app_data_dir = app_data_dir.into();
@@ -550,27 +560,51 @@ impl AiHistoryStore {
             indexed_transcript_bytes: index.message_lengths[..reuse_len].iter().sum(),
         };
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&transcript_path)
-            .map_err(|error| history_io("open AI transcript", &transcript_path, error))?;
+        let transcript_changed = reuse_len < index.len() || reuse_len < records.len();
+        let stale_legacy_entry_ids = index.message_ids[reuse_len..]
+            .iter()
+            .map(|message_id| format!("message:{message_id}"))
+            .collect::<Vec<_>>();
+
+        let mut append_offset = transcript_len;
+        let mut lines_to_append = Vec::with_capacity(records.len().saturating_sub(reuse_len));
         for record in records.iter().skip(reuse_len) {
-            let offset = file
-                .seek(SeekFrom::End(0))
-                .map_err(|error| history_io("seek AI transcript", &transcript_path, error))?;
             let line = serialize_record_line(record)?;
-            file.write_all(line.as_bytes())
-                .and_then(|_| file.write_all(b"\n"))
-                .map_err(|error| history_io("append AI transcript", &transcript_path, error))?;
             let length = line.len() as u64 + 1;
-            next_index.message_offsets.push(offset);
+            next_index.message_offsets.push(append_offset);
             next_index.message_lengths.push(length);
             next_index.message_hashes.push(record.hash.clone());
             next_index.message_ids.push(record.message_id.clone());
             next_index.message_kinds.push(record.kind.clone());
             next_index.message_roles.push(record.role.clone());
             next_index.indexed_transcript_bytes += length;
+            append_offset += length;
+            lines_to_append.push(line);
+        }
+
+        if transcript_changed {
+            // Persist the target index before touching JSONL so recovery can
+            // never mistake an unindexed write for a current SQLite backfill.
+            self.write_transcript_write_marker(
+                session_id,
+                &TranscriptWriteState {
+                    version: HISTORY_FORMAT_VERSION,
+                    next_index: next_index.clone(),
+                    first_changed_offset: reuse_len,
+                    stale_legacy_entry_ids: stale_legacy_entry_ids.clone(),
+                },
+            )?;
+        }
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&transcript_path)
+            .map_err(|error| history_io("open AI transcript", &transcript_path, error))?;
+        for line in &lines_to_append {
+            file.write_all(line.as_bytes())
+                .and_then(|_| file.write_all(b"\n"))
+                .map_err(|error| history_io("append AI transcript", &transcript_path, error))?;
         }
         file.sync_all()
             .map_err(|error| history_io("sync AI transcript", &transcript_path, error))?;
@@ -578,13 +612,7 @@ impl AiHistoryStore {
         metadata.message_count = records.len();
         metadata.preview = derive_session_preview(records.iter().map(|record| &record.payload));
         metadata.updated_at = now_iso8601();
-        if reuse_len < index.len() || reuse_len < records.len() {
-            // Keep the previous index visible until SQLite has acknowledged
-            // the invalidation, so a retry recomputes the same changed tail.
-            let stale_legacy_entry_ids = index.message_ids[reuse_len..]
-                .iter()
-                .map(|message_id| format!("message:{message_id}"))
-                .collect::<Vec<_>>();
+        if transcript_changed {
             self.transcript_store(session_id)
                 .invalidate_legacy_transcript_backfill_from(
                     session_id,
@@ -594,6 +622,7 @@ impl AiHistoryStore {
         }
         self.save_index(session_id, &next_index)?;
         self.save_metadata(&metadata)?;
+        self.clear_transcript_write_marker(session_id)?;
         self.compact_transcript_if_needed(session_id)?;
         Ok(())
     }
@@ -1403,16 +1432,15 @@ impl AiHistoryStore {
 
     fn recover_if_needed(&self, session_id: &SessionId) -> AiResult<()> {
         let marker = self.compaction_marker_path(session_id);
-        if !marker.exists() {
-            return Ok(());
+        if marker.exists() {
+            let transcript_path = self.transcript_path(session_id);
+            let transcript_backup = self.sidecar_path(session_id, "transcript.bak");
+            if !transcript_path.exists() && transcript_backup.exists() {
+                copy_or_replace(&transcript_backup, &transcript_path)?;
+            }
+            self.clear_compaction_sidecars(session_id)?;
         }
-
-        let transcript_path = self.transcript_path(session_id);
-        let transcript_backup = self.sidecar_path(session_id, "transcript.bak");
-        if !transcript_path.exists() && transcript_backup.exists() {
-            copy_or_replace(&transcript_backup, &transcript_path)?;
-        }
-        self.clear_compaction_sidecars(session_id)
+        self.recover_pending_transcript_write(session_id)
     }
 
     fn write_compaction_marker(&self, session_id: &SessionId) -> AiResult<()> {
@@ -1421,6 +1449,54 @@ impl AiHistoryStore {
             started_at: now_iso8601(),
         };
         atomic_write_json(&self.compaction_marker_path(session_id), &state)
+    }
+
+    fn write_transcript_write_marker(
+        &self,
+        session_id: &SessionId,
+        state: &TranscriptWriteState,
+    ) -> AiResult<()> {
+        atomic_write_json(&self.transcript_write_marker_path(session_id), state)
+    }
+
+    fn clear_transcript_write_marker(&self, session_id: &SessionId) -> AiResult<()> {
+        let marker = self.transcript_write_marker_path(session_id);
+        if marker.exists() {
+            fs::remove_file(&marker)
+                .map_err(|error| history_io("remove transcript write marker", &marker, error))?;
+        }
+        Ok(())
+    }
+
+    fn recover_pending_transcript_write(&self, session_id: &SessionId) -> AiResult<()> {
+        let marker = self.transcript_write_marker_path(session_id);
+        if !marker.exists() {
+            return Ok(());
+        }
+        let state: TranscriptWriteState = read_json_file(&marker)?;
+        if state.version != HISTORY_FORMAT_VERSION {
+            return Err(history_error(
+                "AI transcript write marker has an unsupported version.",
+            ));
+        }
+
+        let transcript_len = file_len(&self.transcript_path(session_id)).unwrap_or(0);
+        let write_completed = state.next_index.validate(transcript_len).is_ok()
+            && self
+                .read_payloads_by_index(session_id, &state.next_index, 0, state.next_index.len())
+                .is_ok();
+        if write_completed {
+            // The source write reached disk, so SQLite must be invalidated
+            // before this index can make the revised transcript authoritative.
+            self.transcript_store(session_id)
+                .invalidate_legacy_transcript_backfill_from(
+                    session_id,
+                    state.first_changed_offset,
+                    &state.stale_legacy_entry_ids,
+                )?;
+            self.save_index(session_id, &state.next_index)?;
+        }
+        self.clear_transcript_write_marker(session_id)
     }
 
     fn clear_compaction_sidecars(&self, session_id: &SessionId) -> AiResult<()> {
@@ -1552,6 +1628,11 @@ impl AiHistoryStore {
     fn compaction_marker_path(&self, session_id: &SessionId) -> PathBuf {
         self.session_dir(session_id)
             .join(SESSION_COMPACT_STATE_FILE)
+    }
+
+    fn transcript_write_marker_path(&self, session_id: &SessionId) -> PathBuf {
+        self.session_dir(session_id)
+            .join(SESSION_TRANSCRIPT_WRITE_STATE_FILE)
     }
 
     fn sidecar_path(&self, session_id: &SessionId, name: &str) -> PathBuf {
@@ -4383,6 +4464,75 @@ mod tests {
     }
 
     #[test]
+    fn transcript_write_recovery_reconciles_jsonl_written_before_sqlite_invalidation() {
+        let (_temp, store) = store();
+        let session_id = SessionId("recover_transcript_write_before_sqlite".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, vec![message("legacy-1", "draft")])
+            .unwrap();
+        store.transcript_storage_state(&session_id).unwrap();
+
+        let replacement = message("legacy-1", "complete");
+        let record = AiTranscriptRecord::from_payload(replacement.clone()).unwrap();
+        let line = serialize_record_line(&record).unwrap();
+        let length = line.len() as u64 + 1;
+        let offset = file_len(&store.transcript_path(&session_id)).unwrap();
+        let next_index = AiTranscriptIndex {
+            version: HISTORY_FORMAT_VERSION,
+            message_offsets: vec![offset],
+            message_lengths: vec![length],
+            message_hashes: vec![record.hash],
+            message_ids: vec![record.message_id],
+            message_kinds: vec![record.kind],
+            message_roles: vec![record.role],
+            updated_at: now_iso8601(),
+            indexed_transcript_bytes: length,
+        };
+        store
+            .write_transcript_write_marker(
+                &session_id,
+                &TranscriptWriteState {
+                    version: HISTORY_FORMAT_VERSION,
+                    next_index,
+                    first_changed_offset: 0,
+                    stale_legacy_entry_ids: vec!["message:legacy-1".to_string()],
+                },
+            )
+            .unwrap();
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(store.transcript_path(&session_id))
+            .unwrap();
+        file.write_all(line.as_bytes())
+            .and_then(|_| file.write_all(b"\n"))
+            .and_then(|_| file.sync_all())
+            .unwrap();
+
+        let snapshot = store.load_session_snapshot(&session_id).unwrap().unwrap();
+        assert_eq!(snapshot.messages[0], replacement);
+        assert!(!store.transcript_write_marker_path(&session_id).exists());
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        let block_id = &store.load_transcript_block_metadata(&session_id).unwrap()[0].block_id;
+        let block = store
+            .load_transcript_block(&session_id, block_id)
+            .unwrap()
+            .unwrap();
+        let payload = store
+            .load_native_transcript_payload(
+                &session_id,
+                block.entries[0].payload_ref.as_deref().unwrap(),
+                1024,
+            )
+            .unwrap();
+        assert_eq!(payload.value["message"]["content"], "complete");
+    }
+
+    #[test]
     fn transcript_save_retries_invalidation_after_a_sqlite_failure() {
         let (_temp, store) = store();
         let session_id = SessionId("retry_legacy_invalidation".to_string());
@@ -4402,7 +4552,7 @@ mod tests {
         fs::set_permissions(&database_path, original_permissions).unwrap();
         assert!(failed_save.is_err());
 
-        let stale_page = store
+        let recovered_page = store
             .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
                 session_id: session_id.clone(),
                 offset: 0,
@@ -4410,7 +4560,7 @@ mod tests {
             })
             .unwrap()
             .unwrap();
-        assert_eq!(stale_page.messages[0]["content"], "draft");
+        assert_eq!(recovered_page.messages[0]["content"], "complete");
 
         store
             .save_transcript_window(&session_id, vec![message("legacy-1", "complete")])
