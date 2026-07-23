@@ -137,6 +137,10 @@ class WindowRegistry {
         return this.#getMostRecentMainWindowEntry()?.window ?? null;
     }
 
+    getLastFocusedMainWindowId(): string | null {
+        return this.#lastFocusedMainWindowId;
+    }
+
     getFocusedMainWindow(): BrowserWindow | null {
         const focusedWindow = BrowserWindow.getFocusedWindow();
         if (!focusedWindow) {

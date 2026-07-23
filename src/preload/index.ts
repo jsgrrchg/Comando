@@ -43,6 +43,7 @@ import {
     type AiTrackedFileHunkMutationInput,
     type AiTrackedFileMutationInput,
     type AiUserInputResponseInput,
+    type ActivateWorkspaceLocationInput,
     type ClaudeRuntimeSettingsInput,
     type ClearProjectAppDataInput,
     type ClearProjectAppDataResult,
@@ -66,6 +67,7 @@ import {
     type ListAiSessionHistoryInput,
     type ListProjectTreeInput,
     type OpenProjectWindowInput,
+    type OpenWorkspaceLocationSummary,
     type OpenProjectEntryExternallyInput,
     type OpenProjectFileInput,
     type OpenSettingsWindowInput,
@@ -866,6 +868,16 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSwitcherRequested: (listener) => {
+        const handler = () => listener();
+        ipcRenderer.on(IPC_EVENTS.workspaceSwitcherRequested, handler);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSwitcherRequested,
+                handler,
+            );
+        };
+    },
     onWorkspaceFlushRequested: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -1123,6 +1135,13 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
     activateWorkspaceSurface: (contextKey: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
+    listOpenWorkspaceLocations: async () =>
+        assertIpcArray<OpenWorkspaceLocationSummary>(
+            IPC_CHANNELS.listOpenWorkspaceLocations,
+            await ipcRenderer.invoke(IPC_CHANNELS.listOpenWorkspaceLocations),
+        ),
+    activateWorkspaceLocation: (input: ActivateWorkspaceLocationInput) =>
+        ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceLocation, input),
     captureWorkspaceSurfaceContext: (contextKey: string) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.captureWorkspaceSurfaceContext,
@@ -1159,6 +1178,8 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu),
     showWorkspaceContextMenu: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.showWorkspaceContextMenu, input),
+    moveWorkspaceContext: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.moveWorkspaceContext, input),
     showNativeContextMenu: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.showNativeContextMenu, input),
     setWorkspaceSurfaceContentInset: (height: number) =>

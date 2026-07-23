@@ -7,6 +7,10 @@ import type {
     WorkspacePaneNode,
     WorkspaceTab,
 } from "./ipc";
+import {
+    getWorkspaceContextKey,
+    normalizeWorkspaceWorktreeId,
+} from "./workspace-context";
 
 export const WINDOW_WORKSPACE_RESTORE_SCHEMA_VERSION = 1 as const;
 
@@ -42,7 +46,7 @@ export function normalizeWorkspaceNavigationSnapshot(
         if (!legacy || !projectId) {
             return { droppedContextCount: 0, repaired: true, snapshot: emptyNavigation() };
         }
-        const worktreeId = normalizePrimaryWorktree(
+        const worktreeId = normalizeWorkspaceWorktreeId(
             projectId,
             fallbackScope.worktreeId ?? firstTabWorktreeId(legacy),
         );
@@ -116,7 +120,7 @@ export function normalizeWindowWorkspaceRestoreRecord(
 function normalizeContext(value: unknown): PersistedWorkspaceContext | null {
     if (!isRecord(value) || typeof value.projectId !== "string" || value.projectId.length === 0) return null;
     const rawWorktreeId = typeof value.worktreeId === "string" ? value.worktreeId : null;
-    const worktreeId = normalizePrimaryWorktree(value.projectId, rawWorktreeId);
+    const worktreeId = normalizeWorkspaceWorktreeId(value.projectId, rawWorktreeId);
     const workspace = normalizeLayout(value.workspace);
     if (!workspace) return null;
     const scopedWorkspace: WorkspaceLayoutSnapshot = {
@@ -229,11 +233,7 @@ function firstTabWorktreeId(layout: WorkspaceLayoutSnapshot | null): string | nu
 }
 
 function workspaceContextKey(projectId: string, worktreeId: string | null): string {
-    return `${projectId}::${worktreeId ?? "__primary__"}`;
-}
-
-function normalizePrimaryWorktree(projectId: string, worktreeId: string | null): string | null {
-    return worktreeId === `${projectId}:primary` ? null : worktreeId;
+    return getWorkspaceContextKey(projectId, worktreeId);
 }
 
 function emptyNavigation(): WorkspaceNavigationSnapshot {

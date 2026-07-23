@@ -9,11 +9,11 @@ interface InstallApplicationMenuOptions {
         direction: "decrease" | "increase" | "reset",
     ) => void;
     readonly closeFocusedWindowSurface: () => void;
-    readonly focusProjectWindow: (projectId: string) => boolean;
     readonly getFocusedMainWindowContext: () => WindowContextSnapshot | null;
     readonly openNewMainWindow: (
         projectId?: string | null,
     ) => Promise<void> | void;
+    readonly openWorkspaceSwitcher: () => void;
     readonly reopenLastClosedTab: () => void;
     readonly toggleSidebar: () => void;
     readonly openSettingsWindow: (
@@ -66,20 +66,11 @@ function buildMenuTemplate(
                 label: "New Window",
             },
             {
-                accelerator: "CmdOrCtrl+Alt+N",
+                accelerator: "CmdOrCtrl+Shift+O",
                 click: () => {
-                    const context = options.getFocusedMainWindowContext();
-                    const projectId = context?.projectId ?? null;
-                    if (!projectId) {
-                        void options.openNewMainWindow(null);
-                        return;
-                    }
-
-                    if (!options.focusProjectWindow(projectId)) {
-                        void options.openNewMainWindow(projectId);
-                    }
+                    options.openWorkspaceSwitcher();
                 },
-                label: "Open Current Project In New Window",
+                label: "Switch Workspace…",
             },
             { type: "separator" },
             {

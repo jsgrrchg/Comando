@@ -478,38 +478,28 @@ export function App() {
         },
         [],
     );
-    const requestMoveWorkspaceContextToNewWindow = useCallback(
-        (contextKey: string) => {
+    const requestMoveWorkspaceContext = useCallback(
+        (contextKey: string, targetWindowId: string | null) => {
             const workspaceState = useWorkspaceStore.getState();
             const context = workspaceState.contextsByKey[contextKey];
-            const workspaceSnapshot =
-                workspaceState.getContextNavigationSnapshot(contextKey);
-            if (!context || !workspaceSnapshot) {
+            if (!context) {
                 return Promise.resolve();
             }
 
-            const tabsById =
-                workspaceState.activeContextKey === contextKey
-                    ? workspaceState.tabsById
-                    : context.workspace.tabsById;
-            return closeWorkspaceTabsWithConfirmation(
-                Object.keys(tabsById),
-                async () => {
-                    const comandoApi = getComandoApi();
-                    if (!comandoApi) {
-                        throw new Error("The desktop bridge is unavailable.");
-                    }
+            const comandoApi = getComandoApi();
+            if (!comandoApi) {
+                return Promise.reject(
+                    new Error("The desktop bridge is unavailable."),
+                );
+            }
 
-                    await comandoApi.openProjectWindow({
-                        forceNewWindow: true,
-                        projectId: context.projectId,
-                        workspaceSnapshot,
-                        worktreeId: context.worktreeId,
-                    });
-                    await useWorkspaceStore.getState().closeContext(contextKey);
-                },
-                { tabsById },
-            );
+            // The main process owns the atomic persistence and live surface move.
+            return comandoApi.moveWorkspaceContext({
+                contextKey,
+                projectId: context.projectId,
+                targetWindowId,
+                worktreeId: context.worktreeId,
+            });
         },
         [],
     );
@@ -4966,9 +4956,7 @@ export function App() {
             onCloseContext={(contextKey) => {
                 void requestCloseWorkspaceContext(contextKey);
             }}
-            onMoveContextToNewWindow={(contextKey) => {
-                void requestMoveWorkspaceContextToNewWindow(contextKey);
-            }}
+            onMoveContext={requestMoveWorkspaceContext}
             onOpenProject={handleOpenProject}
             onOpenProjects={handleOpenProjects}
             onOpenSettings={(initialCategory) =>

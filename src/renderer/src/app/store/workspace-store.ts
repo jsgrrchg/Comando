@@ -25,6 +25,10 @@ import {
     type ActiveAiRuntimeId,
 } from "@shared/ai-runtimes";
 import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
+import {
+    areWorkspaceWorktreeIdsEquivalent,
+    normalizeWorkspaceWorktreeId,
+} from "@shared/workspace-context";
 
 import {
     activatePane,
@@ -1284,8 +1288,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             });
             return;
         }
-        const normalizedWorktreeId =
-            worktreeId === `${projectId}:primary` ? null : worktreeId;
+        const normalizedWorktreeId = normalizeWorkspaceWorktreeId(
+            projectId,
+            worktreeId,
+        );
         const contextKey = getProjectContextKey(
             projectId,
             normalizedWorktreeId,
@@ -4427,23 +4433,11 @@ function getComandoApi() {
     return comandoWindow.comando;
 }
 
-function areWorkspaceWorktreeIdsEquivalent(
-    projectId: string | null,
-    left: string | null | undefined,
-    right: string | null | undefined,
-): boolean {
-    return projectId
-        ? areGitWorktreeIdsEquivalent(projectId, left ?? null, right ?? null)
-        : (left ?? null) === (right ?? null);
-}
-
 function getWorkspaceWorktreeScopeKey(
     projectId: string,
     worktreeId: string | null | undefined,
 ): string {
-    return areGitWorktreeIdsEquivalent(projectId, worktreeId ?? null, null)
-        ? "__primary__"
-        : (worktreeId ?? "__primary__");
+    return normalizeWorkspaceWorktreeId(projectId, worktreeId) ?? "__primary__";
 }
 
 function isFileTabAffectedByProjectInvalidation(
