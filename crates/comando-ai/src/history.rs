@@ -775,8 +775,14 @@ impl AiHistoryStore {
             && legacy_fallback_available
             && self.with_legacy_transcript_backfill_index(session_id, |index| {
                 // Every session starts with an empty compatibility file; it
-                // is not migration input until it contains a record.
+                // is not migration input until it contains a record. A
+                // previously invalidated backfill still needs completion.
                 if index.len() == 0 {
+                    if transcript_store.has_data_source()
+                        && !transcript_store.legacy_transcript_backfill_complete(session_id)?
+                    {
+                        transcript_store.advance_legacy_transcript_backfill(session_id, 0, true)?;
+                    }
                     return Ok(false);
                 }
                 if transcript_store
@@ -4414,6 +4420,37 @@ mod tests {
                 .load_native_transcript_payload(&session_id, &obsolete_payload_ref, 1024)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn transcript_storage_state_completes_a_legacy_backfill_truncated_to_empty() {
+        let (_temp, store) = store();
+        let session_id = SessionId("empty_legacy_transcript_after_truncation".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, vec![message("legacy-1", "first")])
+            .unwrap();
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+
+        store
+            .save_transcript_window(&session_id, Vec::new())
+            .unwrap();
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        assert!(
+            store
+                .load_transcript_block_metadata(&session_id)
+                .unwrap()
+                .is_empty()
+        );
+        let snapshot = store.load_session_snapshot(&session_id).unwrap().unwrap();
+        assert!(snapshot.messages.is_empty());
     }
 
     #[test]
