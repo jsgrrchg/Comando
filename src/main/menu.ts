@@ -14,6 +14,7 @@ interface InstallApplicationMenuOptions {
     readonly openNewMainWindow: (
         projectId?: string | null,
     ) => Promise<void> | void;
+    readonly openWorkspaceSwitcher: () => void;
     readonly reopenLastClosedTab: () => void;
     readonly toggleSidebar: () => void;
     readonly openSettingsWindow: (
@@ -80,6 +81,13 @@ function buildMenuTemplate(
                     }
                 },
                 label: "Open Current Project In New Window",
+            },
+            {
+                accelerator: "CmdOrCtrl+Shift+O",
+                click: () => {
+                    options.openWorkspaceSwitcher();
+                },
+                label: "Switch Workspace…",
             },
             { type: "separator" },
             {

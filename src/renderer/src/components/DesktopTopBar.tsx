@@ -16,6 +16,7 @@ import {
 import { writeClipboardText } from "../app/utils/clipboard";
 import { SidebarGitScopePicker } from "./sidebar/SidebarGitScopePicker";
 import { useProjectContextTabDrag } from "./useProjectContextTabDrag";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 
 export type { ProjectContextMenuProject } from "./ProjectContextMenu";
 
@@ -76,6 +77,7 @@ export function DesktopTopBar({
     settingsLabel,
 }: DesktopTopBarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
+    const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
     const menuRootRef = useRef<HTMLDivElement | null>(null);
     const tabsRef = useRef<HTMLDivElement | null>(null);
     const contextTabDrag = useProjectContextTabDrag({
@@ -107,6 +109,13 @@ export function DesktopTopBar({
             window.removeEventListener("keydown", handleKeyDown);
         };
     }, [menuOpen]);
+
+    useEffect(() => {
+        return window.comando?.onWorkspaceSwitcherRequested?.(() => {
+            setMenuOpen(false);
+            setWorkspaceSwitcherOpen(true);
+        });
+    }, []);
 
     useEffect(() => {
         const tabs = tabsRef.current;
@@ -156,6 +165,7 @@ export function DesktopTopBar({
     };
 
     return (
+        <>
         <header
             className="app-drag desktop-titlebar project-context-titlebar relative flex shrink-0 items-center select-none"
             style={{
@@ -331,6 +341,33 @@ export function DesktopTopBar({
 
             <div className="app-no-drag project-context-menu-root" ref={menuRootRef}>
                 <button
+                    aria-expanded={workspaceSwitcherOpen}
+                    aria-haspopup="dialog"
+                    aria-label="Switch workspace"
+                    className="project-context-add"
+                    onClick={() => {
+                        setMenuOpen(false);
+                        setWorkspaceSwitcherOpen(true);
+                    }}
+                    title="Switch workspace"
+                    type="button"
+                >
+                    <svg
+                        aria-hidden="true"
+                        fill="none"
+                        height="12"
+                        viewBox="0 0 14 14"
+                        width="12"
+                    >
+                        <path
+                            d="M3 3.25h8M3 7h8M3 10.75h8"
+                            stroke="currentColor"
+                            strokeLinecap="round"
+                            strokeWidth="1.35"
+                        />
+                    </svg>
+                </button>
+                <button
                     aria-expanded={menuOpen}
                     aria-haspopup="dialog"
                     aria-label="Open project or worktree"
@@ -375,6 +412,12 @@ export function DesktopTopBar({
                 )}
             </div>
         </header>
+        <WorkspaceSwitcher
+            onClose={() => setWorkspaceSwitcherOpen(false)}
+            open={workspaceSwitcherOpen}
+            projects={menuProjects}
+        />
+        </>
     );
 }
 

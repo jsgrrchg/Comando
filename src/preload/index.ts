@@ -868,6 +868,16 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSwitcherRequested: (listener) => {
+        const handler = () => listener();
+        ipcRenderer.on(IPC_EVENTS.workspaceSwitcherRequested, handler);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSwitcherRequested,
+                handler,
+            );
+        };
+    },
     onWorkspaceFlushRequested: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,

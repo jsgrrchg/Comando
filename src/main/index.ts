@@ -423,6 +423,12 @@ if (!hasSingleInstanceLock) {
                 openNewMainWindow: (projectId) => {
                     void openNewMainWindow(projectId ?? null);
                 },
+                openWorkspaceSwitcher: () => {
+                    const focusedWindow = windowRegistry.getFocusedMainWindow();
+                    focusedWindow?.webContents.send(
+                        IPC_EVENTS.workspaceSwitcherRequested,
+                    );
+                },
                 reopenLastClosedTab: () => {
                     const focusedWindow = windowRegistry.getFocusedMainWindow();
                     if (!focusedWindow) {

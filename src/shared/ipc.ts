@@ -213,6 +213,7 @@ export const IPC_EVENTS = {
     sidebarToggleRequested: "shell:sidebar-toggle-requested",
     workspaceCloseActiveTab: "workspace:close-active-tab",
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
+    workspaceSwitcherRequested: "workspace:switcher-requested",
     workspaceFlushRequested: "workspace:flush-requested",
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
     workspaceSurfaceSnapshotRequested: "workspace:surface-snapshot-requested",
@@ -3868,6 +3869,7 @@ export interface ComandoApi {
     onSidebarToggleRequested: (listener: () => void) => () => void;
     onWorkspaceCloseActiveTab: (listener: () => void) => () => void;
     onWorkspaceReopenLastClosedTab: (listener: () => void) => () => void;
+    onWorkspaceSwitcherRequested: (listener: () => void) => () => void;
     onWorkspaceFlushRequested: (
         listener: () => Promise<void> | void,
     ) => () => void;
