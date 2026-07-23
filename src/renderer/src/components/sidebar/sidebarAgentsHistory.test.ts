@@ -9,6 +9,7 @@ import type {
 
 import {
     applySessionUpdateToSidebarHistory,
+    mergeOpenSessionFallbacks,
     SIDEBAR_AGENTS_HISTORY_LIMIT,
 } from "./sidebarAgentsHistory";
 
@@ -269,6 +270,102 @@ describe("applySessionUpdateToSidebarHistory", () => {
         });
     });
 
+    it("preserves known history metadata when a partial snapshot omits messages", () => {
+        const sessions = [
+            createSummary({
+                messageCount: 12,
+                preview: "Persisted transcript preview.",
+                title: "Manual title",
+            }),
+        ] as const;
+
+        const result = applySessionUpdateToSidebarHistory({
+            limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+            scope: DEFAULT_SCOPE,
+            sessions,
+            update: {
+                kind: "snapshot",
+                snapshot: createSnapshot({
+                    manualTitle: "Manual title",
+                    messages: [],
+                    title: "Runtime title",
+                    updatedAt: "2026-04-19T12:30:00.000Z",
+                }),
+            },
+        });
+
+        expect(result.sessions).toHaveLength(1);
+        expect(result.sessions[0]).toMatchObject({
+            messageCount: 12,
+            preview: "Persisted transcript preview.",
+            title: "Manual title",
+            updatedAt: "2026-04-19T12:30:00.000Z",
+        });
+    });
+
+    it("preserves known history metadata when a partial patch has no messages", () => {
+        const sessions = [
+            createSummary({
+                messageCount: 12,
+                preview: "Persisted transcript preview.",
+            }),
+        ] as const;
+
+        const result = applySessionUpdateToSidebarHistory({
+            limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+            scope: DEFAULT_SCOPE,
+            sessions,
+            update: {
+                kind: "patch",
+                patch: {
+                    changes: {
+                        messages: [],
+                        updatedAt: "2026-04-19T12:30:00.000Z",
+                    },
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                },
+            },
+        });
+
+        expect(result.sessions[0]).toMatchObject({
+            messageCount: 12,
+            preview: "Persisted transcript preview.",
+            updatedAt: "2026-04-19T12:30:00.000Z",
+        });
+    });
+
+    it("keeps the manual title when a runtime title patch arrives", () => {
+        const sessions = [
+            createSummary({
+                title: "Manual title",
+            }),
+        ] as const;
+
+        const result = applySessionUpdateToSidebarHistory({
+            limit: SIDEBAR_AGENTS_HISTORY_LIMIT,
+            scope: DEFAULT_SCOPE,
+            sessions,
+            update: {
+                kind: "patch",
+                patch: {
+                    changes: {
+                        manualTitle: "Manual title",
+                        title: "Late runtime title",
+                        updatedAt: "2026-04-19T12:30:00.000Z",
+                    },
+                    runtimeId: "codex",
+                    sessionId: "session-1",
+                },
+            },
+        });
+
+        expect(result.sessions[0]).toMatchObject({
+            title: "Manual title",
+            updatedAt: "2026-04-19T12:30:00.000Z",
+        });
+    });
+
     it("removes a known session when a patch moves it outside the active scope", () => {
         const sessions = [createSummary()] as const;
         const update: AiSessionUpdate = {
@@ -433,5 +530,37 @@ describe("applySessionUpdateToSidebarHistory", () => {
                 sessionId: "child",
             }),
         ]);
+    });
+});
+
+describe("mergeOpenSessionFallbacks", () => {
+    it("keeps every open session visible without duplicating history rows", () => {
+        const persisted = createSummary({ sessionId: "persisted" });
+        const openOnly = createSummary({
+            messageCount: 0,
+            preview: null,
+            sessionId: "open-only",
+            title: "Open Session",
+            updatedAt: "2026-04-19T11:00:00.000Z",
+        });
+
+        const result = mergeOpenSessionFallbacks(
+            [persisted],
+            [
+                openOnly,
+                createSummary({
+                    sessionId: "persisted",
+                    title: "Duplicate fallback",
+                }),
+            ],
+        );
+
+        expect(result.map((session) => session.sessionId)).toEqual([
+            "open-only",
+            "persisted",
+        ]);
+        expect(
+            result.find((session) => session.sessionId === "persisted")?.title,
+        ).toBe("Session One");
     });
 });

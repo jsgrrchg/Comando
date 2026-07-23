@@ -71,7 +71,6 @@ import {
     attachNativeReviewDeltaToTrackedFile,
     toNativeReviewDeltaReference,
 } from "@shared/ai-review-delta";
-import { normalizeAiSessionStatusTitle } from "@shared/ai-session-events";
 import {
     beginReviewWorkCycle,
     consolidateReviewDiffs,
@@ -1515,7 +1514,10 @@ export class AiService {
                         return launch.persistedSnapshot;
                     }
 
-                    return await nativeAi.prepareSession({ input, launch });
+                    return await nativeAi.prepareSession({
+                        input: nativePrepareLaunch.input,
+                        launch: nativePrepareLaunch.launch,
+                    });
                 },
             );
             this.#nativeSessionIds.add(snapshot.sessionId);
@@ -3547,7 +3549,6 @@ export class AiService {
         }
 
         if (event.kind === "status") {
-            const title = normalizeAiSessionStatusTitle(event.title);
             return {
                 ...base,
                 activeTurnStartedAt: event.activeTurnStartedAt,
@@ -3561,10 +3562,6 @@ export class AiService {
                         ? snapshot.pendingUserInput
                         : null,
                 status: event.status,
-                title: title
-                    ? setRuntimeTitleOnSnapshot(snapshot, title, event.updatedAt)
-                          .title
-                    : snapshot.title,
             };
         }
 
@@ -4091,7 +4088,6 @@ export class AiService {
                 ? {
                       ...incomingSnapshot,
                       manualTitle: previousSnapshot.manualTitle,
-                      title: previousSnapshot.title,
                   }
                 : incomingSnapshot;
         const previousReviewActionLog = previousSnapshot
@@ -4275,7 +4271,13 @@ export class AiService {
             launch.persistedSnapshot,
         );
         if (rootSnapshot.sessionId === launch.persistedSnapshot.sessionId) {
-            return { input, launch };
+            return {
+                input: {
+                    ...input,
+                    title: launch.persistedSnapshot.title,
+                },
+                launch,
+            };
         }
 
         const rootInput: SessionDescriptor = {
@@ -4433,6 +4435,9 @@ export class AiService {
             input: {
                 ...input,
                 additionalRoots,
+                // Tab titles are display caches and may contain a manual
+                // override; the runtime must receive its own base title.
+                title: persistedSnapshot.title,
                 worktreeId: input.worktreeId ?? null,
             },
             ownerWindowId,

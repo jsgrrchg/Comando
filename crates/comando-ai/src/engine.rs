@@ -510,12 +510,6 @@ impl AiEngine {
         &self,
         input: comando_types::ai::NativeAiRenameSessionInput,
     ) -> AiResult<()> {
-        if let Ok(mut sessions) = self.lock_sessions()
-            && let Ok(session) = sessions.get_mut(&input.session_id)
-        {
-            session.session.title = input.title.clone();
-            session.session.updated_at = now_iso8601();
-        }
         if let Some(store) = self.history_store()?
             && store.has_session(&input.session_id)
         {
@@ -1828,17 +1822,19 @@ fn is_reasoning_effort_config_option(option: &Value) -> bool {
 }
 
 fn preferred_status_title(metadata: &AiHistorySessionMetadata, incoming_title: &str) -> String {
-    metadata
-        .custom_title
-        .as_deref()
-        .or_else(|| {
-            metadata
-                .subagent
-                .as_ref()
-                .and_then(|subagent| subagent.nickname.as_deref())
-        })
-        .unwrap_or(incoming_title)
-        .to_string()
+    if let Some(nickname) = metadata
+        .subagent
+        .as_ref()
+        .and_then(|subagent| subagent.nickname.as_deref())
+    {
+        return nickname.to_string();
+    }
+    let incoming_title = incoming_title.trim();
+    if incoming_title.is_empty() {
+        metadata.title.clone()
+    } else {
+        incoming_title.to_string()
+    }
 }
 
 fn native_status_from_event(status: &str) -> NativeAiSessionStatus {

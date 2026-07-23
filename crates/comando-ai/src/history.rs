@@ -163,15 +163,17 @@ impl AiHistorySessionMetadata {
         }
     }
 
+    pub fn runtime_title(&self) -> &str {
+        self.subagent
+            .as_ref()
+            .and_then(|subagent| subagent.nickname.as_deref())
+            .unwrap_or(&self.title)
+    }
+
     pub fn display_title(&self) -> &str {
         self.custom_title
             .as_deref()
-            .or_else(|| {
-                self.subagent
-                    .as_ref()
-                    .and_then(|subagent| subagent.nickname.as_deref())
-            })
-            .unwrap_or(&self.title)
+            .unwrap_or_else(|| self.runtime_title())
     }
 }
 
@@ -847,8 +849,8 @@ impl AiHistoryStore {
             let index = self.load_or_repair_index(session_id)?;
             self.read_payloads_by_index(session_id, &index, 0, index.len())?
         };
-        let title = metadata.display_title().to_string();
-
+        let title = metadata.runtime_title().to_string();
+        let manual_title = metadata.custom_title.clone();
         Ok(Some(NativeAiSessionSnapshot {
             session_id: metadata.session_id,
             parent_session_id: metadata.parent_session_id,
@@ -857,6 +859,7 @@ impl AiHistoryStore {
             project_id: metadata.project_id,
             worktree_id: metadata.worktree_id,
             title,
+            manual_title,
             status: metadata.status,
             updated_at: metadata.updated_at,
             active_turn_started_at: state.active_turn_started_at,
@@ -1006,7 +1009,6 @@ impl AiHistoryStore {
 
     pub fn rename_session(&self, session_id: &SessionId, title: String) -> AiResult<()> {
         let mut metadata = self.load_metadata(session_id)?;
-        metadata.title = normalize_title(title.clone());
         metadata.custom_title = Some(normalize_title(title));
         metadata.updated_at = now_iso8601();
         self.save_metadata(&metadata)
@@ -1771,6 +1773,7 @@ impl<'a> LegacyAiHistoryReader<'a> {
                 .and_then(Value::as_str)
                 .unwrap_or(&row.title)
                 .to_string(),
+            manual_title: string_field(&state, "manualTitle"),
             status: native_status_from_legacy(
                 state
                     .get("status")
@@ -3362,7 +3365,11 @@ mod tests {
             .load_session_snapshot(&child.session_id)
             .unwrap()
             .unwrap();
-        assert_eq!(renamed_snapshot.title, "Custom child title");
+        assert_eq!(renamed_snapshot.title, "Kierkegaard");
+        assert_eq!(
+            renamed_snapshot.manual_title.as_deref(),
+            Some("Custom child title")
+        );
     }
 
     #[test]
@@ -3384,7 +3391,8 @@ mod tests {
             .load_session_snapshot(&metadata.session_id)
             .unwrap()
             .unwrap();
-        assert_eq!(snapshot.title, "Renamed");
+        assert_eq!(snapshot.title, metadata.title);
+        assert_eq!(snapshot.manual_title.as_deref(), Some("Renamed"));
         assert_eq!(snapshot.messages, vec![message("message_1", "hello")]);
         assert!(
             store
