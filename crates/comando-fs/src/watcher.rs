@@ -248,11 +248,12 @@ impl WatcherRegistry {
 
     #[cfg(feature = "test-hooks")]
     pub fn queue_test_invalidation_after_delay(
-        &self,
+        &mut self,
         root: ProjectRoot,
         relative_path: String,
         delay: Duration,
     ) {
+        self.roots.insert(watch_key(&root), root.clone());
         let pending = Arc::clone(&self.pending);
         let pending_git_invalidations = Arc::clone(&self.pending_git_invalidations);
         std::thread::spawn(move || {

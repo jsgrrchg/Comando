@@ -5316,6 +5316,95 @@ mod tests {
     }
 
     #[test]
+    fn drops_delayed_worktree_events_after_registry_sync_removes_the_worktree() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let database_path = temp_dir.path().join("comando.sqlite3");
+        let project_path = temp_dir.path().join("project");
+        let worktree_path = temp_dir.path().join("worktree");
+        fs::create_dir_all(&project_path).expect("project dir");
+        fs::create_dir_all(&worktree_path).expect("worktree dir");
+        create_current_schema(&database_path);
+        let mut backend = NativeBackend::default();
+
+        let open_result = backend.handle_request(request(
+            "persistence_open_store",
+            json!({
+                "appDataDir": temp_dir.path(),
+                "databasePath": database_path,
+                "mode": "write",
+            }),
+        ));
+        assert!(only_response(&open_result).ok);
+
+        let add_result = backend.handle_request(request(
+            "project_add",
+            json!({
+                "projectPaths": [project_path],
+                "ownerWindowId": null,
+            }),
+        ));
+        let project_id = only_response(&add_result).result.as_ref().unwrap()["projectIdsToOpen"][0]
+            .as_str()
+            .expect("project id")
+            .to_string();
+
+        let add_worktree_result = backend.handle_request(request(
+            "project_sync_worktrees",
+            json!({
+                "projectId": project_id,
+                "worktrees": [
+                    { "rootPath": project_path, "branchName": null, "headSha": null },
+                    { "rootPath": worktree_path, "branchName": "feature", "headSha": null }
+                ],
+            }),
+        ));
+        let worktree_id = only_response(&add_worktree_result)
+            .result
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .expect("worktrees")
+            .iter()
+            .find(|worktree| worktree["rootPath"] == json!(worktree_path))
+            .and_then(|worktree| worktree["id"].as_str())
+            .expect("secondary worktree id")
+            .to_string();
+
+        let watch_sync_result =
+            backend.handle_request(request("fs_watch_sync_registry", json!({})));
+        assert!(only_response(&watch_sync_result).ok);
+
+        backend.fs_service.queue_test_invalidation_after_delay(
+            comando_fs::ProjectRoot {
+                project_id: project_id.clone().into(),
+                worktree_id: Some(worktree_id.clone().into()),
+                root_path: worktree_path.clone(),
+            },
+            "src/stale.ts".to_string(),
+            std::time::Duration::from_millis(50),
+        );
+
+        let remove_worktree_result = backend.handle_request(request(
+            "project_sync_worktrees",
+            json!({
+                "projectId": project_id,
+                "worktrees": [
+                    { "rootPath": project_path, "branchName": null, "headSha": null }
+                ],
+            }),
+        ));
+        assert!(only_response(&remove_worktree_result).ok);
+
+        let watch_resync_result =
+            backend.handle_request(request("fs_watch_sync_registry", json!({})));
+        assert!(only_response(&watch_resync_result).ok);
+
+        std::thread::sleep(std::time::Duration::from_millis(80));
+
+        assert!(backend.drain_fs_events(true).is_empty());
+    }
+
+    #[test]
     fn project_errors_do_not_include_raw_paths() {
         let temp_dir = TempDir::new().expect("temp dir");
         let database_path = temp_dir.path().join("comando.sqlite3");
