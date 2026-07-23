@@ -579,6 +579,10 @@ impl AiHistoryStore {
         metadata.preview = derive_session_preview(records.iter().map(|record| &record.payload));
         metadata.updated_at = now_iso8601();
         self.save_index(session_id, &next_index)?;
+        if reuse_len < index.len() || reuse_len < records.len() {
+            self.transcript_store(session_id)
+                .invalidate_legacy_transcript_backfill_from(session_id, reuse_len)?;
+        }
         self.save_metadata(&metadata)?;
         self.compact_transcript_if_needed(session_id)?;
         Ok(())
@@ -765,6 +769,11 @@ impl AiHistoryStore {
         let legacy_fallback_available = self.transcript_path(session_id).exists();
         let legacy_transcript_pending = legacy_fallback_available
             && self.with_legacy_transcript_backfill_index(session_id, |index| {
+                // Every session starts with an empty compatibility file; it
+                // is not migration input until it contains a record.
+                if index.len() == 0 {
+                    return Ok(false);
+                }
                 if transcript_store
                     .legacy_transcript_backfill_is_current(session_id, index.len())?
                 {
@@ -2474,7 +2483,14 @@ fn legacy_transcript_entry(
         .and_then(Value::as_str)
         .map(str::to_string)
         .unwrap_or_else(now_iso8601);
-    let payload_ref = format!("legacy-message:{message_id}");
+    let payload_value = json!({ "kind": "message", "message": message });
+    // Payload refs include their content version because sealed payloads are
+    // immutable while the compatibility transcript may revise a message.
+    let payload_ref = format!(
+        "legacy-message:{}:{}",
+        sha256_hex(message_id.as_bytes()),
+        hash_message_payload(&payload_value)?
+    );
     let preview = message_preview_text(&message).map(truncate_session_preview);
 
     Ok((
@@ -2504,7 +2520,7 @@ fn legacy_transcript_entry(
         },
         AiTranscriptPayloadWrite {
             payload_ref,
-            value: json!({ "kind": "message", "message": message }),
+            value: payload_value,
         },
     ))
 }
@@ -4126,7 +4142,11 @@ mod tests {
             .unwrap();
         assert_eq!(block.entries.len(), 2);
         let payload = store
-            .load_native_transcript_payload(&session_id, "legacy-message:legacy-1", 1024)
+            .load_native_transcript_payload(
+                &session_id,
+                block.entries[0].payload_ref.as_deref().unwrap(),
+                1024,
+            )
             .unwrap();
         assert_eq!(payload.value["kind"], "message");
         assert_eq!(payload.value["message"]["id"], "legacy-1");
@@ -4209,6 +4229,44 @@ mod tests {
                 .messages
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn transcript_storage_state_reconciles_a_revised_legacy_message() {
+        let (_temp, store) = store();
+        let session_id = SessionId("reconcile_revised_legacy_message".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, vec![message("legacy-1", "draft")])
+            .unwrap();
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+
+        store
+            .save_transcript_window(&session_id, vec![message("legacy-1", "complete")])
+            .unwrap();
+        let fallback = store.load_session_snapshot(&session_id).unwrap().unwrap();
+        assert_eq!(fallback.messages[0]["content"], "complete");
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
+        let block = store
+            .load_transcript_block(&session_id, &metadata[0].block_id)
+            .unwrap()
+            .unwrap();
+        let payload = store
+            .load_native_transcript_payload(
+                &session_id,
+                block.entries[0].payload_ref.as_deref().unwrap(),
+                1024,
+            )
+            .unwrap();
+        assert_eq!(payload.value["message"]["content"], "complete");
     }
 
     #[test]

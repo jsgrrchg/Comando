@@ -131,6 +131,35 @@ impl TranscriptStore {
         Ok(self.legacy_transcript_backfill_next_offset(session_id)? >= legacy_record_count)
     }
 
+    pub(crate) fn invalidate_legacy_transcript_backfill_from(
+        &self,
+        session_id: &SessionId,
+        first_changed_offset: usize,
+    ) -> AiResult<()> {
+        if !self.database_path.exists() {
+            return Ok(());
+        }
+
+        let connection = self.open(session_id, false)?;
+        // The JSONL writer can revise streaming messages in place, so retain
+        // the earliest affected cursor instead of trusting a completed flag.
+        connection
+            .execute(
+                "UPDATE transcript_sessions
+                 SET
+                    legacy_transcript_backfill_complete = 0,
+                    legacy_transcript_backfill_next_offset = MIN(
+                        legacy_transcript_backfill_next_offset,
+                        ?2
+                    )
+                 WHERE session_id = ?1",
+                params![session_id.0, first_changed_offset as i64],
+            )
+            .map_err(|error| transcript_sql("invalidate legacy transcript backfill", error))?;
+
+        Ok(())
+    }
+
     pub(crate) fn advance_legacy_transcript_backfill(
         &self,
         session_id: &SessionId,
