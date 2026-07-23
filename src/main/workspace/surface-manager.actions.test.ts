@@ -83,6 +83,20 @@ describe("WorkspaceSurfaceManager action routing", () => {
         electronMocks.reset();
     });
 
+    it("waits until a new host renderer registers its surface container", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const ready = manager.waitForHost("host-1", 100);
+
+        manager.syncHost(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+
+        await expect(ready).resolves.toBe(true);
+        await expect(manager.waitForHost("host-1", 100)).resolves.toBe(true);
+    });
+
     it("delivers only to the active surface and rejects stale scopes", () => {
         const manager = new WorkspaceSurfaceManager();
         const host = createHostWindow();

@@ -104,6 +104,10 @@ export interface WorkspaceSurfaceTransferResult {
  */
 export class WorkspaceSurfaceManager {
     readonly #hostsByWindowId = new Map<string, WorkspaceSurfaceHostRecord>();
+    readonly #hostReadyWaitersByWindowId = new Map<
+        string,
+        Set<(ready: boolean) => void>
+    >();
     readonly #surfaceIdsByWebContentsId = new Map<number, string>();
     readonly #surfacesById = new Map<string, WorkspaceSurfaceRecord>();
     readonly #actionsById = new Map<
@@ -135,6 +139,7 @@ export class WorkspaceSurfaceManager {
                 surfaceIdsByContextKey: new Map(),
             };
             this.#hostsByWindowId.set(host.hostWindowId, host);
+            this.#resolveHostReadyWaiters(host.hostWindowId, true);
             const createdHost = host;
             hostWindow.on("resize", () => {
                 this.#scheduleActiveSurfaceLayout(createdHost);
@@ -174,6 +179,30 @@ export class WorkspaceSurfaceManager {
         this.#rejectInactiveActions(host);
         this.#applyVisibility(host, { focusActive: activeContextChanged });
         return host.snapshot;
+    }
+
+    waitForHost(hostWindowId: string, timeoutMs = 10_000): Promise<boolean> {
+        if (this.#hostsByWindowId.has(hostWindowId)) {
+            return Promise.resolve(true);
+        }
+        return new Promise<boolean>((resolve) => {
+            const finish = (ready: boolean) => {
+                clearTimeout(timer);
+                const waiters = this.#hostReadyWaitersByWindowId.get(hostWindowId);
+                waiters?.delete(finish);
+                if (waiters?.size === 0) {
+                    this.#hostReadyWaitersByWindowId.delete(hostWindowId);
+                }
+                resolve(ready);
+            };
+            const timer = setTimeout(() => {
+                finish(false);
+            }, timeoutMs);
+            const waiters =
+                this.#hostReadyWaitersByWindowId.get(hostWindowId) ?? new Set();
+            waiters.add(finish);
+            this.#hostReadyWaitersByWindowId.set(hostWindowId, waiters);
+        });
     }
 
     activate(hostWindowId: string, contextKey: string): boolean {
@@ -758,6 +787,7 @@ export class WorkspaceSurfaceManager {
     }
 
     disposeHost(hostWindowId: string): void {
+        this.#resolveHostReadyWaiters(hostWindowId, false);
         const host = this.#hostsByWindowId.get(hostWindowId);
         if (!host) {
             return;
@@ -769,6 +799,17 @@ export class WorkspaceSurfaceManager {
             this.#destroySurface(host, surfaceId);
         }
         this.#hostsByWindowId.delete(hostWindowId);
+    }
+
+    #resolveHostReadyWaiters(hostWindowId: string, ready: boolean): void {
+        const waiters = this.#hostReadyWaitersByWindowId.get(hostWindowId);
+        if (!waiters) {
+            return;
+        }
+        this.#hostReadyWaitersByWindowId.delete(hostWindowId);
+        for (const resolve of waiters) {
+            resolve(ready);
+        }
     }
 
     #createSurface(

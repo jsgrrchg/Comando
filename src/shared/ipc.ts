@@ -145,6 +145,7 @@ export const IPC_CHANNELS = {
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
     openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
     showWorkspaceContextMenu: "workspace:show-context-menu",
+    moveWorkspaceContext: "workspace:move-context",
     showNativeContextMenu: "app:show-native-context-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
     setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
@@ -2324,14 +2325,28 @@ export type WorkspaceSurfaceActionDispatchResult =
 
 export interface WorkspaceContextMenuInput {
     readonly canCopyFullPath: boolean;
+    readonly contextKey: string;
+    readonly projectId: string;
+    readonly worktreeId: string | null;
     readonly x: number;
     readonly y: number;
 }
 
 export type WorkspaceContextMenuAction =
-    | "copy_full_path"
-    | "move_to_new_window"
-    | "close";
+    | { readonly type: "copy_full_path" }
+    | {
+          readonly type: "move";
+          /** A null destination asks the main process to create an empty window. */
+          readonly targetWindowId: string | null;
+      }
+    | { readonly type: "close" };
+
+export interface MoveWorkspaceContextInput {
+    readonly contextKey: string;
+    readonly projectId: string;
+    readonly targetWindowId: string | null;
+    readonly worktreeId: string | null;
+}
 
 export type NativeContextMenuEntry =
     | {
@@ -3464,6 +3479,7 @@ export interface ComandoApi {
     showWorkspaceContextMenu: (
         input: WorkspaceContextMenuInput,
     ) => Promise<WorkspaceContextMenuAction | null>;
+    moveWorkspaceContext: (input: MoveWorkspaceContextInput) => Promise<void>;
     showNativeContextMenu: (
         input: NativeContextMenuInput,
     ) => Promise<string | null>;

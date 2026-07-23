@@ -20,6 +20,7 @@ import {
     type AppBootstrapSnapshot,
     type GitRepositoryInvalidation,
     type GitRepositorySnapshot,
+    type MoveWorkspaceContextInput,
     type OpenProjectWindowInput,
     type PersistenceSnapshot,
     type ProjectTreeInvalidation,
@@ -28,7 +29,10 @@ import {
     type WindowContextSnapshot,
     type WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
-import { normalizeWorkspaceWorktreeId } from "@shared/workspace-context";
+import {
+    areWorkspaceScopesEquivalent,
+    normalizeWorkspaceWorktreeId,
+} from "@shared/workspace-context";
 import {
     nativeProjectTreeInvalidationToIpc,
     type NativeCapabilitySet,
@@ -374,6 +378,7 @@ if (!hasSingleInstanceLock) {
                 gitService,
                 githubService,
                 openProjectWindow: openOrFocusProjectWindow,
+                moveWorkspaceContext,
                 projectService,
                 settingsService,
                 terminalService,
@@ -981,6 +986,200 @@ function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
     updateMainWindowTitle(window, context.projectId);
 
     return window;
+}
+
+async function moveWorkspaceContext(
+    sourceWindowId: string,
+    input: MoveWorkspaceContextInput,
+): Promise<void> {
+    if (!persistenceService || !workspaceService) {
+        throw new Error("The workspace service is unavailable.");
+    }
+
+    const sourceLocation = workspaceSurfaceManager
+        .listOpenWorkspaceLocations()
+        .find(
+            (location) =>
+                location.hostWindowId === sourceWindowId &&
+                location.contextKey === input.contextKey,
+        );
+    if (
+        !sourceLocation ||
+        !areWorkspaceScopesEquivalent(sourceLocation, input)
+    ) {
+        throw new Error("The workspace is no longer open in this window.");
+    }
+
+    const sourceWindow = windowRegistry.getWindowByStableId(sourceWindowId);
+    const sourceContext = sourceWindow
+        ? windowRegistry.getContextByBrowserWindow(sourceWindow)
+        : null;
+    if (!sourceWindow || sourceContext?.windowKind !== "main") {
+        throw new Error("The source window is no longer available.");
+    }
+
+    const createdTarget = input.targetWindowId === null;
+    const targetContext = createdTarget
+        ? await createEmptyWorkspaceTransferWindow()
+        : windowRegistry
+              .listMainWindowContexts()
+              .find((context) => context.windowId === input.targetWindowId) ??
+          null;
+    const targetWindow = targetContext
+        ? windowRegistry.getWindowByStableId(targetContext.windowId)
+        : null;
+    if (
+        !targetContext ||
+        !targetWindow ||
+        targetContext.windowKind !== "main" ||
+        !targetContext.workspaceId
+    ) {
+        throw new Error("The destination window is no longer available.");
+    }
+    if (targetContext.windowId === sourceWindowId) {
+        throw new Error("The workspace is already in this window.");
+    }
+
+    const sourceWorkspaceId = sourceContext.workspaceId;
+    if (!sourceWorkspaceId) {
+        throw new Error("The source workspace is unavailable.");
+    }
+    const targetSnapshot =
+        workspaceSurfaceManager.getHostSnapshotForWindow(
+            targetContext.windowId,
+        );
+    if (!targetSnapshot) {
+        throw new Error("The destination window is still starting.");
+    }
+    if (
+        targetSnapshot.contexts.some((context) =>
+            areWorkspaceScopesEquivalent(context, input),
+        )
+    ) {
+        throw new Error("The destination already contains this workspace.");
+    }
+
+    await Promise.all([
+        requestWorkspaceFlushesForHost(sourceWindow, sourceWindowId),
+        ...(createdTarget
+            ? []
+            : [
+                  requestWorkspaceFlushesForHost(
+                      targetWindow,
+                      targetContext.windowId,
+                  ),
+              ]),
+    ]);
+    const capturedSourceSnapshot =
+        await requestWorkspaceSurfaceContextCapture(
+            sourceWindowId,
+            input.contextKey,
+        );
+    const latestTargetSnapshot =
+        workspaceSurfaceManager.getHostSnapshotForWindow(
+            targetContext.windowId,
+        );
+    if (!capturedSourceSnapshot || !latestTargetSnapshot) {
+        throw new Error("Could not capture the workspace before moving it.");
+    }
+
+    await workspaceService.saveSnapshot(
+        sourceWorkspaceId,
+        capturedSourceSnapshot,
+    );
+    await workspaceService.saveSnapshot(
+        targetContext.workspaceId,
+        latestTargetSnapshot,
+    );
+    const [sourceRestore, targetRestore] = await Promise.all([
+        workspaceService.loadSnapshot(sourceWorkspaceId),
+        workspaceService.loadSnapshot(targetContext.workspaceId),
+    ]);
+
+    const transfer = await workspaceSurfaceManager.transferSurface({
+        commit: () =>
+            Promise.resolve(
+                workspaceService!.transferContext({
+                    contextKey: input.contextKey,
+                    sourceRevision: sourceRestore.revision,
+                    sourceWorkspaceId,
+                    targetRevision: targetRestore.revision,
+                    targetWorkspaceId: targetContext.workspaceId!,
+                }),
+            ),
+        contextKey: input.contextKey,
+        sourceHostWindowId: sourceWindowId,
+        targetHostWindowId: targetContext.windowId,
+    });
+
+    applyTransferredWorkspaceWindowState(
+        sourceWindowId,
+        transfer.sourceSnapshot,
+    );
+    applyTransferredWorkspaceWindowState(
+        targetContext.windowId,
+        transfer.targetSnapshot,
+    );
+    focusExistingWindow(targetWindow);
+}
+
+async function createEmptyWorkspaceTransferWindow(): Promise<WindowContextSnapshot> {
+    if (!persistenceService || !workspaceService) {
+        throw new Error("The workspace service is unavailable.");
+    }
+    const focusedMainWindow = windowRegistry.getFocusedMainWindow();
+    const focusedContext = focusedMainWindow
+        ? windowRegistry.getContextByBrowserWindow(focusedMainWindow)
+        : null;
+    const shellState =
+        focusedContext?.windowKind === "main"
+            ? persistenceService.loadSnapshot(focusedContext.windowId).shellState
+            : null;
+    const persistenceSnapshot = await persistenceService.createMainWindowSession({
+        projectId: null,
+        shellState,
+        worktreeId: null,
+    });
+    const context = persistenceSnapshot.windowContext;
+    if (context?.windowKind !== "main" || !context.workspaceId) {
+        throw new Error("Could not create the destination window.");
+    }
+    const emptySnapshot: WorkspaceNavigationSnapshot = {
+        activeContextKey: null,
+        contexts: [],
+        openContextKeys: [],
+        version: 3,
+    };
+    await workspaceService.saveSnapshot(context.workspaceId, emptySnapshot);
+    createTrackedMainWindow(persistenceSnapshot);
+    // The live surface can only be attached after the new host renderer has
+    // hydrated its empty navigation and registered its content view owner.
+    if (!(await workspaceSurfaceManager.waitForHost(context.windowId))) {
+        throw new Error("The destination window did not finish starting.");
+    }
+    return context;
+}
+
+function applyTransferredWorkspaceWindowState(
+    windowId: string,
+    snapshot: WorkspaceNavigationSnapshot,
+): void {
+    const activeContext = snapshot.activeContextKey
+        ? snapshot.contexts.find(
+              (context) => context.key === snapshot.activeContextKey,
+          ) ?? null
+        : null;
+    const projectId = activeContext?.projectId ?? null;
+    const worktreeId = activeContext?.worktreeId ?? null;
+    workspaceSurfaceManager
+        .getHostWebContents(windowId)
+        ?.send(IPC_EVENTS.workspaceSurfaceSnapshotUpdated, snapshot);
+    persistenceService?.saveActiveProjectId(windowId, projectId, worktreeId);
+    windowRegistry.updateMainWindowProjectId(windowId, projectId, worktreeId);
+    const window = windowRegistry.getWindowByStableId(windowId);
+    if (window) {
+        updateMainWindowTitle(window, projectId);
+    }
 }
 
 function loadCurrentAppZoomFactor(): number {

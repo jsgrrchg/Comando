@@ -40,6 +40,7 @@ import {
     type DeleteProjectEntryInput,
     type FileBufferNotificationInput,
     type NativeContextMenuInput,
+    type MoveWorkspaceContextInput,
     type EnqueueAiPromptInput,
     type GitBranchListInput,
     type GitBranchSummary as SharedGitBranchSummary,
@@ -234,6 +235,7 @@ import {
 import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
+import { buildWorkspaceMoveDestinations } from "@main/workspace/move-destinations";
 import { activateOpenWorkspaceLocation } from "@main/workspace/location-navigation";
 import {
     activateWorkspaceSurfaceAndNotifyHost,
@@ -255,6 +257,10 @@ interface RegisterIpcHandlersOptions {
         contextKey: string,
     ) => Promise<WorkspaceNavigationSnapshot | null>;
     readonly openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
+    readonly moveWorkspaceContext: (
+        sourceWindowId: string,
+        input: MoveWorkspaceContextInput,
+    ) => Promise<void>;
     readonly persistenceService: PersistenceGateway;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
@@ -388,6 +394,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
     ipcMain.removeHandler(IPC_CHANNELS.showWorkspaceContextMenu);
+    ipcMain.removeHandler(IPC_CHANNELS.moveWorkspaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.showNativeContextMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
@@ -2197,11 +2204,38 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.showWorkspaceContextMenu,
         (event, input: WorkspaceContextMenuInput) => {
-            requireWindowContext(event.sender, "main");
+            const sourceContext = requireWindowContext(event.sender, "main");
             const window = BrowserWindow.fromWebContents(event.sender);
             if (!window || workspaceSurfaceManager.isSurface(event.sender)) {
                 return null;
             }
+
+            const destinations = buildWorkspaceMoveDestinations({
+                candidates: windowRegistry
+                    .listMainWindowContexts()
+                    .flatMap((context) => {
+                        const candidateWindow =
+                            windowRegistry.getWindowByStableId(context.windowId);
+                        const snapshot =
+                            workspaceSurfaceManager.getHostSnapshotForWindow(
+                                context.windowId,
+                            );
+                        return candidateWindow && snapshot
+                            ? [
+                                  {
+                                      snapshot,
+                                      windowId: context.windowId,
+                                      windowTitle: candidateWindow.getTitle(),
+                                  },
+                              ]
+                            : [];
+                    }),
+                scope: {
+                    projectId: input.projectId,
+                    worktreeId: input.worktreeId,
+                },
+                sourceWindowId: sourceContext.windowId,
+            });
 
             return new Promise<WorkspaceContextMenuAction | null>((resolve) => {
                 let selected = false;
@@ -2211,18 +2245,40 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 };
                 const menu = Menu.buildFromTemplate([
                     {
-                        click: () => select("copy_full_path"),
+                        click: () => select({ type: "copy_full_path" }),
                         enabled: input.canCopyFullPath,
                         label: "Copy Full Path",
                     },
                     { type: "separator" },
                     {
-                        click: () => select("move_to_new_window"),
-                        label: "Move to New Window",
+                        label: "Move to Window",
+                        submenu: [
+                            ...destinations.map((destination) => ({
+                                click: () =>
+                                    select({
+                                        targetWindowId:
+                                            destination.targetWindowId,
+                                        type: "move",
+                                    }),
+                                enabled: destination.enabled,
+                                label: destination.label,
+                            })),
+                            ...(destinations.length > 0
+                                ? ([{ type: "separator" }] as const)
+                                : []),
+                            {
+                                click: () =>
+                                    select({
+                                        targetWindowId: null,
+                                        type: "move",
+                                    }),
+                                label: "New Window",
+                            },
+                        ],
                     },
                     { type: "separator" },
                     {
-                        click: () => select("close"),
+                        click: () => select({ type: "close" }),
                         label: "Close",
                     },
                 ]);
@@ -2235,6 +2291,27 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     y: Math.max(0, Math.round(input.y)),
                 });
             });
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.moveWorkspaceContext,
+        async (event, input: MoveWorkspaceContextInput): Promise<void> => {
+            const sourceContext = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error("Workspace moves must start from a host window.");
+            }
+            if (
+                !input ||
+                typeof input.contextKey !== "string" ||
+                typeof input.projectId !== "string" ||
+                (input.worktreeId !== null &&
+                    typeof input.worktreeId !== "string") ||
+                (input.targetWindowId !== null &&
+                    typeof input.targetWindowId !== "string")
+            ) {
+                throw new Error("The workspace move request is invalid.");
+            }
+            await options.moveWorkspaceContext(sourceContext.windowId, input);
         },
     );
     ipcMain.handle(
