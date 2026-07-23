@@ -17,6 +17,7 @@ import {
     type AiRuntimeId,
     type AiSessionConfigOptionMutationInput,
     type GetAiSessionTranscriptPageInput,
+    type ImageClipboardInput,
     type AiLoadTranscriptPayloadInput,
     type AiLoadTranscriptPayloadsInput,
     type AiLoadReviewDeltaInput,
@@ -157,6 +158,7 @@ import {
     type ReadClaudeCodeTranscriptInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
+    type SaveImageAsInput,
     type AiQueuedPromptMutationInput,
     type UpdateAiQueuedPromptInput,
     type SettingsSnapshot,
@@ -183,11 +185,13 @@ import {
     dialog,
     ipcMain,
     Menu,
+    nativeImage,
     nativeTheme,
     shell,
     type MessageBoxOptions,
     type MenuItemConstructorOptions,
     type OpenDialogOptions,
+    type SaveDialogOptions,
 } from "electron";
 
 import {
@@ -512,6 +516,40 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
 
         clipboard.writeText(text);
     });
+    ipcMain.handle(
+        IPC_CHANNELS.writeClipboardImage,
+        (_event, input: ImageClipboardInput) => {
+            const image = resolveIpcImage(input);
+            clipboard.writeImage(image);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.saveImageAs,
+        async (event, input: SaveImageAsInput) => {
+            assertIpcImageInput(input);
+            if (typeof input.suggestedName !== "string") {
+                throw new TypeError("Expected an image file name.");
+            }
+            const ownerWindow =
+                BrowserWindow.fromWebContents(event.sender) ??
+                BrowserWindow.getFocusedWindow();
+            const dialogOptions: SaveDialogOptions = {
+                defaultPath: path.basename(input.suggestedName.trim()) || "image",
+                title: "Save Image As",
+            };
+            const result = ownerWindow
+                ? await dialog.showSaveDialog(ownerWindow, dialogOptions)
+                : await dialog.showSaveDialog(dialogOptions);
+
+            if (!result.canceled && result.filePath) {
+                // Preserve the original bytes instead of re-encoding the image.
+                await fs.promises.writeFile(
+                    result.filePath,
+                    Buffer.from(input.dataBase64, "base64"),
+                );
+            }
+        },
+    );
     ipcMain.handle(IPC_CHANNELS.openExternalUrl, async (_event, url: string) => {
         if (typeof url !== "string") {
             throw new TypeError("Expected external URL to be a string.");
@@ -3674,4 +3712,30 @@ function deriveRepositoryFolderName(repositoryUrl: string): string {
     const withoutGitSuffix = lastSegment.replace(/\.git$/i, "");
     const sanitized = withoutGitSuffix.replace(/[^\w.-]+/g, "-");
     return sanitized.length > 0 ? sanitized : "repository";
+}
+
+function resolveIpcImage(input: ImageClipboardInput) {
+    assertIpcImageInput(input);
+
+    const image = nativeImage.createFromDataURL(
+        `data:${input.mimeType};base64,${input.dataBase64}`,
+    );
+    if (image.isEmpty()) {
+        throw new TypeError("Expected decodable image data.");
+    }
+
+    return image;
+}
+
+function assertIpcImageInput(
+    input: ImageClipboardInput,
+): asserts input is ImageClipboardInput {
+    if (
+        !input ||
+        typeof input.dataBase64 !== "string" ||
+        typeof input.mimeType !== "string" ||
+        !input.mimeType.startsWith("image/")
+    ) {
+        throw new TypeError("Expected valid image data.");
+    }
 }

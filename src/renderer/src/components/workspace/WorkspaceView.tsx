@@ -7219,18 +7219,40 @@ function ImageFileView({
     readonly document: ProjectFileDocument;
 }) {
     const imageSrc = buildImageDataUrl(document);
+    const imageClipboardInput =
+        imageSrc && document.imageDataBase64 && document.mimeType
+            ? {
+                  dataBase64: document.imageDataBase64,
+                  mimeType: document.mimeType,
+              }
+            : null;
     const [scale, setScale] = useState(1);
     const [translate, setTranslate] = useState({ x: 0, y: 0 });
+    const [fitToView, setFitToView] = useState(true);
     const [isDragging, setIsDragging] = useState(false);
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<void> | null>(null);
     const isDraggingRef = useRef(false);
     const lastPointer = useRef({ x: 0, y: 0 });
     const containerRef = useRef<HTMLDivElement>(null);
 
-    const isZoomed = scale !== 1;
-
     const resetView = useCallback(() => {
         setScale(1);
         setTranslate({ x: 0, y: 0 });
+        setFitToView(true);
+    }, []);
+
+    const setActualSize = useCallback(() => {
+        setScale(1);
+        setTranslate({ x: 0, y: 0 });
+        setFitToView(false);
+    }, []);
+
+    const updateZoom = useCallback((factor: number) => {
+        setFitToView(false);
+        setScale((current) =>
+            Math.min(IMAGE_ZOOM_MAX, Math.max(IMAGE_ZOOM_MIN, current * factor)),
+        );
     }, []);
 
     // Reset view when document changes
@@ -7271,15 +7293,18 @@ function ImageFileView({
                 }));
                 return next;
             });
+            setFitToView(false);
         };
 
         container.addEventListener("wheel", onWheel, { passive: false });
         return () => container.removeEventListener("wheel", onWheel);
     }, []);
 
+    const isPannable = scale !== 1 || !fitToView;
+
     const handlePointerDown = useCallback(
         (event: React.PointerEvent<HTMLDivElement>) => {
-            if (!isZoomed) return;
+            if (!isPannable) return;
             isDraggingRef.current = true;
             setIsDragging(true);
             lastPointer.current = { x: event.clientX, y: event.clientY };
@@ -7287,7 +7312,7 @@ function ImageFileView({
                 event.pointerId,
             );
         },
-        [isZoomed],
+        [isPannable],
     );
 
     const handlePointerMove = useCallback(
@@ -7318,7 +7343,15 @@ function ImageFileView({
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
-                style={{ cursor: isZoomed ? "grab" : undefined }}
+                onContextMenu={(event) => {
+                    event.preventDefault();
+                    setContextMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        payload: undefined,
+                    });
+                }}
+                style={{ cursor: isPannable ? "grab" : undefined }}
             >
                 {imageSrc ? (
                     <img
@@ -7328,8 +7361,8 @@ function ImageFileView({
                         onDoubleClick={resetView}
                         src={imageSrc}
                         style={{
-                            maxHeight: scale === 1 ? "100%" : undefined,
-                            maxWidth: scale === 1 ? "100%" : undefined,
+                            maxHeight: fitToView ? "100%" : undefined,
+                            maxWidth: fitToView ? "100%" : undefined,
                             transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
                             transformOrigin: "center center",
                             transition: isDragging
@@ -7347,7 +7380,7 @@ function ImageFileView({
                         </p>
                     </div>
                 )}
-                {isZoomed && (
+                {isPannable && (
                     <div
                         className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-md px-2 py-0.5 text-[10px] font-medium tabular-nums text-text-secondary"
                         style={{
@@ -7362,6 +7395,66 @@ function ImageFileView({
                     </div>
                 )}
             </div>
+            {contextMenu && imageClipboardInput ? (
+                <ContextMenu
+                    entries={[
+                        {
+                            label: "Copy Image",
+                            action: () =>
+                                void window.comando.writeClipboardImage({
+                                    ...imageClipboardInput,
+                                }),
+                        },
+                        {
+                            label: "Copy File Path",
+                            action: () =>
+                                void window.comando.writeClipboardText(
+                                    document.absolutePath,
+                                ),
+                        },
+                        {
+                            label: "Save As…",
+                            action: () =>
+                                void window.comando.saveImageAs({
+                                    ...imageClipboardInput,
+                                    suggestedName: document.name,
+                                }),
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Zoom In",
+                            action: () => updateZoom(1.25),
+                            disabled: scale >= IMAGE_ZOOM_MAX,
+                        },
+                        {
+                            label: "Zoom Out",
+                            action: () => updateZoom(0.8),
+                            disabled: scale <= IMAGE_ZOOM_MIN,
+                        },
+                        {
+                            label: "Actual Size",
+                            action: setActualSize,
+                            disabled: scale === 1 && !fitToView,
+                        },
+                        {
+                            label: "Fit to View",
+                            action: resetView,
+                            disabled: fitToView && scale === 1,
+                        },
+                        {
+                            label: "Reset View",
+                            action: resetView,
+                            disabled:
+                                fitToView &&
+                                scale === 1 &&
+                                translate.x === 0 &&
+                                translate.y === 0,
+                        },
+                    ]}
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                />
+            ) : null}
         </div>
     );
 }

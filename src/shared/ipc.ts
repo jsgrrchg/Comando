@@ -19,6 +19,8 @@ export const IPC_CHANNELS = {
     getWindowContext: "app:get-window-context",
     readClipboardText: "app:read-clipboard-text",
     writeClipboardText: "app:write-clipboard-text",
+    writeClipboardImage: "app:write-clipboard-image",
+    saveImageAs: "app:save-image-as",
     openExternalUrl: "app:open-external-url",
     openGeneratedImage: "app:open-generated-image",
     revealGeneratedImage: "app:reveal-generated-image",
@@ -3420,6 +3422,15 @@ export interface ConfirmWorkspaceCloseInput {
     readonly workspaceName: string;
 }
 
+export interface ImageClipboardInput {
+    readonly dataBase64: string;
+    readonly mimeType: string;
+}
+
+export interface SaveImageAsInput extends ImageClipboardInput {
+    readonly suggestedName: string;
+}
+
 export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getAppUpdateState: () => Promise<AppUpdateState>;
@@ -3432,6 +3443,8 @@ export interface ComandoApi {
     readClipboardText: () => Promise<string>;
     resolveDroppedFilePath: (file: File | null) => string | null;
     writeClipboardText: (text: string) => Promise<void>;
+    writeClipboardImage: (input: ImageClipboardInput) => Promise<void>;
+    saveImageAs: (input: SaveImageAsInput) => Promise<void>;
     openExternalUrl: (url: string) => Promise<void>;
     openGeneratedImage: (path: string) => Promise<void>;
     revealGeneratedImage: (path: string) => Promise<void>;
