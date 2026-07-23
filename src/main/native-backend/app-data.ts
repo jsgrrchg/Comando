@@ -55,7 +55,10 @@ import {
     createWindowWorkspaceRestoreRecord,
     normalizeWindowWorkspaceRestoreRecord,
 } from "@shared/workspace-restore";
-import { areWorkspaceScopesEquivalent } from "@shared/workspace-context";
+import {
+    areWorkspaceScopesEquivalent,
+    hasOpenWorkspaceScope,
+} from "@shared/workspace-context";
 
 import type {
     AiPersistenceGateway,
@@ -490,11 +493,7 @@ class NativePersistenceClient implements PersistenceGateway {
         ) {
             throw new Error("The workspace to move is no longer open.");
         }
-        if (
-            targetRestore.snapshot.contexts.some((candidate) =>
-                areWorkspaceScopesEquivalent(candidate, context),
-            )
-        ) {
+        if (hasOpenWorkspaceScope(targetRestore.snapshot, context)) {
             throw new Error("The destination already contains this workspace.");
         }
 
@@ -542,7 +541,15 @@ class NativePersistenceClient implements PersistenceGateway {
             {
                 ...targetRestore.snapshot,
                 activeContextKey: context.key,
-                contexts: [...targetRestore.snapshot.contexts, updatedContext],
+                // A closed retained context is a cache, not a live duplicate.
+                // Replace it with the incoming live context and its latest state.
+                contexts: [
+                    ...targetRestore.snapshot.contexts.filter(
+                        (candidate) =>
+                            !areWorkspaceScopesEquivalent(candidate, context),
+                    ),
+                    updatedContext,
+                ],
                 openContextKeys: targetOpenContextKeys,
             },
             targetRestore.revision + 1,

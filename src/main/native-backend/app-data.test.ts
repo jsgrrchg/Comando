@@ -146,13 +146,69 @@ describe("createNativeAppDataClient", () => {
         if (!sourceWorkspaceId || !targetWorkspaceId) {
             throw new Error("Expected transfer workspace ids.");
         }
-        await client.workspace.saveSnapshot(
-            sourceWorkspaceId,
-            workspaceNavigation("project-1", null, "pane-source"),
+        const sourceNavigation = workspaceNavigation(
+            "project-1",
+            null,
+            "pane-source",
         );
         await client.workspace.saveSnapshot(
+            sourceWorkspaceId,
+            sourceNavigation,
+        );
+        const targetNavigation = workspaceNavigation(
+            "project-2",
+            null,
+            "pane-target",
+        );
+        const retainedTargetNavigation = {
+            ...targetNavigation,
+            contexts: [
+                ...targetNavigation.contexts,
+                {
+                    ...sourceNavigation.contexts[0],
+                    workspace: {
+                        ...sourceNavigation.contexts[0].workspace,
+                        activePaneId: "pane-stale",
+                        rootNode: {
+                            activeTabId: null,
+                            id: "pane-stale",
+                            tabIds: [],
+                            type: "pane" as const,
+                        },
+                    },
+                },
+            ],
+        };
+        await client.workspace.saveSnapshot(
             targetWorkspaceId,
-            workspaceNavigation("project-2", null, "pane-target"),
+            {
+                ...retainedTargetNavigation,
+                openContextKeys: [
+                    ...targetNavigation.openContextKeys,
+                    "project-1::__primary__",
+                ],
+            },
+        );
+        const sourceWithDuplicate = await client.workspace.loadSnapshot(
+            sourceWorkspaceId,
+        );
+        const targetWithDuplicate = await client.workspace.loadSnapshot(
+            targetWorkspaceId,
+        );
+        await expect(
+            client.workspace.transferContext({
+                contextKey: "project-1::__primary__",
+                sourceRevision: sourceWithDuplicate.revision,
+                sourceWorkspaceId,
+                targetRevision: targetWithDuplicate.revision,
+                targetWorkspaceId,
+            }),
+        ).rejects.toThrow("destination already contains this workspace");
+
+        // Closed contexts retain their layout but are not live duplicates.
+        await client.workspace.saveSnapshot(
+            targetWorkspaceId,
+            retainedTargetNavigation,
         );
         const sourceBefore = await client.workspace.loadSnapshot(
             sourceWorkspaceId,
@@ -183,6 +239,13 @@ describe("createNativeAppDataClient", () => {
                 ],
             },
         });
+        const transferredContexts = transfer.target.snapshot.contexts.filter(
+            (context) => context.key === "project-1::__primary__",
+        );
+        expect(transferredContexts).toHaveLength(1);
+        expect(transferredContexts[0]?.workspace.activePaneId).toBe(
+            "pane-source",
+        );
         await expect(
             client.workspace.transferContext({
                 contextKey: "project-2::__primary__",

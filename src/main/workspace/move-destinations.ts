@@ -1,6 +1,6 @@
 import type { WorkspaceNavigationSnapshot } from "@shared/ipc";
 import {
-    areWorkspaceScopesEquivalent,
+    hasOpenWorkspaceScope,
     type WorkspaceScope,
 } from "@shared/workspace-context";
 
@@ -33,9 +33,7 @@ export function buildWorkspaceMoveDestinations(input: {
     }
 
     return candidates.map((candidate, index) => ({
-        enabled: !candidate.snapshot.contexts.some((context) =>
-            areWorkspaceScopesEquivalent(context, input.scope),
-        ),
+        enabled: !hasOpenWorkspaceScope(candidate.snapshot, input.scope),
         label:
             (labelCounts.get(baseLabels[index]) ?? 0) > 1
                 ? `${baseLabels[index]} — Window ${index + 1}`

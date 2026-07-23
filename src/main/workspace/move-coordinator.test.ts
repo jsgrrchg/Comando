@@ -35,11 +35,13 @@ describe("moveWorkspaceBetweenWindows", () => {
         const onTransferred = vi.fn();
         const transferSurface = vi.fn(async (input: TransferSurfaceInput) => {
             const committed = await input.commit();
-            return {
+            const transfer = {
                 sourceSnapshot: committed.source.snapshot,
                 surfaceId: "surface-primary",
                 targetSnapshot: committed.target.snapshot,
             };
+            input.onCommitted?.(transfer);
+            return transfer;
         });
 
         await moveWorkspaceBetweenWindows(
@@ -112,11 +114,13 @@ describe("moveWorkspaceBetweenWindows", () => {
         const targetContext = createWindowContext("window-new");
         const transferSurface = vi.fn(async (input: TransferSurfaceInput) => {
             const committed = await input.commit();
-            return {
+            const transfer = {
                 sourceSnapshot: committed.source.snapshot,
                 surfaceId: "surface-primary",
                 targetSnapshot: committed.target.snapshot,
             };
+            input.onCommitted?.(transfer);
+            return transfer;
         });
 
         await moveWorkspaceBetweenWindows(
@@ -173,6 +177,89 @@ describe("moveWorkspaceBetweenWindows", () => {
         expect(flushHost).toHaveBeenCalledWith("window-1");
         expect(transferSurface).toHaveBeenCalledWith(
             expect.objectContaining({ targetHostWindowId: "window-new" }),
+        );
+    });
+
+    it("allows a target that only retains a closed equivalent context", async () => {
+        const primary = createContext("project-a::__primary__", null);
+        const other = {
+            ...createContext("project-b::__primary__", null),
+            projectId: "project-b",
+        };
+        const sourceSnapshot = createSnapshot(primary.key, [primary]);
+        const targetSnapshot = createSnapshot(
+            other.key,
+            [other, primary],
+            [other.key],
+        );
+        const committedSource = createSnapshot(null, []);
+        const committedTarget = createSnapshot(primary.key, [other, primary]);
+        const transferSurface = vi.fn(async (input: TransferSurfaceInput) => {
+            const committed = await input.commit();
+            const transfer = {
+                sourceSnapshot: committed.source.snapshot,
+                surfaceId: "surface-primary",
+                targetSnapshot: committed.target.snapshot,
+            };
+            input.onCommitted?.(transfer);
+            return transfer;
+        });
+
+        await moveWorkspaceBetweenWindows(
+            "window-1",
+            {
+                contextKey: primary.key,
+                projectId: primary.projectId,
+                targetWindowId: "window-2",
+                worktreeId: null,
+            },
+            {
+                captureContext: vi.fn(() => Promise.resolve(sourceSnapshot)),
+                createEmptyTarget: vi.fn(),
+                flushHost: vi.fn(() => Promise.resolve()),
+                getWindowContext: (windowId) => createWindowContext(windowId),
+                isWindowAvailable: () => true,
+                manager: {
+                    getHostSnapshotForWindow: (windowId) =>
+                        windowId === "window-1" ? sourceSnapshot : targetSnapshot,
+                    listOpenWorkspaceLocations: () => [
+                        {
+                            contextKey: primary.key,
+                            hostWindowId: "window-1",
+                            isActive: true,
+                            lastActivatedAt: primary.lastActivatedAt,
+                            projectId: primary.projectId,
+                            worktreeId: null,
+                        },
+                    ],
+                    transferSurface,
+                },
+                onTransferred: vi.fn(),
+                workspaceService: createWorkspaceService({
+                    saveSnapshot: vi.fn(() => Promise.resolve()),
+                    sourceSnapshot,
+                    targetSnapshot,
+                    transferContext: vi.fn(() =>
+                        Promise.resolve({
+                            source: createWindowWorkspaceRestoreRecord(
+                                committedSource,
+                                4,
+                            ),
+                            target: createWindowWorkspaceRestoreRecord(
+                                committedTarget,
+                                7,
+                            ),
+                        }),
+                    ),
+                }),
+            },
+        );
+
+        expect(transferSurface).toHaveBeenCalledWith(
+            expect.objectContaining({
+                contextKey: primary.key,
+                targetHostWindowId: "window-2",
+            }),
         );
     });
 
@@ -287,11 +374,12 @@ function createContext(
 function createSnapshot(
     activeContextKey: string | null,
     contexts: readonly PersistedWorkspaceContext[],
+    openContextKeys = contexts.map((context) => context.key),
 ): WorkspaceNavigationSnapshot {
     return {
         activeContextKey,
         contexts,
-        openContextKeys: contexts.map((context) => context.key),
+        openContextKeys,
         version: 3,
     };
 }

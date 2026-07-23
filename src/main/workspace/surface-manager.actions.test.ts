@@ -403,10 +403,21 @@ describe("WorkspaceSurfaceManager action routing", () => {
         const sourceHost = createHostWindow();
         const targetHost = createHostWindow();
         const sourceSnapshot = createSnapshot();
-        const targetSnapshot = singleContextSnapshot(
+        const targetOpenSnapshot = singleContextSnapshot(
             "project-c::__primary__",
             "project-c",
         );
+        const retainedClosedContext = sourceSnapshot.contexts[0];
+        if (!retainedClosedContext) {
+            throw new Error("Expected a retained source context.");
+        }
+        const targetSnapshot: WorkspaceNavigationSnapshot = {
+            ...targetOpenSnapshot,
+            contexts: [
+                ...targetOpenSnapshot.contexts,
+                retainedClosedContext,
+            ],
+        };
         manager.syncHost(
             sourceHost.window,
             createHostContext(),
@@ -437,7 +448,12 @@ describe("WorkspaceSurfaceManager action routing", () => {
         }
         const committedTarget: WorkspaceNavigationSnapshot = {
             activeContextKey: movedContext.key,
-            contexts: [...targetSnapshot.contexts, movedContext],
+            contexts: [
+                ...targetSnapshot.contexts.filter(
+                    (context) => context.key !== movedContext.key,
+                ),
+                movedContext,
+            ],
             openContextKeys: [
                 ...targetSnapshot.openContextKeys,
                 movedContext.key,
@@ -479,6 +495,11 @@ describe("WorkspaceSurfaceManager action routing", () => {
             "project-b::__primary__",
         );
         expect(result.targetSnapshot.activeContextKey).toBe(movedContext.key);
+        expect(
+            result.targetSnapshot.contexts.filter(
+                (context) => context.key === movedContext.key,
+            ),
+        ).toHaveLength(1);
         expect(onSurfaceDestroyed).not.toHaveBeenCalled();
     });
 
@@ -530,13 +551,377 @@ describe("WorkspaceSurfaceManager action routing", () => {
                 : null,
         ).toMatchObject({ hostWindowId: "host-1", workspaceId: "workspace-1" });
     });
+
+    it("rejects transfers before a destination starts closing", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const sourceHost = createHostWindow();
+        const targetHost = createHostWindow();
+        manager.syncHost(sourceHost.window, createHostContext(), createSnapshot());
+        manager.syncHost(
+            targetHost.window,
+            {
+                ...createHostContext(),
+                projectId: "project-c",
+                windowId: "host-2",
+                workspaceId: "workspace-2",
+                workspaceSessionId: "workspace-session-2",
+            },
+            singleContextSnapshot("project-c::__primary__", "project-c"),
+        );
+        const commit = vi.fn();
+
+        await manager.prepareHostForClose("host-2");
+
+        await expect(
+            manager.transferSurface({
+                commit,
+                contextKey: "project-a::__primary__",
+                sourceHostWindowId: "host-1",
+                targetHostWindowId: "host-2",
+            }),
+        ).rejects.toThrow("window is closing");
+        expect(commit).not.toHaveBeenCalled();
+    });
+
+    it("waits for an in-flight transfer before allowing a host to close", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const sourceHost = createHostWindow();
+        const targetHost = createHostWindow();
+        const sourceSnapshot = createSnapshot();
+        const targetSnapshot = singleContextSnapshot(
+            "project-c::__primary__",
+            "project-c",
+        );
+        manager.syncHost(sourceHost.window, createHostContext(), sourceSnapshot);
+        manager.syncHost(
+            targetHost.window,
+            {
+                ...createHostContext(),
+                projectId: "project-c",
+                windowId: "host-2",
+                workspaceId: "workspace-2",
+                workspaceSessionId: "workspace-session-2",
+            },
+            targetSnapshot,
+        );
+        const movingContext = sourceSnapshot.contexts[0];
+        if (!movingContext) {
+            throw new Error("Expected a moving context.");
+        }
+        const committedSource = singleContextSnapshot(
+            "project-b::__primary__",
+            "project-b",
+        );
+        const committedTarget: WorkspaceNavigationSnapshot = {
+            activeContextKey: movingContext.key,
+            contexts: [...targetSnapshot.contexts, movingContext],
+            openContextKeys: [
+                ...targetSnapshot.openContextKeys,
+                movingContext.key,
+            ],
+            version: 3,
+        };
+        const deferredCommit = createDeferred(
+            {
+                source: createWindowWorkspaceRestoreRecord(
+                    committedSource,
+                    2,
+                ),
+                target: createWindowWorkspaceRestoreRecord(
+                    committedTarget,
+                    2,
+                ),
+            },
+        );
+        let hostsNotified = false;
+        const transfer = manager.transferSurface({
+            commit: () => deferredCommit.promise,
+            contextKey: movingContext.key,
+            onCommitted: () => {
+                hostsNotified = true;
+            },
+            sourceHostWindowId: "host-1",
+            targetHostWindowId: "host-2",
+        });
+        let closePrepared = false;
+        const closePreparation = manager
+            .prepareHostForClose("host-2")
+            .then(() => {
+                closePrepared = true;
+            });
+
+        await Promise.resolve();
+        expect(closePrepared).toBe(false);
+
+        deferredCommit.resolve();
+        await transfer;
+        await closePreparation;
+
+        expect(closePrepared).toBe(true);
+        expect(hostsNotified).toBe(true);
+        expect(
+            manager.getSurfaceWebContents("host-2", movingContext.key),
+        ).not.toBeNull();
+        await expect(
+            manager.transferSurface({
+                commit: vi.fn(),
+                contextKey: "project-b::__primary__",
+                sourceHostWindowId: "host-1",
+                targetHostWindowId: "host-2",
+            }),
+        ).rejects.toThrow("window is closing");
+    });
+
+    it("allows transfers after reopening a host with the same stable id", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const sourceHost = createHostWindow();
+        const closedTargetHost = createHostWindow();
+        const sourceSnapshot = createSnapshot();
+        const targetSnapshot = singleContextSnapshot(
+            "project-c::__primary__",
+            "project-c",
+        );
+        const targetContext = {
+            ...createHostContext(),
+            projectId: "project-c",
+            windowId: "host-2",
+            workspaceId: "workspace-2",
+            workspaceSessionId: "workspace-session-2",
+        };
+        manager.syncHost(sourceHost.window, createHostContext(), sourceSnapshot);
+        manager.syncHost(
+            closedTargetHost.window,
+            targetContext,
+            targetSnapshot,
+        );
+
+        await manager.prepareHostForClose("host-2");
+        manager.disposeHost("host-2");
+
+        const reopenedTargetHost = createHostWindow();
+        manager.syncHost(
+            reopenedTargetHost.window,
+            targetContext,
+            targetSnapshot,
+        );
+        const movingContext = sourceSnapshot.contexts[0];
+        if (!movingContext) {
+            throw new Error("Expected a moving context.");
+        }
+        const committedTarget: WorkspaceNavigationSnapshot = {
+            activeContextKey: movingContext.key,
+            contexts: [...targetSnapshot.contexts, movingContext],
+            openContextKeys: [
+                ...targetSnapshot.openContextKeys,
+                movingContext.key,
+            ],
+            version: 3,
+        };
+
+        await expect(
+            manager.transferSurface({
+                commit: () =>
+                    Promise.resolve({
+                        source: createWindowWorkspaceRestoreRecord(
+                            singleContextSnapshot(
+                                "project-b::__primary__",
+                                "project-b",
+                            ),
+                            2,
+                        ),
+                        target: createWindowWorkspaceRestoreRecord(
+                            committedTarget,
+                            2,
+                        ),
+                    }),
+                contextKey: movingContext.key,
+                sourceHostWindowId: "host-1",
+                targetHostWindowId: "host-2",
+            }),
+        ).resolves.toMatchObject({
+            targetSnapshot: committedTarget,
+        });
+        expect(
+            manager.getSurfaceWebContents("host-2", movingContext.key),
+        ).not.toBeNull();
+    });
+
+    it("does not let delayed disposal remove a replacement host generation", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const sourceHost = createHostWindow();
+        const oldTargetHost = createHostWindow();
+        const sourceSnapshot = createSnapshot();
+        const oldTargetSnapshot = singleContextSnapshot(
+            "project-c::__primary__",
+            "project-c",
+        );
+        const targetContext = {
+            ...createHostContext(),
+            projectId: "project-c",
+            windowId: "host-2",
+            workspaceId: "workspace-2",
+            workspaceSessionId: "workspace-session-2",
+        };
+        manager.syncHost(sourceHost.window, createHostContext(), sourceSnapshot);
+        manager.syncHost(
+            oldTargetHost.window,
+            targetContext,
+            oldTargetSnapshot,
+        );
+        const movingContext = sourceSnapshot.contexts[0];
+        if (!movingContext) {
+            throw new Error("Expected a moving context.");
+        }
+        const committedTarget: WorkspaceNavigationSnapshot = {
+            activeContextKey: movingContext.key,
+            contexts: [...oldTargetSnapshot.contexts, movingContext],
+            openContextKeys: [
+                ...oldTargetSnapshot.openContextKeys,
+                movingContext.key,
+            ],
+            version: 3,
+        };
+        const deferredCommit = createDeferred({
+            source: createWindowWorkspaceRestoreRecord(
+                singleContextSnapshot(
+                    "project-b::__primary__",
+                    "project-b",
+                ),
+                2,
+            ),
+            target: createWindowWorkspaceRestoreRecord(committedTarget, 2),
+        });
+        const transfer = manager.transferSurface({
+            commit: () => deferredCommit.promise,
+            contextKey: movingContext.key,
+            sourceHostWindowId: "host-1",
+            targetHostWindowId: "host-2",
+        });
+
+        manager.disposeHost("host-2");
+        const replacementHost = createHostWindow();
+        const replacementSnapshot = singleContextSnapshot(
+            "project-d::__primary__",
+            "project-d",
+        );
+        manager.syncHost(
+            replacementHost.window,
+            {
+                ...targetContext,
+                projectId: "project-d",
+                workspaceSessionId: "workspace-session-2-reopened",
+            },
+            replacementSnapshot,
+        );
+        await manager.prepareHostForClose(
+            "host-2",
+            oldTargetHost.window,
+        );
+        manager.disposeHost("host-2", oldTargetHost.window);
+
+        deferredCommit.resolve();
+        await transfer;
+        await Promise.resolve();
+
+        expect(manager.getHostSnapshotForWindow("host-2")).toEqual(
+            replacementSnapshot,
+        );
+        expect(
+            manager.getSurfaceWebContents(
+                "host-2",
+                "project-d::__primary__",
+            ),
+        ).not.toBeNull();
+    });
+
+    it("keeps committed ownership when presentation refresh fails", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const sourceHost = createHostWindow();
+        const targetHost = createHostWindow();
+        const sourceSnapshot = createSnapshot();
+        const targetSnapshot = singleContextSnapshot(
+            "project-c::__primary__",
+            "project-c",
+        );
+        manager.syncHost(sourceHost.window, createHostContext(), sourceSnapshot);
+        manager.syncHost(
+            targetHost.window,
+            {
+                ...createHostContext(),
+                projectId: "project-c",
+                windowId: "host-2",
+                workspaceId: "workspace-2",
+                workspaceSessionId: "workspace-session-2",
+            },
+            targetSnapshot,
+        );
+        const movingContext = sourceSnapshot.contexts[0];
+        if (!movingContext) {
+            throw new Error("Expected a moving context.");
+        }
+        const committedTarget: WorkspaceNavigationSnapshot = {
+            activeContextKey: movingContext.key,
+            contexts: [...targetSnapshot.contexts, movingContext],
+            openContextKeys: [
+                ...targetSnapshot.openContextKeys,
+                movingContext.key,
+            ],
+            version: 3,
+        };
+        targetHost.getContentBounds.mockImplementation(() => {
+            throw new Error("layout failed");
+        });
+        const consoleError = vi
+            .spyOn(console, "error")
+            .mockImplementation(() => undefined);
+
+        const result = await manager.transferSurface({
+            commit: () =>
+                Promise.resolve({
+                    source: createWindowWorkspaceRestoreRecord(
+                        singleContextSnapshot(
+                            "project-b::__primary__",
+                            "project-b",
+                        ),
+                        2,
+                    ),
+                    target: createWindowWorkspaceRestoreRecord(
+                        committedTarget,
+                        2,
+                    ),
+                }),
+            contextKey: movingContext.key,
+            sourceHostWindowId: "host-1",
+            targetHostWindowId: "host-2",
+        });
+
+        expect(typeof result.surfaceId).toBe("string");
+        expect(
+            manager.getSurfaceWebContents("host-1", movingContext.key),
+        ).toBeNull();
+        expect(
+            manager.getSurfaceWebContents("host-2", movingContext.key),
+        ).not.toBeNull();
+        expect(consoleError).toHaveBeenCalledWith(
+            "[workspace] Failed to refresh surfaces after a committed transfer",
+            expect.any(Error),
+        );
+        consoleError.mockRestore();
+    });
 });
 
 function createHostWindow(): {
+    readonly getContentBounds: ReturnType<typeof vi.fn>;
     readonly send: ReturnType<typeof vi.fn>;
     readonly window: BrowserWindow;
 } {
     const send = vi.fn();
+    const getContentBounds = vi.fn(() => ({
+        height: 800,
+        width: 1200,
+        x: 0,
+        y: 0,
+    }));
     const webContents = {
         getZoomFactor: () => 1,
         isDestroyed: () => false,
@@ -547,12 +932,12 @@ function createHostWindow(): {
             addChildView: vi.fn(),
             removeChildView: vi.fn(),
         },
-        getContentBounds: () => ({ height: 800, width: 1200, x: 0, y: 0 }),
+        getContentBounds,
         isDestroyed: () => false,
         on: vi.fn(),
         webContents,
     } as unknown as BrowserWindow;
-    return { send, window };
+    return { getContentBounds, send, window };
 }
 
 function createHostContext(): WindowContextSnapshot {
@@ -609,6 +994,25 @@ function createPersistedContext(key: string, projectId: string) {
             tabs: [],
         },
         worktreeId: null,
+    };
+}
+
+function createDeferred<T>(value: T): {
+    readonly promise: Promise<T>;
+    readonly resolve: () => void;
+} {
+    let resolvePromise: ((value: T) => void) | null = null;
+    const promise = new Promise<T>((resolve) => {
+        resolvePromise = resolve;
+    });
+    return {
+        promise,
+        resolve: () => {
+            if (!resolvePromise) {
+                throw new Error("Deferred promise was not initialized.");
+            }
+            resolvePromise(value);
+        },
     };
 }
 
