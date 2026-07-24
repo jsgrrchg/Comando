@@ -23,13 +23,13 @@ use comando_types::ai::{
     NativeAiImageAttachment, NativeAiImageGenerationPayload, NativeAiImageMessage,
     NativeAiLaunchSpec, NativeAiPermissionOptionPayload, NativeAiPermissionRequestPayload,
     NativeAiPermissionResponseInput, NativeAiPlanEntryPayload, NativeAiPlanUpdatedPayload,
-    NativeAiRuntimeConnectionPayload, NativeAiRuntimeSessionMapping,
+    NativeAiPrepareSessionInput, NativeAiRuntimeConnectionPayload, NativeAiRuntimeSessionMapping,
     NativeAiSessionCatalogUpdatedPayload, NativeAiSessionConfigOptionPayload,
     NativeAiSessionConfigSelectEntryPayload, NativeAiSessionStatus, NativeAiSessionSummary,
     NativeAiSubagentBreadcrumbPayload, NativeAiSubagentCreatedPayload, NativeAiTokenUsageCost,
     NativeAiTokenUsagePayload, NativeAiToolActivityPayload, NativeAiUserInputQuestionOptionPayload,
     NativeAiUserInputQuestionPayload, NativeAiUserInputRequestPayload,
-    NativeAiUserInputResponseInput,
+    NativeAiUserInputResponseInput, NativeCustomAcpLaunchSpec,
 };
 use comando_types::ids::{
     MessageId, RuntimeId, RuntimeSessionId, SessionId, ToolCallId as NativeToolCallId,
@@ -165,7 +165,7 @@ pub struct AcpProcessSpec {
 
 impl AcpProcessSpec {
     pub fn from_launch(
-        definition: RuntimeDefinition,
+        definition: &RuntimeDefinition,
         launch: &NativeAiLaunchSpec,
     ) -> AiResult<Self> {
         validate_launch_context(definition, launch)?;
@@ -187,6 +187,55 @@ impl AcpProcessSpec {
         })
     }
 
+    pub fn from_custom_launch(
+        definition: &RuntimeDefinition,
+        launch: &NativeCustomAcpLaunchSpec,
+        input: &NativeAiPrepareSessionInput,
+    ) -> AiResult<Self> {
+        let runtime_id = launch.runtime_id.0.clone();
+        if input.runtime_id != launch.runtime_id || definition.id != runtime_id {
+            return Err(AiError::RuntimeLaunchContextInvalid {
+                runtime_id,
+                message: "Custom runtime launch identity does not match the session.".to_string(),
+            });
+        }
+        if input.cwd.trim().is_empty() {
+            return Err(AiError::RuntimeLaunchContextInvalid {
+                runtime_id: launch.runtime_id.0.clone(),
+                message: "Custom runtime launch cwd is missing.".to_string(),
+            });
+        }
+        if definition.acp_args != launch.args
+            || definition.default_executable != launch.executable
+            || definition.protocol_flavor != AcpProtocolFlavor::Current14
+        {
+            return Err(AiError::RuntimeLaunchContextInvalid {
+                runtime_id: launch.runtime_id.0.clone(),
+                message: "Custom runtime launch does not match its immutable definition."
+                    .to_string(),
+            });
+        }
+
+        // Main owns environment construction; native only accepts the already
+        // validated map and clears every inherited process variable at spawn.
+        Ok(Self {
+            runtime_id: launch.runtime_id.0.clone(),
+            command: launch.command.clone(),
+            executable: launch.executable.clone(),
+            args: launch.args.clone(),
+            cwd: input.cwd.clone(),
+            env: launch.env.clone(),
+            protocol_flavor: definition.protocol_flavor,
+            auth_method: None,
+            auth_credential_source: None,
+            auth_handshake: None,
+            persisted_runtime_session_id: input.persisted_runtime_session_id.clone(),
+            persisted_subagent_session_mappings: input.persisted_subagent_session_mappings.clone(),
+            supports_resume_session: false,
+            supports_subagents: false,
+        })
+    }
+
     pub fn redacted_env(&self) -> BTreeMap<String, String> {
         self.env
             .iter()
@@ -196,7 +245,7 @@ impl AcpProcessSpec {
 }
 
 fn validate_launch_context(
-    definition: RuntimeDefinition,
+    definition: &RuntimeDefinition,
     launch: &NativeAiLaunchSpec,
 ) -> AiResult<()> {
     let runtime_id = definition.id.to_string();
@@ -305,12 +354,8 @@ fn persisted_session_start_method(spec: &AcpProcessSpec) -> PersistedSessionStar
     }
 }
 
-fn definition_args(definition: RuntimeDefinition) -> Vec<String> {
-    definition
-        .acp_args
-        .iter()
-        .map(|arg| (*arg).to_string())
-        .collect()
+fn definition_args(definition: &RuntimeDefinition) -> Vec<String> {
+    definition.acp_args.clone()
 }
 
 async fn run_acp_auth_handshake(
@@ -5204,7 +5249,7 @@ mod tests {
         codex_launch.persisted_runtime_session_id =
             Some(RuntimeSessionId("runtime-codex".to_string()));
         let codex_spec =
-            AcpProcessSpec::from_launch(registry.get("codex").unwrap(), &codex_launch).unwrap();
+            AcpProcessSpec::from_launch(&registry.get("codex").unwrap(), &codex_launch).unwrap();
 
         assert!(codex_spec.supports_resume_session);
         assert_eq!(
@@ -5216,7 +5261,7 @@ mod tests {
         opencode_launch.persisted_runtime_session_id =
             Some(RuntimeSessionId("runtime-opencode".to_string()));
         let opencode_spec =
-            AcpProcessSpec::from_launch(registry.get("opencode").unwrap(), &opencode_launch)
+            AcpProcessSpec::from_launch(&registry.get("opencode").unwrap(), &opencode_launch)
                 .unwrap();
 
         assert!(!opencode_spec.supports_resume_session);
@@ -8164,7 +8209,7 @@ mod tests {
         let registry = RuntimeRegistry::default();
         let definition = registry.get("opencode").unwrap();
         let spec = AcpProcessSpec::from_launch(
-            definition,
+            &definition,
             &launch_spec("opencode", "opencode", vec!["acp"]),
         )
         .unwrap();
@@ -8186,9 +8231,11 @@ mod tests {
 
         for (runtime_id, executable, args) in cases {
             let definition = registry.get(runtime_id).unwrap();
-            let spec =
-                AcpProcessSpec::from_launch(definition, &launch_spec(runtime_id, executable, args))
-                    .unwrap();
+            let spec = AcpProcessSpec::from_launch(
+                &definition,
+                &launch_spec(runtime_id, executable, args),
+            )
+            .unwrap();
             assert_eq!(spec.runtime_id, runtime_id);
         }
     }
@@ -8200,7 +8247,7 @@ mod tests {
 
         assert!(matches!(
             AcpProcessSpec::from_launch(
-                definition,
+                &definition,
                 &launch_spec("opencode", "opencode", vec!["acp"]),
             ),
             Err(AiError::RuntimeLaunchContextInvalid { .. })
@@ -8213,7 +8260,7 @@ mod tests {
         let definition = registry.get("grok").unwrap();
 
         assert!(matches!(
-            AcpProcessSpec::from_launch(definition, &launch_spec("grok", "grok", vec!["agent"])),
+            AcpProcessSpec::from_launch(&definition, &launch_spec("grok", "grok", vec!["agent"])),
             Err(AiError::RuntimeLaunchContextInvalid { .. })
         ));
     }
@@ -8386,7 +8433,7 @@ mod tests {
             external_method_id: "cached_token".to_string(),
             meta: BTreeMap::new(),
         });
-        let spec = AcpProcessSpec::from_launch(definition, &launch).unwrap();
+        let spec = AcpProcessSpec::from_launch(&definition, &launch).unwrap();
         let request =
             acp_auth_handshake_request(&spec, &initialize_response_with_auth("xai.api_key"))
                 .unwrap()
@@ -8407,7 +8454,7 @@ mod tests {
             external_method_id: "cached_token".to_string(),
             meta: BTreeMap::new(),
         });
-        let spec = AcpProcessSpec::from_launch(definition, &launch).unwrap();
+        let spec = AcpProcessSpec::from_launch(&definition, &launch).unwrap();
         let request =
             acp_auth_handshake_request(&spec, &initialize_response_with_auth("cached_token"))
                 .unwrap()
@@ -8428,7 +8475,7 @@ mod tests {
             external_method_id: "cached_token".to_string(),
             meta: BTreeMap::new(),
         });
-        let spec = AcpProcessSpec::from_launch(definition, &launch).unwrap();
+        let spec = AcpProcessSpec::from_launch(&definition, &launch).unwrap();
         let error =
             acp_auth_handshake_request(&spec, &initialize_response_with_auth("cached_token"))
                 .unwrap_err();

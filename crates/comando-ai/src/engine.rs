@@ -35,7 +35,7 @@ use crate::history::{
     AiHistorySessionMetadata, AiHistorySessionMetadataInput, AiHistoryStore,
     AiHistorySubagentMetadata,
 };
-use crate::runtime::RuntimeRegistry;
+use crate::runtime::{RuntimeDefinition, RuntimeRegistry};
 use crate::runtime_setup::{
     RuntimeAuthTerminalLaunch, prepare_auth_terminal_launch, prepare_auth_terminal_logout,
     prepare_runtime_auth_connection, prepare_runtime_launch, runtime_status,
@@ -134,7 +134,7 @@ impl AiEngine {
         let runtime_id = input.runtime_id.0;
         if let Some(store) = self.runtime_setup_store()? {
             let definition = self.registry.get(&runtime_id)?;
-            return runtime_status(&store, definition);
+            return runtime_status(&store, &definition);
         }
         let launch_status = input.launch.map(|launch| launch.status);
         self.registry.status_from_launch(&runtime_id, launch_status)
@@ -152,7 +152,7 @@ impl AiEngine {
                     runtime_id: runtime_id.to_string(),
                     message: "Native runtime setup is not initialized.".to_string(),
                 })?;
-        prepare_auth_terminal_launch(&store, definition, method_id)
+        prepare_auth_terminal_launch(&store, &definition, method_id)
     }
 
     pub fn prepare_auth_terminal_logout(
@@ -166,7 +166,7 @@ impl AiEngine {
                     runtime_id: runtime_id.to_string(),
                     message: "Native runtime setup is not initialized.".to_string(),
                 })?;
-        prepare_auth_terminal_logout(&store, definition)
+        prepare_auth_terminal_logout(&store, &definition)
     }
 
     pub fn authenticate_runtime_auth(
@@ -187,14 +187,14 @@ impl AiEngine {
                 })?;
         let launch = prepare_runtime_auth_connection(
             &store,
-            definition,
+            &definition,
             method_id,
             cwd,
             owner_window_id,
             project_id,
             worktree_id,
         )?;
-        let spec = AcpProcessSpec::from_launch(definition, &launch)?;
+        let spec = AcpProcessSpec::from_launch(&definition, &launch)?;
         run_acp_runtime_auth(
             &self.runtime,
             spec,
@@ -214,14 +214,14 @@ impl AiEngine {
                 })?;
         let launch = prepare_runtime_auth_connection(
             &store,
-            definition,
+            &definition,
             "chatgpt",
             cwd,
             String::new(),
             None,
             None,
         )?;
-        let spec = AcpProcessSpec::from_launch(definition, &launch)?;
+        let spec = AcpProcessSpec::from_launch(&definition, &launch)?;
         run_acp_runtime_auth(&self.runtime, spec, AcpRuntimeAuthAction::Logout)
     }
 
@@ -229,18 +229,38 @@ impl AiEngine {
         &self,
         input: NativeAiPrepareSessionInput,
     ) -> AiResult<NativeAiSessionSummary> {
-        let definition = self.registry.require_native(&input.runtime_id.0)?;
-        let resolved_launch = match input.launch.clone() {
-            Some(launch) => launch,
-            None => {
-                let store = self.runtime_setup_store()?.ok_or_else(|| {
-                    AiError::RuntimeLaunchContextInvalid {
-                        runtime_id: input.runtime_id.0.clone(),
-                        message: "Native runtime setup is not initialized.".to_string(),
-                    }
-                })?;
-                prepare_runtime_launch(&store, definition, &input)?.launch
-            }
+        let custom_launch = input.custom_acp_launch.clone();
+        let definition = match custom_launch.as_ref() {
+            Some(launch) => RuntimeDefinition::from_custom_launch(launch)?,
+            None => self.registry.require_native(&input.runtime_id.0)?,
+        };
+        if input.runtime_id.0 != definition.id {
+            return Err(AiError::RuntimeLaunchContextInvalid {
+                runtime_id: input.runtime_id.0.clone(),
+                message: "Runtime launch identity does not match the requested session."
+                    .to_string(),
+            });
+        }
+        if custom_launch.is_some() && input.launch.is_some() {
+            return Err(AiError::RuntimeLaunchContextInvalid {
+                runtime_id: input.runtime_id.0.clone(),
+                message: "Custom runtimes cannot include a built-in launch context.".to_string(),
+            });
+        }
+        let resolved_launch = match custom_launch.as_ref() {
+            Some(_) => None,
+            None => Some(match input.launch.clone() {
+                Some(launch) => launch,
+                None => {
+                    let store = self.runtime_setup_store()?.ok_or_else(|| {
+                        AiError::RuntimeLaunchContextInvalid {
+                            runtime_id: input.runtime_id.0.clone(),
+                            message: "Native runtime setup is not initialized.".to_string(),
+                        }
+                    })?;
+                    prepare_runtime_launch(&store, &definition, &input)?.launch
+                }
+            }),
         };
         let mut history_metadata =
             AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
@@ -250,7 +270,12 @@ impl AiEngine {
                     .launch
                     .as_ref()
                     .and_then(|launch| launch.persisted_runtime_session_id.clone())
-                    .or_else(|| resolved_launch.persisted_runtime_session_id.clone()),
+                    .or_else(|| input.persisted_runtime_session_id.clone())
+                    .or_else(|| {
+                        resolved_launch
+                            .as_ref()
+                            .and_then(|launch| launch.persisted_runtime_session_id.clone())
+                    }),
                 parent_session_id: None,
                 project_id: input.project_id.clone(),
                 worktree_id: input.worktree_id.clone(),
@@ -264,7 +289,18 @@ impl AiEngine {
                 additional_roots: input.additional_roots.clone(),
             });
 
-        let launch = resolved_launch;
+        let spec = match custom_launch.as_ref() {
+            Some(launch) => AcpProcessSpec::from_custom_launch(&definition, launch, &input)?,
+            None => AcpProcessSpec::from_launch(
+                &definition,
+                resolved_launch
+                    .as_ref()
+                    .ok_or_else(|| AiError::RuntimeLaunchContextInvalid {
+                        runtime_id: input.runtime_id.0.clone(),
+                        message: "Built-in runtime launch details are missing.".to_string(),
+                    })?,
+            )?,
+        };
         let session = NativeAiSession::from_prepare_input(input)?;
         let mut sessions = self.lock_sessions()?;
         if let Ok(existing) = sessions.get_mut(&session.session_id) {
@@ -280,7 +316,6 @@ impl AiEngine {
         }
         let event_sender = self.event_sender()?;
         drop(sessions);
-        let spec = AcpProcessSpec::from_launch(definition, &launch)?;
         let (session, controller) = start_acp_session(
             &self.runtime,
             spec,
