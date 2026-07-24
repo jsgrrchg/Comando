@@ -327,6 +327,93 @@ describe("AiService history", () => {
         }
     });
 
+    it("exposes an interrupted tail outside sealed block metadata", async () => {
+        const snapshot = createSnapshot();
+        const openTail: AiOpenTranscriptTail = {
+            entries: [{
+                createdAt: "2026-04-16T12:00:01.000Z",
+                id: "message:assistant-1",
+                kind: "message",
+                payloadRef: "tail:assistant-1",
+                sequence: 1,
+                sessionId: snapshot.sessionId,
+                summary: {
+                    label: "Assistant",
+                    preview: "Recovered streamed output.",
+                    status: "streaming",
+                },
+                updatedAt: "2026-04-16T12:00:01.000Z",
+            }],
+            entryRevisions: [{
+                entryId: "message:assistant-1",
+                entryRevision: 1,
+                ordinal: 0,
+            }],
+            payloads: [{
+                payloadRef: "tail:assistant-1",
+                value: {
+                    kind: "message",
+                    message: {
+                        attachments: [],
+                        content: "Recovered streamed output.",
+                        createdAt: "2026-04-16T12:00:01.000Z",
+                        id: "assistant-1",
+                        kind: "assistant",
+                        status: "streaming",
+                    },
+                },
+            }],
+            revision: 1,
+            sessionId: snapshot.sessionId,
+            terminalStatus: null,
+            turnId: "interrupted-turn",
+            updatedAt: "2026-04-16T12:00:01.000Z",
+        };
+        const loadTranscriptBlockMetadata = vi.fn(() => Promise.resolve({
+            blocks: [],
+            capabilityVersion: 1,
+            sessionId: snapshot.sessionId,
+            transcriptRevision: 1,
+        }));
+        const service = createService({
+            nativeAi: createNativeAiGateway({
+                checkpointOpenTranscriptTail: vi.fn(() => Promise.resolve()),
+                getTranscriptCapability: vi.fn(() => ({
+                    blockNativeVersion: 1,
+                    legacyFallbackAvailable: true,
+                })),
+                getTranscriptStorageState: vi.fn(() => Promise.resolve({
+                    capabilityVersion: 1,
+                    legacyFallbackAvailable: true,
+                    migrationManifestExists: false,
+                    mode: "block-native" as const,
+                    sessionId: snapshot.sessionId,
+                    storageVersion: 5,
+                })),
+                loadOpenTranscriptTail: vi.fn(() => Promise.resolve(openTail)),
+                loadSessionSnapshot: vi.fn(() => Promise.resolve(snapshot)),
+                loadTranscriptBlockMetadata,
+                sealTranscriptTurn: vi.fn(() => Promise.resolve([])),
+            }),
+        });
+
+        try {
+            const restored = await service.getSessionSnapshot(snapshot.sessionId);
+            const metadata = await service.getTranscriptBlockMetadata(snapshot.sessionId);
+
+            // A renderer that reads only sealed blocks has no representation
+            // for this otherwise recoverable historical message.
+            expect(restored?.messages).toMatchObject([{
+                content: "Recovered streamed output.",
+                id: "assistant-1",
+            }]);
+            expect(metadata?.blocks).toEqual([]);
+            expect(loadTranscriptBlockMetadata).toHaveBeenCalledOnce();
+        } finally {
+            service.close();
+        }
+    });
+
     it("retries a transient transcript migration status failure", async () => {
         vi.useFakeTimers();
         const snapshot = createSnapshot();

@@ -5065,6 +5065,79 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_native_tail_is_absent_from_sealed_history_after_restart() {
+        let (temp, store) = store();
+        let session_id = SessionId("interrupted_native_tail".to_string());
+        let legacy_message = message("assistant-1", "Recovered streamed output.");
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, vec![legacy_message.clone()])
+            .unwrap();
+
+        let mut entry = transcript_entry(
+            &session_id,
+            "message:assistant-1",
+            "Recovered streamed output.",
+        );
+        entry.payload_ref = Some("tail:assistant-1".to_string());
+        store
+            .checkpoint_open_transcript_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "interrupted-turn".to_string(),
+                terminal_status: None,
+                entries: vec![entry],
+                payloads: vec![AiTranscriptPayloadWrite {
+                    payload_ref: "tail:assistant-1".to_string(),
+                    value: json!({ "kind": "message", "message": legacy_message }),
+                }],
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![NativeAiOpenTranscriptEntryRef {
+                    entry_id: "message:assistant-1".to_string(),
+                    entry_revision: 1,
+                    ordinal: 0,
+                }],
+            })
+            .unwrap();
+        drop(store);
+
+        let reopened = AiHistoryStore::new(temp.path()).unwrap();
+        let snapshot = reopened
+            .load_session_snapshot(&session_id)
+            .unwrap()
+            .unwrap();
+        let page = reopened
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id: session_id.clone(),
+                offset: 0,
+                limit: 10,
+            })
+            .unwrap()
+            .unwrap();
+
+        // The native snapshot delegates history to sealed blocks, but an
+        // interrupted tail has not produced one yet.
+        assert!(snapshot.messages.is_empty());
+        assert_eq!(page.messages.len(), 1);
+        assert!(
+            reopened
+                .load_transcript_block_metadata(&session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reopened
+                .load_open_transcript_tail(&session_id)
+                .unwrap()
+                .unwrap()
+                .entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["message:assistant-1"]
+        );
+    }
+
+    #[test]
     fn sealing_turn_persists_payload_and_stable_block_revision() {
         let (_temp, store) = store();
         let session_id = SessionId("sealed_turn".to_string());
