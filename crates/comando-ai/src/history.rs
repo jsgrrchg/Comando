@@ -5147,6 +5147,137 @@ mod tests {
     }
 
     #[test]
+    fn restart_reconciles_terminal_tail_so_history_and_block_native_chat_are_complete() {
+        let (temp, store) = store();
+        let session_id = SessionId("restart_terminal_tail_reconciliation".to_string());
+        let mut session_metadata = metadata(&session_id.0);
+        session_metadata.status = NativeAiSessionStatus::Streaming;
+        store.create_session(session_metadata).unwrap();
+
+        // History continues to read the compatibility transcript while an open
+        // terminal tail can leave the block-native projection incomplete.
+        store
+            .save_transcript_window(
+                &session_id,
+                vec![
+                    message("assistant-a", "First durable answer."),
+                    message("assistant-b", "Completed answer awaiting recovery."),
+                ],
+            )
+            .unwrap();
+
+        let first = transcript_entry(&session_id, "message:assistant-a", "First durable answer.");
+        let second = transcript_entry(
+            &session_id,
+            "message:assistant-b",
+            "Completed answer awaiting recovery.",
+        );
+        store
+            .seal_transcript_turn(&session_id, "turn-a", vec![first.clone()], vec![])
+            .unwrap();
+        store
+            .checkpoint_open_transcript_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-b".to_string(),
+                terminal_status: Some(NativeAiTranscriptTerminalStatus::Completed),
+                entries: vec![first.clone(), second.clone()],
+                payloads: vec![],
+                removed_entry_ids: vec![],
+                entry_order: vec![
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: first.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 0,
+                    },
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: second.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 1,
+                    },
+                ],
+            })
+            .unwrap();
+        drop(store);
+
+        let reopened = AiHistoryStore::new(temp.path()).unwrap();
+        let startup_snapshot = reopened
+            .load_session_snapshot(&session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(startup_snapshot.status, NativeAiSessionStatus::Streaming);
+        assert!(startup_snapshot.messages.is_empty());
+        let history = reopened
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id: session_id.clone(),
+                offset: 0,
+                limit: 10,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(history.messages.len(), 2);
+        assert_eq!(
+            reopened
+                .load_transcript_block_metadata(&session_id)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            reopened
+                .load_open_transcript_tail(&session_id)
+                .unwrap()
+                .unwrap()
+                .terminal_status,
+            Some(NativeAiTranscriptTerminalStatus::Completed)
+        );
+
+        let metadata = reopened
+            .reconcile_terminal_open_transcript_tail(&session_id, "turn-b")
+            .unwrap();
+        assert!(
+            reopened
+                .load_open_transcript_tail(&session_id)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(metadata.len(), 2);
+
+        let block_entry_ids = metadata
+            .iter()
+            .flat_map(|block| {
+                reopened
+                    .load_transcript_block(&session_id, &block.block_id)
+                    .unwrap()
+                    .unwrap()
+                    .entries
+            })
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        assert_eq!(block_entry_ids, vec![first.id, second.id]);
+        assert_eq!(
+            reopened
+                .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                    session_id: session_id.clone(),
+                    offset: 0,
+                    limit: 10,
+                })
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            2
+        );
+
+        assert_eq!(
+            reopened
+                .reconcile_terminal_open_transcript_tail(&session_id, "turn-b")
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
     fn sealing_turn_persists_payload_and_stable_block_revision() {
         let (_temp, store) = store();
         let session_id = SessionId("sealed_turn".to_string());
