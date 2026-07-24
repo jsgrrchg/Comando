@@ -229,6 +229,7 @@ impl NativeBackend {
             | "ai_checkpoint_open_transcript_tail"
             | "ai_load_open_transcript_tail"
             | "ai_seal_transcript_turn"
+            | "ai_reconcile_terminal_open_transcript_tail"
             | "ai_load_transcript_block_metadata"
             | "ai_load_transcript_block"
             | "ai_load_transcript_payload"
@@ -367,6 +368,7 @@ impl NativeBackend {
             | "ai_checkpoint_open_transcript_tail"
             | "ai_load_open_transcript_tail"
             | "ai_seal_transcript_turn"
+            | "ai_reconcile_terminal_open_transcript_tail"
             | "ai_load_transcript_block_metadata"
             | "ai_load_transcript_block"
             | "ai_load_transcript_payload"
@@ -2459,6 +2461,27 @@ impl NativeBackend {
                         request.id,
                         serde_json::to_value(metadata)
                             .expect("AI sealed transcript metadata serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_reconcile_terminal_open_transcript_tail" => {
+                let input = match parse_args::<
+                    native_ai::NativeAiReconcileTerminalOpenTranscriptTailInput,
+                >(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .reconcile_terminal_open_transcript_tail(&input.session_id, &input.turn_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(metadata) => response_only(
+                        request.id,
+                        serde_json::to_value(metadata)
+                            .expect("AI reconciled transcript metadata serializes"),
                     ),
                     Err(error) => error_only(request.id, error),
                 }

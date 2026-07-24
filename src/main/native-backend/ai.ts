@@ -33,6 +33,7 @@ import type {
     AiTranscriptPayload,
     AiTranscriptPayloadsOutput,
     AiTranscriptStorageState,
+    AiReconcileTerminalOpenTranscriptTailInput,
     AiSealTranscriptTurnInput,
     AiTrackedFile,
     AiTrackedFileHunkMutationInput,
@@ -483,6 +484,22 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         );
         if (!Array.isArray(output)) {
             throw new Error("Native sealed transcript metadata must be an array.");
+        }
+        return output as NativeAiTranscriptBlockMetadata[];
+    }
+
+    async reconcileTerminalOpenTranscriptTail(
+        input: AiReconcileTerminalOpenTranscriptTailInput,
+    ): Promise<readonly AiTranscriptBlockMetadata[]> {
+        const output = await this.#client.request<unknown>(
+            "ai_reconcile_terminal_open_transcript_tail",
+            {
+                sessionId: input.sessionId,
+                turnId: input.turnId,
+            },
+        );
+        if (!Array.isArray(output)) {
+            throw new Error("Native reconciled transcript metadata must be an array.");
         }
         return output as NativeAiTranscriptBlockMetadata[];
     }

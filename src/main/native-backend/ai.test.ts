@@ -796,6 +796,22 @@ describe("NativeAiGateway", () => {
                         },
                     ] as T);
                 }
+                if (command === "ai_reconcile_terminal_open_transcript_tail") {
+                    return Promise.resolve([
+                        {
+                            blockId: "session-1:0",
+                            endSequence: 1,
+                            entryCount: 1,
+                            estimatedHeight: 72,
+                            estimatedRowCount: 1,
+                            firstCreatedAt: TURN_STARTED_AT,
+                            lastCreatedAt: TURN_STARTED_AT,
+                            revision: 2,
+                            sessionId: "session-1",
+                            startSequence: 1,
+                        },
+                    ] as T);
+                }
                 return Promise.resolve({ ok: true } as T);
             },
         );
@@ -822,6 +838,12 @@ describe("NativeAiGateway", () => {
                 turnId: tail.turnId,
             }),
         ).resolves.toMatchObject([{ blockId: "session-1:0" }]);
+        await expect(
+            gateway.reconcileTerminalOpenTranscriptTail({
+                sessionId: tail.sessionId,
+                turnId: tail.turnId,
+            }),
+        ).resolves.toMatchObject([{ blockId: "session-1:0" }]);
 
         expect(client.request).toHaveBeenCalledWith(
             "ai_checkpoint_open_transcript_tail",
@@ -830,6 +852,10 @@ describe("NativeAiGateway", () => {
         expect(client.request).toHaveBeenCalledWith(
             "ai_load_open_transcript_tail",
             { sessionId: "session-1" },
+        );
+        expect(client.request).toHaveBeenCalledWith(
+            "ai_reconcile_terminal_open_transcript_tail",
+            { sessionId: "session-1", turnId: tail.turnId },
         );
     });
 

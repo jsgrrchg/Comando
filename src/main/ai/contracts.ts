@@ -36,6 +36,7 @@ import type {
     AiTranscriptPayload,
     AiTranscriptPayloadsOutput,
     AiTranscriptStorageState,
+    AiReconcileTerminalOpenTranscriptTailInput,
     AiSealTranscriptTurnInput,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
@@ -208,6 +209,9 @@ export interface NativeAiGateway {
     respondUserInput(input: AiUserInputResponseInput): Promise<void>;
     sealTranscriptTurn?(
         input: AiSealTranscriptTurnInput,
+    ): Promise<readonly AiTranscriptBlockMetadata[]>;
+    reconcileTerminalOpenTranscriptTail?(
+        input: AiReconcileTerminalOpenTranscriptTailInput,
     ): Promise<readonly AiTranscriptBlockMetadata[]>;
     sendPrompt(input: NativeAiSendPromptRpcInput): Promise<AiPromptResult>;
     setSessionPinned(input: AiSessionPinnedMutationInput): Promise<void>;

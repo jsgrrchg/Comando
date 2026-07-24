@@ -493,6 +493,9 @@ export class AiService {
     readonly #loadedTranscriptBlockMetadataSessionIds = new Set<string>();
     readonly #legacyTranscriptSessionIds = new Set<string>();
     readonly #loadingTranscriptBlockMetadataSessionIds = new Set<string>();
+    readonly #loadingTranscriptBlockMetadataRequestSessionIds = new Set<string>();
+    readonly #pendingTranscriptBlockMetadataReloadSessionIds = new Set<string>();
+    readonly #transcriptBlockMetadataGenerations = new Map<string, number>();
     readonly #recoveredTranscriptTailSessionIds = new Set<string>();
     readonly #transcriptRecoveryPromises = new Map<string, Promise<void>>();
     readonly #transcriptMigrationTimers = new Map<
@@ -619,6 +622,9 @@ export class AiService {
         this.#liveTranscriptTails.clear();
         this.#loadedTranscriptBlockMetadataSessionIds.clear();
         this.#loadingTranscriptBlockMetadataSessionIds.clear();
+        this.#loadingTranscriptBlockMetadataRequestSessionIds.clear();
+        this.#pendingTranscriptBlockMetadataReloadSessionIds.clear();
+        this.#transcriptBlockMetadataGenerations.clear();
         this.#recoveredTranscriptTailSessionIds.clear();
         this.#transcriptRecoveryPromises.clear();
         for (const timer of this.#transcriptMigrationTimers.values()) {
@@ -764,8 +770,9 @@ export class AiService {
         this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
         // Snapshots can be the only delivery path during a reconnect, so their
         // active tail must enter the same durable queue as event-driven updates.
-        this.#transcriptPersistence?.scheduleCheckpoint(nextSnapshot.sessionId);
-        this.#scheduleTranscriptRecovery(nextSnapshot.sessionId);
+        // Recovery runs first so a restarted runtime cannot overwrite an older
+        // persisted tail before it is restored or reconciled.
+        this.#scheduleTranscriptCheckpointAfterRecovery(nextSnapshot.sessionId);
         this.#scheduleTranscriptBlockMetadataLoad(nextSnapshot.sessionId);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
             preserveCanonicalTranscriptArrays(
@@ -805,7 +812,7 @@ export class AiService {
         }
 
         this.#liveTranscriptTails.applyEvent(event);
-        this.#transcriptPersistence?.scheduleCheckpoint(event.sessionId);
+        this.#scheduleTranscriptCheckpointAfterRecovery(event.sessionId);
         if (event.kind === "turn-status") {
             this.#transcriptPersistence?.requestSeal(
                 event.sessionId,
@@ -1317,10 +1324,13 @@ export class AiService {
             preserveLegacyFallback: true,
         });
         if (this.#usesBlockNativeTranscript(sessionId)) {
-            // Open tails are intentionally absent from sealed block metadata.
-            // Restore one before projecting the historical snapshot so an
-            // interrupted streaming turn remains visible after restart.
-            await this.#recoverTranscriptTail(sessionId);
+            // Historical sessions cannot receive the terminal event that
+            // would normally seal an interrupted tail after a restart.
+            await this.#recoverTranscriptTail(sessionId, {
+                sealInterruptedTail: !isResyncEligibleAiSessionStatus(
+                    persistedSnapshot.status,
+                ),
+            });
         }
         return this.#toRendererSessionSnapshot(
             this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot),
@@ -1387,6 +1397,32 @@ export class AiService {
         ) {
             return null;
         }
+        if (!(await this.#refreshTranscriptStorageMode(sessionId))) {
+            return null;
+        }
+        const hasLiveSnapshot = this.#liveSnapshots.has(sessionId);
+        if (!hasLiveSnapshot) {
+            const persistedSnapshot =
+                await this.#loadPersistedSessionSnapshot(sessionId);
+            if (
+                persistedSnapshot &&
+                !isResyncEligibleAiSessionStatus(persistedSnapshot.status)
+            ) {
+                // Metadata can race ahead of session hydration after restart.
+                // Resolve the historical tail before exposing sealed blocks.
+                await this.#recoverTranscriptTail(sessionId, {
+                    sealInterruptedTail: true,
+                });
+            } else {
+                await this.#recoverTranscriptTail(sessionId);
+            }
+        } else {
+            // A live snapshot can arrive before the persisted tail is loaded.
+            // Do not expose block metadata until that predecessor is resolved.
+            await this.#recoverTranscriptTail(sessionId);
+        }
+        // Recovery can seal blocks and advance the storage revision. Re-read
+        // the mode before returning metadata from the post-recovery state.
         if (!(await this.#refreshTranscriptStorageMode(sessionId))) {
             return null;
         }
@@ -2648,28 +2684,68 @@ export class AiService {
         if (
             !nativeAi?.loadTranscriptBlockMetadata ||
             !nativeAi.getTranscriptCapability?.().blockNativeVersion ||
-            this.#loadedTranscriptBlockMetadataSessionIds.has(sessionId) ||
-            this.#loadingTranscriptBlockMetadataSessionIds.has(sessionId)
+            (this.#loadedTranscriptBlockMetadataSessionIds.has(sessionId) &&
+                !this.#pendingTranscriptBlockMetadataReloadSessionIds.has(
+                    sessionId,
+                ))
         ) {
+            return;
+        }
+        if (this.#loadingTranscriptBlockMetadataSessionIds.has(sessionId)) {
+            if (
+                this.#loadingTranscriptBlockMetadataRequestSessionIds.has(
+                    sessionId,
+                )
+            ) {
+                this.#pendingTranscriptBlockMetadataReloadSessionIds.add(
+                    sessionId,
+                );
+            }
             return;
         }
         const loadTranscriptBlockMetadata = (targetSessionId: string) =>
             nativeAi.loadTranscriptBlockMetadata!(targetSessionId);
 
         this.#loadingTranscriptBlockMetadataSessionIds.add(sessionId);
-        void this.#refreshTranscriptStorageMode(sessionId)
-            .then((isBlockNative) =>
-                isBlockNative
-                    ? loadTranscriptBlockMetadata(sessionId)
-                    : null,
-            )
-            .then((output) => {
-                if (!output || this.#deletedSessionIds.has(sessionId)) {
+        void this.#recoverTranscriptTail(sessionId)
+            .then(() => this.#refreshTranscriptStorageMode(sessionId))
+            .then(async (isBlockNative) => {
+                if (!isBlockNative) {
+                    return null;
+                }
+                const generation =
+                    this.#transcriptBlockMetadataGenerations.get(sessionId) ??
+                    0;
+                this.#loadingTranscriptBlockMetadataRequestSessionIds.add(
+                    sessionId,
+                );
+                const output = await loadTranscriptBlockMetadata(sessionId)
+                    .finally(() => {
+                        this.#loadingTranscriptBlockMetadataRequestSessionIds.delete(
+                            sessionId,
+                        );
+                    });
+                return { generation, output };
+            })
+            .then((result) => {
+                if (!result || this.#deletedSessionIds.has(sessionId)) {
+                    return;
+                }
+                if (
+                    result.generation !==
+                    (this.#transcriptBlockMetadataGenerations.get(sessionId) ??
+                        0)
+                ) {
+                    // A seal completed while this request was in flight. Drop
+                    // the stale response and reload after the active request.
+                    this.#pendingTranscriptBlockMetadataReloadSessionIds.add(
+                        sessionId,
+                    );
                     return;
                 }
                 this.#liveTranscriptTails.setStableBlocks(
                     sessionId,
-                    output.blocks,
+                    result.output.blocks,
                 );
                 this.#loadedTranscriptBlockMetadataSessionIds.add(sessionId);
             })
@@ -2681,7 +2757,28 @@ export class AiService {
             })
             .finally(() => {
                 this.#loadingTranscriptBlockMetadataSessionIds.delete(sessionId);
+                if (
+                    this.#pendingTranscriptBlockMetadataReloadSessionIds.delete(
+                        sessionId,
+                    )
+                ) {
+                    this.#loadedTranscriptBlockMetadataSessionIds.delete(sessionId);
+                    this.#scheduleTranscriptBlockMetadataLoad(sessionId);
+                }
             });
+    }
+
+    #invalidateTranscriptBlockMetadata(sessionId: string): void {
+        this.#loadedTranscriptBlockMetadataSessionIds.delete(sessionId);
+        this.#transcriptBlockMetadataGenerations.set(
+            sessionId,
+            (this.#transcriptBlockMetadataGenerations.get(sessionId) ?? 0) + 1,
+        );
+        if (
+            this.#loadingTranscriptBlockMetadataRequestSessionIds.has(sessionId)
+        ) {
+            this.#pendingTranscriptBlockMetadataReloadSessionIds.add(sessionId);
+        }
     }
 
     #createTranscriptPersistence(
@@ -2690,6 +2787,7 @@ export class AiService {
         if (
             !nativeAi?.checkpointOpenTranscriptTail ||
             !nativeAi.loadOpenTranscriptTail ||
+            !nativeAi.reconcileTerminalOpenTranscriptTail ||
             !nativeAi.sealTranscriptTurn ||
             !nativeAi.getTranscriptCapability?.().blockNativeVersion
         ) {
@@ -2697,10 +2795,11 @@ export class AiService {
         }
         const checkpoint = nativeAi.checkpointOpenTranscriptTail.bind(nativeAi);
         const load = nativeAi.loadOpenTranscriptTail.bind(nativeAi);
+        const reconcile = nativeAi.reconcileTerminalOpenTranscriptTail.bind(nativeAi);
         const seal = nativeAi.sealTranscriptTurn.bind(nativeAi);
         return new AiTranscriptPersistenceCoordinator(
             this.#liveTranscriptTails,
-            { checkpoint, load, seal },
+            { checkpoint, load, reconcile, seal },
             undefined,
             {
                 onSealed: (sessionId) => {
@@ -2708,7 +2807,7 @@ export class AiService {
                         return;
                     }
                     this.#transcriptStorageModes.set(sessionId, "block-native");
-                    this.#loadedTranscriptBlockMetadataSessionIds.delete(sessionId);
+                    this.#invalidateTranscriptBlockMetadata(sessionId);
                     this.#scheduleTranscriptBlockMetadataLoad(sessionId);
                     this.#emitSealedTranscriptSnapshot(sessionId);
                 },
@@ -2716,26 +2815,39 @@ export class AiService {
         );
     }
 
-    #scheduleTranscriptRecovery(sessionId: string): void {
-        void this.#recoverTranscriptTail(sessionId).catch((error: unknown) => {
-            debugBenignError("ai.service.recoverTranscriptTail", error);
-        });
+    #scheduleTranscriptCheckpointAfterRecovery(sessionId: string): void {
+        void this.#recoverTranscriptTail(sessionId)
+            .then(() => {
+                this.#transcriptPersistence?.scheduleCheckpoint(sessionId);
+            })
+            .catch((error: unknown) => {
+                debugBenignError(
+                    "ai.service.recoverTranscriptTailBeforeCheckpoint",
+                    error,
+                );
+            });
     }
 
-    async #recoverTranscriptTail(sessionId: string): Promise<void> {
+    async #recoverTranscriptTail(
+        sessionId: string,
+        options: { readonly sealInterruptedTail?: boolean } = {},
+    ): Promise<void> {
         if (
             !this.#transcriptPersistence ||
-            this.#recoveredTranscriptTailSessionIds.has(sessionId)
+            (!options.sealInterruptedTail &&
+                this.#recoveredTranscriptTailSessionIds.has(sessionId))
         ) {
             return;
         }
         const existing = this.#transcriptRecoveryPromises.get(sessionId);
         if (existing) {
             await existing;
-            return;
+            if (!options.sealInterruptedTail) {
+                return;
+            }
         }
         const recovery = this.#transcriptPersistence
-            .recover(sessionId)
+            .recover(sessionId, options)
             .then(() => {
                 this.#recoveredTranscriptTailSessionIds.add(sessionId);
             })
@@ -2881,6 +2993,13 @@ export class AiService {
             this.#loadingTranscriptBlockMetadataSessionIds.delete(
                 currentSessionId,
             );
+            this.#loadingTranscriptBlockMetadataRequestSessionIds.delete(
+                currentSessionId,
+            );
+            this.#pendingTranscriptBlockMetadataReloadSessionIds.delete(
+                currentSessionId,
+            );
+            this.#transcriptBlockMetadataGenerations.delete(currentSessionId);
             this.#liveSessionContexts.delete(currentSessionId);
             this.#liveSessionTouches.delete(currentSessionId);
             this.#freezingSessionIds.delete(currentSessionId);
@@ -3326,7 +3445,7 @@ export class AiService {
         this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
         // A prepared session may already contain streamed output before events
         // resume, so do not wait for a later event to make it crash-safe.
-        this.#transcriptPersistence?.scheduleCheckpoint(nextSnapshot.sessionId);
+        this.#scheduleTranscriptCheckpointAfterRecovery(nextSnapshot.sessionId);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
             preserveCanonicalTranscriptArrays(
                 previousSnapshot,
@@ -3335,7 +3454,6 @@ export class AiService {
             ownerWindowId,
         );
         this.#scheduleTranscriptBlockMetadataLoad(cachedSnapshot.sessionId);
-        this.#scheduleTranscriptRecovery(cachedSnapshot.sessionId);
         if (!this.#isNativeAiSession(cachedSnapshot.sessionId)) {
             this.#persistence.saveSessionSnapshot(cachedSnapshot);
         }
@@ -5880,9 +5998,7 @@ export class AiService {
             void this.#refreshTranscriptStorageMode(sessionId)
                 .then((isBlockNative) => {
                     if (isBlockNative) {
-                        this.#loadedTranscriptBlockMetadataSessionIds.delete(
-                            sessionId,
-                        );
+                        this.#invalidateTranscriptBlockMetadata(sessionId);
                         this.#scheduleTranscriptBlockMetadataLoad(sessionId);
                         // The renderer may have observed an empty block-native
                         // snapshot while this migration was still pending.

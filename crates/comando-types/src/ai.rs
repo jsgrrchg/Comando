@@ -732,6 +732,13 @@ pub struct NativeAiSealTranscriptTurnInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeAiReconcileTerminalOpenTranscriptTailInput {
+    pub session_id: SessionId,
+    pub turn_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeAiLoadTranscriptBlockInput {
     pub session_id: SessionId,
     pub block_id: String,

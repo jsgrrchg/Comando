@@ -4,6 +4,7 @@ import type {
     AiMessage,
     AiOpenTranscriptTail,
     AiSessionDomainEventBase,
+    AiSessionSnapshot,
     AiTranscriptBlockMetadata,
 } from "@shared/ipc";
 
@@ -277,14 +278,101 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         });
     });
 
-    it("seals a recovered terminal tail without sealing a newer live turn", async () => {
+    it("seals an interrupted tail recovered without a live runtime", async () => {
+        const store = new AiLiveTranscriptTailStore();
+        const seal = vi.fn(() => Promise.resolve([sealedMetadata()]));
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                load: vi.fn(() => Promise.resolve(recoveredTail())),
+                seal,
+            }),
+        );
+
+        await coordinator.recover(SESSION_ID, { sealInterruptedTail: true });
+
+        expect(seal).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: SESSION_ID,
+            turnId: TURN_ID,
+        }));
+        expect(store.getSnapshot(SESSION_ID)?.stableBlocks).toEqual([
+            sealedMetadata(),
+        ]);
+    });
+
+    it("reconciles a completed recovered tail despite a delayed streaming snapshot", async () => {
+        const store = new AiLiveTranscriptTailStore();
+        const recovered = {
+            ...recoveredTail(),
+            terminalStatus: "completed" as const,
+        };
+        const reconcile = vi.fn(() => Promise.resolve([sealedMetadata()]));
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                load: vi.fn(() => Promise.resolve(recovered)),
+                reconcile,
+            }),
+        );
+
+        await coordinator.recover(SESSION_ID);
+
+        expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({
+            turnId: recovered.turnId,
+        }));
+        expect(store.getSnapshot(SESSION_ID)).toMatchObject({
+            entries: [],
+            stableBlocks: [sealedMetadata()],
+            turnId: null,
+        });
+    });
+
+    it("seals a displaced nonterminal tail before checkpointing the newer turn", async () => {
+        const store = liveStore();
+        store.applyEvent(messageStarted("new turn output"));
+        const recovered = {
+            ...recoveredTail(),
+            turnId: "previous-turn",
+        };
+        const seal = vi.fn(() => Promise.resolve([sealedMetadata()]));
+        const checkpoint = vi.fn((input: CheckpointInput) => {
+            void input;
+            return Promise.resolve();
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                checkpoint,
+                load: vi.fn(() => Promise.resolve(recovered)),
+                seal,
+            }),
+        );
+
+        await coordinator.recover(SESSION_ID);
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        expect(seal).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: SESSION_ID,
+            turnId: recovered.turnId,
+        }));
+        expect(checkpoint).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: SESSION_ID,
+            turnId: TURN_ID,
+        }));
+        expect(store.getSnapshot(SESSION_ID)).toMatchObject({
+            stableBlocks: [sealedMetadata()],
+            turnId: TURN_ID,
+        });
+    });
+
+    it("reconciles a completed tail when a streaming snapshot creates a newer turn", async () => {
         const store = new AiLiveTranscriptTailStore();
         const load = deferred<AiOpenTranscriptTail | null>();
         const checkpoint = vi.fn((input: CheckpointInput) => {
             void input;
             return Promise.resolve();
         });
-        const seal = vi.fn((input: SealInput) => {
+        const reconcile = vi.fn((input: { sessionId: string; turnId: string }) => {
             void input;
             return Promise.resolve([sealedMetadata()]);
         });
@@ -298,19 +386,12 @@ describe("AiTranscriptPersistenceCoordinator", () => {
             adapterStub({
                 checkpoint,
                 load: vi.fn(() => load.promise),
-                seal,
+                reconcile,
             }),
         );
 
         const recovery = coordinator.recover(SESSION_ID);
-        store.applyEvent({
-            ...eventBase,
-            activeTurnStartedAt: TURN_ID,
-            kind: "status",
-            lastError: null,
-            status: "streaming",
-        });
-        store.applyEvent(messageStarted("new turn output"));
+        store.synchronizeSnapshot(streamingSnapshot(TURN_ID));
         coordinator.scheduleCheckpoint(SESSION_ID);
         await Promise.resolve();
         expect(checkpoint).not.toHaveBeenCalled();
@@ -319,8 +400,8 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         await recovery;
         await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
 
-        expect(seal).toHaveBeenCalledOnce();
-        expect(seal).toHaveBeenCalledWith(
+        expect(reconcile).toHaveBeenCalledOnce();
+        expect(reconcile).toHaveBeenCalledWith(
             expect.objectContaining({ turnId: recovered.turnId }),
         );
         expect(checkpoint).toHaveBeenCalledWith(
@@ -332,6 +413,52 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         expect(store.getSnapshot(SESSION_ID)).toMatchObject({
             turnId: TURN_ID,
         });
+    });
+
+    it("preserves a terminal seal requested while loading a nonterminal tail", async () => {
+        const store = new AiLiveTranscriptTailStore();
+        const load = deferred<AiOpenTranscriptTail | null>();
+        const checkpoints: CheckpointInput[] = [];
+        const seal = vi.fn((input: SealInput) => {
+            void input;
+            return Promise.resolve([sealedMetadata()]);
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                checkpoint: vi.fn((input: CheckpointInput) => {
+                    checkpoints.push(input);
+                    return Promise.resolve();
+                }),
+                load: vi.fn(() => load.promise),
+                seal,
+            }),
+        );
+
+        const recovery = coordinator.recover(SESSION_ID);
+        store.applyEvent({
+            ...eventBase,
+            error: null,
+            kind: "turn-status",
+            status: "completed",
+            turnId: TURN_ID,
+        });
+        coordinator.requestSeal(SESSION_ID, "completed");
+
+        load.resolve(recoveredTail());
+        await recovery;
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        expect(checkpoints).toHaveLength(1);
+        expect(checkpoints[0]).toMatchObject({
+            terminalStatus: "completed",
+            turnId: TURN_ID,
+        });
+        expect(seal).toHaveBeenCalledOnce();
+        expect(seal).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: SESSION_ID,
+            turnId: TURN_ID,
+        }));
     });
 
     it("checkpoints terminal state before sealing and clears the live tail", async () => {
@@ -456,6 +583,7 @@ function adapterStub(
     return {
         checkpoint: vi.fn(() => Promise.resolve()),
         load: vi.fn(() => Promise.resolve(null)),
+        reconcile: vi.fn(() => Promise.resolve([])),
         seal: vi.fn(() => Promise.resolve([])),
         ...overrides,
     };
@@ -502,6 +630,33 @@ function message(id: string, content: string, createdAt: string): AiMessage {
         id,
         kind: "assistant",
         status: "streaming",
+    };
+}
+
+function streamingSnapshot(activeTurnStartedAt: string): AiSessionSnapshot {
+    return {
+        activeTurnStartedAt,
+        availableCommands: [],
+        configOptions: [],
+        lastError: null,
+        messages: [message("assistant-1", "new turn output", activeTurnStartedAt)],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        projectId: null,
+        runtimeId: "codex",
+        runtimeSessionId: "runtime-1",
+        sessionId: SESSION_ID,
+        status: "streaming",
+        title: "Streaming recovery",
+        tokenUsage: null,
+        toolActivity: [],
+        trackedFiles: [],
+        updatedAt: activeTurnStartedAt,
     };
 }
 
