@@ -34,6 +34,9 @@ import {
     type CloneRepositoryResult,
     type ConfirmWorkspaceCloseInput,
     type CodexRuntimeSettingsInput,
+    type CustomAcpRuntimeDefinitionInput,
+    type DeleteCustomAcpRuntimeInput,
+    type UpdateCustomAcpRuntimeInput,
     type CopyExternalProjectEntriesInput,
     type CopyProjectEntriesInput,
     type CreateProjectEntryInput,
@@ -291,6 +294,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.checkCommandAvailability);
     ipcMain.removeHandler(IPC_CHANNELS.readClaudeCodeTranscript);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
+    ipcMain.removeHandler(IPC_CHANNELS.listCustomAcpRuntimes);
+    ipcMain.removeHandler(IPC_CHANNELS.createCustomAcpRuntime);
+    ipcMain.removeHandler(IPC_CHANNELS.updateCustomAcpRuntime);
+    ipcMain.removeHandler(IPC_CHANNELS.deleteCustomAcpRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.getProjectSettings);
     ipcMain.removeHandler(IPC_CHANNELS.getSystemTheme);
     ipcMain.removeHandler(IPC_CHANNELS.saveSettingsSnapshot);
@@ -648,6 +655,40 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.getSettingsSnapshot,
         (): SettingsSnapshot => options.settingsService.loadSnapshot(),
+    );
+    ipcMain.handle(IPC_CHANNELS.listCustomAcpRuntimes, () =>
+        options.settingsService.listCustomAcpRuntimes(),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.createCustomAcpRuntime,
+        (_event, input: CustomAcpRuntimeDefinitionInput) => {
+            const definition =
+                options.settingsService.createCustomAcpRuntime(input);
+            broadcastCurrentSettings(options.settingsService);
+            return definition;
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.updateCustomAcpRuntime,
+        (_event, input: UpdateCustomAcpRuntimeInput) => {
+            const definition = options.settingsService.updateCustomAcpRuntime(
+                input.id,
+                input.definition,
+            );
+            broadcastCurrentSettings(options.settingsService);
+            return definition;
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.deleteCustomAcpRuntime,
+        (_event, input: DeleteCustomAcpRuntimeInput) => {
+            const result =
+                options.settingsService.deleteCustomAcpRuntime(input.id);
+            if (result.deleted) {
+                broadcastCurrentSettings(options.settingsService);
+            }
+            return result;
+        },
     );
     ipcMain.handle(
         IPC_CHANNELS.getProjectSettings,
@@ -3696,6 +3737,16 @@ function normalizePathKey(filePath: string): string {
 
 function getNativePathIdentityPlatform(): "posix" | "win32" {
     return process.platform === "win32" ? "win32" : "posix";
+}
+
+function broadcastCurrentSettings(settingsService: SettingsGateway): void {
+    const persisted = settingsService.loadSnapshot();
+    broadcastSettingsUpdated(
+        persisted.appearance ?? null,
+        persisted.editor ?? null,
+        persisted.aiChat ?? null,
+        persisted.terminal ?? null,
+    );
 }
 
 function normalizeGitPath(filePath: string): string {

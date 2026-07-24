@@ -54,6 +54,10 @@ import {
     type CheckCommandAvailabilityInput,
     type CheckCommandAvailabilityResult,
     type CodexRuntimeSettingsInput,
+    type CustomAcpRuntimeDefinition,
+    type CustomAcpRuntimeDefinitionInput,
+    type DeleteCustomAcpRuntimeInput,
+    type DeleteCustomAcpRuntimeResult,
     type CopyExternalProjectEntriesInput,
     type CopyExternalProjectEntriesResult,
     type CopyProjectEntriesInput,
@@ -183,6 +187,7 @@ import {
     type SaveProjectFileInput,
     type SaveImageAsInput,
     type UpdateAiQueuedPromptInput,
+    type UpdateCustomAcpRuntimeInput,
     type SettingsSnapshot,
     type SettingsUpdatedEvent,
     type SystemTheme,
@@ -556,6 +561,31 @@ const comandoApi: ComandoApi = {
         assertIpcObject<SettingsSnapshot>(
             IPC_CHANNELS.getSettingsSnapshot,
             await ipcRenderer.invoke(IPC_CHANNELS.getSettingsSnapshot),
+        ),
+    listCustomAcpRuntimes: async () =>
+        assertIpcArray<CustomAcpRuntimeDefinition>(
+            IPC_CHANNELS.listCustomAcpRuntimes,
+            await ipcRenderer.invoke(IPC_CHANNELS.listCustomAcpRuntimes),
+        ),
+    createCustomAcpRuntime: async (
+        definition: CustomAcpRuntimeDefinitionInput,
+    ) =>
+        assertIpcObject<CustomAcpRuntimeDefinition>(
+            IPC_CHANNELS.createCustomAcpRuntime,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.createCustomAcpRuntime,
+                definition,
+            ),
+        ),
+    updateCustomAcpRuntime: async (input: UpdateCustomAcpRuntimeInput) =>
+        assertIpcObject<CustomAcpRuntimeDefinition>(
+            IPC_CHANNELS.updateCustomAcpRuntime,
+            await ipcRenderer.invoke(IPC_CHANNELS.updateCustomAcpRuntime, input),
+        ),
+    deleteCustomAcpRuntime: async (input: DeleteCustomAcpRuntimeInput) =>
+        assertIpcObject<DeleteCustomAcpRuntimeResult>(
+            IPC_CHANNELS.deleteCustomAcpRuntime,
+            await ipcRenderer.invoke(IPC_CHANNELS.deleteCustomAcpRuntime, input),
         ),
     getProjectSettings: async (projectId: string) =>
         assertIpcObjectOrNull<ProjectSettingsSnapshot>(

@@ -36,6 +36,10 @@ export const IPC_CHANNELS = {
     saveGrokRuntimeSettings: "settings:save-grok-runtime-settings",
     saveKiloRuntimeSettings: "settings:save-kilo-runtime-settings",
     saveOpenCodeRuntimeSettings: "settings:save-opencode-runtime-settings",
+    listCustomAcpRuntimes: "settings:list-custom-acp-runtimes",
+    createCustomAcpRuntime: "settings:create-custom-acp-runtime",
+    updateCustomAcpRuntime: "settings:update-custom-acp-runtime",
+    deleteCustomAcpRuntime: "settings:delete-custom-acp-runtime",
     getSystemTheme: "app:get-system-theme",
     saveSettingsSnapshot: "settings:save-snapshot",
     saveProjectSettings: "settings:save-project-settings",
@@ -526,6 +530,44 @@ export interface AiSettingsSnapshot {
     readonly opencode: OpenCodeRuntimeSettings;
 }
 
+export interface CustomAcpRuntimeDefinition {
+    readonly args: readonly string[];
+    readonly authMode: "external";
+    readonly command: string;
+    readonly displayName: string;
+    readonly env: Readonly<Record<string, string>>;
+    readonly id: CustomAcpRuntimeId;
+    readonly launchFingerprint: string;
+    readonly revision: number;
+}
+
+export interface CustomAcpRuntimeDefinitionInput {
+    readonly args: readonly string[];
+    readonly authMode: "external";
+    readonly command: string;
+    readonly displayName: string;
+    readonly env: Readonly<Record<string, string>>;
+}
+
+export interface CustomAcpRuntimesSettings {
+    readonly runtimes: readonly CustomAcpRuntimeDefinition[];
+    readonly version: 1;
+}
+
+export interface UpdateCustomAcpRuntimeInput {
+    readonly definition: CustomAcpRuntimeDefinitionInput;
+    readonly id: CustomAcpRuntimeId;
+}
+
+export interface DeleteCustomAcpRuntimeInput {
+    readonly id: CustomAcpRuntimeId;
+}
+
+export interface DeleteCustomAcpRuntimeResult {
+    readonly deleted: boolean;
+    readonly historyReferenceCount: number;
+}
+
 export type AiRuntimeSource =
     | "bundled"
     | "env"
@@ -675,6 +717,7 @@ export interface SettingsSnapshot {
     readonly ai?: AiSettingsSnapshot | null;
     readonly aiChat?: AppAiChatSettings | null;
     readonly appearance?: AppAppearanceSettings | null;
+    readonly customAcpRuntimes?: CustomAcpRuntimesSettings | null;
     readonly editor?: AppEditorSettings | null;
     readonly shellState: PersistedShellState | null;
     readonly terminal?: AppTerminalSettings | null;
@@ -3490,6 +3533,18 @@ export interface ComandoApi {
         input: ReadClaudeCodeTranscriptInput,
     ) => Promise<ReadClaudeCodeTranscriptResult>;
     getSettingsSnapshot: () => Promise<SettingsSnapshot>;
+    listCustomAcpRuntimes: () => Promise<
+        readonly CustomAcpRuntimeDefinition[]
+    >;
+    createCustomAcpRuntime: (
+        definition: CustomAcpRuntimeDefinitionInput,
+    ) => Promise<CustomAcpRuntimeDefinition>;
+    updateCustomAcpRuntime: (
+        input: UpdateCustomAcpRuntimeInput,
+    ) => Promise<CustomAcpRuntimeDefinition>;
+    deleteCustomAcpRuntime: (
+        input: DeleteCustomAcpRuntimeInput,
+    ) => Promise<DeleteCustomAcpRuntimeResult>;
     getProjectSettings: (
         projectId: string,
     ) => Promise<ProjectSettingsSnapshot | null>;

@@ -31,6 +31,9 @@ import type {
     AppEditorSettings,
     ClaudeRuntimeSettings,
     CodexRuntimeSettings,
+    CustomAcpRuntimeDefinition,
+    CustomAcpRuntimeDefinitionInput,
+    CustomAcpRuntimeId,
     DatabaseStatus,
     GetAiSessionTranscriptPageInput,
     GrokRuntimeSettings,
@@ -51,6 +54,11 @@ import type {
     WindowWorkspaceRestoreRecord,
     WorkspaceSnapshot,
 } from "@shared/ipc";
+import {
+    createCustomAcpRuntimeDefinition,
+    normalizeCustomAcpRuntimesSettings,
+    updateCustomAcpRuntimeDefinition,
+} from "@main/ai/custom-acp-runtimes";
 import {
     createWindowWorkspaceRestoreRecord,
     normalizeWindowWorkspaceRestoreRecord,
@@ -748,7 +756,12 @@ class NativeSettingsClient implements SettingsGateway {
     }
 
     saveSnapshot(snapshot: SettingsSnapshot): void {
-        this.#snapshot = normalizeSettingsSnapshot(snapshot);
+        // Dedicated CRUD keeps renderer snapshots from choosing IDs, revisions,
+        // fingerprints, or silently replacing the custom runtime collection.
+        this.#snapshot = normalizeSettingsSnapshot({
+            ...snapshot,
+            customAcpRuntimes: this.#snapshot.customAcpRuntimes,
+        });
         this.#persistSoon();
     }
 
@@ -841,6 +854,60 @@ class NativeSettingsClient implements SettingsGateway {
         this.#setRuntime("opencode", settings);
     }
 
+    listCustomAcpRuntimes(): readonly CustomAcpRuntimeDefinition[] {
+        return structuredClone(
+            normalizeCustomAcpRuntimesSettings(
+                this.#snapshot.customAcpRuntimes,
+            ).runtimes,
+        );
+    }
+
+    createCustomAcpRuntime(
+        input: CustomAcpRuntimeDefinitionInput,
+    ): CustomAcpRuntimeDefinition {
+        const definitions = this.listCustomAcpRuntimes();
+        const definition = createCustomAcpRuntimeDefinition(
+            input,
+            definitions,
+        );
+        this.#setCustomAcpRuntimes([...definitions, definition]);
+        return structuredClone(definition);
+    }
+
+    updateCustomAcpRuntime(
+        id: CustomAcpRuntimeId,
+        input: CustomAcpRuntimeDefinitionInput,
+    ): CustomAcpRuntimeDefinition {
+        const definitions = this.listCustomAcpRuntimes();
+        const current = definitions.find((definition) => definition.id === id);
+        if (!current) {
+            throw new Error("Custom ACP runtime was not found.");
+        }
+        const updated = updateCustomAcpRuntimeDefinition(
+            current,
+            input,
+            definitions,
+        );
+        this.#setCustomAcpRuntimes(
+            definitions.map((definition) =>
+                definition.id === id ? updated : definition,
+            ),
+        );
+        return structuredClone(updated);
+    }
+
+    deleteCustomAcpRuntime(id: CustomAcpRuntimeId) {
+        const definitions = this.listCustomAcpRuntimes();
+        const nextDefinitions = definitions.filter(
+            (definition) => definition.id !== id,
+        );
+        if (nextDefinitions.length === definitions.length) {
+            return { deleted: false, historyReferenceCount: 0 };
+        }
+        this.#setCustomAcpRuntimes(nextDefinitions);
+        return { deleted: true, historyReferenceCount: 0 };
+    }
+
     async saveCodexAuth(
         settings: CodexRuntimeSettings,
         secrets: readonly SecretRecordPatch[],
@@ -883,6 +950,19 @@ class NativeSettingsClient implements SettingsGateway {
             ai: {
                 ...ai,
                 [runtimeId]: settings,
+            },
+        };
+        this.#persistSoon();
+    }
+
+    #setCustomAcpRuntimes(
+        definitions: readonly CustomAcpRuntimeDefinition[],
+    ): void {
+        this.#snapshot = {
+            ...this.#snapshot,
+            customAcpRuntimes: {
+                runtimes: structuredClone(definitions),
+                version: 1,
             },
         };
         this.#persistSoon();
@@ -2125,6 +2205,10 @@ function createDefaultSettingsSnapshot(): CompleteSettingsSnapshot {
             suggestionsEnabled: true,
             vimModeEnabled: false,
         },
+        customAcpRuntimes: {
+            runtimes: [],
+            version: 1,
+        },
         shellState: null,
         terminal: DEFAULT_APP_TERMINAL_SETTINGS,
     };
@@ -2153,6 +2237,14 @@ function normalizeSettingsSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot
             ...defaults.appearance,
             ...(snapshot.appearance ?? {}),
         },
+        customAcpRuntimes: normalizeCustomAcpRuntimesSettings(
+            snapshot.customAcpRuntimes,
+            (message) =>
+                debugBenignError(
+                    "nativeAppData.customAcpRuntimeSettings",
+                    new Error(message),
+                ),
+        ),
         editor: snapshot.editor ?? defaults.editor,
         shellState: snapshot.shellState ?? null,
         terminal: snapshot.terminal ?? defaults.terminal,

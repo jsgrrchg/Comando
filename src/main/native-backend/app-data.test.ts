@@ -27,6 +27,68 @@ afterEach(() => {
 });
 
 describe("createNativeAppDataClient", () => {
+    it("persists custom ACP CRUD without trusting renderer snapshots", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+        const firstClient = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const first = firstClient.settings.createCustomAcpRuntime({
+            args: [],
+            authMode: "external",
+            command: "/opt/homebrew/bin/pi-acp",
+            displayName: "Pi",
+            env: {},
+        });
+        const second = firstClient.settings.createCustomAcpRuntime({
+            args: ["--profile", "development"],
+            authMode: "external",
+            command: "/usr/local/bin/internal-acp",
+            displayName: "Internal development",
+            env: { INTERNAL_PROFILE: "development" },
+        });
+        const updated = firstClient.settings.updateCustomAcpRuntime(first.id, {
+            args: [],
+            authMode: "external",
+            command: "/opt/homebrew/bin/pi-acp",
+            displayName: "Pi renamed",
+            env: {},
+        });
+        const untrustedSnapshot = firstClient.settings.loadSnapshot();
+        firstClient.settings.saveSnapshot({
+            ...untrustedSnapshot,
+            customAcpRuntimes: { runtimes: [], version: 1 },
+        });
+
+        expect(updated).toMatchObject({
+            id: first.id,
+            revision: 2,
+        });
+        expect(updated.launchFingerprint).toBe(first.launchFingerprint);
+        expect(firstClient.settings.listCustomAcpRuntimes()).toHaveLength(2);
+        await firstClient.close();
+
+        const restored = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        expect(restored.settings.listCustomAcpRuntimes()).toEqual([
+            updated,
+            second,
+        ]);
+        expect(restored.settings.deleteCustomAcpRuntime(first.id)).toEqual({
+            deleted: true,
+            historyReferenceCount: 0,
+        });
+        expect(restored.settings.listCustomAcpRuntimes()).toEqual([second]);
+        await restored.close();
+    });
+
     it("atomically restores isolated workspace snapshots for multiple windows", async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
         tempDirs.push(tempDir);
