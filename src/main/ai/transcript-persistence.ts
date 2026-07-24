@@ -58,6 +58,7 @@ interface SessionPersistenceQueue {
     checkpointedRevision: number;
     inFlight: Promise<void> | null;
     isRecovering: boolean;
+    recoveredInterruptedTail: AiOpenTranscriptTail | null;
     recoveredTerminalTail: AiOpenTranscriptTail | null;
     retryTimer: ReturnType<typeof setTimeout> | null;
     sealStatus: AiTranscriptTerminalStatus | null;
@@ -123,10 +124,9 @@ export class AiTranscriptPersistenceCoordinator {
             }
             if (!this.store.restoreOpenTail(recovered)) {
                 // The native store has one open tail per session. A newer
-                // in-memory turn therefore makes the recovered one stale and
-                // a terminal predecessor must be reconciled before either
-                // turn can be projected. An unresolved predecessor is kept
-                // durable until the runtime can resolve the conflict.
+                // in-memory turn therefore makes the recovered one stale.
+                // Preserve the predecessor by sealing it as interrupted before
+                // the successor is allowed to replace the native open tail.
                 if (recovered.terminalStatus !== null) {
                     await this.#reconcileRecoveredTerminalTail(
                         sessionId,
@@ -134,8 +134,10 @@ export class AiTranscriptPersistenceCoordinator {
                         recovered,
                     );
                 } else {
-                    throw new Error(
-                        "Open transcript tail belongs to another unresolved turn.",
+                    await this.#sealDisplacedInterruptedTail(
+                        sessionId,
+                        queue,
+                        recovered,
                     );
                 }
                 return recovered;
@@ -271,6 +273,15 @@ export class AiTranscriptPersistenceCoordinator {
                     queue,
                     tail,
                     metadata,
+                );
+                return;
+            }
+            if (queue.recoveredInterruptedTail) {
+                const tail = queue.recoveredInterruptedTail;
+                await this.#sealDisplacedInterruptedTail(
+                    sessionId,
+                    queue,
+                    tail,
                 );
                 return;
             }
@@ -430,6 +441,7 @@ export class AiTranscriptPersistenceCoordinator {
     ): boolean {
         return (
             queue.isRecovering ||
+            queue.recoveredInterruptedTail !== null ||
             queue.recoveredTerminalTail !== null ||
             this.store.getPendingTerminalTurn(sessionId) !== null ||
             this.store.takePendingEntries(sessionId).length > 0 ||
@@ -460,6 +472,7 @@ export class AiTranscriptPersistenceCoordinator {
                 checkpointedRevision: 0,
                 inFlight: null,
                 isRecovering: false,
+                recoveredInterruptedTail: null,
                 recoveredTerminalTail: null,
                 retryTimer: null,
                 sealStatus: null,
@@ -525,6 +538,30 @@ export class AiTranscriptPersistenceCoordinator {
         if (queue.sealTurnId === tail.turnId) {
             queue.sealStatus = null;
             queue.sealTurnId = null;
+        }
+    }
+
+    async #sealDisplacedInterruptedTail(
+        sessionId: string,
+        queue: SessionPersistenceQueue,
+        tail: AiOpenTranscriptTail,
+    ): Promise<void> {
+        this.#setStatus(sessionId, queue, "sealing", null);
+        try {
+            await this.#sealInterruptedRecoveredTail(sessionId, queue, tail);
+            queue.recoveredInterruptedTail = null;
+        } catch (error) {
+            // Keep the predecessor ahead of the successor in the retry queue.
+            // SQLite still owns this tail, so checkpointing the newer turn
+            // cannot succeed until the interrupted predecessor is sealed.
+            queue.recoveredInterruptedTail = tail;
+            this.#setStatus(
+                sessionId,
+                queue,
+                "retrying",
+                error instanceof Error ? error.message : String(error),
+            );
+            throw error;
         }
     }
 

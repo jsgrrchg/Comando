@@ -327,7 +327,7 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         });
     });
 
-    it("defers a displaced nonterminal tail without sealing or replacing it", async () => {
+    it("seals a displaced nonterminal tail before checkpointing the newer turn", async () => {
         const store = liveStore();
         store.applyEvent(messageStarted("new turn output"));
         const recovered = {
@@ -335,20 +335,32 @@ describe("AiTranscriptPersistenceCoordinator", () => {
             turnId: "previous-turn",
         };
         const seal = vi.fn(() => Promise.resolve([sealedMetadata()]));
+        const checkpoint = vi.fn((input: CheckpointInput) => {
+            void input;
+            return Promise.resolve();
+        });
         const coordinator = new AiTranscriptPersistenceCoordinator(
             store,
             adapterStub({
+                checkpoint,
                 load: vi.fn(() => Promise.resolve(recovered)),
                 seal,
             }),
         );
 
-        await expect(coordinator.recover(SESSION_ID)).rejects.toThrow(
-            "Open transcript tail belongs to another unresolved turn.",
-        );
+        await coordinator.recover(SESSION_ID);
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
 
-        expect(seal).not.toHaveBeenCalled();
+        expect(seal).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: SESSION_ID,
+            turnId: recovered.turnId,
+        }));
+        expect(checkpoint).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: SESSION_ID,
+            turnId: TURN_ID,
+        }));
         expect(store.getSnapshot(SESSION_ID)).toMatchObject({
+            stableBlocks: [sealedMetadata()],
             turnId: TURN_ID,
         });
     });
