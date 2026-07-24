@@ -2624,6 +2624,87 @@ mod tests {
     }
 
     #[test]
+    fn terminal_open_tail_with_a_foreign_sealed_block_reproduces_seal_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_id = SessionId("foreign-sealed-tail".to_string());
+        let store = TranscriptStore::new(temp.path());
+        let first = entry(&session_id, "entry-in-sealed-block");
+        let second = entry(&session_id, "entry-in-open-block");
+
+        store.append(&session_id, vec![first.clone()]).unwrap();
+        store
+            .seal_turn(&session_id, "turn-a", vec![first.clone()], Vec::new())
+            .unwrap();
+
+        // The recovered terminal tail deliberately retains a reference owned by turn-a.
+        store
+            .checkpoint_open_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-b".to_string(),
+                terminal_status: Some(NativeAiTranscriptTerminalStatus::Completed),
+                entries: vec![first.clone(), second.clone()],
+                payloads: Vec::new(),
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: first.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 0,
+                    },
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: second.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 1,
+                    },
+                ],
+            })
+            .unwrap();
+
+        let error = store
+            .seal_turn(
+                &session_id,
+                "turn-b",
+                vec![first.clone(), second.clone()],
+                Vec::new(),
+            )
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Transcript block is already sealed by another turn")
+        );
+        let tail = store.load_open_tail(&session_id).unwrap().unwrap();
+        assert_eq!(tail.turn_id, "turn-b");
+        assert_eq!(
+            tail.terminal_status,
+            Some(NativeAiTranscriptTerminalStatus::Completed)
+        );
+        assert_eq!(
+            tail.entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.id.as_str(), second.id.as_str()]
+        );
+        assert_eq!(store.load_block_metadata(&session_id).unwrap().len(), 1);
+
+        let connection = store.open(&session_id, false).unwrap();
+        let (sealed, open): (i64, i64) = connection
+            .query_row(
+                "SELECT
+                    SUM(CASE WHEN is_sealed = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN is_sealed = 0 THEN 1 ELSE 0 END)
+                 FROM transcript_blocks
+                 WHERE session_id = ?1",
+                params![session_id.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((sealed, open), (1, 1));
+    }
+
+    #[test]
     fn checkpoint_reorders_only_the_changed_open_tail_rows() {
         let temp = tempfile::tempdir().unwrap();
         let session_id = SessionId("reordered-open-tail".to_string());

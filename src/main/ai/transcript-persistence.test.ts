@@ -4,6 +4,7 @@ import type {
     AiMessage,
     AiOpenTranscriptTail,
     AiSessionDomainEventBase,
+    AiSessionSnapshot,
     AiTranscriptBlockMetadata,
 } from "@shared/ipc";
 
@@ -352,7 +353,7 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         });
     });
 
-    it("seals a recovered terminal tail without sealing a newer live turn", async () => {
+    it("seals a recovered completed tail when a streaming snapshot creates a newer turn", async () => {
         const store = new AiLiveTranscriptTailStore();
         const load = deferred<AiOpenTranscriptTail | null>();
         const checkpoint = vi.fn((input: CheckpointInput) => {
@@ -378,14 +379,7 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         );
 
         const recovery = coordinator.recover(SESSION_ID);
-        store.applyEvent({
-            ...eventBase,
-            activeTurnStartedAt: TURN_ID,
-            kind: "status",
-            lastError: null,
-            status: "streaming",
-        });
-        store.applyEvent(messageStarted("new turn output"));
+        store.synchronizeSnapshot(streamingSnapshot(TURN_ID));
         coordinator.scheduleCheckpoint(SESSION_ID);
         await Promise.resolve();
         expect(checkpoint).not.toHaveBeenCalled();
@@ -577,6 +571,33 @@ function message(id: string, content: string, createdAt: string): AiMessage {
         id,
         kind: "assistant",
         status: "streaming",
+    };
+}
+
+function streamingSnapshot(activeTurnStartedAt: string): AiSessionSnapshot {
+    return {
+        activeTurnStartedAt,
+        availableCommands: [],
+        configOptions: [],
+        lastError: null,
+        messages: [message("assistant-1", "new turn output", activeTurnStartedAt)],
+        modeId: null,
+        modes: [],
+        modelId: null,
+        models: [],
+        pendingPermission: null,
+        pendingUserInput: null,
+        plan: null,
+        projectId: null,
+        runtimeId: "codex",
+        runtimeSessionId: "runtime-1",
+        sessionId: SESSION_ID,
+        status: "streaming",
+        title: "Streaming recovery",
+        tokenUsage: null,
+        toolActivity: [],
+        trackedFiles: [],
+        updatedAt: activeTurnStartedAt,
     };
 }
 
