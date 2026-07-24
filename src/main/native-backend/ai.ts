@@ -44,6 +44,7 @@ import type {
     ListAiSessionHistoryInput,
 } from "@shared/ipc";
 import { AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX } from "@shared/ipc";
+import { isCustomAcpRuntimeId } from "@shared/ai-runtimes";
 import { toNativeReviewDeltaReference } from "@shared/ai-review-delta";
 import {
     getNativeAiTranscriptBlockCapabilityVersion,
@@ -172,7 +173,10 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     shouldHandleRuntime(runtimeId: AiRuntimeId): boolean {
-        return this.#enabledRuntimeIds.has(runtimeId);
+        return (
+            this.#enabledRuntimeIds.has(runtimeId) ||
+            isCustomAcpRuntimeId(runtimeId)
+        );
     }
 
     getTranscriptCapability(): AiTranscriptCapability {
@@ -724,6 +728,12 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 additionalRoots: request.launch.additionalRoots,
                 configOptions: nativeConfigOptionsFromLaunch(request.launch),
                 cwd: request.launch.cwd,
+                ...(request.launch.resolvedRuntime.customAcpLaunch
+                    ? {
+                          customAcpLaunch:
+                              request.launch.resolvedRuntime.customAcpLaunch,
+                      }
+                    : {}),
                 launch: null,
                 modeId: request.launch.desiredSelections.modeId,
                 modelId: request.launch.desiredSelections.modelId,

@@ -21,6 +21,7 @@ const MAX_TOTAL_LAUNCH_TEXT_LENGTH = 32_768;
 const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SECRET_LIKE_ENV_KEY_PATTERN =
     /(?:^|_)(?:API_?KEY|AUTH|CREDENTIAL|PASSWORD|PRIVATE|SECRET|TOKEN)(?:_|$)/i;
+const PROTECTED_ENV_KEYS = new Set(["PATH", "PATHEXT"]);
 const CUSTOM_ACP_LAUNCH_PROFILE = "acp-current14-custom-v1";
 
 export interface CustomAcpRuntimeValidationOptions {
@@ -83,6 +84,11 @@ export function validateCustomAcpRuntimeInput(
     )) {
         if (!ENV_KEY_PATTERN.test(key)) {
             throw new Error(`Environment variable "${key}" has an invalid name.`);
+        }
+        if (PROTECTED_ENV_KEYS.has(key.toUpperCase())) {
+            throw new Error(
+                `Environment variable "${key}" is controlled by Comando.`,
+            );
         }
         if (SECRET_LIKE_ENV_KEY_PATTERN.test(key)) {
             throw new Error(

@@ -7,6 +7,7 @@ import type {
     NativeToolCallId,
     NativeWorktreeId,
 } from "./ids";
+import type { CustomAcpLaunchSpec } from "../ipc";
 
 export type NativeAiRuntimeId = NativeRuntimeId;
 export type ReviewDeltaId = string;
@@ -233,6 +234,7 @@ export type NativeAiPrepareSessionInput = {
     readonly modeId: string | null;
     readonly configOptions: Readonly<Record<string, unknown>>;
     readonly additionalRoots: readonly string[];
+    readonly customAcpLaunch?: CustomAcpLaunchSpec | null;
     readonly persistedRuntimeSessionId?: NativeRuntimeSessionId | null;
     readonly persistedSubagentSessionMappings?: readonly NativeAiRuntimeSessionMapping[];
     readonly launch: NativeAiLaunchSpec | null;

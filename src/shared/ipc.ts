@@ -549,6 +549,22 @@ export interface CustomAcpRuntimeDefinitionInput {
     readonly env: Readonly<Record<string, string>>;
 }
 
+export interface CustomAcpLaunchSpec {
+    readonly args: readonly string[];
+    readonly authMode: "external";
+    readonly command: string;
+    readonly configuredEnv: Readonly<Record<string, string>>;
+    readonly displayName: string;
+    readonly env: Readonly<Record<string, string>>;
+    readonly executable: string;
+    readonly launchFingerprint: string;
+    readonly productProfile: "conservative";
+    readonly protocolVersion: "acp-current14";
+    readonly revision: number;
+    readonly runtimeId: CustomAcpRuntimeId;
+    readonly state: "ready";
+}
+
 export interface CustomAcpRuntimesSettings {
     readonly runtimes: readonly CustomAcpRuntimeDefinition[];
     readonly version: 1;

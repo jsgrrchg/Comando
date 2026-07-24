@@ -84,6 +84,15 @@ describe("custom ACP runtime definitions", () => {
         },
     );
 
+    it("rejects attempts to replace the controlled PATH", () => {
+        expect(() =>
+            validateCustomAcpRuntimeInput({
+                ...INPUT,
+                env: { PATH: "/untrusted/bin" },
+            }),
+        ).toThrow(/controlled by Comando/);
+    });
+
     it("rejects renderer-controlled identity fields by normalizing only input", () => {
         const untrusted = {
             ...INPUT,

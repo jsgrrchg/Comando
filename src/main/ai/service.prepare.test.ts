@@ -6,6 +6,7 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
     AiTrackedFile,
+    CustomAcpRuntimeDefinition,
 } from "@shared/ipc";
 
 import type { NativeAiGateway } from "./contracts";
@@ -2481,6 +2482,62 @@ describe("AiService prepareSession", () => {
     });
 });
 
+describe("custom ACP prepare launches", () => {
+    it("passes the resolved immutable launch only for the selected custom runtime", async () => {
+        const runtimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+        const definition: CustomAcpRuntimeDefinition = {
+            args: ["--profile", "test"],
+            authMode: "external",
+            command: process.execPath,
+            displayName: "Pi",
+            env: { PI_PROFILE: "test" },
+            id: runtimeId,
+            launchFingerprint: "a".repeat(64),
+            revision: 4,
+        };
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            () =>
+                Promise.resolve(createSnapshot({
+                    runtimeId,
+                    sessionId: "custom-session",
+                    title: "Pi 1",
+                })),
+        );
+        const service = createPrepareService({
+            customAcpRuntimes: [definition],
+            nativeAi: createNativeAi({
+                prepareSession,
+                shouldHandleRuntime: vi.fn(() => true),
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId,
+                sessionId: "custom-session",
+                title: "Pi 1",
+            },
+            "window-1",
+        );
+
+        const request = prepareSession.mock.calls[0]?.[0];
+        expect(request?.launch.resolvedRuntime.customAcpLaunch).toMatchObject({
+            args: ["--profile", "test"],
+            authMode: "external",
+            displayName: "Pi",
+            executable: process.execPath,
+            launchFingerprint: "a".repeat(64),
+            revision: 4,
+            runtimeId,
+        });
+        expect(
+            request?.launch.resolvedRuntime.customAcpLaunch?.env,
+        ).not.toHaveProperty("OPENAI_API_KEY");
+    });
+});
+
 function createNativeAi(
     overrides: Partial<NativeAiGateway> = {},
 ): NativeAiGateway {
@@ -2604,6 +2661,7 @@ function createPrepareService(
             typeof AiService
         >[0]["aiSessionRetention"];
         readonly nativeAi?: NativeAiGateway;
+        readonly customAcpRuntimes?: readonly CustomAcpRuntimeDefinition[];
         readonly onSessionSnapshot?: (
             ownerWindowId: string,
             update: AiSessionUpdate,
@@ -2642,6 +2700,9 @@ function createPrepareService(
             saveSecret: vi.fn(),
         },
         settingsService: {
+            listCustomAcpRuntimes: vi.fn(
+                () => options.customAcpRuntimes ?? [],
+            ),
             loadClaudeRuntimeSettings: vi.fn(() => ({
                 authInvalidatedAtMs: null,
                 authMethod: null,

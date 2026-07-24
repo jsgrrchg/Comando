@@ -62,6 +62,83 @@ describe("NativeAiGateway", () => {
         expect(payload.launch).toBeNull();
     });
 
+    it("attaches an immutable custom launch only to prepare requests", async () => {
+        const client = createClient();
+        const runtimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+        client.request.mockResolvedValueOnce({
+            projectId: null,
+            runtimeId,
+            runtimeSessionId: "runtime-custom-1",
+            sessionId: "session-custom-1",
+            status: "idle",
+            title: "Pi 1",
+            updatedAt: "2026-07-24T00:00:00.000Z",
+            worktreeId: null,
+        });
+        const gateway = createGateway(client);
+        const baseLaunch = createLaunch();
+        const customAcpLaunch = {
+            args: [] as const,
+            authMode: "external" as const,
+            command: "pi-acp",
+            configuredEnv: {},
+            displayName: "Pi",
+            env: { HOME: "/Users/example", PATH: "/usr/bin:/bin" },
+            executable: "/opt/homebrew/bin/pi-acp",
+            launchFingerprint: "a".repeat(64),
+            productProfile: "conservative" as const,
+            protocolVersion: "acp-current14" as const,
+            revision: 1,
+            runtimeId,
+            state: "ready" as const,
+        };
+        const launch: AiSessionLaunchInput = {
+            ...baseLaunch,
+            input: {
+                ...baseLaunch.input,
+                projectId: null,
+                runtimeId,
+                sessionId: "session-custom-1",
+                title: "Pi 1",
+                worktreeId: null,
+            },
+            persistedSnapshot: createEmptyAiSessionSnapshot({
+                projectId: null,
+                runtimeId,
+                sessionId: "session-custom-1",
+                title: "Pi 1",
+                worktreeId: null,
+            }),
+            resolvedRuntime: {
+                args: [],
+                command: "pi-acp",
+                customAcpLaunch,
+                env: customAcpLaunch.env,
+                executable: customAcpLaunch.executable,
+                status: {
+                    ...baseLaunch.resolvedRuntime.status,
+                    authMethod: "external",
+                    runtimeId,
+                },
+            },
+        };
+
+        await gateway.prepareSession({
+            input: launch.input,
+            launch,
+        });
+
+        const prepareCall = client.request.mock.calls.find(
+            ([command]) => command === "ai_prepare_session",
+        );
+        expect(prepareCall?.[1]).toMatchObject({
+            customAcpLaunch,
+            runtimeId,
+            sessionId: "session-custom-1",
+        });
+    });
+
     it("preserves the active turn start when a streaming session is prepared again", async () => {
         const client = createClient();
         client.request.mockResolvedValueOnce({

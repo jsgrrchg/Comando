@@ -21,6 +21,7 @@ import type {
     AiRuntimeAuthLaunchInput,
     AiRuntimeAuthLogoutInput,
     AiRuntimeStatus,
+    CustomAcpLaunchSpec,
     AiSessionDomainEvent,
     AiSessionSnapshot,
     AiSessionUpdate,
@@ -306,6 +307,7 @@ export interface ResolvedAcpRuntime {
         readonly meta?: Record<string, unknown>;
     };
     readonly command: string;
+    readonly customAcpLaunch?: CustomAcpLaunchSpec;
     readonly env: NodeJS.ProcessEnv;
     readonly executable: string;
     readonly status: AiRuntimeStatus;

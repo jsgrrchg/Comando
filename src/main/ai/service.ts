@@ -88,6 +88,7 @@ import {
     type AiReviewActionLogTarget,
 } from "@shared/ai-review-action-log";
 import { isReasoningEffortConfigOption } from "@shared/ai-config-options";
+import { isCustomAcpRuntimeId } from "@shared/ai-runtimes";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -152,6 +153,10 @@ import {
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
 import { buildRuntimeSpawnEnv } from "./runtime-env";
+import {
+    createMissingCustomAcpRuntimeStatus,
+    resolveCustomAcpRuntime,
+} from "./custom-acp-launch";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
 import {
     AiLiveTranscriptTailStore,
@@ -985,7 +990,9 @@ export class AiService {
     }
 
     async getRuntimeStatus(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus> {
-        const nativeAi = this.#nativeAuthGateway(runtimeId);
+        const nativeAi = isCustomAcpRuntimeId(runtimeId)
+            ? null
+            : this.#nativeAuthGateway(runtimeId);
         if (nativeAi?.getRuntimeStatus) {
             await this.#migrateNativeRuntimeSettingsIfNeeded(runtimeId);
             const status = this.#withPersistedRuntimeCatalog(
@@ -4515,8 +4522,19 @@ export class AiService {
                 title: input.title,
                 worktreeId: input.worktreeId ?? null,
             });
+        const customLaunch = resolvedRuntime.customAcpLaunch;
+        const identitySnapshot =
+            customLaunch && !snapshotOverride && !liveSnapshot && !storedSnapshot
+                ? {
+                      ...sourceSnapshot,
+                      runtimeDisplayName: customLaunch.displayName,
+                      runtimeLaunchFingerprint:
+                          customLaunch.launchFingerprint,
+                      runtimeRevision: customLaunch.revision,
+                  }
+                : sourceSnapshot;
         const persistedSnapshot =
-            this.#hydrateSnapshotRuntimeCatalog(sourceSnapshot);
+            this.#hydrateSnapshotRuntimeCatalog(identitySnapshot);
         const shouldCaptureRuntimeDefaults =
             !snapshotOverride &&
             !liveSnapshot &&
@@ -5753,6 +5771,14 @@ export class AiService {
     }
 
     #resolveRuntimeStatus(runtimeId: AiRuntimeId): AiRuntimeStatus {
+        if (isCustomAcpRuntimeId(runtimeId)) {
+            const definition = this.#settingsService
+                .listCustomAcpRuntimes()
+                .find((candidate) => candidate.id === runtimeId);
+            return definition
+                ? resolveCustomAcpRuntime(definition).status
+                : createMissingCustomAcpRuntimeStatus(runtimeId);
+        }
         if (runtimeId === "claude") {
             return getClaudeRuntimeStatus(
                 this.#settingsService.loadClaudeRuntimeSettings(),
@@ -6048,6 +6074,9 @@ export class AiService {
         runtimeId: AiRuntimeId,
         fallbackStatus: AiRuntimeStatus,
     ): Promise<AiRuntimeStatus> {
+        if (isCustomAcpRuntimeId(runtimeId)) {
+            return fallbackStatus;
+        }
         const nativeAi = this.#nativeAuthGateway(runtimeId);
         if (!nativeAi?.getRuntimeStatus) {
             return fallbackStatus;
@@ -6063,6 +6092,21 @@ export class AiService {
         runtimeId: AiRuntimeId,
         codexSettingsOverride?: CodexRuntimeSettings,
     ): ResolvedAcpRuntime {
+        if (isCustomAcpRuntimeId(runtimeId)) {
+            const definition = this.#settingsService
+                .listCustomAcpRuntimes()
+                .find((candidate) => candidate.id === runtimeId);
+            if (!definition) {
+                return {
+                    args: [],
+                    command: runtimeId,
+                    env: {},
+                    executable: runtimeId,
+                    status: createMissingCustomAcpRuntimeStatus(runtimeId),
+                };
+            }
+            return resolveCustomAcpRuntime(definition);
+        }
         if (runtimeId === "claude") {
             const settings = this.#settingsService.loadClaudeRuntimeSettings();
             const resolved = resolveClaudeRuntime(settings, this.#secretStore);
