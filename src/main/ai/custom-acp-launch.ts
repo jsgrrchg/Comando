@@ -107,7 +107,7 @@ export function createMissingCustomAcpRuntimeStatus(
         runtimeId,
         "missing",
         null,
-        "This custom ACP runtime definition is no longer available.",
+        "This custom ACP runtime definition is no longer available. Restore it in Settings or create a new session with another runtime.",
     );
 }
 

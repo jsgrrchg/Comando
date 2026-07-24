@@ -2942,6 +2942,7 @@ mod tests {
 
     fn test_session(cwd: &Path, session_id: &str) -> NativeAiSession {
         NativeAiSession {
+            custom_acp_continuation_strategy: None,
             owner_window_id: "window-1".to_string(),
             runtime_id: RuntimeId("opencode".to_string()),
             runtime_session_id: None,

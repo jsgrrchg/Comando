@@ -39,6 +39,7 @@ import type {
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiUserInputResponseInput,
+    CustomAcpContinuationStrategy,
     FileBufferNotificationInput,
     GetAiSessionTranscriptPageInput,
     ListAiSessionHistoryInput,
@@ -695,8 +696,18 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     async #prepareSessionWithStaleRuntimeRetry(
         request: NativeAiPrepareSessionRpcInput,
     ): Promise<NativeAiSessionSummary> {
+        const continuationStrategy =
+            request.launch.persistedSnapshot
+                .customAcpContinuationStrategy ?? null;
+        const isCustomRuntime =
+            request.launch.resolvedRuntime.customAcpLaunch !== undefined;
+        const canContinueCustomRuntime =
+            continuationStrategy === "load" ||
+            continuationStrategy === "resume";
         const persistedRuntimeSessionId =
-            request.launch.persistedSnapshot.runtimeSessionId ?? null;
+            !isCustomRuntime || canContinueCustomRuntime
+                ? (request.launch.persistedSnapshot.runtimeSessionId ?? null)
+                : null;
 
         try {
             return await this.#requestPrepareSession(
@@ -730,6 +741,9 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 cwd: request.launch.cwd,
                 ...(request.launch.resolvedRuntime.customAcpLaunch
                     ? {
+                          customAcpContinuationStrategy:
+                              request.launch.persistedSnapshot
+                                  .customAcpContinuationStrategy ?? null,
                           customAcpLaunch:
                               request.launch.resolvedRuntime.customAcpLaunch,
                       }
@@ -1364,10 +1378,26 @@ function nativeSummaryToSnapshot(
         // history snapshot was closed before the application restarted.
         closedAt: null,
         configOptions: launch.desiredSelections.configOptions,
+        customAcpContinuationStrategy:
+            summary.customAcpContinuationStrategy ??
+            launch.persistedSnapshot.customAcpContinuationStrategy ??
+            null,
         modeId: launch.desiredSelections.modeId,
         modelId: launch.desiredSelections.modelId,
         projectId: summary.projectId,
         runtimeId: summary.runtimeId as AiRuntimeId,
+        runtimeDisplayName:
+            launch.resolvedRuntime.customAcpLaunch?.displayName ??
+            launch.persistedSnapshot.runtimeDisplayName ??
+            null,
+        runtimeLaunchFingerprint:
+            launch.resolvedRuntime.customAcpLaunch?.launchFingerprint ??
+            launch.persistedSnapshot.runtimeLaunchFingerprint ??
+            null,
+        runtimeRevision:
+            launch.resolvedRuntime.customAcpLaunch?.revision ??
+            launch.persistedSnapshot.runtimeRevision ??
+            null,
         runtimeSessionId: summary.runtimeSessionId,
         sessionId: summary.sessionId,
         status,
@@ -1427,7 +1457,19 @@ function nativeHistorySummaryToIpc(
         pinnedAt: nullableString(summary.pinnedAt),
         preview: nullableString(summary.preview),
         projectId: nullableString(summary.projectId),
+        customAcpContinuationStrategy:
+            normalizeCustomContinuationStrategy(
+                summary.customAcpContinuationStrategy,
+            ),
         runtimeId: summary.runtimeId as AiRuntimeId,
+        runtimeDisplayName: nullableString(summary.runtimeDisplayName),
+        runtimeLaunchFingerprint: nullableString(
+            summary.runtimeLaunchFingerprint,
+        ),
+        runtimeRevision:
+            typeof summary.runtimeRevision === "number"
+                ? summary.runtimeRevision
+                : null,
         runtimeSessionId: nullableString(summary.runtimeSessionId),
         sessionId: summary.sessionId,
         title: summary.title,
@@ -1488,6 +1530,10 @@ function nativeSnapshotToIpc(snapshot: NativeAiSessionSnapshot): AiSessionSnapsh
             snapshot.configOptions,
             "Native AI snapshot configOptions",
         ) as AiSessionSnapshot["configOptions"],
+        customAcpContinuationStrategy:
+            normalizeCustomContinuationStrategy(
+                snapshot.customAcpContinuationStrategy,
+            ),
         lastError: nullableString(snapshot.lastError),
         manualTitle: nullableString(snapshot.manualTitle),
         messages: requireRecordArray(
@@ -1520,6 +1566,14 @@ function nativeSnapshotToIpc(snapshot: NativeAiSessionSnapshot): AiSessionSnapsh
         projectId: nullableString(snapshot.projectId),
         reasoningEffort: nullableString(snapshot.reasoningEffort),
         runtimeId: snapshot.runtimeId as AiRuntimeId,
+        runtimeDisplayName: nullableString(snapshot.runtimeDisplayName),
+        runtimeLaunchFingerprint: nullableString(
+            snapshot.runtimeLaunchFingerprint,
+        ),
+        runtimeRevision:
+            typeof snapshot.runtimeRevision === "number"
+                ? snapshot.runtimeRevision
+                : null,
         runtimeSessionId: nullableString(snapshot.runtimeSessionId),
         sessionId: snapshot.sessionId,
         status: nativeSessionStatusToIpc(snapshot.status),
@@ -1618,6 +1672,16 @@ function requireString(value: unknown, label: string): string {
 
 function nullableString(value: unknown): string | null {
     return typeof value === "string" ? value : null;
+}
+
+function normalizeCustomContinuationStrategy(
+    value: unknown,
+): CustomAcpContinuationStrategy | null {
+    return value === "load" ||
+        value === "new-session-only" ||
+        value === "resume"
+        ? value
+        : null;
 }
 
 function requireNumber(value: unknown, label: string): number {

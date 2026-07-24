@@ -5067,6 +5067,7 @@ mod tests {
                 session_id: SessionId("session-1".to_string()),
             },
             native_ai::NativeAiSessionSummary {
+                custom_acp_continuation_strategy: None,
                 session_id: SessionId("session-1".to_string()),
                 runtime_id: RuntimeId("codex".to_string()),
                 runtime_session_id: Some("runtime-1".into()),

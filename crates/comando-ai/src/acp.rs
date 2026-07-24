@@ -95,8 +95,14 @@ const TERMINAL_OUTPUT_MAX_LENGTH: usize = 10_000;
 type PermissionWaiterMap = Arc<Mutex<HashMap<String, PendingPermissionRequest>>>;
 type PromptCapabilitiesState = Arc<Mutex<AcpPromptCapabilities>>;
 type UserInputWaiterMap = Arc<Mutex<HashMap<String, PendingUserInputRequest>>>;
-type AcpStartResult = Result<RuntimeSessionId, String>;
+type AcpStartResult = Result<AcpStartedSession, String>;
 type AcpStartSender = Arc<Mutex<Option<oneshot::Sender<AcpStartResult>>>>;
+
+#[derive(Debug)]
+struct AcpStartedSession {
+    custom_acp_continuation_strategy: Option<String>,
+    runtime_session_id: RuntimeSessionId,
+}
 
 #[derive(Debug)]
 struct PendingPermissionRequest {
@@ -159,6 +165,7 @@ pub struct AcpProcessSpec {
     pub auth_handshake: Option<comando_types::ai::NativeAiAuthHandshakeSpec>,
     pub persisted_runtime_session_id: Option<RuntimeSessionId>,
     pub persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
+    pub is_custom: bool,
     pub supports_resume_session: bool,
     pub supports_subagents: bool,
 }
@@ -182,6 +189,7 @@ impl AcpProcessSpec {
             auth_handshake: launch.auth_handshake.clone(),
             persisted_runtime_session_id: launch.persisted_runtime_session_id.clone(),
             persisted_subagent_session_mappings: launch.persisted_subagent_session_mappings.clone(),
+            is_custom: false,
             supports_resume_session: definition.capabilities.resume_session,
             supports_subagents: definition.capabilities.subagents,
         })
@@ -215,6 +223,27 @@ impl AcpProcessSpec {
                     .to_string(),
             });
         }
+        let (supports_load_session, supports_resume_session) =
+            match input.custom_acp_continuation_strategy.as_deref() {
+                Some("load") => (true, false),
+                Some("resume") => (false, true),
+                Some("new-session-only") | None => (false, false),
+                Some(_) => {
+                    return Err(AiError::RuntimeLaunchContextInvalid {
+                        runtime_id: launch.runtime_id.0.clone(),
+                        message: "Custom runtime continuation strategy is invalid.".to_string(),
+                    });
+                }
+            };
+        if input.persisted_runtime_session_id.is_some()
+            && !supports_load_session
+            && !supports_resume_session
+        {
+            return Err(AiError::RuntimeLaunchContextInvalid {
+                runtime_id: launch.runtime_id.0.clone(),
+                message: "Custom runtime does not support continuing this session.".to_string(),
+            });
+        }
 
         // Main owns environment construction; native only accepts the already
         // validated map and clears every inherited process variable at spawn.
@@ -231,7 +260,8 @@ impl AcpProcessSpec {
             auth_handshake: None,
             persisted_runtime_session_id: input.persisted_runtime_session_id.clone(),
             persisted_subagent_session_mappings: input.persisted_subagent_session_mappings.clone(),
-            supports_resume_session: false,
+            is_custom: true,
+            supports_resume_session,
             supports_subagents: false,
         })
     }
@@ -351,6 +381,35 @@ fn persisted_session_start_method(spec: &AcpProcessSpec) -> PersistedSessionStar
         PersistedSessionStartMethod::Resume
     } else {
         PersistedSessionStartMethod::Load
+    }
+}
+
+fn custom_continuation_strategy(response: &InitializeResponse) -> &'static str {
+    if response
+        .agent_capabilities
+        .session_capabilities
+        .resume
+        .is_some()
+    {
+        "resume"
+    } else if response.agent_capabilities.load_session {
+        "load"
+    } else {
+        "new-session-only"
+    }
+}
+
+fn custom_runtime_supports_start_method(
+    response: &InitializeResponse,
+    method: PersistedSessionStartMethod,
+) -> bool {
+    match method {
+        PersistedSessionStartMethod::Resume => response
+            .agent_capabilities
+            .session_capabilities
+            .resume
+            .is_some(),
+        PersistedSessionStartMethod::Load => response.agent_capabilities.load_session,
     }
 }
 
@@ -667,13 +726,14 @@ pub fn start_acp_session(
         }
     });
 
-    let runtime_session_id = runtime
+    let started_session = runtime
         .block_on(started_receiver)
         .map_err(|_| AiError::RuntimeExited {
             message: "The ACP runtime exited before creating a session.".to_string(),
         })?
         .map_err(|message| AiError::RuntimeExited { message })?;
-    session.runtime_session_id = Some(runtime_session_id);
+    session.runtime_session_id = Some(started_session.runtime_session_id);
+    session.custom_acp_continuation_strategy = started_session.custom_acp_continuation_strategy;
     session.updated_at = now_iso8601();
     Ok((session, controller))
 }
@@ -909,6 +969,9 @@ async fn run_acp_session(
                     |message| agent_client_protocol::Error::internal_error().data(message),
                 )?;
                 run_acp_auth_handshake(&connection, &spec, &initialize_response).await?;
+                let observed_custom_continuation_strategy = spec
+                    .is_custom
+                    .then(|| custom_continuation_strategy(&initialize_response).to_string());
 
                 let additional_directories = session
                     .scope
@@ -919,7 +982,18 @@ async fn run_acp_session(
                 let (runtime_session_id, initial_config_options) = if let Some(runtime_session_id) =
                     spec.persisted_runtime_session_id.clone()
                 {
-                    let config_options = match persisted_session_start_method(&spec) {
+                    let start_method = persisted_session_start_method(&spec);
+                    if spec.is_custom
+                        && !custom_runtime_supports_start_method(
+                            &initialize_response,
+                            start_method,
+                        )
+                    {
+                        return Err(agent_client_protocol::Error::internal_error().data(
+                            "Custom ACP runtime no longer advertises the persisted continuation strategy.",
+                        ));
+                    }
+                    let config_options = match start_method {
                         PersistedSessionStartMethod::Resume => {
                             let resume_session = ResumeSessionRequest::new(
                                 agent_client_protocol::schema::v1::SessionId::from(
@@ -976,7 +1050,14 @@ async fn run_acp_session(
                         updated_at: now_iso8601(),
                     },
                 );
-                send_start_result(&started_sender, Ok(runtime_session_id.clone()));
+                send_start_result(
+                    &started_sender,
+                    Ok(AcpStartedSession {
+                        custom_acp_continuation_strategy:
+                            observed_custom_continuation_strategy,
+                        runtime_session_id: runtime_session_id.clone(),
+                    }),
+                );
 
                 while let Some(command) = command_receiver.recv().await {
                     match command {
@@ -5271,6 +5352,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn custom_continuation_strategy_uses_advertised_capabilities() {
+        use agent_client_protocol::schema::v1::{
+            AgentCapabilities, SessionCapabilities, SessionResumeCapabilities,
+        };
+
+        let resume = InitializeResponse::new(ProtocolVersion::V1).agent_capabilities(
+            AgentCapabilities::new().session_capabilities(
+                SessionCapabilities::new().resume(SessionResumeCapabilities::new()),
+            ),
+        );
+        let load = InitializeResponse::new(ProtocolVersion::V1)
+            .agent_capabilities(AgentCapabilities::new().load_session(true));
+        let new_only = InitializeResponse::new(ProtocolVersion::V1);
+
+        assert_eq!(custom_continuation_strategy(&resume), "resume");
+        assert_eq!(custom_continuation_strategy(&load), "load");
+        assert_eq!(custom_continuation_strategy(&new_only), "new-session-only");
+    }
+
     fn native_test_session() -> NativeAiSession {
         native_test_session_for_runtime("codex")
     }
@@ -5288,6 +5389,7 @@ mod tests {
             mode_id: None,
             config_options: BTreeMap::new(),
             additional_roots: Vec::new(),
+            custom_acp_continuation_strategy: None,
             custom_acp_launch: None,
             persisted_runtime_session_id: None,
             persisted_subagent_session_mappings: Vec::new(),

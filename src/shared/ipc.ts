@@ -399,6 +399,10 @@ export type BuiltInAiRuntimeId =
 export type CustomAcpRuntimeId = `custom:${string}`;
 
 export type AiRuntimeId = BuiltInAiRuntimeId | CustomAcpRuntimeId;
+export type CustomAcpContinuationStrategy =
+    | "load"
+    | "new-session-only"
+    | "resume";
 
 export type AiRuntimeKind = "built-in" | "custom-acp";
 
@@ -2845,6 +2849,7 @@ export interface AiSessionSnapshot {
     readonly projectId: string | null;
     readonly reasoningEffort?: string | null;
     readonly runtimeId: AiRuntimeId;
+    readonly customAcpContinuationStrategy?: CustomAcpContinuationStrategy | null;
     readonly runtimeDisplayName?: string | null;
     readonly runtimeLaunchFingerprint?: string | null;
     readonly runtimeRevision?: number | null;
@@ -3379,6 +3384,7 @@ export interface UpdateAiQueuedPromptInput extends EnqueueAiPromptInput {
 }
 
 export interface PrepareAiSessionInput {
+    readonly confirmCustomRuntimeChange?: boolean;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
     readonly sessionId: string;
@@ -3431,6 +3437,7 @@ export interface AiHistorySessionSummary {
     readonly preview: string | null;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
+    readonly customAcpContinuationStrategy?: CustomAcpContinuationStrategy | null;
     readonly runtimeDisplayName?: string | null;
     readonly runtimeLaunchFingerprint?: string | null;
     readonly runtimeRevision?: number | null;

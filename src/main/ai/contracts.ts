@@ -316,7 +316,12 @@ export interface ResolvedAcpRuntime {
 
 export type SessionDescriptor = Pick<
     PrepareAiSessionInput,
-    "projectId" | "runtimeId" | "sessionId" | "title" | "worktreeId"
+    | "confirmCustomRuntimeChange"
+    | "projectId"
+    | "runtimeId"
+    | "sessionId"
+    | "title"
+    | "worktreeId"
 > & {
     readonly additionalRoots?: readonly string[];
 };

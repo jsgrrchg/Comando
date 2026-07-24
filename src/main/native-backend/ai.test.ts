@@ -106,6 +106,7 @@ describe("NativeAiGateway", () => {
             persistedSnapshot: createEmptyAiSessionSnapshot({
                 projectId: null,
                 runtimeId,
+                runtimeSessionId: "runtime-custom-previous",
                 sessionId: "session-custom-1",
                 title: "Pi 1",
                 worktreeId: null,
@@ -133,7 +134,9 @@ describe("NativeAiGateway", () => {
             ([command]) => command === "ai_prepare_session",
         );
         expect(prepareCall?.[1]).toMatchObject({
+            customAcpContinuationStrategy: null,
             customAcpLaunch,
+            persistedRuntimeSessionId: null,
             runtimeId,
             sessionId: "session-custom-1",
         });

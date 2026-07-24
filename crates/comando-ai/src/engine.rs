@@ -288,6 +288,11 @@ impl AiEngine {
                 cwd: input.cwd.clone(),
                 additional_roots: input.additional_roots.clone(),
             });
+        if let Some(launch) = custom_launch.as_ref() {
+            history_metadata.runtime_display_name = Some(launch.display_name.clone());
+            history_metadata.runtime_launch_fingerprint = Some(launch.launch_fingerprint.clone());
+            history_metadata.runtime_revision = Some(launch.revision);
+        }
 
         let spec = match custom_launch.as_ref() {
             Some(launch) => AcpProcessSpec::from_custom_launch(&definition, launch, &input)?,
@@ -327,6 +332,8 @@ impl AiEngine {
         let summary = sessions.insert_with_acp_controller(session, controller)?;
         drop(sessions);
         history_metadata.runtime_session_id = summary.runtime_session_id.clone();
+        history_metadata.custom_acp_continuation_strategy =
+            summary.custom_acp_continuation_strategy.clone();
         let initial_history_messages = self.initialize_history_session(history_metadata)?;
         self.history_messages
             .lock()
@@ -652,6 +659,7 @@ impl AiEngine {
         )?;
 
         Ok(NativeAiSession {
+            custom_acp_continuation_strategy: metadata.custom_acp_continuation_strategy,
             owner_window_id: String::new(),
             runtime_id: metadata.runtime_id,
             runtime_session_id: metadata.runtime_session_id,
@@ -781,6 +789,16 @@ impl AiEngine {
         let snapshot = store.load_session_snapshot(&metadata.session_id)?;
         let mut current = store.load_metadata(&metadata.session_id)?;
         current.runtime_id = metadata.runtime_id;
+        current.custom_acp_continuation_strategy = metadata
+            .custom_acp_continuation_strategy
+            .or(current.custom_acp_continuation_strategy);
+        current.runtime_display_name = metadata
+            .runtime_display_name
+            .or(current.runtime_display_name);
+        current.runtime_launch_fingerprint = metadata
+            .runtime_launch_fingerprint
+            .or(current.runtime_launch_fingerprint);
+        current.runtime_revision = metadata.runtime_revision.or(current.runtime_revision);
         current.runtime_session_id = metadata.runtime_session_id.or(current.runtime_session_id);
         current.parent_session_id = metadata.parent_session_id;
         current.project_id = metadata.project_id;
@@ -807,6 +825,10 @@ impl AiEngine {
         {
             let mut metadata = store.load_metadata(&summary.session_id)?;
             metadata.runtime_session_id = summary.runtime_session_id.clone();
+            metadata.custom_acp_continuation_strategy = summary
+                .custom_acp_continuation_strategy
+                .clone()
+                .or(metadata.custom_acp_continuation_strategy);
             metadata.status = summary.status.clone();
             metadata.title = preferred_status_title(&metadata, &summary.title);
             metadata.updated_at = summary.updated_at.clone();
@@ -1322,6 +1344,11 @@ impl AiEngine {
                 .as_ref()
                 .and_then(|parent_id| store.load_metadata(parent_id).ok());
             if let Some(parent_metadata) = parent_metadata {
+                metadata.custom_acp_continuation_strategy =
+                    parent_metadata.custom_acp_continuation_strategy;
+                metadata.runtime_display_name = parent_metadata.runtime_display_name;
+                metadata.runtime_launch_fingerprint = parent_metadata.runtime_launch_fingerprint;
+                metadata.runtime_revision = parent_metadata.runtime_revision;
                 metadata.project_id = metadata.project_id.or(parent_metadata.project_id);
                 metadata.worktree_id = metadata.worktree_id.or(parent_metadata.worktree_id);
                 if metadata.cwd.as_deref().is_none_or(str::is_empty) {
@@ -1420,6 +1447,13 @@ impl AiEngine {
                 .map(|metadata| metadata.additional_roots.clone())
                 .unwrap_or_default(),
         });
+        if let Some(parent_metadata) = parent_metadata {
+            metadata.custom_acp_continuation_strategy =
+                parent_metadata.custom_acp_continuation_strategy;
+            metadata.runtime_display_name = parent_metadata.runtime_display_name;
+            metadata.runtime_launch_fingerprint = parent_metadata.runtime_launch_fingerprint;
+            metadata.runtime_revision = parent_metadata.runtime_revision;
+        }
         if let Some(parent_session_id) = parent_session_id {
             metadata.subagent = Some(AiHistorySubagentMetadata {
                 parent_session_id,
@@ -1920,6 +1954,7 @@ mod tests {
             mode_id: None,
             config_options: Default::default(),
             additional_roots: Vec::new(),
+            custom_acp_continuation_strategy: None,
             custom_acp_launch: None,
             persisted_runtime_session_id: None,
             persisted_subagent_session_mappings: Vec::new(),
