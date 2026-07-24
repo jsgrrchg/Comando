@@ -1,6 +1,7 @@
 import type {
     AiOpenTranscriptTail,
     AiOpenTranscriptTailCheckpoint,
+    AiReconcileTerminalOpenTranscriptTailInput,
     AiSealTranscriptTurnInput,
     AiTranscriptBlockMetadata,
     AiTranscriptTerminalStatus,
@@ -32,6 +33,9 @@ export interface AiTranscriptRecoveryOptions {
 export interface AiTranscriptPersistenceAdapter {
     checkpoint(input: AiOpenTranscriptTailCheckpoint): Promise<void>;
     load(sessionId: string): Promise<AiOpenTranscriptTail | null>;
+    reconcile(
+        input: AiReconcileTerminalOpenTranscriptTailInput,
+    ): Promise<readonly AiTranscriptBlockMetadata[]>;
     seal(
         input: AiSealTranscriptTurnInput,
     ): Promise<readonly AiTranscriptBlockMetadata[]>;
@@ -120,8 +124,20 @@ export class AiTranscriptPersistenceCoordinator {
             if (!this.store.restoreOpenTail(recovered)) {
                 // The native store has one open tail per session. A newer
                 // in-memory turn therefore makes the recovered one stale and
-                // it must be sealed before either turn can be projected.
-                await this.#sealRecoveredTail(sessionId, queue, recovered);
+                // a terminal predecessor must be reconciled before either
+                // turn can be projected. An unresolved predecessor is kept
+                // durable until the runtime can resolve the conflict.
+                if (recovered.terminalStatus !== null) {
+                    await this.#reconcileRecoveredTerminalTail(
+                        sessionId,
+                        queue,
+                        recovered,
+                    );
+                } else {
+                    throw new Error(
+                        "Open transcript tail belongs to another unresolved turn.",
+                    );
+                }
                 return recovered;
             }
             queue.checkpointedRevision = recovered.revision;
@@ -129,13 +145,20 @@ export class AiTranscriptPersistenceCoordinator {
             queue.sealTurnId = recovered.terminalStatus
                 ? recovered.turnId
                 : null;
-            if (
-                recovered.terminalStatus !== null ||
-                options.sealInterruptedTail
-            ) {
+            if (recovered.terminalStatus !== null) {
                 // Terminal tails are authoritative even when a delayed
                 // session snapshot still reports streaming after restart.
-                await this.#sealRecoveredTail(sessionId, queue, recovered);
+                await this.#reconcileRecoveredTerminalTail(
+                    sessionId,
+                    queue,
+                    recovered,
+                );
+            } else if (options.sealInterruptedTail) {
+                await this.#sealInterruptedRecoveredTail(
+                    sessionId,
+                    queue,
+                    recovered,
+                );
             }
             return recovered;
         } finally {
@@ -238,20 +261,17 @@ export class AiTranscriptPersistenceCoordinator {
             if (queue.recoveredTerminalTail) {
                 const tail = queue.recoveredTerminalTail;
                 this.#setStatus(sessionId, queue, "sealing", null);
-                const metadata = await this.adapter.seal({
-                    entries: tail.entries,
-                    payloads: tail.payloads,
+                const metadata = await this.adapter.reconcile({
                     sessionId,
                     turnId: tail.turnId,
                 });
                 queue.recoveredTerminalTail = null;
-                this.store.setStableBlocks(sessionId, metadata);
-                if (queue.sealTurnId === tail.turnId) {
-                    queue.sealStatus = null;
-                    queue.sealTurnId = null;
-                }
-                this.options.onSealed?.(sessionId, metadata);
-                queue.attempt = 0;
+                this.#acknowledgeReconciledTerminalTail(
+                    sessionId,
+                    queue,
+                    tail,
+                    metadata,
+                );
                 return;
             }
             const pendingTerminal = this.store.getPendingTerminalTurn(sessionId);
@@ -451,37 +471,82 @@ export class AiTranscriptPersistenceCoordinator {
         return queue;
     }
 
-    async #sealRecoveredTail(
+    async #reconcileRecoveredTerminalTail(
         sessionId: string,
         queue: SessionPersistenceQueue,
         tail: AiOpenTranscriptTail,
     ): Promise<void> {
         this.#setStatus(sessionId, queue, "sealing", null);
         try {
-            const metadata = await this.adapter.seal({
-                entries: tail.entries,
-                payloads: tail.payloads,
+            const metadata = await this.adapter.reconcile({
                 sessionId,
                 turnId: tail.turnId,
             });
-            if (!this.store.acknowledgeSealedTurn(
+            this.#acknowledgeReconciledTerminalTail(
                 sessionId,
-                tail.turnId,
+                queue,
+                tail,
                 metadata,
-                tail.revision,
-            )) {
-                this.store.setStableBlocks(sessionId, metadata);
-            }
-            this.options.onSealed?.(sessionId, metadata);
-            queue.attempt = 0;
-            if (queue.sealTurnId === tail.turnId) {
-                queue.sealStatus = null;
-                queue.sealTurnId = null;
-            }
-        } catch {
-            // Preserve the tail for the regular retry loop when sealing is
-            // temporarily unavailable during startup.
+            );
+        } catch (error) {
             queue.recoveredTerminalTail = tail;
+            this.#setStatus(
+                sessionId,
+                queue,
+                "retrying",
+                error instanceof Error ? error.message : String(error),
+            );
+            throw error;
+        }
+    }
+
+    async #sealInterruptedRecoveredTail(
+        sessionId: string,
+        queue: SessionPersistenceQueue,
+        tail: AiOpenTranscriptTail,
+    ): Promise<void> {
+        this.#setStatus(sessionId, queue, "sealing", null);
+        const metadata = await this.adapter.seal({
+            entries: tail.entries,
+            payloads: tail.payloads,
+            sessionId,
+            turnId: tail.turnId,
+        });
+        if (!this.store.acknowledgeSealedTurn(
+            sessionId,
+            tail.turnId,
+            metadata,
+            tail.revision,
+        )) {
+            this.store.setStableBlocks(sessionId, metadata);
+        }
+        this.options.onSealed?.(sessionId, metadata);
+        queue.attempt = 0;
+        if (queue.sealTurnId === tail.turnId) {
+            queue.sealStatus = null;
+            queue.sealTurnId = null;
+        }
+    }
+
+    #acknowledgeReconciledTerminalTail(
+        sessionId: string,
+        queue: SessionPersistenceQueue,
+        tail: AiOpenTranscriptTail,
+        metadata: readonly AiTranscriptBlockMetadata[],
+    ): void {
+        if (!this.store.acknowledgeSealedTurn(
+            sessionId,
+            tail.turnId,
+            metadata,
+            tail.revision,
+        )) {
+            this.store.setStableBlocks(sessionId, metadata);
+        }
+        this.options.onSealed?.(sessionId, metadata);
+        queue.attempt = 0;
+        if (queue.sealTurnId === tail.turnId) {
+            queue.sealStatus = null;
+            queue.sealTurnId = null;
         }
     }
 

@@ -2957,6 +2957,11 @@ export interface AiSealTranscriptTurnInput {
     readonly payloads: readonly AiTranscriptPayloadWrite[];
 }
 
+export interface AiReconcileTerminalOpenTranscriptTailInput {
+    readonly sessionId: string;
+    readonly turnId: string;
+}
+
 export const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION = 1;
 export const AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX = 64 * 1024 * 1024;
 

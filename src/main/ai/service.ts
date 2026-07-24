@@ -2707,6 +2707,7 @@ export class AiService {
         if (
             !nativeAi?.checkpointOpenTranscriptTail ||
             !nativeAi.loadOpenTranscriptTail ||
+            !nativeAi.reconcileTerminalOpenTranscriptTail ||
             !nativeAi.sealTranscriptTurn ||
             !nativeAi.getTranscriptCapability?.().blockNativeVersion
         ) {
@@ -2714,10 +2715,11 @@ export class AiService {
         }
         const checkpoint = nativeAi.checkpointOpenTranscriptTail.bind(nativeAi);
         const load = nativeAi.loadOpenTranscriptTail.bind(nativeAi);
+        const reconcile = nativeAi.reconcileTerminalOpenTranscriptTail.bind(nativeAi);
         const seal = nativeAi.sealTranscriptTurn.bind(nativeAi);
         return new AiTranscriptPersistenceCoordinator(
             this.#liveTranscriptTails,
-            { checkpoint, load, seal },
+            { checkpoint, load, reconcile, seal },
             undefined,
             {
                 onSealed: (sessionId) => {

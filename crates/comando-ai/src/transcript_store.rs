@@ -410,6 +410,7 @@ impl TranscriptStore {
                 .map_err(|error| {
                     transcript_sql("start open transcript checkpoint transaction", error)
                 })?;
+            validate_open_tail_turn_transition(&transaction, &session_id, &turn_id)?;
             let obsolete_payload_files =
                 persist_payloads(&transaction, &session_id, &prepared_payloads)?;
             append_entries_in_transaction(&transaction, &session_id, entries)?;
@@ -1644,6 +1645,35 @@ fn persist_open_tail(
     Ok(())
 }
 
+fn validate_open_tail_turn_transition(
+    transaction: &Transaction<'_>,
+    session_id: &SessionId,
+    turn_id: &str,
+) -> AiResult<()> {
+    let state = transaction
+        .query_row(
+            "SELECT turn_id, terminal_status
+             FROM transcript_open_tails
+             WHERE session_id = ?1",
+            params![session_id.0],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(|error| transcript_sql("load open transcript turn transition", error))?;
+    let Some((existing_turn_id, terminal_status)) = state else {
+        return Ok(());
+    };
+    if existing_turn_id == turn_id {
+        return Ok(());
+    }
+    let message = if terminal_status.is_some() {
+        "Terminal open transcript tail must be reconciled before changing turns"
+    } else {
+        "Open transcript tail belongs to another unresolved turn"
+    };
+    Err(AiError::InvalidInput(message.to_string()))
+}
+
 fn reserve_open_tail_ordinals(
     transaction: &Transaction<'_>,
     session_id: &SessionId,
@@ -2528,6 +2558,32 @@ mod tests {
         }
     }
 
+    fn open_tail_checkpoint(
+        session_id: &SessionId,
+        turn_id: &str,
+        terminal_status: Option<NativeAiTranscriptTerminalStatus>,
+        entries: Vec<NativeAiTranscriptEntryEnvelope>,
+    ) -> NativeAiCheckpointOpenTranscriptTailInput {
+        let entry_order = entries
+            .iter()
+            .enumerate()
+            .map(|(ordinal, entry)| NativeAiOpenTranscriptEntryRef {
+                entry_id: entry.id.clone(),
+                entry_revision: 1,
+                ordinal,
+            })
+            .collect();
+        NativeAiCheckpointOpenTranscriptTailInput {
+            session_id: session_id.clone(),
+            turn_id: turn_id.to_string(),
+            terminal_status,
+            entries,
+            payloads: Vec::new(),
+            removed_entry_ids: Vec::new(),
+            entry_order,
+        }
+    }
+
     #[test]
     fn newer_schema_is_rejected_without_touching_provisional_entries() {
         let temp = tempfile::tempdir().unwrap();
@@ -2714,6 +2770,102 @@ mod tests {
                 .map(|entry| &entry.id)
                 .collect::<Vec<_>>(),
             vec![&first.id]
+        );
+    }
+
+    #[test]
+    fn checkpoint_rejects_replacing_an_unresolved_open_tail() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_id = SessionId("unresolved-turn-transition".to_string());
+        let store = TranscriptStore::new(temp.path());
+        let first = entry(&session_id, "entry-a");
+        let second = entry(&session_id, "entry-b");
+
+        store
+            .checkpoint_open_tail(open_tail_checkpoint(
+                &session_id,
+                "turn-a",
+                None,
+                vec![first.clone()],
+            ))
+            .unwrap();
+
+        let error = store
+            .checkpoint_open_tail(open_tail_checkpoint(
+                &session_id,
+                "turn-b",
+                None,
+                vec![second],
+            ))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Open transcript tail belongs to another unresolved turn")
+        );
+        let tail = store.load_open_tail(&session_id).unwrap().unwrap();
+        assert_eq!(tail.turn_id, "turn-a");
+        assert_eq!(
+            tail.entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.id.as_str()]
+        );
+    }
+
+    #[test]
+    fn checkpoint_requires_terminal_tail_reconciliation_before_turn_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_id = SessionId("terminal-turn-transition".to_string());
+        let store = TranscriptStore::new(temp.path());
+        let first = entry(&session_id, "entry-a");
+        let second = entry(&session_id, "entry-b");
+
+        store
+            .checkpoint_open_tail(open_tail_checkpoint(
+                &session_id,
+                "turn-a",
+                Some(NativeAiTranscriptTerminalStatus::Completed),
+                vec![first],
+            ))
+            .unwrap();
+
+        let error = store
+            .checkpoint_open_tail(open_tail_checkpoint(
+                &session_id,
+                "turn-b",
+                None,
+                vec![second.clone()],
+            ))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Terminal open transcript tail must be reconciled")
+        );
+
+        store
+            .reconcile_terminal_open_tail(&session_id, "turn-a")
+            .unwrap();
+        store
+            .checkpoint_open_tail(open_tail_checkpoint(
+                &session_id,
+                "turn-b",
+                None,
+                vec![second.clone()],
+            ))
+            .unwrap();
+
+        let tail = store.load_open_tail(&session_id).unwrap().unwrap();
+        assert_eq!(tail.turn_id, "turn-b");
+        assert_eq!(
+            tail.entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![second.id.as_str()]
         );
     }
 

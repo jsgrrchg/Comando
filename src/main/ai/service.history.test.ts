@@ -440,6 +440,54 @@ describe("AiService history", () => {
         }
     });
 
+    it("does not mark a terminal tail as recovered when reconciliation fails", async () => {
+        const snapshot = createSnapshot({
+            activeTurnStartedAt: null,
+            status: "idle",
+        });
+        const loadOpenTranscriptTail = vi.fn(() => Promise.resolve(
+            terminalTail(snapshot.sessionId),
+        ));
+        const reconcileTerminalOpenTranscriptTail = vi.fn(() => Promise.reject(
+            new Error("reconciliation unavailable"),
+        ));
+        const service = createService({
+            nativeAi: createNativeAiGateway({
+                checkpointOpenTranscriptTail: vi.fn(() => Promise.resolve()),
+                getTranscriptCapability: vi.fn(() => ({
+                    blockNativeVersion: 1,
+                    legacyFallbackAvailable: true,
+                })),
+                getTranscriptStorageState: vi.fn(() => Promise.resolve({
+                    capabilityVersion: 1,
+                    legacyFallbackAvailable: true,
+                    migrationManifestExists: false,
+                    mode: "block-native" as const,
+                    sessionId: snapshot.sessionId,
+                    storageVersion: 5,
+                })),
+                loadOpenTranscriptTail,
+                loadSessionSnapshot: vi.fn(() => Promise.resolve(snapshot)),
+                reconcileTerminalOpenTranscriptTail,
+                sealTranscriptTurn: vi.fn(() => Promise.resolve([])),
+            }),
+        });
+
+        try {
+            await expect(service.getSessionSnapshot(snapshot.sessionId)).rejects.toThrow(
+                "reconciliation unavailable",
+            );
+            await expect(service.getSessionSnapshot(snapshot.sessionId)).rejects.toThrow(
+                "reconciliation unavailable",
+            );
+
+            expect(loadOpenTranscriptTail).toHaveBeenCalledTimes(2);
+            expect(reconcileTerminalOpenTranscriptTail).toHaveBeenCalled();
+        } finally {
+            service.close();
+        }
+    });
+
     it("retries a transient transcript migration status failure", async () => {
         vi.useFakeTimers();
         const snapshot = createSnapshot();
@@ -1213,6 +1261,19 @@ function createSnapshot(
     };
 }
 
+function terminalTail(sessionId: string): AiOpenTranscriptTail {
+    return {
+        entries: [],
+        entryRevisions: [],
+        payloads: [],
+        revision: 1,
+        sessionId,
+        terminalStatus: "completed",
+        turnId: "terminal-turn",
+        updatedAt: "2026-04-16T12:00:01.000Z",
+    };
+}
+
 function createTrackedFile(
     overrides: Partial<AiTrackedFile> = {},
 ): AiTrackedFile {
@@ -1344,6 +1405,7 @@ function createNativeAiGateway(
         loadSessionSnapshot: vi.fn(() => Promise.resolve(null)),
         loadSessionTranscriptPage: vi.fn(() => Promise.resolve(null)),
         prepareSession: vi.fn(),
+        reconcileTerminalOpenTranscriptTail: vi.fn(() => Promise.resolve([])),
         renameSession: vi.fn(),
         respondPermission: vi.fn(),
         respondUserInput: vi.fn(),
