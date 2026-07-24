@@ -1044,20 +1044,20 @@ impl AiHistoryStore {
             else {
                 continue;
             };
-            // A synced JSONL write can have a pending marker while metadata
-            // still says zero messages. Recover before applying visibility filters.
-            self.recover_if_needed(&initial_metadata.session_id)?;
-            let metadata: AiHistorySessionMetadata = read_json_file(&metadata_path)?;
-            if metadata.project_id != input.project_id {
+            if initial_metadata.project_id != input.project_id {
                 continue;
             }
             if !history_worktree_scope_matches(
-                metadata.project_id.as_ref(),
-                metadata.worktree_id.as_ref(),
+                initial_metadata.project_id.as_ref(),
+                initial_metadata.worktree_id.as_ref(),
                 input.worktree_id.as_ref(),
             ) {
                 continue;
             }
+            // A synced JSONL write can have a pending marker while metadata
+            // still says zero messages. Scope before recovering unrelated sessions.
+            self.recover_if_needed(&initial_metadata.session_id)?;
+            let metadata: AiHistorySessionMetadata = read_json_file(&metadata_path)?;
             if metadata.message_count == 0 && metadata.parent_session_id.is_none() {
                 continue;
             }
@@ -3516,6 +3516,46 @@ mod tests {
 
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].session_id, child.session_id);
+    }
+
+    #[test]
+    fn list_ignores_a_corrupt_recovery_marker_outside_its_scope() {
+        let (_temp, store) = store();
+        let mut scoped = metadata("scoped");
+        scoped.message_count = 1;
+        store.create_session(scoped.clone()).unwrap();
+
+        let mut other = metadata("other");
+        other.project_id = Some(ProjectId("project_2".to_string()));
+        store.create_session(other.clone()).unwrap();
+        store
+            .write_transcript_write_marker(
+                &other.session_id,
+                &TranscriptWriteState {
+                    version: HISTORY_FORMAT_VERSION + 1,
+                    next_index: AiTranscriptIndex::empty(),
+                    first_changed_offset: 0,
+                    stale_legacy_entry_ids: Vec::new(),
+                    session_metadata: None,
+                },
+            )
+            .unwrap();
+
+        let history = store
+            .list_session_history(NativeAiListSessionHistoryInput {
+                project_id: Some(ProjectId("project_1".to_string())),
+                worktree_id: Some(WorktreeId("worktree_1".to_string())),
+                limit: None,
+            })
+            .unwrap();
+
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].session_id, scoped.session_id);
+        assert!(
+            store
+                .transcript_write_marker_path(&other.session_id)
+                .exists()
+        );
     }
 
     #[test]
