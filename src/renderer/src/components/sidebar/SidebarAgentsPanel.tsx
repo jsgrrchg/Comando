@@ -12,13 +12,13 @@ import { createPortal } from "react-dom";
 
 import type {
     AiHistorySessionSummary,
+    AiRuntimeDescriptor,
     AiRuntimeId,
     ComandoApi,
     WorkspaceSurfaceActionRequest,
 } from "@shared/ipc";
 import {
-    ACTIVE_AI_RUNTIME_IDS,
-    type ActiveAiRuntimeId,
+    BUILT_IN_AI_RUNTIME_CATALOG,
 } from "@shared/ai-runtimes";
 import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
 
@@ -141,7 +141,6 @@ const SIDEBAR_AGENTS_REFRESH_DEBOUNCE_MS = 800;
 const EMPTY_AGENTS_SESSIONS: readonly AiHistorySessionSummary[] = [];
 const EMPTY_COLLAPSED_IDS: ReadonlySet<string> = new Set();
 
-const SIDEBAR_AGENTS_NEW_RUNTIMES = ACTIVE_AI_RUNTIME_IDS;
 const SIDEBAR_AGENT_DRAG_THRESHOLD_PX = 6;
 const CLAUDE_CODE_TERMINAL_DESCRIPTION =
     "Open the claude CLI in a workspace terminal.";
@@ -152,6 +151,7 @@ export function SidebarAgentsPanel({
     filter,
     onRequestWorkspaceAction,
     projectId,
+    runtimeCatalog = BUILT_IN_AI_RUNTIME_CATALOG,
     workspaceContextKey,
     worktreeId,
 }: {
@@ -160,6 +160,7 @@ export function SidebarAgentsPanel({
         request: WorkspaceSurfaceActionRequest,
     ) => void;
     readonly projectId: string | null;
+    readonly runtimeCatalog?: readonly AiRuntimeDescriptor[];
     readonly workspaceContextKey?: string | null;
     readonly worktreeId: string | null;
 }) {
@@ -720,7 +721,7 @@ export function SidebarAgentsPanel({
     );
 
     const handleCreateNewAgentTab = useCallback(
-        (runtimeId: ActiveAiRuntimeId) => {
+        (runtimeId: AiRuntimeId) => {
             if (onRequestWorkspaceAction) {
                 if (!projectId || !workspaceContextKey) {
                     return;
@@ -1080,11 +1081,13 @@ export function SidebarAgentsPanel({
                 claudeCodeAvailable,
                 onCreateNewAgentTab: handleCreateNewAgentTab,
                 onOpenClaudeCodeTerminal: handleOpenClaudeCodeTerminal,
+                runtimeCatalog,
             }),
         [
             claudeCodeAvailable,
             handleCreateNewAgentTab,
             handleOpenClaudeCodeTerminal,
+            runtimeCatalog,
         ],
     );
 
@@ -1739,16 +1742,20 @@ export function buildSidebarAgentsNewAgentMenuEntries({
     claudeCodeAvailable,
     onCreateNewAgentTab,
     onOpenClaudeCodeTerminal,
+    runtimeCatalog = BUILT_IN_AI_RUNTIME_CATALOG,
 }: {
     readonly claudeCodeAvailable: boolean | null;
-    readonly onCreateNewAgentTab: (runtimeId: ActiveAiRuntimeId) => void;
+    readonly onCreateNewAgentTab: (runtimeId: AiRuntimeId) => void;
     readonly onOpenClaudeCodeTerminal: () => void;
+    readonly runtimeCatalog?: readonly AiRuntimeDescriptor[];
 }): readonly ContextMenuEntry[] {
     return [
-        ...SIDEBAR_AGENTS_NEW_RUNTIMES.map((runtimeId) => ({
-            action: () => onCreateNewAgentTab(runtimeId),
-            label: `New ${getHistoryRuntimeLabel(runtimeId)} thread`,
-        })),
+        ...runtimeCatalog
+            .filter((runtime) => runtime.available)
+            .map((runtime) => ({
+                action: () => onCreateNewAgentTab(runtime.id),
+                label: `New ${runtime.displayName} thread`,
+            })),
         {
             action: onOpenClaudeCodeTerminal,
             label: "New Claude Code Terminal",
@@ -2600,7 +2607,10 @@ function isSessionPinned(session: SidebarAgentSessionSummary): boolean {
 function getSidebarAgentRuntimeLabel(session: SidebarAgentSessionSummary): string {
     return session.runtimeId === CLAUDE_CODE_TERMINAL_RUNTIME_ID
         ? "Claude Code"
-        : getHistoryRuntimeLabel(session.runtimeId);
+        : getHistoryRuntimeLabel(
+              session.runtimeId,
+              session.runtimeDisplayName,
+          );
 }
 
 function isSubagentSession(session: SidebarAgentSessionSummary): boolean {

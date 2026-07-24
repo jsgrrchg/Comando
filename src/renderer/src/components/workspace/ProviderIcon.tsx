@@ -1,6 +1,7 @@
 import {
     ACTIVE_AI_RUNTIME_IDS,
     getAiRuntimeDisplayName,
+    isBuiltInAiRuntimeId,
     type ActiveAiRuntimeId,
 } from "@shared/ai-runtimes";
 import type { AiRuntimeId } from "@shared/ipc";
@@ -14,8 +15,10 @@ type ProviderIconProps = {
     readonly size?: number;
 };
 
-function resolveProviderRuntimeId(runtimeId: AiRuntimeId): ActiveAiRuntimeId {
-    return PROVIDER_ICON_RUNTIME_IDS.includes(runtimeId) ? runtimeId : "codex";
+function resolveProviderRuntimeId(
+    runtimeId: AiRuntimeId,
+): ActiveAiRuntimeId | null {
+    return isBuiltInAiRuntimeId(runtimeId) ? runtimeId : null;
 }
 
 export function ProviderIcon({
@@ -25,7 +28,28 @@ export function ProviderIcon({
     size = 12,
 }: ProviderIconProps) {
     const resolvedRuntimeId = resolveProviderRuntimeId(runtimeId);
-    const label = `${getAiRuntimeDisplayName(resolvedRuntimeId)} provider`;
+    const label = `${getAiRuntimeDisplayName(runtimeId)} provider`;
+
+    if (resolvedRuntimeId === null) {
+        return (
+            <svg
+                aria-label={label}
+                className={className}
+                data-provider-icon="custom-acp"
+                fill="none"
+                height={size}
+                role="img"
+                style={{ opacity }}
+                viewBox="0 0 16 16"
+                width={size}
+            >
+                <path
+                    d="M5.25 2.75h5.5v2.5h2.5v5.5h-2.5v2.5h-5.5v-2.5h-2.5v-5.5h2.5v-2.5Zm1.5 3v4.5h2.5v-4.5h-2.5Z"
+                    fill="currentColor"
+                />
+            </svg>
+        );
+    }
 
     if (resolvedRuntimeId === "claude") {
         return (

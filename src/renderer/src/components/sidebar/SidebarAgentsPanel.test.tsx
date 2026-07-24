@@ -1072,4 +1072,39 @@ describe("SidebarAgentsPanel new agent menu", () => {
                 "The claude command was not found in Comando's PATH. Your shell may still resolve it.",
         });
     });
+
+    it("includes custom runtimes without provider-only actions", () => {
+        const createAgent = vi.fn();
+        const id = "custom:550e8400-e29b-41d4-a716-446655440000";
+        const entries = buildSidebarAgentsNewAgentMenuEntries({
+            claudeCodeAvailable: true,
+            onCreateNewAgentTab: createAgent,
+            onOpenClaudeCodeTerminal: vi.fn(),
+            runtimeCatalog: [
+                {
+                    available: true,
+                    capabilities: {
+                        internalAuthentication: false,
+                        proprietaryActions: false,
+                        subagents: false,
+                    },
+                    displayName: "Pi",
+                    id,
+                    kind: "custom-acp",
+                },
+            ],
+        });
+        const entry = entries.find(
+            (candidate) =>
+                candidate.type !== "separator" &&
+                candidate.label === "New Pi thread",
+        );
+
+        if (entry?.type === "separator" || !entry?.action) {
+            throw new Error("Expected custom runtime entry.");
+        }
+        entry.action();
+
+        expect(createAgent).toHaveBeenCalledWith(id);
+    });
 });

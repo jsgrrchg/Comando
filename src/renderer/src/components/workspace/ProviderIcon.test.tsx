@@ -21,14 +21,26 @@ describe("ProviderIcon", () => {
         }
     });
 
-    it("falls back to Codex for unknown legacy runtime ids", () => {
+    it("renders a generic ACP icon for a custom runtime", () => {
+        const markup = renderToStaticMarkup(
+            createElement(ProviderIcon, {
+                runtimeId:
+                    "custom:550e8400-e29b-41d4-a716-446655440000",
+            }),
+        );
+
+        expect(markup).toContain('data-provider-icon="custom-acp"');
+        expect(markup).not.toContain('data-provider-icon="codex"');
+    });
+
+    it("renders the generic ACP icon for an unknown persisted runtime", () => {
         const markup = renderToStaticMarkup(
             createElement(ProviderIcon, {
                 runtimeId: "legacy-runtime" as AiRuntimeId,
             }),
         );
 
-        expect(markup).toContain('data-provider-icon="codex"');
+        expect(markup).toContain('data-provider-icon="custom-acp"');
     });
 
     it("uses the official OpenAI mark for Codex", () => {

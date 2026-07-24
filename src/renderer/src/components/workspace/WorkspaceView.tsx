@@ -21,6 +21,7 @@ import { useShallow } from "zustand/react/shallow";
 import type {
     AiFileContextAttachment,
     AiImageAttachment,
+    AiRuntimeDescriptor,
     AiRuntimeId,
     AiTrackedFile,
     GitChangeEntry,
@@ -29,10 +30,7 @@ import type {
     ProjectFileDocument,
 } from "@shared/ipc";
 import {
-    ACTIVE_AI_RUNTIME_IDS,
-    getAiRuntimeDisplayName,
-    isActiveAiRuntimeId,
-    type ActiveAiRuntimeId,
+    BUILT_IN_AI_RUNTIME_CATALOG,
 } from "@shared/ai-runtimes";
 import {
     resolveEditorLanguage,
@@ -630,6 +628,7 @@ export function buildWorkspaceAgentsQuickCreateEntries({
     defaultWorktreeId,
     onCreateChatTab,
     onOpenClaudeCodeTerminal,
+    runtimeCatalog = BUILT_IN_AI_RUNTIME_CATALOG,
 }: {
     readonly claudeCodeAvailable: boolean | null;
     readonly defaultProjectId: string | null;
@@ -637,20 +636,24 @@ export function buildWorkspaceAgentsQuickCreateEntries({
     readonly onCreateChatTab: (
         projectId: string | null,
         worktreeId: string | null,
-        runtimeId: ActiveAiRuntimeId,
+        runtimeId: AiRuntimeId,
     ) => void;
     readonly onOpenClaudeCodeTerminal: () => void;
+    readonly runtimeCatalog?: readonly AiRuntimeDescriptor[];
 }): readonly QuickCreateMenuEntry[] {
     const createRuntimeEntry = (
-        runtimeId: ActiveAiRuntimeId,
+        runtime: AiRuntimeDescriptor,
     ): QuickCreateMenuEntry => ({
         action: () =>
-            onCreateChatTab(defaultProjectId, defaultWorktreeId, runtimeId),
-        label: getAiRuntimeDisplayName(runtimeId),
+            onCreateChatTab(defaultProjectId, defaultWorktreeId, runtime.id),
+        label: runtime.displayName,
     });
+    const availableRuntimes = runtimeCatalog.filter(
+        (runtime) => runtime.available,
+    );
 
     return [
-        ...ACTIVE_AI_RUNTIME_IDS.slice(0, 2).map(createRuntimeEntry),
+        ...availableRuntimes.slice(0, 2).map(createRuntimeEntry),
         {
             action: onOpenClaudeCodeTerminal,
             label: "Claude Code",
@@ -659,12 +662,8 @@ export function buildWorkspaceAgentsQuickCreateEntries({
                     ? CLAUDE_CODE_NOT_FOUND_MESSAGE
                     : CLAUDE_CODE_TERMINAL_DESCRIPTION,
         },
-        ...ACTIVE_AI_RUNTIME_IDS.slice(2).map(createRuntimeEntry),
+        ...availableRuntimes.slice(2).map(createRuntimeEntry),
     ];
-}
-
-function resolveActiveRuntimeId(runtimeId: AiRuntimeId): ActiveAiRuntimeId {
-    return isActiveAiRuntimeId(runtimeId) ? runtimeId : "codex";
 }
 
 export function WorkspaceView({
@@ -2320,7 +2319,7 @@ function WorkspacePaneView({
         void createChatTab(
             defaultProjectId,
             defaultWorktreeId ?? null,
-            resolveActiveRuntimeId(lastFocusedRuntimeId),
+            lastFocusedRuntimeId,
         );
     }, [
         createChatTab,
@@ -2394,7 +2393,7 @@ function WorkspacePaneView({
             await createChatTab(
                 context.projectId,
                 worktreeId,
-                resolveActiveRuntimeId(currentState.lastFocusedRuntimeId),
+                currentState.lastFocusedRuntimeId,
             );
 
             const createdChatTab = Object.values(

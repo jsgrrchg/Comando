@@ -385,12 +385,32 @@ export interface ReadClaudeCodeTranscriptResult {
     readonly title: string | null;
 }
 
-export type AiRuntimeId =
+export type BuiltInAiRuntimeId =
     | "claude"
     | "codex"
     | "grok"
     | "kilo"
     | "opencode";
+
+export type CustomAcpRuntimeId = `custom:${string}`;
+
+export type AiRuntimeId = BuiltInAiRuntimeId | CustomAcpRuntimeId;
+
+export type AiRuntimeKind = "built-in" | "custom-acp";
+
+export interface AiRuntimeProductCapabilities {
+    readonly internalAuthentication: boolean;
+    readonly proprietaryActions: boolean;
+    readonly subagents: boolean;
+}
+
+export interface AiRuntimeDescriptor {
+    readonly available: boolean;
+    readonly capabilities: AiRuntimeProductCapabilities;
+    readonly displayName: string;
+    readonly id: AiRuntimeId;
+    readonly kind: AiRuntimeKind;
+}
 
 export interface AiAuthMethod {
     readonly description: string;
@@ -2766,6 +2786,9 @@ export interface AiSessionSnapshot {
     readonly projectId: string | null;
     readonly reasoningEffort?: string | null;
     readonly runtimeId: AiRuntimeId;
+    readonly runtimeDisplayName?: string | null;
+    readonly runtimeLaunchFingerprint?: string | null;
+    readonly runtimeRevision?: number | null;
     readonly runtimeSessionId: string | null;
     readonly reviewActionLog?: AiReviewActionLogState | null;
     readonly reviewDeltas?: readonly AiReviewDeltaSummary[];
@@ -3349,6 +3372,9 @@ export interface AiHistorySessionSummary {
     readonly preview: string | null;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
+    readonly runtimeDisplayName?: string | null;
+    readonly runtimeLaunchFingerprint?: string | null;
+    readonly runtimeRevision?: number | null;
     readonly runtimeSessionId?: string | null;
     readonly sessionId: string;
     readonly title: string;

@@ -47,6 +47,7 @@ import {
     attachNativeReviewDeltaToTrackedFile,
 } from "@shared/ai-review-delta";
 import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
+import { getAiRuntimeDisplayName } from "@shared/ai-runtimes";
 import { getAiTranscriptToolEntryId } from "@shared/ai-transcript";
 import {
     deriveTrackedFilesFromActionLog,
@@ -5936,17 +5937,5 @@ function getComandoApi() {
 }
 
 function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude";
-        case "grok":
-            return "Grok";
-        case "kilo":
-            return "Kilo";
-        case "opencode":
-            return "OpenCode";
-        case "codex":
-        default:
-            return "Codex";
-    }
+    return getAiRuntimeDisplayName(runtimeId);
 }

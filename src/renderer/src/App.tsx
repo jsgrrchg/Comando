@@ -26,7 +26,6 @@ import type {
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 import { resolveEditorLanguage } from "@shared/editor-language";
-import { isActiveAiRuntimeId } from "@shared/ai-runtimes";
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
 import { writeClipboardText } from "./app/utils/clipboard";
@@ -2833,9 +2832,7 @@ export function App() {
                 await createChatTab(
                     activeProjectId,
                     worktreeId,
-                    isActiveAiRuntimeId(lastFocusedRuntimeId)
-                        ? lastFocusedRuntimeId
-                        : "codex",
+                    lastFocusedRuntimeId,
                 );
             } catch (error) {
                 window.alert(
@@ -2922,9 +2919,7 @@ export function App() {
                 await createChatTab(
                     request.projectId,
                     worktreeId,
-                    isActiveAiRuntimeId(lastFocusedRuntimeId)
-                        ? lastFocusedRuntimeId
-                        : "codex",
+                    lastFocusedRuntimeId,
                 );
             } catch (error) {
                 window.alert(

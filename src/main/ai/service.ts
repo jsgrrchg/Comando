@@ -2665,6 +2665,7 @@ export class AiService {
                 };
             }
         }
+        return null;
     }
 
     #isNativeAiSession(sessionId: string): boolean {

@@ -315,6 +315,7 @@ function resolveRuntimeExecutable(
                     input.secretStore,
                 ).program;
         }
+        return null;
     } catch {
         return null;
     }

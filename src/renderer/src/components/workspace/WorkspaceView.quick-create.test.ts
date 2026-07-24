@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { buildAiRuntimeCatalog } from "@shared/ai-runtimes";
 
 import {
     buildWorkspaceAgentsQuickCreateEntries,
@@ -92,6 +93,33 @@ describe("WorkspaceView quick create agents menu", () => {
             title:
                 "The claude command was not found in Comando's PATH. Your shell may still resolve it.",
         });
+    });
+
+    it("creates custom runtimes from the unified catalog", () => {
+        const createChatTab = vi.fn();
+        const id = "custom:550e8400-e29b-41d4-a716-446655440000";
+        const entries = buildWorkspaceAgentsQuickCreateEntries({
+            claudeCodeAvailable: true,
+            defaultProjectId: "project-1",
+            defaultWorktreeId: null,
+            onCreateChatTab: createChatTab,
+            onOpenClaudeCodeTerminal: vi.fn(),
+            runtimeCatalog: buildAiRuntimeCatalog([
+                { displayName: "Pi development", id },
+            ]),
+        });
+        const entry = entries.find(
+            (candidate) =>
+                candidate.type !== "separator" &&
+                candidate.label === "Pi development",
+        );
+
+        if (entry?.type === "separator" || !entry?.action) {
+            throw new Error("Expected custom runtime entry.");
+        }
+        entry.action();
+
+        expect(createChatTab).toHaveBeenCalledWith("project-1", null, id);
     });
 
     it("labels Grok as the last quick-create action", () => {

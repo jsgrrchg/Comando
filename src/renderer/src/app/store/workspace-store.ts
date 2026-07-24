@@ -22,7 +22,6 @@ import type {
 } from "@shared/ipc";
 import {
     getAiRuntimeDisplayName,
-    type ActiveAiRuntimeId,
 } from "@shared/ai-runtimes";
 import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
 import {
@@ -103,7 +102,7 @@ import { useProjectsStore } from "./projects-store";
 import { getProjectContextKey } from "../projects/context-key";
 
 export type WorkspaceQuickCreateAction =
-    | ActiveAiRuntimeId
+    | AiRuntimeId
     | "git"
     | "history"
     | "file"
@@ -170,7 +169,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     createChatTab: (
         projectId: string | null,
         worktreeId?: string | null,
-        runtimeId?: ActiveAiRuntimeId,
+        runtimeId?: AiRuntimeId,
     ) => Promise<void>;
     createTerminalTab: (
         projectId: string | null,
@@ -769,7 +768,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     createChatTab: async (
         projectId: string | null,
         worktreeId: string | null = null,
-        runtimeId: ActiveAiRuntimeId = "codex",
+        runtimeId: AiRuntimeId = "codex",
     ) => {
         const paneId = get().activePaneId;
         const runtimeTitle = getAiRuntimeDisplayName(runtimeId);
