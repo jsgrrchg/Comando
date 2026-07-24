@@ -454,7 +454,7 @@ impl TranscriptStore {
             ));
         }
         let mut connection = self.open(session_id, true)?;
-        let result = (|| {
+        (|| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| {
@@ -533,8 +533,7 @@ impl TranscriptStore {
                 transcript_sql("commit terminal open transcript reconciliation", error)
             })?;
             Ok(metadata)
-        })();
-        result
+        })()
     }
 
     pub(crate) fn load_open_tail(
