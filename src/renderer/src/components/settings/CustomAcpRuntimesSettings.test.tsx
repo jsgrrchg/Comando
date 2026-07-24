@@ -133,6 +133,53 @@ describe("CustomAcpRuntimesSettings", () => {
         );
         expect(onDelete).toHaveBeenCalledWith(runtime.id);
     });
+
+    it("restores a deleted definition with its original identity", async () => {
+        const runtime = definition(
+            "550e8400-e29b-41d4-a716-446655440000",
+            "Pi",
+        );
+        const onRestore = vi.fn(() => Promise.resolve(runtime));
+        mount(
+            <CustomAcpRuntimesSettings
+                deletedDefinitions={[runtime]}
+                onRestore={onRestore}
+            />,
+        );
+
+        expect(document.body.textContent).toContain(
+            "Deleted definitions retained for history",
+        );
+        await clickButtonAsync("Restore");
+        expect(onRestore).toHaveBeenCalledWith(runtime.id);
+    });
+
+    it("requires confirmation before changing a persisted launch contract", async () => {
+        const runtime = definition(
+            "550e8400-e29b-41d4-a716-446655440000",
+            "Pi",
+        );
+        const onUpdate = vi.fn(() => Promise.resolve(runtime));
+        const confirm = vi.fn(() => false);
+        vi.stubGlobal("confirm", confirm);
+        mount(
+            <CustomAcpRuntimesSettings
+                definitions={[runtime]}
+                onUpdate={onUpdate}
+            />,
+        );
+
+        clickButton("Edit");
+        const command =
+            document.body.querySelectorAll<HTMLInputElement>("input")[1];
+        changeValue(command, "/usr/local/bin/pi-acp");
+        await clickButtonAsync("Save changes");
+
+        expect(confirm).toHaveBeenCalledWith(
+            expect.stringContaining("Existing history keeps its original fingerprint"),
+        );
+        expect(onUpdate).not.toHaveBeenCalled();
+    });
 });
 
 function mount(node: ReactNode): void {

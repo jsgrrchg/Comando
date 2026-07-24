@@ -400,6 +400,32 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         );
     }
 
+    async countSessionHistoryByRuntime(
+        runtimeId: AiRuntimeId,
+    ): Promise<number> {
+        if (!this.#historyEnabled) {
+            return 0;
+        }
+        const output = requireRecord(
+            await this.#client.request<unknown>(
+                "ai_count_session_history_by_runtime",
+                { runtimeId },
+            ),
+            "Native AI history runtime count",
+        );
+        const count = output.count;
+        if (
+            typeof count !== "number" ||
+            !Number.isSafeInteger(count) ||
+            count < 0
+        ) {
+            throw new Error(
+                "Native AI history runtime count must be a non-negative integer.",
+            );
+        }
+        return count;
+    }
+
     async listSessionRuntimeMappingsForParent(
         parentSessionId: string,
     ): Promise<readonly AiRuntimeSessionMapping[]> {

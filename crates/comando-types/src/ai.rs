@@ -530,6 +530,12 @@ pub struct NativeAiListSessionHistoryInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeAiCountSessionHistoryByRuntimeInput {
+    pub runtime_id: RuntimeId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeAiHistorySessionSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_acp_continuation_strategy: Option<String>,

@@ -37,9 +37,11 @@ export const IPC_CHANNELS = {
     saveKiloRuntimeSettings: "settings:save-kilo-runtime-settings",
     saveOpenCodeRuntimeSettings: "settings:save-opencode-runtime-settings",
     listCustomAcpRuntimes: "settings:list-custom-acp-runtimes",
+    listDeletedCustomAcpRuntimes: "settings:list-deleted-custom-acp-runtimes",
     createCustomAcpRuntime: "settings:create-custom-acp-runtime",
     updateCustomAcpRuntime: "settings:update-custom-acp-runtime",
     deleteCustomAcpRuntime: "settings:delete-custom-acp-runtime",
+    restoreCustomAcpRuntime: "settings:restore-custom-acp-runtime",
     verifyCustomAcpRuntime: "settings:verify-custom-acp-runtime",
     getSystemTheme: "app:get-system-theme",
     saveSettingsSnapshot: "settings:save-snapshot",
@@ -571,6 +573,7 @@ export interface CustomAcpLaunchSpec {
 }
 
 export interface CustomAcpRuntimesSettings {
+    readonly deletedRuntimes?: readonly CustomAcpRuntimeDefinition[];
     readonly runtimes: readonly CustomAcpRuntimeDefinition[];
     readonly version: 1;
 }
@@ -581,6 +584,10 @@ export interface UpdateCustomAcpRuntimeInput {
 }
 
 export interface DeleteCustomAcpRuntimeInput {
+    readonly id: CustomAcpRuntimeId;
+}
+
+export interface RestoreCustomAcpRuntimeInput {
     readonly id: CustomAcpRuntimeId;
 }
 
@@ -3564,6 +3571,9 @@ export interface ComandoApi {
     listCustomAcpRuntimes: () => Promise<
         readonly CustomAcpRuntimeDefinition[]
     >;
+    listDeletedCustomAcpRuntimes: () => Promise<
+        readonly CustomAcpRuntimeDefinition[]
+    >;
     createCustomAcpRuntime: (
         definition: CustomAcpRuntimeDefinitionInput,
     ) => Promise<CustomAcpRuntimeDefinition>;
@@ -3573,6 +3583,9 @@ export interface ComandoApi {
     deleteCustomAcpRuntime: (
         input: DeleteCustomAcpRuntimeInput,
     ) => Promise<DeleteCustomAcpRuntimeResult>;
+    restoreCustomAcpRuntime: (
+        input: RestoreCustomAcpRuntimeInput,
+    ) => Promise<CustomAcpRuntimeDefinition>;
     verifyCustomAcpRuntime: (
         input: VerifyCustomAcpRuntimeInput,
     ) => Promise<AiRuntimeStatus>;

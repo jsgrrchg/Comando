@@ -164,6 +164,9 @@ export interface NativeAiGateway {
     closeOwnedByWindow(ownerWindowId: string): Promise<void> | void;
     closeSession(sessionId: string): Promise<void>;
     deleteSession(sessionId: string): Promise<void>;
+    countSessionHistoryByRuntime?(
+        runtimeId: AiRuntimeId,
+    ): Promise<number>;
     listSessionHistory(
         input: ListAiSessionHistoryInput,
     ): Promise<readonly AiHistorySessionSummary[]>;

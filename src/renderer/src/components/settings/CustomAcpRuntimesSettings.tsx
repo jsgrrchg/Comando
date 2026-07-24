@@ -16,6 +16,7 @@ import { SectionLabel } from "./primitives";
 
 export interface CustomAcpRuntimesSettingsProps {
     readonly definitions?: readonly CustomAcpRuntimeDefinition[];
+    readonly deletedDefinitions?: readonly CustomAcpRuntimeDefinition[];
     readonly disabled?: boolean;
     readonly onCreate?: (
         input: CustomAcpRuntimeDefinitionInput,
@@ -26,6 +27,9 @@ export interface CustomAcpRuntimesSettingsProps {
     readonly onUpdate?: (
         id: CustomAcpRuntimeId,
         input: CustomAcpRuntimeDefinitionInput,
+    ) => Promise<CustomAcpRuntimeDefinition> | CustomAcpRuntimeDefinition;
+    readonly onRestore?: (
+        id: CustomAcpRuntimeId,
     ) => Promise<CustomAcpRuntimeDefinition> | CustomAcpRuntimeDefinition;
     readonly onVerify?: (
         input: CustomAcpRuntimeDefinitionInput,
@@ -80,9 +84,11 @@ const BUTTON_STYLE: CSSProperties = {
 
 export function CustomAcpRuntimesSettings({
     definitions = [],
+    deletedDefinitions = [],
     disabled = false,
     onCreate,
     onDelete,
+    onRestore,
     onUpdate,
     onVerify,
     statuses,
@@ -279,6 +285,46 @@ export function CustomAcpRuntimesSettings({
                     ))}
                 </div>
             )}
+
+            {deletedDefinitions.length > 0 ? (
+                <div style={{ marginTop: 14 }}>
+                    <div style={{ ...mutedStyle, marginBottom: 6 }}>
+                        Deleted definitions retained for history
+                    </div>
+                    <div style={{ display: "grid", gap: 8 }}>
+                        {deletedDefinitions.map((definition) => (
+                            <article key={definition.id} style={cardStyle}>
+                                <div style={{ minWidth: 0 }}>
+                                    <div
+                                        style={{
+                                            fontSize: 12,
+                                            fontWeight: 600,
+                                        }}
+                                    >
+                                        {definition.displayName}
+                                    </div>
+                                    <div style={mutedStyle}>
+                                        Unavailable · revision{" "}
+                                        {definition.revision}
+                                    </div>
+                                </div>
+                                <button
+                                    disabled={disabled || busy}
+                                    style={BUTTON_STYLE}
+                                    type="button"
+                                    onClick={() => {
+                                        void runAction(async () => {
+                                            await onRestore?.(definition.id);
+                                        });
+                                    }}
+                                >
+                                    Restore
+                                </button>
+                            </article>
+                        ))}
+                    </div>
+                </div>
+            ) : null}
 
             {editor ? (
                 <div style={editorStyle}>

@@ -36,6 +36,7 @@ import {
     type CodexRuntimeSettingsInput,
     type CustomAcpRuntimeDefinitionInput,
     type DeleteCustomAcpRuntimeInput,
+    type RestoreCustomAcpRuntimeInput,
     type UpdateCustomAcpRuntimeInput,
     type VerifyCustomAcpRuntimeInput,
     type CopyExternalProjectEntriesInput,
@@ -298,9 +299,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.readClaudeCodeTranscript);
     ipcMain.removeHandler(IPC_CHANNELS.getSettingsSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.listCustomAcpRuntimes);
+    ipcMain.removeHandler(IPC_CHANNELS.listDeletedCustomAcpRuntimes);
     ipcMain.removeHandler(IPC_CHANNELS.createCustomAcpRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.updateCustomAcpRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.deleteCustomAcpRuntime);
+    ipcMain.removeHandler(IPC_CHANNELS.restoreCustomAcpRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.verifyCustomAcpRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.getProjectSettings);
     ipcMain.removeHandler(IPC_CHANNELS.getSystemTheme);
@@ -663,6 +666,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(IPC_CHANNELS.listCustomAcpRuntimes, () =>
         options.settingsService.listCustomAcpRuntimes(),
     );
+    ipcMain.handle(IPC_CHANNELS.listDeletedCustomAcpRuntimes, () =>
+        options.settingsService.listDeletedCustomAcpRuntimes(),
+    );
     ipcMain.handle(
         IPC_CHANNELS.createCustomAcpRuntime,
         (_event, input: CustomAcpRuntimeDefinitionInput) => {
@@ -685,13 +691,28 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.deleteCustomAcpRuntime,
-        (_event, input: DeleteCustomAcpRuntimeInput) => {
+        async (_event, input: DeleteCustomAcpRuntimeInput) => {
+            const historyReferenceCount =
+                await options.aiService.countSessionHistoryByRuntime(input.id);
             const result =
                 options.settingsService.deleteCustomAcpRuntime(input.id);
             if (result.deleted) {
                 broadcastCurrentSettings(options.settingsService);
             }
-            return result;
+            return {
+                ...result,
+                historyReferenceCount,
+            };
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.restoreCustomAcpRuntime,
+        (_event, input: RestoreCustomAcpRuntimeInput) => {
+            const definition = options.settingsService.restoreCustomAcpRuntime(
+                input.id,
+            );
+            broadcastCurrentSettings(options.settingsService);
+            return definition;
         },
     );
     ipcMain.handle(

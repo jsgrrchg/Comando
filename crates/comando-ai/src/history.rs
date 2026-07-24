@@ -1087,6 +1087,44 @@ impl AiHistoryStore {
         Ok(summaries)
     }
 
+    pub fn count_session_history_by_runtime(&self, runtime_id: &RuntimeId) -> AiResult<usize> {
+        let sessions_dir = self.sessions_dir();
+        if !sessions_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut count = 0;
+        for entry in fs::read_dir(&sessions_dir)
+            .map_err(|error| history_io("read AI sessions dir", &sessions_dir, error))?
+        {
+            let entry = entry
+                .map_err(|error| history_io("read AI sessions dir entry", &sessions_dir, error))?;
+            if !entry
+                .file_type()
+                .map_err(|error| history_io("read AI session file type", &entry.path(), error))?
+                .is_dir()
+            {
+                continue;
+            }
+            let metadata_path = entry.path().join(SESSION_META_FILE);
+            let Ok(initial_metadata) = read_json_file::<AiHistorySessionMetadata>(&metadata_path)
+            else {
+                continue;
+            };
+            if initial_metadata.runtime_id != *runtime_id {
+                continue;
+            }
+            self.recover_if_needed(&initial_metadata.session_id)?;
+            let metadata = read_json_file::<AiHistorySessionMetadata>(&metadata_path)?;
+            if metadata.runtime_id == *runtime_id
+                && (metadata.message_count > 0 || metadata.parent_session_id.is_some())
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     pub fn list_runtime_mappings_for_parent(
         &self,
         parent_session_id: &SessionId,
@@ -3190,6 +3228,37 @@ mod tests {
             "kind": "assistant",
             "status": "completed"
         })
+    }
+
+    #[test]
+    fn counts_history_references_across_project_scopes_by_runtime_identity() {
+        let (_temp, store) = store();
+        for (session_id, runtime_id) in [
+            (
+                "custom-history-one",
+                "custom:550e8400-e29b-41d4-a716-446655440000",
+            ),
+            (
+                "custom-history-two",
+                "custom:550e8400-e29b-41d4-a716-446655440000",
+            ),
+            ("built-in-history", "codex"),
+        ] {
+            let mut session = metadata(session_id);
+            session.runtime_id = RuntimeId(runtime_id.to_string());
+            session.message_count = 1;
+            session.project_id = Some(ProjectId(format!("project-{session_id}")));
+            store.create_session(session).unwrap();
+        }
+
+        assert_eq!(
+            store
+                .count_session_history_by_runtime(&RuntimeId(
+                    "custom:550e8400-e29b-41d4-a716-446655440000".to_string(),
+                ))
+                .unwrap(),
+            2
+        );
     }
 
     #[test]

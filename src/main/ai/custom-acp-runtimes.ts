@@ -248,7 +248,52 @@ export function normalizeCustomAcpRuntimesSettings(
         }
     }
 
-    return { runtimes: definitions, version: 1 };
+    const deletedDefinitions: CustomAcpRuntimeDefinition[] = [];
+    const deletedCandidates = Array.isArray(value.deletedRuntimes)
+        ? value.deletedRuntimes
+        : [];
+    for (const candidate of deletedCandidates.slice(0, MAX_RUNTIME_COUNT)) {
+        try {
+            if (
+                !isRecord(candidate) ||
+                !isCustomAcpRuntimeId(candidate.id) ||
+                !Number.isSafeInteger(candidate.revision) ||
+                (candidate.revision as number) < 1 ||
+                definitions.some(
+                    (definition) => definition.id === candidate.id,
+                ) ||
+                deletedDefinitions.some(
+                    (definition) => definition.id === candidate.id,
+                )
+            ) {
+                throw new Error("deleted identity or revision is invalid");
+            }
+            const normalized = validateCustomAcpRuntimeInput(
+                candidate as unknown as CustomAcpRuntimeDefinitionInput,
+                { existingDefinitions: [] },
+            );
+            deletedDefinitions.push({
+                ...normalized,
+                id: candidate.id,
+                // Tombstones remain untrusted persisted input until restored.
+                launchFingerprint:
+                    calculateCustomAcpLaunchFingerprint(normalized),
+                revision: candidate.revision as number,
+            });
+        } catch (error) {
+            onDiagnostic?.(
+                `Discarded malformed deleted custom ACP runtime: ${formatError(error)}`,
+            );
+        }
+    }
+
+    return {
+        ...(deletedDefinitions.length > 0
+            ? { deletedRuntimes: deletedDefinitions }
+            : {}),
+        runtimes: definitions,
+        version: 1,
+    };
 }
 
 function requireTrimmedString(

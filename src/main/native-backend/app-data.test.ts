@@ -86,7 +86,29 @@ describe("createNativeAppDataClient", () => {
             historyReferenceCount: 0,
         });
         expect(restored.settings.listCustomAcpRuntimes()).toEqual([second]);
+        expect(restored.settings.listDeletedCustomAcpRuntimes()).toEqual([
+            updated,
+        ]);
         await restored.close();
+
+        const afterDelete = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        expect(afterDelete.settings.listDeletedCustomAcpRuntimes()).toEqual([
+            updated,
+        ]);
+        expect(
+            afterDelete.settings.restoreCustomAcpRuntime(first.id),
+        ).toEqual(updated);
+        expect(afterDelete.settings.listCustomAcpRuntimes()).toEqual([
+            second,
+            updated,
+        ]);
+        expect(afterDelete.settings.listDeletedCustomAcpRuntimes()).toEqual(
+            [],
+        );
+        await afterDelete.close();
     });
 
     it("atomically restores isolated workspace snapshots for multiple windows", async () => {

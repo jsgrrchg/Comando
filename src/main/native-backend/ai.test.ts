@@ -801,6 +801,9 @@ describe("NativeAiGateway", () => {
                         },
                     ] as T);
                 }
+                if (command === "ai_count_session_history_by_runtime") {
+                    return Promise.resolve({ count: 2 } as T);
+                }
                 return Promise.resolve({ ok: true } as T);
             },
         );
@@ -835,6 +838,9 @@ describe("NativeAiGateway", () => {
                 runtimeSessionId: "runtime-child",
             },
         ]);
+        await expect(
+            gateway.countSessionHistoryByRuntime("opencode"),
+        ).resolves.toBe(2);
         await gateway.setSessionPinned({ pinned: true, sessionId: "session-1" });
         await gateway.renameSession({ sessionId: "session-1", title: "Renamed" });
         await gateway.deleteSession("session-1");

@@ -224,6 +224,7 @@ impl NativeBackend {
             | "ai_set_session_config_option"
             | "ai_rename_session"
             | "ai_list_session_history"
+            | "ai_count_session_history_by_runtime"
             | "ai_load_session_transcript_page"
             | "ai_append_transcript_entries"
             | "ai_checkpoint_open_transcript_tail"
@@ -363,6 +364,7 @@ impl NativeBackend {
             | "ai_set_session_config_option"
             | "ai_rename_session"
             | "ai_list_session_history"
+            | "ai_count_session_history_by_runtime"
             | "ai_load_session_transcript_page"
             | "ai_append_transcript_entries"
             | "ai_checkpoint_open_transcript_tail"
@@ -2374,6 +2376,22 @@ impl NativeBackend {
                         request.id,
                         serde_json::to_value(history).expect("ai history list serializes"),
                     ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_count_session_history_by_runtime" => {
+                let input = match parse_args::<native_ai::NativeAiCountSessionHistoryByRuntimeInput>(
+                    &request,
+                ) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .count_session_history_by_runtime(&input.runtime_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(count) => response_only(request.id, json!({ "count": count })),
                     Err(error) => error_only(request.id, error),
                 }
             }

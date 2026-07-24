@@ -1358,6 +1358,15 @@ export class AiService {
         return await this.#persistence.listSessionHistory(input);
     }
 
+    async countSessionHistoryByRuntime(
+        runtimeId: AiRuntimeId,
+    ): Promise<number> {
+        return (
+            (await this.#nativeAi?.countSessionHistoryByRuntime?.(runtimeId)) ??
+            0
+        );
+    }
+
     async setSessionPinned(
         input: AiSessionPinnedMutationInput,
     ): Promise<void> {

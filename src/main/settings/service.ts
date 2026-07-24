@@ -63,6 +63,7 @@ export interface SettingsGateway {
     loadOpenCodeRuntimeSettings(): OpenCodeRuntimeSettings;
     saveOpenCodeRuntimeSettings(settings: OpenCodeRuntimeSettings): void;
     listCustomAcpRuntimes(): readonly CustomAcpRuntimeDefinition[];
+    listDeletedCustomAcpRuntimes(): readonly CustomAcpRuntimeDefinition[];
     createCustomAcpRuntime(
         input: CustomAcpRuntimeDefinitionInput,
     ): CustomAcpRuntimeDefinition;
@@ -73,4 +74,7 @@ export interface SettingsGateway {
     deleteCustomAcpRuntime(
         id: CustomAcpRuntimeId,
     ): DeleteCustomAcpRuntimeResult;
+    restoreCustomAcpRuntime(
+        id: CustomAcpRuntimeId,
+    ): CustomAcpRuntimeDefinition;
 }

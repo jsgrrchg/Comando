@@ -114,6 +114,9 @@ export function SettingsApp() {
     const [customAcpRuntimes, setCustomAcpRuntimes] = useState<
         readonly CustomAcpRuntimeDefinition[]
     >([]);
+    const [deletedCustomAcpRuntimes, setDeletedCustomAcpRuntimes] = useState<
+        readonly CustomAcpRuntimeDefinition[]
+    >([]);
     const [customAcpRuntimeStatuses, setCustomAcpRuntimeStatuses] = useState<
         Partial<Record<CustomAcpRuntimeId, AiRuntimeStatus | null>>
     >({});
@@ -214,6 +217,7 @@ export function SettingsApp() {
         const [
             settingsSnapshot,
             customRuntimes,
+            deletedCustomRuntimes,
             codex,
             claude,
             grok,
@@ -223,6 +227,7 @@ export function SettingsApp() {
             await Promise.all([
                 window.comando.getSettingsSnapshot(),
                 window.comando.listCustomAcpRuntimes(),
+                window.comando.listDeletedCustomAcpRuntimes(),
                 window.comando.getAiRuntimeStatus("codex"),
                 window.comando.getAiRuntimeStatus("claude"),
                 window.comando.getAiRuntimeStatus("grok"),
@@ -232,6 +237,7 @@ export function SettingsApp() {
 
         setRuntimeSettings(settingsSnapshot.ai ?? null);
         setCustomAcpRuntimes(customRuntimes);
+        setDeletedCustomAcpRuntimes(deletedCustomRuntimes);
         const customStatuses = await Promise.all(
             customRuntimes.map(async (definition) => [
                 definition.id,
@@ -987,6 +993,7 @@ export function SettingsApp() {
                 busyProviderId: savingRuntimeId,
                 customAcpRuntimes: {
                     definitions: customAcpRuntimes,
+                    deletedDefinitions: deletedCustomAcpRuntimes,
                     onCreate: async (input) => {
                         const definition =
                             await window.comando.createCustomAcpRuntime(input);
@@ -1008,11 +1015,24 @@ export function SettingsApp() {
                         const result =
                             await window.comando.deleteCustomAcpRuntime({ id });
                         if (result.deleted) {
+                            const deletedDefinition =
+                                customAcpRuntimes.find(
+                                    (definition) => definition.id === id,
+                                );
                             setCustomAcpRuntimes((current) =>
                                 current.filter(
                                     (definition) => definition.id !== id,
                                 ),
                             );
+                            if (deletedDefinition) {
+                                setDeletedCustomAcpRuntimes((current) => [
+                                    ...current.filter(
+                                        (definition) =>
+                                            definition.id !== id,
+                                    ),
+                                    deletedDefinition,
+                                ]);
+                            }
                             setCustomAcpRuntimeStatuses((current) => {
                                 const next = { ...current };
                                 delete next[id];
@@ -1020,6 +1040,30 @@ export function SettingsApp() {
                             });
                         }
                         return result;
+                    },
+                    onRestore: async (id) => {
+                        const definition =
+                            await window.comando.restoreCustomAcpRuntime({
+                                id,
+                            });
+                        setDeletedCustomAcpRuntimes((current) =>
+                            current.filter(
+                                (candidate) => candidate.id !== id,
+                            ),
+                        );
+                        setCustomAcpRuntimes((current) => [
+                            ...current,
+                            definition,
+                        ]);
+                        const status =
+                            await window.comando.getAiRuntimeStatus(
+                                definition.id,
+                            );
+                        setCustomAcpRuntimeStatuses((current) => ({
+                            ...current,
+                            [definition.id]: status,
+                        }));
+                        return definition;
                     },
                     onUpdate: async (id, input) => {
                         const definition =

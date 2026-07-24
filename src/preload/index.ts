@@ -58,6 +58,7 @@ import {
     type CustomAcpRuntimeDefinitionInput,
     type DeleteCustomAcpRuntimeInput,
     type DeleteCustomAcpRuntimeResult,
+    type RestoreCustomAcpRuntimeInput,
     type VerifyCustomAcpRuntimeInput,
     type CopyExternalProjectEntriesInput,
     type CopyExternalProjectEntriesResult,
@@ -568,6 +569,13 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.listCustomAcpRuntimes,
             await ipcRenderer.invoke(IPC_CHANNELS.listCustomAcpRuntimes),
         ),
+    listDeletedCustomAcpRuntimes: async () =>
+        assertIpcArray<CustomAcpRuntimeDefinition>(
+            IPC_CHANNELS.listDeletedCustomAcpRuntimes,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.listDeletedCustomAcpRuntimes,
+            ),
+        ),
     createCustomAcpRuntime: async (
         definition: CustomAcpRuntimeDefinitionInput,
     ) =>
@@ -587,6 +595,14 @@ const comandoApi: ComandoApi = {
         assertIpcObject<DeleteCustomAcpRuntimeResult>(
             IPC_CHANNELS.deleteCustomAcpRuntime,
             await ipcRenderer.invoke(IPC_CHANNELS.deleteCustomAcpRuntime, input),
+        ),
+    restoreCustomAcpRuntime: async (input: RestoreCustomAcpRuntimeInput) =>
+        assertIpcObject<CustomAcpRuntimeDefinition>(
+            IPC_CHANNELS.restoreCustomAcpRuntime,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.restoreCustomAcpRuntime,
+                input,
+            ),
         ),
     verifyCustomAcpRuntime: async (input: VerifyCustomAcpRuntimeInput) =>
         assertIpcObject<AiRuntimeStatus>(
