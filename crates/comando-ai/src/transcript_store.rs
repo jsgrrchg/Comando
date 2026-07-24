@@ -442,6 +442,100 @@ impl TranscriptStore {
         }
     }
 
+    pub(crate) fn reconcile_terminal_open_tail(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> AiResult<Vec<NativeAiTranscriptBlockMetadata>> {
+        if turn_id.trim().is_empty() {
+            return Err(AiError::InvalidInput(
+                "Open transcript turn ID must not be empty".to_string(),
+            ));
+        }
+        let mut connection = self.open(session_id, true)?;
+        let result = (|| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| {
+                    transcript_sql("start terminal open transcript reconciliation", error)
+                })?;
+            let state = transaction
+                .query_row(
+                    "SELECT turn_id, terminal_status
+                     FROM transcript_open_tails
+                     WHERE session_id = ?1",
+                    params![session_id.0],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()
+                .map_err(|error| transcript_sql("load terminal open transcript tail", error))?;
+            let Some((stored_turn_id, terminal_status)) = state else {
+                return load_all_block_metadata(&transaction, session_id);
+            };
+            if stored_turn_id != turn_id {
+                return Err(AiError::InvalidInput(
+                    "Open transcript tail belongs to a different turn".to_string(),
+                ));
+            }
+            if terminal_status.is_none() {
+                return Err(AiError::InvalidInput(
+                    "Open transcript tail is not terminal".to_string(),
+                ));
+            }
+
+            let mut statement = transaction
+                .prepare(
+                    "SELECT entry_id
+                     FROM transcript_open_tail_entries
+                     WHERE session_id = ?1
+                     ORDER BY ordinal ASC",
+                )
+                .map_err(|error| transcript_sql("prepare terminal open tail entries", error))?;
+            let entry_ids = statement
+                .query_map(params![session_id.0], |row| row.get::<_, String>(0))
+                .map_err(|error| transcript_sql("query terminal open tail entries", error))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| transcript_sql("read terminal open tail entry", error))?;
+            drop(statement);
+
+            let block_ids = block_ids_for_entries(&transaction, session_id, &entry_ids)?;
+            validate_block_payload_references(&transaction, session_id, &block_ids)?;
+            let mut open_block_ids = Vec::new();
+            for block_id in &block_ids {
+                let is_sealed = transaction
+                    .query_row(
+                        "SELECT is_sealed
+                         FROM transcript_blocks
+                         WHERE session_id = ?1 AND block_id = ?2",
+                        params![session_id.0, block_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|error| {
+                        transcript_sql("load transcript block reconciliation state", error)
+                    })?;
+                if is_sealed == 0 {
+                    open_block_ids.push(block_id.clone());
+                }
+            }
+
+            // Blocks already sealed by another turn are durable and must not be reassigned.
+            seal_blocks(&transaction, session_id, turn_id, &open_block_ids)?;
+            let metadata = load_block_metadata_by_ids(&transaction, session_id, &block_ids)?;
+            transaction
+                .execute(
+                    "DELETE FROM transcript_open_tails
+                     WHERE session_id = ?1 AND turn_id = ?2",
+                    params![session_id.0, turn_id],
+                )
+                .map_err(|error| transcript_sql("clear reconciled open transcript tail", error))?;
+            transaction.commit().map_err(|error| {
+                transcript_sql("commit terminal open transcript reconciliation", error)
+            })?;
+            Ok(metadata)
+        })();
+        result
+    }
+
     pub(crate) fn load_open_tail(
         &self,
         session_id: &SessionId,
@@ -2624,7 +2718,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_open_tail_with_a_foreign_sealed_block_reproduces_seal_failure() {
+    fn terminal_open_tail_reconciles_a_foreign_sealed_block() {
         let temp = tempfile::tempdir().unwrap();
         let session_id = SessionId("foreign-sealed-tail".to_string());
         let store = TranscriptStore::new(temp.path());
@@ -2660,34 +2754,20 @@ mod tests {
             })
             .unwrap();
 
-        let error = store
-            .seal_turn(
-                &session_id,
-                "turn-b",
-                vec![first.clone(), second.clone()],
-                Vec::new(),
-            )
-            .unwrap_err();
+        let metadata = store
+            .reconcile_terminal_open_tail(&session_id, "turn-b")
+            .unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("Transcript block is already sealed by another turn")
-        );
-        let tail = store.load_open_tail(&session_id).unwrap().unwrap();
-        assert_eq!(tail.turn_id, "turn-b");
+        assert!(store.load_open_tail(&session_id).unwrap().is_none());
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(store.load_block_metadata(&session_id).unwrap().len(), 2);
         assert_eq!(
-            tail.terminal_status,
-            Some(NativeAiTranscriptTerminalStatus::Completed)
+            store
+                .reconcile_terminal_open_tail(&session_id, "turn-b")
+                .unwrap()
+                .len(),
+            2
         );
-        assert_eq!(
-            tail.entries
-                .iter()
-                .map(|entry| entry.id.as_str())
-                .collect::<Vec<_>>(),
-            vec![first.id.as_str(), second.id.as_str()]
-        );
-        assert_eq!(store.load_block_metadata(&session_id).unwrap().len(), 1);
 
         let connection = store.open(&session_id, false).unwrap();
         let (sealed, open): (i64, i64) = connection
@@ -2701,7 +2781,23 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!((sealed, open), (1, 1));
+        assert_eq!((sealed, open), (2, 0));
+        let owners = connection
+            .prepare(
+                "SELECT turn_id
+                 FROM transcript_blocks
+                 WHERE session_id = ?1
+                 ORDER BY ordinal ASC",
+            )
+            .unwrap()
+            .query_map(params![session_id.0], |row| row.get::<_, Option<String>>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            owners,
+            vec![Some("turn-a".to_string()), Some("turn-b".to_string())]
+        );
     }
 
     #[test]

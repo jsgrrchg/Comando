@@ -671,6 +671,15 @@ impl AiHistoryStore {
             .seal_turn(session_id, turn_id, entries, payloads)
     }
 
+    pub fn reconcile_terminal_open_transcript_tail(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> AiResult<Vec<NativeAiTranscriptBlockMetadata>> {
+        self.transcript_store(session_id)
+            .reconcile_terminal_open_tail(session_id, turn_id)
+    }
+
     pub fn checkpoint_open_transcript_tail(
         &self,
         input: NativeAiCheckpointOpenTranscriptTailInput,
