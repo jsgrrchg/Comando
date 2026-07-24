@@ -197,7 +197,7 @@ describe("AiService history", () => {
                 expect(checkpointOpenTranscriptTail).toHaveBeenCalledOnce(),
             );
             await vi.waitFor(() =>
-                expect(loadTranscriptBlockMetadata).toHaveBeenCalled(),
+                expect(loadTranscriptBlockMetadata).toHaveBeenCalledOnce(),
             );
         } finally {
             service.close();

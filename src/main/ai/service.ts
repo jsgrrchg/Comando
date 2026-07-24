@@ -493,6 +493,7 @@ export class AiService {
     readonly #loadedTranscriptBlockMetadataSessionIds = new Set<string>();
     readonly #legacyTranscriptSessionIds = new Set<string>();
     readonly #loadingTranscriptBlockMetadataSessionIds = new Set<string>();
+    readonly #loadingTranscriptBlockMetadataRequestSessionIds = new Set<string>();
     readonly #pendingTranscriptBlockMetadataReloadSessionIds = new Set<string>();
     readonly #transcriptBlockMetadataGenerations = new Map<string, number>();
     readonly #recoveredTranscriptTailSessionIds = new Set<string>();
@@ -621,6 +622,7 @@ export class AiService {
         this.#liveTranscriptTails.clear();
         this.#loadedTranscriptBlockMetadataSessionIds.clear();
         this.#loadingTranscriptBlockMetadataSessionIds.clear();
+        this.#loadingTranscriptBlockMetadataRequestSessionIds.clear();
         this.#pendingTranscriptBlockMetadataReloadSessionIds.clear();
         this.#transcriptBlockMetadataGenerations.clear();
         this.#recoveredTranscriptTailSessionIds.clear();
@@ -2690,7 +2692,15 @@ export class AiService {
             return;
         }
         if (this.#loadingTranscriptBlockMetadataSessionIds.has(sessionId)) {
-            this.#pendingTranscriptBlockMetadataReloadSessionIds.add(sessionId);
+            if (
+                this.#loadingTranscriptBlockMetadataRequestSessionIds.has(
+                    sessionId,
+                )
+            ) {
+                this.#pendingTranscriptBlockMetadataReloadSessionIds.add(
+                    sessionId,
+                );
+            }
             return;
         }
         const loadTranscriptBlockMetadata = (targetSessionId: string) =>
@@ -2706,7 +2716,15 @@ export class AiService {
                 const generation =
                     this.#transcriptBlockMetadataGenerations.get(sessionId) ??
                     0;
-                const output = await loadTranscriptBlockMetadata(sessionId);
+                this.#loadingTranscriptBlockMetadataRequestSessionIds.add(
+                    sessionId,
+                );
+                const output = await loadTranscriptBlockMetadata(sessionId)
+                    .finally(() => {
+                        this.#loadingTranscriptBlockMetadataRequestSessionIds.delete(
+                            sessionId,
+                        );
+                    });
                 return { generation, output };
             })
             .then((result) => {
@@ -2756,7 +2774,9 @@ export class AiService {
             sessionId,
             (this.#transcriptBlockMetadataGenerations.get(sessionId) ?? 0) + 1,
         );
-        if (this.#loadingTranscriptBlockMetadataSessionIds.has(sessionId)) {
+        if (
+            this.#loadingTranscriptBlockMetadataRequestSessionIds.has(sessionId)
+        ) {
             this.#pendingTranscriptBlockMetadataReloadSessionIds.add(sessionId);
         }
     }
@@ -2971,6 +2991,9 @@ export class AiService {
                 currentSessionId,
             );
             this.#loadingTranscriptBlockMetadataSessionIds.delete(
+                currentSessionId,
+            );
+            this.#loadingTranscriptBlockMetadataRequestSessionIds.delete(
                 currentSessionId,
             );
             this.#pendingTranscriptBlockMetadataReloadSessionIds.delete(
