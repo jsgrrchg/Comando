@@ -1040,9 +1040,14 @@ impl AiHistoryStore {
             }
 
             let metadata_path = entry.path().join(SESSION_META_FILE);
-            let Ok(metadata) = read_json_file::<AiHistorySessionMetadata>(&metadata_path) else {
+            let Ok(initial_metadata) = read_json_file::<AiHistorySessionMetadata>(&metadata_path)
+            else {
                 continue;
             };
+            // A synced JSONL write can have a pending marker while metadata
+            // still says zero messages. Recover before applying visibility filters.
+            self.recover_if_needed(&initial_metadata.session_id)?;
+            let metadata: AiHistorySessionMetadata = read_json_file(&metadata_path)?;
             if metadata.project_id != input.project_id {
                 continue;
             }
@@ -4586,7 +4591,7 @@ mod tests {
 
     #[test]
     fn transcript_write_recovery_restores_metadata_for_a_first_synced_write() {
-        let (_temp, store) = store();
+        let (temp, store) = store();
         let session_id = SessionId("recover_first_transcript_write_metadata".to_string());
         store.create_session(metadata(&session_id.0)).unwrap();
 
@@ -4631,25 +4636,11 @@ mod tests {
             .and_then(|_| file.sync_all())
             .unwrap();
 
-        let page = store
-            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
-                session_id: session_id.clone(),
-                offset: 0,
-                limit: 10,
-            })
-            .unwrap()
-            .unwrap();
-        assert_eq!(page.messages, vec![first_message]);
-        assert!(!store.transcript_write_marker_path(&session_id).exists());
-
-        let recovered_metadata = store.load_metadata(&session_id).unwrap();
-        assert_eq!(
-            recovered_metadata.message_count,
-            target_metadata.message_count
-        );
-        assert_eq!(recovered_metadata.preview, target_metadata.preview);
-        assert_eq!(recovered_metadata.updated_at, target_metadata.updated_at);
-        let history = store
+        // Listing history is the first operation after restart, so it must
+        // recover the pending marker before filtering zero-message sessions.
+        drop(store);
+        let reopened = AiHistoryStore::new(temp.path()).unwrap();
+        let history = reopened
             .list_session_history(NativeAiListSessionHistoryInput {
                 project_id: Some(ProjectId("project_1".to_string())),
                 worktree_id: Some(WorktreeId("worktree_1".to_string())),
@@ -4658,6 +4649,25 @@ mod tests {
             .unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].session_id, session_id);
+        assert!(!reopened.transcript_write_marker_path(&session_id).exists());
+
+        let page = reopened
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id: session_id.clone(),
+                offset: 0,
+                limit: 10,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.messages, vec![first_message]);
+
+        let recovered_metadata = reopened.load_metadata(&session_id).unwrap();
+        assert_eq!(
+            recovered_metadata.message_count,
+            target_metadata.message_count
+        );
+        assert_eq!(recovered_metadata.preview, target_metadata.preview);
+        assert_eq!(recovered_metadata.updated_at, target_metadata.updated_at);
     }
 
     #[test]
