@@ -6,6 +6,7 @@ import type {
     AiSessionSnapshot,
     AiSessionTranscriptPage,
     AiSessionUpdate,
+    AiTranscriptBlockMetadataOutput,
     AiTrackedFile,
 } from "@shared/ipc";
 
@@ -122,6 +123,174 @@ describe("AiService history", () => {
                     expect.objectContaining({ id: "message:assistant-1" }),
                 ]),
             );
+        } finally {
+            service.close();
+        }
+    });
+
+    it("reconciles a recovered terminal tail before checkpointing a newer snapshot", async () => {
+        let resolveReconciliation!: (value: readonly ReturnType<typeof transcriptBlock>[]) => void;
+        const reconciliation = new Promise<readonly ReturnType<typeof transcriptBlock>[]>((resolve) => {
+            resolveReconciliation = resolve;
+        });
+        const checkpointOpenTranscriptTail = vi.fn<
+            NonNullable<NativeAiGateway["checkpointOpenTranscriptTail"]>
+        >(() => Promise.resolve());
+        const loadTranscriptBlockMetadata = vi.fn(() => Promise.resolve({
+            blocks: [],
+            capabilityVersion: 1,
+            sessionId: "session-1",
+            transcriptRevision: 2,
+        }));
+        const snapshot = createSnapshot({
+            activeTurnStartedAt: "2026-04-16T12:02:00.000Z",
+            messages: [{
+                attachments: [],
+                content: "New runtime output.",
+                createdAt: "2026-04-16T12:02:01.000Z",
+                id: "assistant-new",
+                kind: "assistant",
+                status: "streaming",
+            }],
+            status: "streaming",
+        });
+        const reconcileTerminalOpenTranscriptTail = vi.fn(() => reconciliation);
+        const service = createService({
+            nativeAi: createNativeAiGateway({
+                checkpointOpenTranscriptTail,
+                getTranscriptCapability: vi.fn(() => ({
+                    blockNativeVersion: 1,
+                    legacyFallbackAvailable: true,
+                })),
+                getTranscriptStorageState: vi.fn(() => Promise.resolve({
+                    capabilityVersion: 1,
+                    legacyFallbackAvailable: true,
+                    migrationManifestExists: false,
+                    mode: "block-native" as const,
+                    sessionId: snapshot.sessionId,
+                    storageVersion: 5,
+                })),
+                loadOpenTranscriptTail: vi.fn(() => Promise.resolve(
+                    terminalTail(snapshot.sessionId),
+                )),
+                loadTranscriptBlockMetadata,
+                reconcileTerminalOpenTranscriptTail,
+                sealTranscriptTurn: vi.fn(() => Promise.resolve([])),
+            }),
+        });
+
+        try {
+            service.handleNativeSessionSnapshot("window-1", {
+                kind: "snapshot",
+                snapshot,
+            });
+
+            await vi.waitFor(() =>
+                expect(reconcileTerminalOpenTranscriptTail).toHaveBeenCalledOnce(),
+            );
+            expect(checkpointOpenTranscriptTail).not.toHaveBeenCalled();
+            expect(loadTranscriptBlockMetadata).not.toHaveBeenCalled();
+
+            resolveReconciliation([]);
+
+            await vi.waitFor(() =>
+                expect(checkpointOpenTranscriptTail).toHaveBeenCalledOnce(),
+            );
+            await vi.waitFor(() =>
+                expect(loadTranscriptBlockMetadata).toHaveBeenCalled(),
+            );
+        } finally {
+            service.close();
+        }
+    });
+
+    it("discards metadata that was loaded before a concurrent seal", async () => {
+        let resolveFirstMetadata!: (value: AiTranscriptBlockMetadataOutput) => void;
+        const firstMetadata = new Promise<AiTranscriptBlockMetadataOutput>((resolve) => {
+            resolveFirstMetadata = resolve;
+        });
+        const snapshot = createSnapshot({
+            activeTurnStartedAt: "2026-04-16T12:03:00.000Z",
+            messages: [{
+                attachments: [],
+                content: "Output that will be sealed.",
+                createdAt: "2026-04-16T12:03:01.000Z",
+                id: "assistant-sealed",
+                kind: "assistant",
+                status: "streaming",
+            }],
+            status: "streaming",
+        });
+        const staleBlock = transcriptBlock(snapshot.sessionId, "stale", 1);
+        const sealedBlock = transcriptBlock(snapshot.sessionId, "sealed", 2);
+        const loadTranscriptBlockMetadata = vi
+            .fn()
+            .mockReturnValueOnce(firstMetadata)
+            .mockResolvedValueOnce({
+                blocks: [sealedBlock],
+                capabilityVersion: 1,
+                sessionId: snapshot.sessionId,
+                transcriptRevision: 2,
+            });
+        const service = createService({
+            nativeAi: createNativeAiGateway({
+                checkpointOpenTranscriptTail: vi.fn(() => Promise.resolve()),
+                getTranscriptCapability: vi.fn(() => ({
+                    blockNativeVersion: 1,
+                    legacyFallbackAvailable: true,
+                })),
+                getTranscriptStorageState: vi.fn(() => Promise.resolve({
+                    capabilityVersion: 1,
+                    legacyFallbackAvailable: true,
+                    migrationManifestExists: false,
+                    mode: "block-native" as const,
+                    sessionId: snapshot.sessionId,
+                    storageVersion: 5,
+                })),
+                loadOpenTranscriptTail: vi.fn(() => Promise.resolve(null)),
+                loadTranscriptBlockMetadata,
+                sealTranscriptTurn: vi.fn(() => Promise.resolve([sealedBlock])),
+            }),
+        });
+
+        try {
+            service.handleNativeSessionSnapshot("window-1", {
+                kind: "snapshot",
+                snapshot,
+            });
+            await vi.waitFor(() =>
+                expect(loadTranscriptBlockMetadata).toHaveBeenCalledOnce(),
+            );
+
+            service.handleNativeSessionEvent("window-1", {
+                error: null,
+                kind: "turn-status",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: "codex",
+                runtimeSessionId: snapshot.runtimeSessionId,
+                sessionId: snapshot.sessionId,
+                status: "completed",
+                turnId: snapshot.activeTurnStartedAt!,
+                updatedAt: "2026-04-16T12:03:02.000Z",
+            });
+            await vi.waitFor(() =>
+                expect(loadTranscriptBlockMetadata).toHaveBeenCalledTimes(1),
+            );
+
+            resolveFirstMetadata({
+                blocks: [staleBlock],
+                capabilityVersion: 1,
+                sessionId: snapshot.sessionId,
+                transcriptRevision: 1,
+            });
+
+            await vi.waitFor(() =>
+                expect(loadTranscriptBlockMetadata).toHaveBeenCalledTimes(2),
+            );
+            expect(
+                service.getLiveTranscriptTail(snapshot.sessionId)?.stableBlocks,
+            ).toEqual([sealedBlock]);
         } finally {
             service.close();
         }
@@ -1271,6 +1440,25 @@ function terminalTail(sessionId: string): AiOpenTranscriptTail {
         terminalStatus: "completed",
         turnId: "terminal-turn",
         updatedAt: "2026-04-16T12:00:01.000Z",
+    };
+}
+
+function transcriptBlock(
+    sessionId: string,
+    suffix: string,
+    revision: number,
+) {
+    return {
+        blockId: `${sessionId}:${suffix}`,
+        endSequence: revision,
+        entryCount: 1,
+        estimatedHeight: 72,
+        estimatedRowCount: 1,
+        firstCreatedAt: "2026-04-16T12:00:01.000Z",
+        lastCreatedAt: "2026-04-16T12:00:01.000Z",
+        revision,
+        sessionId,
+        startSequence: revision,
     };
 }
 
