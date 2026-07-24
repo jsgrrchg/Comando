@@ -143,10 +143,14 @@ export class AiTranscriptPersistenceCoordinator {
                 return recovered;
             }
             queue.checkpointedRevision = recovered.revision;
-            queue.sealStatus = recovered.terminalStatus;
-            queue.sealTurnId = recovered.terminalStatus
-                ? recovered.turnId
-                : null;
+            // A terminal event can arrive while load() is pending; its
+            // same-turn seal request must outlive a nonterminal snapshot.
+            if (queue.sealStatus === null || queue.sealTurnId !== recovered.turnId) {
+                queue.sealStatus = recovered.terminalStatus;
+                queue.sealTurnId = recovered.terminalStatus
+                    ? recovered.turnId
+                    : null;
+            }
             if (recovered.terminalStatus !== null) {
                 // Terminal tails are authoritative even when a delayed
                 // session snapshot still reports streaming after restart.

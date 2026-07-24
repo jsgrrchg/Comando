@@ -415,6 +415,52 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         });
     });
 
+    it("preserves a terminal seal requested while loading a nonterminal tail", async () => {
+        const store = new AiLiveTranscriptTailStore();
+        const load = deferred<AiOpenTranscriptTail | null>();
+        const checkpoints: CheckpointInput[] = [];
+        const seal = vi.fn((input: SealInput) => {
+            void input;
+            return Promise.resolve([sealedMetadata()]);
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                checkpoint: vi.fn((input: CheckpointInput) => {
+                    checkpoints.push(input);
+                    return Promise.resolve();
+                }),
+                load: vi.fn(() => load.promise),
+                seal,
+            }),
+        );
+
+        const recovery = coordinator.recover(SESSION_ID);
+        store.applyEvent({
+            ...eventBase,
+            error: null,
+            kind: "turn-status",
+            status: "completed",
+            turnId: TURN_ID,
+        });
+        coordinator.requestSeal(SESSION_ID, "completed");
+
+        load.resolve(recoveredTail());
+        await recovery;
+        await expect(coordinator.flushSession(SESSION_ID, 500)).resolves.toBe(true);
+
+        expect(checkpoints).toHaveLength(1);
+        expect(checkpoints[0]).toMatchObject({
+            terminalStatus: "completed",
+            turnId: TURN_ID,
+        });
+        expect(seal).toHaveBeenCalledOnce();
+        expect(seal).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: SESSION_ID,
+            turnId: TURN_ID,
+        }));
+    });
+
     it("checkpoints terminal state before sealing and clears the live tail", async () => {
         const store = liveStore();
         const metadata = sealedMetadata();
