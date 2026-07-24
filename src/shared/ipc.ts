@@ -40,6 +40,7 @@ export const IPC_CHANNELS = {
     createCustomAcpRuntime: "settings:create-custom-acp-runtime",
     updateCustomAcpRuntime: "settings:update-custom-acp-runtime",
     deleteCustomAcpRuntime: "settings:delete-custom-acp-runtime",
+    verifyCustomAcpRuntime: "settings:verify-custom-acp-runtime",
     getSystemTheme: "app:get-system-theme",
     saveSettingsSnapshot: "settings:save-snapshot",
     saveProjectSettings: "settings:save-project-settings",
@@ -586,6 +587,10 @@ export interface DeleteCustomAcpRuntimeInput {
 export interface DeleteCustomAcpRuntimeResult {
     readonly deleted: boolean;
     readonly historyReferenceCount: number;
+}
+
+export interface VerifyCustomAcpRuntimeInput {
+    readonly definition: CustomAcpRuntimeDefinitionInput;
 }
 
 export type AiRuntimeSource =
@@ -3568,6 +3573,9 @@ export interface ComandoApi {
     deleteCustomAcpRuntime: (
         input: DeleteCustomAcpRuntimeInput,
     ) => Promise<DeleteCustomAcpRuntimeResult>;
+    verifyCustomAcpRuntime: (
+        input: VerifyCustomAcpRuntimeInput,
+    ) => Promise<AiRuntimeStatus>;
     getProjectSettings: (
         projectId: string,
     ) => Promise<ProjectSettingsSnapshot | null>;

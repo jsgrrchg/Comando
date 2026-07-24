@@ -37,6 +37,7 @@ import {
     type CustomAcpRuntimeDefinitionInput,
     type DeleteCustomAcpRuntimeInput,
     type UpdateCustomAcpRuntimeInput,
+    type VerifyCustomAcpRuntimeInput,
     type CopyExternalProjectEntriesInput,
     type CopyProjectEntriesInput,
     type CreateProjectEntryInput,
@@ -208,6 +209,8 @@ import { resolveCodexGeneratedImageFilePath } from "@main/file-preview-protocol"
 import { isNativeBackendOperationCancelled } from "@main/native-backend/client";
 
 import type { AiService } from "@main/ai/service";
+import { createCustomAcpRuntimeDefinition } from "@main/ai/custom-acp-runtimes";
+import { resolveCustomAcpRuntime } from "@main/ai/custom-acp-launch";
 import {
     forgetOpenFileBuffer,
     recordOpenFileBuffer,
@@ -298,6 +301,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.createCustomAcpRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.updateCustomAcpRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.deleteCustomAcpRuntime);
+    ipcMain.removeHandler(IPC_CHANNELS.verifyCustomAcpRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.getProjectSettings);
     ipcMain.removeHandler(IPC_CHANNELS.getSystemTheme);
     ipcMain.removeHandler(IPC_CHANNELS.saveSettingsSnapshot);
@@ -688,6 +692,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 broadcastCurrentSettings(options.settingsService);
             }
             return result;
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.verifyCustomAcpRuntime,
+        (_event, input: VerifyCustomAcpRuntimeInput) => {
+            // Verification uses a transient Main-owned identity so renderer
+            // input never becomes persistent launch authority.
+            const definition = createCustomAcpRuntimeDefinition(
+                input.definition,
+                [],
+            );
+            return resolveCustomAcpRuntime(definition).status;
         },
     );
     ipcMain.handle(
