@@ -277,6 +277,81 @@ describe("AiTranscriptPersistenceCoordinator", () => {
         });
     });
 
+    it("seals an interrupted tail recovered without a live runtime", async () => {
+        const store = new AiLiveTranscriptTailStore();
+        const seal = vi.fn(() => Promise.resolve([sealedMetadata()]));
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                load: vi.fn(() => Promise.resolve(recoveredTail())),
+                seal,
+            }),
+        );
+
+        await coordinator.recover(SESSION_ID, { sealInterruptedTail: true });
+
+        expect(seal).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: SESSION_ID,
+            turnId: TURN_ID,
+        }));
+        expect(store.getSnapshot(SESSION_ID)?.stableBlocks).toEqual([
+            sealedMetadata(),
+        ]);
+    });
+
+    it("seals a completed recovered tail despite a delayed streaming snapshot", async () => {
+        const store = new AiLiveTranscriptTailStore();
+        const recovered = {
+            ...recoveredTail(),
+            terminalStatus: "completed" as const,
+        };
+        const seal = vi.fn(() => Promise.resolve([sealedMetadata()]));
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                load: vi.fn(() => Promise.resolve(recovered)),
+                seal,
+            }),
+        );
+
+        await coordinator.recover(SESSION_ID);
+
+        expect(seal).toHaveBeenCalledWith(expect.objectContaining({
+            turnId: recovered.turnId,
+        }));
+        expect(store.getSnapshot(SESSION_ID)).toMatchObject({
+            entries: [],
+            stableBlocks: [sealedMetadata()],
+            turnId: null,
+        });
+    });
+
+    it("seals a displaced nonterminal tail before preserving a newer turn", async () => {
+        const store = liveStore();
+        store.applyEvent(messageStarted("new turn output"));
+        const recovered = {
+            ...recoveredTail(),
+            turnId: "previous-turn",
+        };
+        const seal = vi.fn(() => Promise.resolve([sealedMetadata()]));
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({
+                load: vi.fn(() => Promise.resolve(recovered)),
+                seal,
+            }),
+        );
+
+        await coordinator.recover(SESSION_ID);
+
+        expect(seal).toHaveBeenCalledWith(expect.objectContaining({
+            turnId: "previous-turn",
+        }));
+        expect(store.getSnapshot(SESSION_ID)).toMatchObject({
+            turnId: TURN_ID,
+        });
+    });
+
     it("seals a recovered terminal tail without sealing a newer live turn", async () => {
         const store = new AiLiveTranscriptTailStore();
         const load = deferred<AiOpenTranscriptTail | null>();

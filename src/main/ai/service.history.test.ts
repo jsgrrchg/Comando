@@ -246,7 +246,7 @@ describe("AiService history", () => {
         expect(loadTranscriptBlockMetadata).not.toHaveBeenCalled();
     });
 
-    it("restores an open tail before returning a historical block-native snapshot", async () => {
+    it("keeps an open tail visible while a live runtime owns the session", async () => {
         const snapshot = createSnapshot({
             activeTurnStartedAt: "2026-04-16T12:00:00.000Z",
             status: "streaming",
@@ -292,6 +292,7 @@ describe("AiService history", () => {
             updatedAt: "2026-04-16T12:00:01.000Z",
         };
         const loadOpenTranscriptTail = vi.fn(() => Promise.resolve(openTail));
+        const sealTranscriptTurn = vi.fn(() => Promise.resolve([]));
         const service = createService({
             nativeAi: createNativeAiGateway({
                 checkpointOpenTranscriptTail: vi.fn(() => Promise.resolve()),
@@ -309,26 +310,50 @@ describe("AiService history", () => {
                 })),
                 loadOpenTranscriptTail,
                 loadSessionSnapshot: vi.fn(() => Promise.resolve(snapshot)),
-                sealTranscriptTurn: vi.fn(() => Promise.resolve([])),
+                sealTranscriptTurn,
             }),
         });
 
         try {
-            await expect(service.getSessionSnapshot(snapshot.sessionId)).resolves
-                .toMatchObject({
-                    messages: [{
-                        content: "Recovered streamed output.",
-                        id: "assistant-1",
-                    }],
-                });
+            service.handleNativeSessionSnapshot("window-1", {
+                kind: "snapshot",
+                snapshot,
+            });
+            await vi.waitFor(() => expect(loadOpenTranscriptTail).toHaveBeenCalledOnce());
+            const restored = await service.getSessionSnapshot(snapshot.sessionId);
+            const recoveredMessage = service
+                .getLiveTranscriptTail(snapshot.sessionId)
+                ?.entries.find((entry) => entry.envelope.id === "message:assistant-1");
+            expect(recoveredMessage?.payload).toMatchObject({
+                message: { id: "assistant-1" },
+            });
+            expect(restored).toMatchObject({
+                messages: [{
+                    content: "Recovered streamed output.",
+                    id: "assistant-1",
+                }],
+            });
+            expect(sealTranscriptTurn).not.toHaveBeenCalled();
             expect(loadOpenTranscriptTail).toHaveBeenCalledOnce();
         } finally {
             service.close();
         }
     });
 
-    it("exposes an interrupted tail outside sealed block metadata", async () => {
+    it("seals an interrupted historical tail before loading block metadata", async () => {
         const snapshot = createSnapshot();
+        const sealedBlock = {
+            blockId: `${snapshot.sessionId}:0`,
+            endSequence: 1,
+            entryCount: 1,
+            estimatedHeight: 72,
+            estimatedRowCount: 1,
+            firstCreatedAt: "2026-04-16T12:00:01.000Z",
+            lastCreatedAt: "2026-04-16T12:00:01.000Z",
+            revision: 1,
+            sessionId: snapshot.sessionId,
+            startSequence: 1,
+        };
         const openTail: AiOpenTranscriptTail = {
             entries: [{
                 createdAt: "2026-04-16T12:00:01.000Z",
@@ -370,7 +395,7 @@ describe("AiService history", () => {
             updatedAt: "2026-04-16T12:00:01.000Z",
         };
         const loadTranscriptBlockMetadata = vi.fn(() => Promise.resolve({
-            blocks: [],
+            blocks: [sealedBlock],
             capabilityVersion: 1,
             sessionId: snapshot.sessionId,
             transcriptRevision: 1,
@@ -390,25 +415,26 @@ describe("AiService history", () => {
                     sessionId: snapshot.sessionId,
                     storageVersion: 5,
                 })),
-                loadOpenTranscriptTail: vi.fn(() => Promise.resolve(openTail)),
+                loadOpenTranscriptTail: vi
+                    .fn()
+                    .mockResolvedValueOnce(openTail)
+                    .mockResolvedValue(null),
                 loadSessionSnapshot: vi.fn(() => Promise.resolve(snapshot)),
                 loadTranscriptBlockMetadata,
-                sealTranscriptTurn: vi.fn(() => Promise.resolve([])),
+                sealTranscriptTurn: vi.fn(() => Promise.resolve([sealedBlock])),
             }),
         });
 
         try {
-            const restored = await service.getSessionSnapshot(snapshot.sessionId);
             const metadata = await service.getTranscriptBlockMetadata(snapshot.sessionId);
+            const restored = await service.getSessionSnapshot(snapshot.sessionId);
 
-            // A renderer that reads only sealed blocks has no representation
-            // for this otherwise recoverable historical message.
-            expect(restored?.messages).toMatchObject([{
-                content: "Recovered streamed output.",
-                id: "assistant-1",
-            }]);
-            expect(metadata?.blocks).toEqual([]);
-            expect(loadTranscriptBlockMetadata).toHaveBeenCalledOnce();
+            expect(restored?.messages).toEqual([]);
+            expect(metadata?.blocks).toEqual([sealedBlock]);
+            expect(
+                service.getLiveTranscriptTail(snapshot.sessionId)?.stableBlocks,
+            ).toEqual([sealedBlock]);
+            expect(loadTranscriptBlockMetadata).toHaveBeenCalled();
         } finally {
             service.close();
         }

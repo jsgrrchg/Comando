@@ -1317,10 +1317,13 @@ export class AiService {
             preserveLegacyFallback: true,
         });
         if (this.#usesBlockNativeTranscript(sessionId)) {
-            // Open tails are intentionally absent from sealed block metadata.
-            // Restore one before projecting the historical snapshot so an
-            // interrupted streaming turn remains visible after restart.
-            await this.#recoverTranscriptTail(sessionId);
+            // Historical sessions cannot receive the terminal event that
+            // would normally seal an interrupted tail after a restart.
+            await this.#recoverTranscriptTail(sessionId, {
+                sealInterruptedTail: !isResyncEligibleAiSessionStatus(
+                    persistedSnapshot.status,
+                ),
+            });
         }
         return this.#toRendererSessionSnapshot(
             this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot),
@@ -1389,6 +1392,20 @@ export class AiService {
         }
         if (!(await this.#refreshTranscriptStorageMode(sessionId))) {
             return null;
+        }
+        if (!this.#liveSnapshots.has(sessionId)) {
+            const persistedSnapshot =
+                await this.#loadPersistedSessionSnapshot(sessionId);
+            if (
+                persistedSnapshot &&
+                !isResyncEligibleAiSessionStatus(persistedSnapshot.status)
+            ) {
+                // Metadata can race ahead of session hydration after restart.
+                // Resolve the historical tail before exposing sealed blocks.
+                await this.#recoverTranscriptTail(sessionId, {
+                    sealInterruptedTail: true,
+                });
+            }
         }
         return await nativeAi.loadTranscriptBlockMetadata(sessionId);
     }
@@ -2722,20 +2739,26 @@ export class AiService {
         });
     }
 
-    async #recoverTranscriptTail(sessionId: string): Promise<void> {
+    async #recoverTranscriptTail(
+        sessionId: string,
+        options: { readonly sealInterruptedTail?: boolean } = {},
+    ): Promise<void> {
         if (
             !this.#transcriptPersistence ||
-            this.#recoveredTranscriptTailSessionIds.has(sessionId)
+            (!options.sealInterruptedTail &&
+                this.#recoveredTranscriptTailSessionIds.has(sessionId))
         ) {
             return;
         }
         const existing = this.#transcriptRecoveryPromises.get(sessionId);
         if (existing) {
             await existing;
-            return;
+            if (!options.sealInterruptedTail) {
+                return;
+            }
         }
         const recovery = this.#transcriptPersistence
-            .recover(sessionId)
+            .recover(sessionId, options)
             .then(() => {
                 this.#recoveredTranscriptTailSessionIds.add(sessionId);
             })

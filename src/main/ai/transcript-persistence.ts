@@ -24,6 +24,11 @@ export interface AiTranscriptPersistenceOptions {
     readonly retryMaxDelayMs?: number;
 }
 
+export interface AiTranscriptRecoveryOptions {
+    /** Seal an unfinished tail when no live runtime owns the session. */
+    readonly sealInterruptedTail?: boolean;
+}
+
 export interface AiTranscriptPersistenceAdapter {
     checkpoint(input: AiOpenTranscriptTailCheckpoint): Promise<void>;
     load(sessionId: string): Promise<AiOpenTranscriptTail | null>;
@@ -101,7 +106,10 @@ export class AiTranscriptPersistenceCoordinator {
         this.#pump(sessionId);
     }
 
-    async recover(sessionId: string): Promise<AiOpenTranscriptTail | null> {
+    async recover(
+        sessionId: string,
+        options: AiTranscriptRecoveryOptions = {},
+    ): Promise<AiOpenTranscriptTail | null> {
         const queue = this.#queueFor(sessionId);
         queue.isRecovering = true;
         try {
@@ -110,12 +118,10 @@ export class AiTranscriptPersistenceCoordinator {
                 return null;
             }
             if (!this.store.restoreOpenTail(recovered)) {
-                // A newer turn reached memory before recovery completed. Seal
-                // the old terminal tail independently instead of applying its
-                // terminal status to the newer turn.
-                if (recovered.terminalStatus) {
-                    queue.recoveredTerminalTail = recovered;
-                }
+                // The native store has one open tail per session. A newer
+                // in-memory turn therefore makes the recovered one stale and
+                // it must be sealed before either turn can be projected.
+                await this.#sealRecoveredTail(sessionId, queue, recovered);
                 return recovered;
             }
             queue.checkpointedRevision = recovered.revision;
@@ -123,6 +129,14 @@ export class AiTranscriptPersistenceCoordinator {
             queue.sealTurnId = recovered.terminalStatus
                 ? recovered.turnId
                 : null;
+            if (
+                recovered.terminalStatus !== null ||
+                options.sealInterruptedTail
+            ) {
+                // Terminal tails are authoritative even when a delayed
+                // session snapshot still reports streaming after restart.
+                await this.#sealRecoveredTail(sessionId, queue, recovered);
+            }
             return recovered;
         } finally {
             queue.isRecovering = false;
@@ -232,6 +246,10 @@ export class AiTranscriptPersistenceCoordinator {
                 });
                 queue.recoveredTerminalTail = null;
                 this.store.setStableBlocks(sessionId, metadata);
+                if (queue.sealTurnId === tail.turnId) {
+                    queue.sealStatus = null;
+                    queue.sealTurnId = null;
+                }
                 this.options.onSealed?.(sessionId, metadata);
                 queue.attempt = 0;
                 return;
@@ -431,6 +449,40 @@ export class AiTranscriptPersistenceCoordinator {
             this.#queues.set(sessionId, queue);
         }
         return queue;
+    }
+
+    async #sealRecoveredTail(
+        sessionId: string,
+        queue: SessionPersistenceQueue,
+        tail: AiOpenTranscriptTail,
+    ): Promise<void> {
+        this.#setStatus(sessionId, queue, "sealing", null);
+        try {
+            const metadata = await this.adapter.seal({
+                entries: tail.entries,
+                payloads: tail.payloads,
+                sessionId,
+                turnId: tail.turnId,
+            });
+            if (!this.store.acknowledgeSealedTurn(
+                sessionId,
+                tail.turnId,
+                metadata,
+                tail.revision,
+            )) {
+                this.store.setStableBlocks(sessionId, metadata);
+            }
+            this.options.onSealed?.(sessionId, metadata);
+            queue.attempt = 0;
+            if (queue.sealTurnId === tail.turnId) {
+                queue.sealStatus = null;
+                queue.sealTurnId = null;
+            }
+        } catch {
+            // Preserve the tail for the regular retry loop when sealing is
+            // temporarily unavailable during startup.
+            queue.recoveredTerminalTail = tail;
+        }
     }
 
     #setStatus(
