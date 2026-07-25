@@ -7,6 +7,7 @@ import {
     isBuiltInAiRuntimeId,
     isCustomAcpRuntimeId,
     isKnownAiRuntimeId,
+    resolveAvailableAiRuntimeId,
 } from "./ai-runtimes";
 
 describe("AI runtime identity", () => {
@@ -76,5 +77,18 @@ describe("AI runtime catalog", () => {
         expect(isBuiltInAiRuntimeId(custom?.id)).toBe(false);
         expect(custom?.capabilities.internalAuthentication).toBe(false);
         expect(custom?.capabilities.proprietaryActions).toBe(false);
+    });
+
+    it("falls back to Codex when a preferred runtime is missing or unavailable", () => {
+        const id = "custom:550e8400-e29b-41d4-a716-446655440000";
+        const catalog = buildAiRuntimeCatalog([
+            { available: false, displayName: "Pi", id },
+        ]);
+
+        expect(resolveAvailableAiRuntimeId("claude", catalog)).toBe("claude");
+        expect(resolveAvailableAiRuntimeId(id, catalog)).toBe("codex");
+        expect(resolveAvailableAiRuntimeId(id, buildAiRuntimeCatalog())).toBe(
+            "codex",
+        );
     });
 });

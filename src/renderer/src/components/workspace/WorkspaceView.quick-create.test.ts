@@ -140,6 +140,14 @@ describe("WorkspaceView quick create agents menu", () => {
             "Open last item: Pi development chat",
         );
     });
+
+    it("labels a deleted custom runtime preference as Codex", () => {
+        const id = "custom:550e8400-e29b-41d4-a716-446655440000";
+
+        expect(
+            getQuickCreateButtonTitle(id, true, buildAiRuntimeCatalog()),
+        ).toBe("Open last item: Codex chat");
+    });
 });
 
 describe("Workspace pane focus", () => {

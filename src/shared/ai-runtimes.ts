@@ -137,6 +137,14 @@ export function findAiRuntimeDescriptor(
     return catalog.find((runtime) => runtime.id === runtimeId) ?? null;
 }
 
+export function resolveAvailableAiRuntimeId(
+    runtimeId: AiRuntimeId,
+    catalog: readonly AiRuntimeDescriptor[],
+): AiRuntimeId {
+    const descriptor = findAiRuntimeDescriptor(runtimeId, catalog);
+    return descriptor?.available ? descriptor.id : "codex";
+}
+
 export function getAiRuntimeDisplayName(
     runtimeId: AiRuntimeId,
     catalog?: readonly AiRuntimeDescriptor[],

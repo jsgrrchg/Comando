@@ -22,6 +22,7 @@ import type {
 } from "@shared/ipc";
 import {
     getAiRuntimeDisplayName,
+    resolveAvailableAiRuntimeId,
 } from "@shared/ai-runtimes";
 import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
 import {
@@ -769,12 +770,19 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     createChatTab: async (
         projectId: string | null,
         worktreeId: string | null = null,
-        runtimeId: AiRuntimeId = "codex",
+        requestedRuntimeId: AiRuntimeId = "codex",
     ) => {
         const paneId = get().activePaneId;
+        const runtimeCatalog = useSettingsStore.getState().runtimeCatalog;
+        // New chats must never inherit a deleted or disabled runtime. History
+        // restoration uses a separate path and keeps its original identity.
+        const runtimeId = resolveAvailableAiRuntimeId(
+            requestedRuntimeId,
+            runtimeCatalog,
+        );
         const runtimeTitle = getAiRuntimeDisplayName(
             runtimeId,
-            useSettingsStore.getState().runtimeCatalog,
+            runtimeCatalog,
         );
         const tab: WorkspaceChatTab = {
             createdAt: new Date().toISOString(),

@@ -1493,6 +1493,28 @@ describe("workspace file opening", () => {
         expect(state.lastQuickCreateAction).toBe(runtimeId);
     });
 
+    it("falls back to Codex when a new chat requests a deleted custom runtime", async () => {
+        const deletedRuntimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+
+        await useWorkspaceStore
+            .getState()
+            .createChatTab("project-1", null, deletedRuntimeId);
+
+        const state = useWorkspaceStore.getState();
+        const chatTab = Object.values(state.tabsById).find(
+            (tab) => tab.kind === "chat",
+        );
+
+        expect(chatTab).toMatchObject({
+            kind: "chat",
+            runtimeId: "codex",
+            title: "Codex 1",
+        });
+        expect(state.lastFocusedRuntimeId).toBe("codex");
+        expect(state.lastQuickCreateAction).toBe("codex");
+    });
+
     it("opens a file in the requested pane instead of the globally active pane", async () => {
         useWorkspaceStore.setState((state) => ({
             ...state,

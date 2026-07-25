@@ -32,6 +32,7 @@ import type {
 import {
     BUILT_IN_AI_RUNTIME_CATALOG,
     getAiRuntimeDisplayName,
+    resolveAvailableAiRuntimeId,
 } from "@shared/ai-runtimes";
 import {
     resolveEditorLanguage,
@@ -2455,7 +2456,7 @@ function WorkspacePaneView({
             void createChatTab(
                 defaultProjectId,
                 defaultWorktreeId ?? null,
-                runtimeId,
+                resolveAvailableAiRuntimeId(runtimeId, runtimeCatalog),
             );
             return;
         }
@@ -3667,7 +3668,11 @@ export function getQuickCreateButtonTitle(
 ) {
     const runtimeId = getQuickCreateRuntimeId(action);
     if (runtimeId) {
-        return `Open last item: ${getAiRuntimeDisplayName(runtimeId, runtimeCatalog)} chat`;
+        const availableRuntimeId = resolveAvailableAiRuntimeId(
+            runtimeId,
+            runtimeCatalog,
+        );
+        return `Open last item: ${getAiRuntimeDisplayName(availableRuntimeId, runtimeCatalog)} chat`;
     }
 
     switch (action) {
