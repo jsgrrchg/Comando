@@ -435,10 +435,11 @@
 .project-context-tab-shell {
     position: relative;
     display: flex;
+    width: max-content;
     min-width: 96px;
-    max-width: 200px;
     height: 24px;
-    flex: 0 1 auto;
+    /* Keep branch labels complete; the surrounding tab strip owns overflow. */
+    flex: 0 0 auto;
     align-items: center;
     overflow: hidden;
     border: 1px solid transparent;
@@ -525,9 +526,7 @@
     display: block;
     min-width: 0;
     flex: 1;
-    overflow: hidden;
     white-space: nowrap;
-    text-overflow: ellipsis;
 }
 
 .project-context-tab-title {
@@ -2642,9 +2641,7 @@ button {
     display: block;
     min-width: 0;
     flex: 1;
-    overflow: hidden;
     white-space: nowrap;
-    text-overflow: ellipsis;
 }
 
 .sidebar-git-scope-trigger__titlebar-project {
