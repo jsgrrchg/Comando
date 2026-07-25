@@ -1505,13 +1505,13 @@ fn find_explicit_ai_resource_runtime(definition: &RuntimeDefinition) -> Option<R
     {
         return Some(command);
     }
-    find_ai_resource_binary(&definition, &resource_dir)
+    find_ai_resource_binary(definition, &resource_dir)
         .map(|candidate| command_from_existing_path(definition, candidate, "bundled"))
 }
 
 fn find_explicit_ai_resource_binary(definition: &RuntimeDefinition) -> Option<PathBuf> {
     let resource_dir = explicit_ai_resource_dir()?;
-    find_ai_resource_binary(&definition, &resource_dir)
+    find_ai_resource_binary(definition, &resource_dir)
 }
 
 fn find_ai_resource_binary(definition: &RuntimeDefinition, resource_dir: &Path) -> Option<PathBuf> {
