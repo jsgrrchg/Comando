@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import type {
+    AiRuntimeDescriptor,
     AppAiChatSettings,
     AppAppearanceSettings,
     AppEditorSettings,
@@ -8,6 +9,7 @@ import type {
     SettingsSnapshot,
     SystemTheme,
 } from "@shared/ipc";
+import { buildAiRuntimeCatalog } from "@shared/ai-runtimes";
 import {
     DEFAULT_APP_TERMINAL_SETTINGS,
     normalizeAppTerminalSettings,
@@ -28,6 +30,7 @@ interface SettingsStore {
     readonly editor: AppEditorSettings;
     readonly error: string | null;
     readonly revision: number;
+    readonly runtimeCatalog: readonly AiRuntimeDescriptor[];
     readonly status: SettingsStatus;
     readonly systemTheme: SystemTheme;
     readonly terminal: AppTerminalSettings;
@@ -47,6 +50,7 @@ function createDefaultSettingsState() {
         editor: getDefaultAppEditorSettings(),
         error: null,
         revision: 0,
+        runtimeCatalog: buildAiRuntimeCatalog(),
         status: "idle" as const,
         systemTheme: DEFAULT_SYSTEM_THEME,
         terminal: DEFAULT_APP_TERMINAL_SETTINGS,
@@ -128,6 +132,9 @@ function applySnapshot(
     const aiChat = snapshot.aiChat ?? getDefaultAiChatSettings();
     const appearance = snapshot.appearance ?? getDefaultAppAppearance();
     const editor = snapshot.editor ?? getDefaultAppEditorSettings();
+    const runtimeCatalog = buildAiRuntimeCatalog(
+        snapshot.customAcpRuntimes?.runtimes,
+    );
     const terminal = normalizeAppTerminalSettings(snapshot.terminal);
 
     setCachedAppEditorSettings(snapshot.editor);
@@ -137,6 +144,7 @@ function applySnapshot(
         editor,
         error: null,
         revision: state.revision + 1,
+        runtimeCatalog,
         status: "ready",
         systemTheme,
         terminal,

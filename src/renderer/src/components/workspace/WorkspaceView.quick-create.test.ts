@@ -4,6 +4,7 @@ import { buildAiRuntimeCatalog } from "@shared/ai-runtimes";
 import {
     buildWorkspaceAgentsQuickCreateEntries,
     getQuickCreateButtonTitle,
+    getQuickCreateRuntimeId,
     shouldActivateWorkspacePaneOnMouseDown,
 } from "./WorkspaceView";
 
@@ -125,6 +126,18 @@ describe("WorkspaceView quick create agents menu", () => {
     it("labels Grok as the last quick-create action", () => {
         expect(getQuickCreateButtonTitle("grok", true)).toBe(
             "Open last item: Grok chat",
+        );
+    });
+
+    it("resolves and labels a custom runtime as the last quick-create action", () => {
+        const id = "custom:550e8400-e29b-41d4-a716-446655440000";
+        const catalog = buildAiRuntimeCatalog([
+            { displayName: "Pi development", id },
+        ]);
+
+        expect(getQuickCreateRuntimeId(id)).toBe(id);
+        expect(getQuickCreateButtonTitle(id, true, catalog)).toBe(
+            "Open last item: Pi development chat",
         );
     });
 });

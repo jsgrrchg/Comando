@@ -568,6 +568,7 @@ export function App() {
     const stickyFoldersEnabled = useSettingsStore(
         (state) => state.appearance.stickyFoldersEnabled,
     );
+    const runtimeCatalog = useSettingsStore((state) => state.runtimeCatalog);
 
     const [dragState, setDragState] = useState<DragState>(null);
     const [fileTreeContextMenu, setFileTreeContextMenu] =
@@ -4614,6 +4615,7 @@ export function App() {
                                 : undefined
                         }
                         projectId={activeProjectId}
+                        runtimeCatalog={runtimeCatalog}
                         workspaceContextKey={workspaceActiveContextKey}
                         worktreeId={activeWorktreeId}
                     />
@@ -5068,6 +5070,7 @@ export function App() {
                             void handleCreateTreeEntry("file", null);
                         }}
                         recentProjects={workspaceRecentProjects}
+                        runtimeCatalog={runtimeCatalog}
                     />
                 </main>
                 <QuickOpenFilePalette
@@ -5173,6 +5176,7 @@ export function App() {
                                     void handleCreateTreeEntry("file", null);
                                 }}
                                 recentProjects={workspaceRecentProjects}
+                                runtimeCatalog={runtimeCatalog}
                             />
                         </main>
                     </div>

@@ -99,6 +99,7 @@ import {
 } from "@renderer/app/debug/fileSyncProbe";
 import { useAiStore } from "./ai-store";
 import { useProjectsStore } from "./projects-store";
+import { useSettingsStore } from "./settings-store";
 import { getProjectContextKey } from "../projects/context-key";
 
 export type WorkspaceQuickCreateAction =
@@ -771,7 +772,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         runtimeId: AiRuntimeId = "codex",
     ) => {
         const paneId = get().activePaneId;
-        const runtimeTitle = getAiRuntimeDisplayName(runtimeId);
+        const runtimeTitle = getAiRuntimeDisplayName(
+            runtimeId,
+            useSettingsStore.getState().runtimeCatalog,
+        );
         const tab: WorkspaceChatTab = {
             createdAt: new Date().toISOString(),
             draft: "",
