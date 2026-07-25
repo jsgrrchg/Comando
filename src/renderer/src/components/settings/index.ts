@@ -1,4 +1,5 @@
 export { AIProvidersSettings } from "./AIProvidersSettings";
+export { CustomAcpRuntimesSettings } from "./CustomAcpRuntimesSettings";
 export { AI_PROVIDER_IDS } from "./aiProviderSettingsModel";
 export { SettingsWindow } from "./SettingsWindow";
 export {
@@ -14,6 +15,7 @@ export {
 export type {
     AIProvidersSettingsProps,
 } from "./AIProvidersSettings";
+export type { CustomAcpRuntimesSettingsProps } from "./CustomAcpRuntimesSettings";
 export type {
     AiProviderDiagnosticEntry,
     AiProviderAuthMethodId,

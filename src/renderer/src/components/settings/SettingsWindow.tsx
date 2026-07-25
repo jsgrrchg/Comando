@@ -287,6 +287,12 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Wiring",
         "Actions",
         "Configured runtimes",
+        "Custom ACP runtimes",
+        "Add runtime",
+        "Verify executable",
+        "Arguments",
+        "Environment",
+        "Authentication managed by the runtime",
     ],
     updates: [
         "Version",

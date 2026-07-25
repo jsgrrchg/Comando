@@ -5,6 +5,10 @@ import type {
     AppTerminalSettings,
     ClaudeRuntimeSettings,
     CodexRuntimeSettings,
+    CustomAcpRuntimeDefinition,
+    CustomAcpRuntimeDefinitionInput,
+    CustomAcpRuntimeId,
+    DeleteCustomAcpRuntimeResult,
     GrokRuntimeSettings,
     KiloRuntimeSettings,
     OpenCodeRuntimeSettings,
@@ -58,4 +62,19 @@ export interface SettingsGateway {
     saveKiloRuntimeSettings(settings: KiloRuntimeSettings): void;
     loadOpenCodeRuntimeSettings(): OpenCodeRuntimeSettings;
     saveOpenCodeRuntimeSettings(settings: OpenCodeRuntimeSettings): void;
+    listCustomAcpRuntimes(): readonly CustomAcpRuntimeDefinition[];
+    listDeletedCustomAcpRuntimes(): readonly CustomAcpRuntimeDefinition[];
+    createCustomAcpRuntime(
+        input: CustomAcpRuntimeDefinitionInput,
+    ): CustomAcpRuntimeDefinition;
+    updateCustomAcpRuntime(
+        id: CustomAcpRuntimeId,
+        input: CustomAcpRuntimeDefinitionInput,
+    ): CustomAcpRuntimeDefinition;
+    deleteCustomAcpRuntime(
+        id: CustomAcpRuntimeId,
+    ): DeleteCustomAcpRuntimeResult;
+    restoreCustomAcpRuntime(
+        id: CustomAcpRuntimeId,
+    ): CustomAcpRuntimeDefinition;
 }

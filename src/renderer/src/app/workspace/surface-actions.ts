@@ -1,4 +1,4 @@
-import { isActiveAiRuntimeId } from "@shared/ai-runtimes";
+import { isKnownAiRuntimeId } from "@shared/ai-runtimes";
 import { resolveEditorLanguage } from "@shared/editor-language";
 import type { WorkspaceSurfaceActionRequest } from "@shared/ipc";
 
@@ -76,7 +76,7 @@ export async function executeWorkspaceSurfaceAction(
             );
             return;
         case "new-chat":
-            if (!isActiveAiRuntimeId(request.runtimeId)) {
+            if (!isKnownAiRuntimeId(request.runtimeId)) {
                 throw new Error("Unsupported chat runtime.");
             }
             await workspace.createChatTab(
@@ -227,13 +227,10 @@ async function resolveChatSession(
         return targetChatTab.sessionId;
     }
 
-    const runtimeId = isActiveAiRuntimeId(workspace.lastFocusedRuntimeId)
-        ? workspace.lastFocusedRuntimeId
-        : "codex";
     await workspace.createChatTab(
         request.projectId,
         request.worktreeId,
-        runtimeId,
+        workspace.lastFocusedRuntimeId,
     );
     workspace = dependencies.getWorkspaceState();
     const createdTab = workspace.lastFocusedChatTabId

@@ -78,8 +78,16 @@ impl Default for HistoryCompactionPolicy {
 #[serde(rename_all = "camelCase")]
 pub struct AiHistorySessionMetadata {
     pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_acp_continuation_strategy: Option<String>,
     pub session_id: SessionId,
     pub runtime_id: RuntimeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_launch_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_session_id: Option<RuntimeSessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,8 +141,12 @@ impl AiHistorySessionMetadata {
         let now = now_iso8601();
         Self {
             version: HISTORY_FORMAT_VERSION,
+            custom_acp_continuation_strategy: None,
             session_id: input.session_id,
             runtime_id: input.runtime_id,
+            runtime_display_name: None,
+            runtime_launch_fingerprint: None,
+            runtime_revision: None,
             runtime_session_id: input.runtime_session_id,
             parent_session_id: input.parent_session_id,
             project_id: input.project_id,
@@ -982,9 +994,13 @@ impl AiHistoryStore {
         let title = metadata.runtime_title().to_string();
         let manual_title = metadata.custom_title.clone();
         Ok(Some(NativeAiSessionSnapshot {
+            custom_acp_continuation_strategy: metadata.custom_acp_continuation_strategy,
             session_id: metadata.session_id,
             parent_session_id: metadata.parent_session_id,
             runtime_id: metadata.runtime_id,
+            runtime_display_name: metadata.runtime_display_name,
+            runtime_launch_fingerprint: metadata.runtime_launch_fingerprint,
+            runtime_revision: metadata.runtime_revision,
             runtime_session_id: metadata.runtime_session_id,
             project_id: metadata.project_id,
             worktree_id: metadata.worktree_id,
@@ -1069,6 +1085,44 @@ impl AiHistoryStore {
             summaries.truncate(limit);
         }
         Ok(summaries)
+    }
+
+    pub fn count_session_history_by_runtime(&self, runtime_id: &RuntimeId) -> AiResult<usize> {
+        let sessions_dir = self.sessions_dir();
+        if !sessions_dir.exists() {
+            return Ok(0);
+        }
+
+        let mut count = 0;
+        for entry in fs::read_dir(&sessions_dir)
+            .map_err(|error| history_io("read AI sessions dir", &sessions_dir, error))?
+        {
+            let entry = entry
+                .map_err(|error| history_io("read AI sessions dir entry", &sessions_dir, error))?;
+            if !entry
+                .file_type()
+                .map_err(|error| history_io("read AI session file type", &entry.path(), error))?
+                .is_dir()
+            {
+                continue;
+            }
+            let metadata_path = entry.path().join(SESSION_META_FILE);
+            let Ok(initial_metadata) = read_json_file::<AiHistorySessionMetadata>(&metadata_path)
+            else {
+                continue;
+            };
+            if initial_metadata.runtime_id != *runtime_id {
+                continue;
+            }
+            self.recover_if_needed(&initial_metadata.session_id)?;
+            let metadata = read_json_file::<AiHistorySessionMetadata>(&metadata_path)?;
+            if metadata.runtime_id == *runtime_id
+                && (metadata.message_count > 0 || metadata.parent_session_id.is_some())
+            {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
 
     pub fn list_runtime_mappings_for_parent(
@@ -1969,6 +2023,7 @@ impl<'a> LegacyAiHistoryReader<'a> {
         let messages = self.load_all_messages(session_id)?;
 
         Ok(Some(NativeAiSessionSnapshot {
+            custom_acp_continuation_strategy: string_field(&state, "customAcpContinuationStrategy"),
             session_id: SessionId(row.session_id),
             parent_session_id: row.parent_session_id.map(SessionId),
             runtime_id: RuntimeId(
@@ -1978,6 +2033,9 @@ impl<'a> LegacyAiHistoryReader<'a> {
                     .unwrap_or(&row.runtime_id)
                     .to_string(),
             ),
+            runtime_display_name: string_field(&state, "runtimeDisplayName"),
+            runtime_launch_fingerprint: string_field(&state, "runtimeLaunchFingerprint"),
+            runtime_revision: state.get("runtimeRevision").and_then(Value::as_u64),
             runtime_session_id: row.runtime_session_id.map(RuntimeSessionId),
             project_id: row.project_id.map(ProjectId),
             worktree_id: row.worktree_id.map(WorktreeId),
@@ -2704,9 +2762,13 @@ fn legacy_transcript_entry(
 fn summary_from_metadata(metadata: AiHistorySessionMetadata) -> NativeAiHistorySessionSummary {
     let title = metadata.display_title().to_string();
     NativeAiHistorySessionSummary {
+        custom_acp_continuation_strategy: metadata.custom_acp_continuation_strategy,
         session_id: metadata.session_id,
         parent_session_id: metadata.parent_session_id,
         runtime_id: metadata.runtime_id,
+        runtime_display_name: metadata.runtime_display_name,
+        runtime_launch_fingerprint: metadata.runtime_launch_fingerprint,
+        runtime_revision: metadata.runtime_revision,
         runtime_session_id: metadata.runtime_session_id,
         project_id: metadata.project_id,
         worktree_id: metadata.worktree_id,
@@ -2721,9 +2783,13 @@ fn summary_from_metadata(metadata: AiHistorySessionMetadata) -> NativeAiHistoryS
 
 fn summary_from_legacy_row(row: LegacyHistoryRow) -> NativeAiHistorySessionSummary {
     NativeAiHistorySessionSummary {
+        custom_acp_continuation_strategy: None,
         session_id: SessionId(row.session_id),
         parent_session_id: row.parent_session_id.map(SessionId),
         runtime_id: RuntimeId(row.runtime_id),
+        runtime_display_name: None,
+        runtime_launch_fingerprint: None,
+        runtime_revision: None,
         runtime_session_id: row.runtime_session_id.map(RuntimeSessionId),
         project_id: row.project_id.map(ProjectId),
         worktree_id: row.worktree_id.map(WorktreeId),
@@ -3165,6 +3231,37 @@ mod tests {
     }
 
     #[test]
+    fn counts_history_references_across_project_scopes_by_runtime_identity() {
+        let (_temp, store) = store();
+        for (session_id, runtime_id) in [
+            (
+                "custom-history-one",
+                "custom:550e8400-e29b-41d4-a716-446655440000",
+            ),
+            (
+                "custom-history-two",
+                "custom:550e8400-e29b-41d4-a716-446655440000",
+            ),
+            ("built-in-history", "codex"),
+        ] {
+            let mut session = metadata(session_id);
+            session.runtime_id = RuntimeId(runtime_id.to_string());
+            session.message_count = 1;
+            session.project_id = Some(ProjectId(format!("project-{session_id}")));
+            store.create_session(session).unwrap();
+        }
+
+        assert_eq!(
+            store
+                .count_session_history_by_runtime(&RuntimeId(
+                    "custom:550e8400-e29b-41d4-a716-446655440000".to_string(),
+                ))
+                .unwrap(),
+            2
+        );
+    }
+
+    #[test]
     fn tool_activity_details_are_stored_as_independent_records() {
         let (_temp, store) = store();
         let session_id = SessionId("tool-details".into());
@@ -3391,11 +3488,25 @@ mod tests {
     #[test]
     fn metadata_roundtrips_and_does_not_escape_app_data() {
         let (temp, store) = store();
-        let metadata = metadata("../dangerous/session");
+        let mut metadata = metadata("../dangerous/session");
+        metadata.custom_acp_continuation_strategy = Some("resume".to_string());
+        metadata.runtime_display_name = Some("Pi development".to_string());
+        metadata.runtime_launch_fingerprint = Some("a".repeat(64));
+        metadata.runtime_revision = Some(4);
         store.create_session(metadata.clone()).unwrap();
 
         let loaded = store.load_metadata(&metadata.session_id).unwrap();
         assert_eq!(loaded.session_id, metadata.session_id);
+        assert_eq!(
+            loaded.custom_acp_continuation_strategy.as_deref(),
+            Some("resume")
+        );
+        assert_eq!(loaded.runtime_display_name, metadata.runtime_display_name);
+        assert_eq!(
+            loaded.runtime_launch_fingerprint,
+            metadata.runtime_launch_fingerprint
+        );
+        assert_eq!(loaded.runtime_revision, Some(4));
         assert!(
             store
                 .session_dir(&metadata.session_id)

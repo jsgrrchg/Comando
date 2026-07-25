@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { buildAiRuntimeCatalog } from "@shared/ai-runtimes";
 
 import {
     buildWorkspaceAgentsQuickCreateEntries,
     getQuickCreateButtonTitle,
+    getQuickCreateRuntimeId,
     shouldActivateWorkspacePaneOnMouseDown,
 } from "./WorkspaceView";
 
@@ -94,10 +96,57 @@ describe("WorkspaceView quick create agents menu", () => {
         });
     });
 
+    it("creates custom runtimes from the unified catalog", () => {
+        const createChatTab = vi.fn();
+        const id = "custom:550e8400-e29b-41d4-a716-446655440000";
+        const entries = buildWorkspaceAgentsQuickCreateEntries({
+            claudeCodeAvailable: true,
+            defaultProjectId: "project-1",
+            defaultWorktreeId: null,
+            onCreateChatTab: createChatTab,
+            onOpenClaudeCodeTerminal: vi.fn(),
+            runtimeCatalog: buildAiRuntimeCatalog([
+                { displayName: "Pi development", id },
+            ]),
+        });
+        const entry = entries.find(
+            (candidate) =>
+                candidate.type !== "separator" &&
+                candidate.label === "Pi development",
+        );
+
+        if (entry?.type === "separator" || !entry?.action) {
+            throw new Error("Expected custom runtime entry.");
+        }
+        entry.action();
+
+        expect(createChatTab).toHaveBeenCalledWith("project-1", null, id);
+    });
+
     it("labels Grok as the last quick-create action", () => {
         expect(getQuickCreateButtonTitle("grok", true)).toBe(
             "Open last item: Grok chat",
         );
+    });
+
+    it("resolves and labels a custom runtime as the last quick-create action", () => {
+        const id = "custom:550e8400-e29b-41d4-a716-446655440000";
+        const catalog = buildAiRuntimeCatalog([
+            { displayName: "Pi development", id },
+        ]);
+
+        expect(getQuickCreateRuntimeId(id)).toBe(id);
+        expect(getQuickCreateButtonTitle(id, true, catalog)).toBe(
+            "Open last item: Pi development chat",
+        );
+    });
+
+    it("labels a deleted custom runtime preference as Codex", () => {
+        const id = "custom:550e8400-e29b-41d4-a716-446655440000";
+
+        expect(
+            getQuickCreateButtonTitle(id, true, buildAiRuntimeCatalog()),
+        ).toBe("Open last item: Codex chat");
     });
 });
 

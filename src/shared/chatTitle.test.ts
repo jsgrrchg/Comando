@@ -32,6 +32,15 @@ describe("isDefaultChatTitle", () => {
         expect(isDefaultChatTitle("Claude")).toBe(false);
         expect(isDefaultChatTitle("")).toBe(false);
     });
+
+    it("matches numbered defaults for a configured external runtime", () => {
+        expect(isDefaultChatTitle("Pi 2", "Pi")).toBe(true);
+        expect(isDefaultChatTitle("Pi development 12", "Pi development")).toBe(
+            true,
+        );
+        expect(isDefaultChatTitle("Issue 123", "Pi")).toBe(false);
+        expect(isDefaultChatTitle("Pi investigation", "Pi")).toBe(false);
+    });
 });
 
 describe("truncateChatTitle", () => {
@@ -139,6 +148,18 @@ describe("getChatDisplayTitle", () => {
         ).toBe("Investigate the startup crash");
     });
 
+    it("uses the first prompt for an external runtime without title updates", () => {
+        expect(
+            getChatDisplayTitle({
+                messages: [
+                    { kind: "user", content: "Investigate the startup crash" },
+                ],
+                runtimeDisplayName: "Pi",
+                title: "Pi 2",
+            }),
+        ).toBe("Investigate the startup crash");
+    });
+
     it("keeps manual and runtime titles ahead of the prompt fallback", () => {
         const messages = [
             { kind: "user", content: "Investigate the startup crash" },
@@ -146,6 +167,7 @@ describe("getChatDisplayTitle", () => {
 
         expect(
             getChatDisplayTitle({
+                runtimeDisplayName: "Pi",
                 title: "Runtime generated title",
                 messages,
             }),
@@ -153,6 +175,7 @@ describe("getChatDisplayTitle", () => {
         expect(
             getChatDisplayTitle({
                 manualTitle: "Manual title",
+                runtimeDisplayName: "Pi",
                 title: "Runtime generated title",
                 messages,
             }),

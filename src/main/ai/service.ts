@@ -71,6 +71,7 @@ import {
     attachNativeReviewDeltaToTrackedFile,
     toNativeReviewDeltaReference,
 } from "@shared/ai-review-delta";
+import { createCustomRuntimeChangeConfirmationErrorMessage } from "@shared/ai-session-errors";
 import {
     beginReviewWorkCycle,
     consolidateReviewDiffs,
@@ -88,6 +89,7 @@ import {
     type AiReviewActionLogTarget,
 } from "@shared/ai-review-action-log";
 import { isReasoningEffortConfigOption } from "@shared/ai-config-options";
+import { isCustomAcpRuntimeId } from "@shared/ai-runtimes";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -152,6 +154,10 @@ import {
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
 import { buildRuntimeSpawnEnv } from "./runtime-env";
+import {
+    createMissingCustomAcpRuntimeStatus,
+    resolveCustomAcpRuntime,
+} from "./custom-acp-launch";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
 import {
     AiLiveTranscriptTailStore,
@@ -279,6 +285,7 @@ interface AiSchedulerDiagnostics {
 }
 
 interface AiSessionRetentionDiagnostics {
+    readonly activeCustomRuntimeLaunchCount: number;
     readonly closed: readonly AiSessionRetentionCloseRecord[];
     readonly hotSessions: readonly AiSessionRetentionHotSession[];
     readonly idleTtlMs: number;
@@ -487,6 +494,10 @@ export class AiService {
     readonly #retentionFreezePromises = new Map<string, Promise<void>>();
     readonly #lastRetentionCloseRecords: AiSessionRetentionCloseRecord[] = [];
     readonly #lastRetentionSkippedRecords: AiSessionRetentionSkippedRecord[] = [];
+    readonly #activeCustomRuntimeLaunches = new Map<
+        string,
+        ResolvedAcpRuntime
+    >();
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
     readonly #liveTranscriptTails = new AiLiveTranscriptTailStore();
@@ -617,6 +628,7 @@ export class AiService {
         this.#reviewMutationChains.clear();
         this.#nativeSessionIds.clear();
         this.#pendingNativeCatalogPatches.clear();
+        this.#activeCustomRuntimeLaunches.clear();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
         this.#liveTranscriptTails.clear();
@@ -643,6 +655,8 @@ export class AiService {
 
     getSessionRetentionDiagnostics(): AiSessionRetentionDiagnostics {
         return {
+            activeCustomRuntimeLaunchCount:
+                this.#activeCustomRuntimeLaunches.size,
             closed: [...this.#lastRetentionCloseRecords],
             hotSessions: [...this.#liveSessionContexts.values()]
                 .map((context) => {
@@ -985,7 +999,9 @@ export class AiService {
     }
 
     async getRuntimeStatus(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus> {
-        const nativeAi = this.#nativeAuthGateway(runtimeId);
+        const nativeAi = isCustomAcpRuntimeId(runtimeId)
+            ? null
+            : this.#nativeAuthGateway(runtimeId);
         if (nativeAi?.getRuntimeStatus) {
             await this.#migrateNativeRuntimeSettingsIfNeeded(runtimeId);
             const status = this.#withPersistedRuntimeCatalog(
@@ -1346,6 +1362,15 @@ export class AiService {
         return await this.#persistence.listSessionHistory(input);
     }
 
+    async countSessionHistoryByRuntime(
+        runtimeId: AiRuntimeId,
+    ): Promise<number> {
+        return (
+            (await this.#nativeAi?.countSessionHistoryByRuntime?.(runtimeId)) ??
+            0
+        );
+    }
+
     async setSessionPinned(
         input: AiSessionPinnedMutationInput,
     ): Promise<void> {
@@ -1557,6 +1582,12 @@ export class AiService {
                 },
             );
             this.#nativeSessionIds.add(snapshot.sessionId);
+            if (nativePrepareLaunch.launch.resolvedRuntime.customAcpLaunch) {
+                this.#activeCustomRuntimeLaunches.set(
+                    snapshot.sessionId,
+                    nativePrepareLaunch.launch.resolvedRuntime,
+                );
+            }
             const acceptedSnapshot = this.#acceptPreparedLiveSnapshot(
                 snapshot,
                 ownerWindowId,
@@ -1730,6 +1761,15 @@ export class AiService {
                             launch: nativePrepareLaunch.launch,
                         });
                         this.#nativeSessionIds.add(snapshot.sessionId);
+                        if (
+                            nativePrepareLaunch.launch.resolvedRuntime
+                                .customAcpLaunch
+                        ) {
+                            this.#activeCustomRuntimeLaunches.set(
+                                snapshot.sessionId,
+                                nativePrepareLaunch.launch.resolvedRuntime,
+                            );
+                        }
                         nativeSendState.preparedSessionContext = {
                             ownerWindowId,
                             runtimeId: nativePrepareLaunch.input.runtimeId,
@@ -2665,6 +2705,7 @@ export class AiService {
                 };
             }
         }
+        return null;
     }
 
     #isNativeAiSession(sessionId: string): boolean {
@@ -2974,6 +3015,7 @@ export class AiService {
             }
         }
         for (const currentSessionId of sessionIdsToClear) {
+            this.#activeCustomRuntimeLaunches.delete(currentSessionId);
             this.#nativeChildParentSessionIds.delete(currentSessionId);
             this.#liveSnapshots.delete(currentSessionId);
             this.#liveTranscriptTails.clearSession(currentSessionId);
@@ -3038,6 +3080,7 @@ export class AiService {
     }
 
     #detachLiveSession(sessionId: string): void {
+        this.#activeCustomRuntimeLaunches.delete(sessionId);
         this.#liveSnapshots.delete(sessionId);
         this.#liveSessionContexts.delete(sessionId);
         this.#liveSessionTouches.delete(sessionId);
@@ -4479,7 +4522,29 @@ export class AiService {
             input,
             projectRoot,
         );
-        const resolvedRuntimeBase = this.#resolveRuntimeCommand(input.runtimeId);
+        const liveSnapshot = this.#liveSnapshots.get(input.sessionId) ?? null;
+        const storedSnapshot =
+            !snapshotOverride && !liveSnapshot
+                ? await this.#loadPersistedSessionSnapshot(input.sessionId)
+                : null;
+        const sourceSnapshot =
+            snapshotOverride ??
+            liveSnapshot ??
+            storedSnapshot ??
+            createEmptyAiSessionSnapshot({
+                projectId: input.projectId,
+                runtimeId: input.runtimeId,
+                sessionId: input.sessionId,
+                title: input.title,
+                worktreeId: input.worktreeId ?? null,
+            });
+        const activeCustomRuntime =
+            liveSnapshot && isCustomAcpRuntimeId(input.runtimeId)
+                ? this.#activeCustomRuntimeLaunches.get(input.sessionId)
+                : undefined;
+        const resolvedRuntimeBase =
+            activeCustomRuntime ??
+            this.#resolveRuntimeCommand(input.runtimeId);
         const resolvedRuntime = {
             ...resolvedRuntimeBase,
             status: await this.#resolveLaunchRuntimeStatus(
@@ -4498,24 +4563,44 @@ export class AiService {
             );
         }
 
-        const liveSnapshot = this.#liveSnapshots.get(input.sessionId) ?? null;
-        const storedSnapshot =
-            !snapshotOverride && !liveSnapshot
-                ? await this.#loadPersistedSessionSnapshot(input.sessionId)
-                : null;
-        const sourceSnapshot =
-            snapshotOverride ??
-            liveSnapshot ??
-            storedSnapshot ??
-            createEmptyAiSessionSnapshot({
-                projectId: input.projectId,
-                runtimeId: input.runtimeId,
-                sessionId: input.sessionId,
-                title: input.title,
-                worktreeId: input.worktreeId ?? null,
-            });
+        const customLaunch = resolvedRuntime.customAcpLaunch;
+        if (
+            customLaunch &&
+            !liveSnapshot &&
+            sourceSnapshot.runtimeLaunchFingerprint &&
+            sourceSnapshot.runtimeLaunchFingerprint !==
+                customLaunch.launchFingerprint &&
+            !input.confirmCustomRuntimeChange
+        ) {
+            throw new Error(
+                createCustomRuntimeChangeConfirmationErrorMessage(
+                    `The ${sourceSnapshot.runtimeDisplayName ?? "custom ACP runtime"} definition changed since this session was created. Continue with the modified configuration?`,
+                ),
+            );
+        }
+        if (
+            customLaunch &&
+            !liveSnapshot &&
+            sourceSnapshot.runtimeSessionId &&
+            sourceSnapshot.customAcpContinuationStrategy ===
+                "new-session-only"
+        ) {
+            throw new Error(
+                `${sourceSnapshot.runtimeDisplayName ?? customLaunch.displayName} does not support continuing this runtime session. The transcript is still available; start a new session to keep working.`,
+            );
+        }
+        const identitySnapshot =
+            customLaunch && !snapshotOverride && !liveSnapshot && !storedSnapshot
+                ? {
+                      ...sourceSnapshot,
+                      runtimeDisplayName: customLaunch.displayName,
+                      runtimeLaunchFingerprint:
+                          customLaunch.launchFingerprint,
+                      runtimeRevision: customLaunch.revision,
+                  }
+                : sourceSnapshot;
         const persistedSnapshot =
-            this.#hydrateSnapshotRuntimeCatalog(sourceSnapshot);
+            this.#hydrateSnapshotRuntimeCatalog(identitySnapshot);
         const shouldCaptureRuntimeDefaults =
             !snapshotOverride &&
             !liveSnapshot &&
@@ -5752,6 +5837,14 @@ export class AiService {
     }
 
     #resolveRuntimeStatus(runtimeId: AiRuntimeId): AiRuntimeStatus {
+        if (isCustomAcpRuntimeId(runtimeId)) {
+            const definition = this.#settingsService
+                .listCustomAcpRuntimes()
+                .find((candidate) => candidate.id === runtimeId);
+            return definition
+                ? resolveCustomAcpRuntime(definition).status
+                : createMissingCustomAcpRuntimeStatus(runtimeId);
+        }
         if (runtimeId === "claude") {
             return getClaudeRuntimeStatus(
                 this.#settingsService.loadClaudeRuntimeSettings(),
@@ -6047,6 +6140,9 @@ export class AiService {
         runtimeId: AiRuntimeId,
         fallbackStatus: AiRuntimeStatus,
     ): Promise<AiRuntimeStatus> {
+        if (isCustomAcpRuntimeId(runtimeId)) {
+            return fallbackStatus;
+        }
         const nativeAi = this.#nativeAuthGateway(runtimeId);
         if (!nativeAi?.getRuntimeStatus) {
             return fallbackStatus;
@@ -6062,6 +6158,21 @@ export class AiService {
         runtimeId: AiRuntimeId,
         codexSettingsOverride?: CodexRuntimeSettings,
     ): ResolvedAcpRuntime {
+        if (isCustomAcpRuntimeId(runtimeId)) {
+            const definition = this.#settingsService
+                .listCustomAcpRuntimes()
+                .find((candidate) => candidate.id === runtimeId);
+            if (!definition) {
+                return {
+                    args: [],
+                    command: runtimeId,
+                    env: {},
+                    executable: runtimeId,
+                    status: createMissingCustomAcpRuntimeStatus(runtimeId),
+                };
+            }
+            return resolveCustomAcpRuntime(definition);
+        }
         if (runtimeId === "claude") {
             const settings = this.#settingsService.loadClaudeRuntimeSettings();
             const resolved = resolveClaudeRuntime(settings, this.#secretStore);

@@ -12,6 +12,7 @@ import {
     isReasoningEffortConfigOption,
 } from "@shared/ai-config-options";
 import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
+import { getAiRuntimeDisplayName } from "@shared/ai-runtimes";
 import {
     serializeComposerMessagePartsForDisplay,
 } from "@shared/composer-display-markers";
@@ -325,19 +326,7 @@ function createAiSessionPatchChanges(
 }
 
 export function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude";
-        case "grok":
-            return "Grok";
-        case "kilo":
-            return "Kilo";
-        case "opencode":
-            return "OpenCode";
-        case "codex":
-        default:
-            return "Codex";
-    }
+    return getAiRuntimeDisplayName(runtimeId);
 }
 
 export function applySessionCatalogToSnapshot(

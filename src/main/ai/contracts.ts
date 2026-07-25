@@ -21,6 +21,7 @@ import type {
     AiRuntimeAuthLaunchInput,
     AiRuntimeAuthLogoutInput,
     AiRuntimeStatus,
+    CustomAcpLaunchSpec,
     AiSessionDomainEvent,
     AiSessionSnapshot,
     AiSessionUpdate,
@@ -163,6 +164,9 @@ export interface NativeAiGateway {
     closeOwnedByWindow(ownerWindowId: string): Promise<void> | void;
     closeSession(sessionId: string): Promise<void>;
     deleteSession(sessionId: string): Promise<void>;
+    countSessionHistoryByRuntime?(
+        runtimeId: AiRuntimeId,
+    ): Promise<number>;
     listSessionHistory(
         input: ListAiSessionHistoryInput,
     ): Promise<readonly AiHistorySessionSummary[]>;
@@ -306,6 +310,7 @@ export interface ResolvedAcpRuntime {
         readonly meta?: Record<string, unknown>;
     };
     readonly command: string;
+    readonly customAcpLaunch?: CustomAcpLaunchSpec;
     readonly env: NodeJS.ProcessEnv;
     readonly executable: string;
     readonly status: AiRuntimeStatus;
@@ -314,7 +319,12 @@ export interface ResolvedAcpRuntime {
 
 export type SessionDescriptor = Pick<
     PrepareAiSessionInput,
-    "projectId" | "runtimeId" | "sessionId" | "title" | "worktreeId"
+    | "confirmCustomRuntimeChange"
+    | "projectId"
+    | "runtimeId"
+    | "sessionId"
+    | "title"
+    | "worktreeId"
 > & {
     readonly additionalRoots?: readonly string[];
 };

@@ -1,4 +1,5 @@
 import type { AiSessionSnapshot } from "@shared/ipc";
+import { getCustomRuntimeChangeConfirmationMessage } from "@shared/ai-session-errors";
 
 import { useAiStore } from "@renderer/app/store/ai-store";
 
@@ -95,6 +96,17 @@ export function requestStopAgentSession({
     }
 
     void cancelSession(sessionId);
+}
+
+export function requestCustomRuntimeChangeConfirmation(
+    error: unknown,
+): boolean | null {
+    const message = getCustomRuntimeChangeConfirmationMessage(error);
+    if (!message) {
+        return null;
+    }
+
+    return window.confirm(message);
 }
 
 function isBusyAiSessionSnapshot(

@@ -310,6 +310,26 @@ pub struct NativeAiRuntimeSessionMapping {
     pub runtime_session_id: RuntimeSessionId,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeCustomAcpLaunchSpec {
+    pub args: Vec<String>,
+    pub auth_mode: String,
+    pub command: String,
+    #[serde(default)]
+    pub configured_env: BTreeMap<String, String>,
+    pub display_name: String,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    pub executable: String,
+    pub launch_fingerprint: String,
+    pub product_profile: String,
+    pub protocol_version: String,
+    pub revision: u64,
+    pub runtime_id: RuntimeId,
+    pub state: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiPrepareSessionInput {
@@ -326,6 +346,10 @@ pub struct NativeAiPrepareSessionInput {
     pub config_options: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     pub additional_roots: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_acp_continuation_strategy: Option<String>,
+    #[serde(default)]
+    pub custom_acp_launch: Option<NativeCustomAcpLaunchSpec>,
     #[serde(default)]
     pub persisted_runtime_session_id: Option<RuntimeSessionId>,
     #[serde(default)]
@@ -482,6 +506,8 @@ pub struct NativeAiConfigOption {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSessionSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_acp_continuation_strategy: Option<String>,
     pub session_id: SessionId,
     pub runtime_id: RuntimeId,
     pub runtime_session_id: Option<RuntimeSessionId>,
@@ -504,10 +530,24 @@ pub struct NativeAiListSessionHistoryInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeAiCountSessionHistoryByRuntimeInput {
+    pub runtime_id: RuntimeId,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeAiHistorySessionSummary {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_acp_continuation_strategy: Option<String>,
     pub session_id: SessionId,
     pub parent_session_id: Option<SessionId>,
     pub runtime_id: RuntimeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_launch_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_revision: Option<u64>,
     pub runtime_session_id: Option<RuntimeSessionId>,
     pub project_id: Option<ProjectId>,
     pub worktree_id: Option<WorktreeId>,
@@ -769,9 +809,17 @@ pub struct NativeAiListSessionRuntimeMappingsInput {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct NativeAiSessionSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_acp_continuation_strategy: Option<String>,
     pub session_id: SessionId,
     pub parent_session_id: Option<SessionId>,
     pub runtime_id: RuntimeId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_launch_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_revision: Option<u64>,
     pub runtime_session_id: Option<RuntimeSessionId>,
     pub project_id: Option<ProjectId>,
     pub worktree_id: Option<WorktreeId>,

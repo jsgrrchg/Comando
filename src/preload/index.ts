@@ -54,6 +54,12 @@ import {
     type CheckCommandAvailabilityInput,
     type CheckCommandAvailabilityResult,
     type CodexRuntimeSettingsInput,
+    type CustomAcpRuntimeDefinition,
+    type CustomAcpRuntimeDefinitionInput,
+    type DeleteCustomAcpRuntimeInput,
+    type DeleteCustomAcpRuntimeResult,
+    type RestoreCustomAcpRuntimeInput,
+    type VerifyCustomAcpRuntimeInput,
     type CopyExternalProjectEntriesInput,
     type CopyExternalProjectEntriesResult,
     type CopyProjectEntriesInput,
@@ -183,6 +189,7 @@ import {
     type SaveProjectFileInput,
     type SaveImageAsInput,
     type UpdateAiQueuedPromptInput,
+    type UpdateCustomAcpRuntimeInput,
     type SettingsSnapshot,
     type SettingsUpdatedEvent,
     type SystemTheme,
@@ -556,6 +563,51 @@ const comandoApi: ComandoApi = {
         assertIpcObject<SettingsSnapshot>(
             IPC_CHANNELS.getSettingsSnapshot,
             await ipcRenderer.invoke(IPC_CHANNELS.getSettingsSnapshot),
+        ),
+    listCustomAcpRuntimes: async () =>
+        assertIpcArray<CustomAcpRuntimeDefinition>(
+            IPC_CHANNELS.listCustomAcpRuntimes,
+            await ipcRenderer.invoke(IPC_CHANNELS.listCustomAcpRuntimes),
+        ),
+    listDeletedCustomAcpRuntimes: async () =>
+        assertIpcArray<CustomAcpRuntimeDefinition>(
+            IPC_CHANNELS.listDeletedCustomAcpRuntimes,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.listDeletedCustomAcpRuntimes,
+            ),
+        ),
+    createCustomAcpRuntime: async (
+        definition: CustomAcpRuntimeDefinitionInput,
+    ) =>
+        assertIpcObject<CustomAcpRuntimeDefinition>(
+            IPC_CHANNELS.createCustomAcpRuntime,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.createCustomAcpRuntime,
+                definition,
+            ),
+        ),
+    updateCustomAcpRuntime: async (input: UpdateCustomAcpRuntimeInput) =>
+        assertIpcObject<CustomAcpRuntimeDefinition>(
+            IPC_CHANNELS.updateCustomAcpRuntime,
+            await ipcRenderer.invoke(IPC_CHANNELS.updateCustomAcpRuntime, input),
+        ),
+    deleteCustomAcpRuntime: async (input: DeleteCustomAcpRuntimeInput) =>
+        assertIpcObject<DeleteCustomAcpRuntimeResult>(
+            IPC_CHANNELS.deleteCustomAcpRuntime,
+            await ipcRenderer.invoke(IPC_CHANNELS.deleteCustomAcpRuntime, input),
+        ),
+    restoreCustomAcpRuntime: async (input: RestoreCustomAcpRuntimeInput) =>
+        assertIpcObject<CustomAcpRuntimeDefinition>(
+            IPC_CHANNELS.restoreCustomAcpRuntime,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.restoreCustomAcpRuntime,
+                input,
+            ),
+        ),
+    verifyCustomAcpRuntime: async (input: VerifyCustomAcpRuntimeInput) =>
+        assertIpcObject<AiRuntimeStatus>(
+            IPC_CHANNELS.verifyCustomAcpRuntime,
+            await ipcRenderer.invoke(IPC_CHANNELS.verifyCustomAcpRuntime, input),
         ),
     getProjectSettings: async (projectId: string) =>
         assertIpcObjectOrNull<ProjectSettingsSnapshot>(

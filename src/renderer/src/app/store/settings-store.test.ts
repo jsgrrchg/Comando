@@ -5,6 +5,7 @@ import type {
     AppAppearanceSettings,
     AppEditorSettings,
     AppTerminalSettings,
+    CustomAcpRuntimeDefinition,
     SettingsUpdatedEvent,
     SystemTheme,
 } from "@shared/ipc";
@@ -82,6 +83,19 @@ function createTerminalSettings(
     };
 }
 
+function createCustomRuntimeDefinition(): CustomAcpRuntimeDefinition {
+    return {
+        args: ["--profile", "development"],
+        authMode: "external",
+        command: "/opt/homebrew/bin/pi-acp",
+        displayName: "Pi development",
+        env: {},
+        id: "custom:550e8400-e29b-41d4-a716-446655440000",
+        launchFingerprint: "fingerprint",
+        revision: 1,
+    };
+}
+
 function flushAsyncWork(): Promise<void> {
     return new Promise((resolve) => {
         setTimeout(resolve, 0);
@@ -148,6 +162,7 @@ describe("settings-store", () => {
             terminalFontFamily: "Menlo",
             terminalFontSize: 18,
         });
+        const customRuntime = createCustomRuntimeDefinition();
         let settingsListener:
             | ((payload: SettingsUpdatedEvent) => void)
             | null = null;
@@ -164,6 +179,10 @@ describe("settings-store", () => {
             .mockResolvedValueOnce({
                 aiChat: nextAiChat,
                 appearance: nextAppearance,
+                customAcpRuntimes: {
+                    runtimes: [customRuntime],
+                    version: 1,
+                },
                 editor: nextEditor,
                 shellState: null,
                 terminal: nextTerminal,
@@ -209,6 +228,11 @@ describe("settings-store", () => {
             editor: nextEditor,
             revision: 2,
             terminal: nextTerminal,
+        });
+        expect(useSettingsStore.getState().runtimeCatalog.at(-1)).toMatchObject({
+            displayName: "Pi development",
+            id: customRuntime.id,
+            kind: "custom-acp",
         });
         expect(getSettingsSnapshot).toHaveBeenCalledTimes(2);
     });

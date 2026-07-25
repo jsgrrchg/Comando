@@ -60,26 +60,26 @@ struct RuntimeAuthState {
 
 pub fn runtime_status(
     store: &RuntimeSetupStore,
-    definition: RuntimeDefinition,
+    definition: &RuntimeDefinition,
 ) -> AiResult<NativeAiRuntimeStatus> {
-    let setup = load_runtime_setup(store, definition.id)?;
+    let setup = load_runtime_setup(store, definition.id.as_str())?;
     let command = resolve_runtime_command(definition, &setup);
-    let auth = runtime_auth_state(store, definition.id, &setup);
+    let auth = runtime_auth_state(store, definition.id.as_str(), &setup);
     Ok(status_from_parts(definition, &setup, &command, &auth))
 }
 
 pub fn prepare_runtime_launch(
     store: &RuntimeSetupStore,
-    definition: RuntimeDefinition,
+    definition: &RuntimeDefinition,
     input: &NativeAiPrepareSessionInput,
 ) -> AiResult<RuntimeResolvedSetup> {
-    let setup = load_runtime_setup(store, definition.id)?;
+    let setup = load_runtime_setup(store, definition.id.as_str())?;
     let command = resolve_runtime_command(definition, &setup);
-    let auth = runtime_auth_state(store, definition.id, &setup);
+    let auth = runtime_auth_state(store, definition.id.as_str(), &setup);
     let status = status_from_parts(definition, &setup, &command, &auth);
     if command.state != "ready" {
         return Err(AiError::RuntimeNotReady {
-            runtime_id: definition.id.to_string(),
+            runtime_id: definition.id.as_str().to_string(),
             message: status
                 .message
                 .clone()
@@ -88,7 +88,7 @@ pub fn prepare_runtime_launch(
     }
     if !auth.ready {
         return Err(AiError::RuntimeAuthMissing {
-            runtime_id: definition.id.to_string(),
+            runtime_id: definition.id.as_str().to_string(),
             message: status
                 .message
                 .clone()
@@ -96,9 +96,9 @@ pub fn prepare_runtime_launch(
         });
     }
     let executable = command.executable.clone();
-    let env = runtime_spawn_env(store, definition.id, &setup, &auth, &executable);
+    let env = runtime_spawn_env(store, definition.id.as_str(), &setup, &auth, &executable);
     let auth_credential_source = credential_source_wire(&auth.credential_source);
-    let auth_handshake = if definition.id == "grok" {
+    let auth_handshake = if definition.id.as_str() == "grok" {
         Some(NativeAiAuthHandshakeSpec {
             env_method_id: "xai.api_key".to_string(),
             external_method_id: "cached_token".to_string(),
@@ -108,7 +108,7 @@ pub fn prepare_runtime_launch(
         None
     };
     let launch = NativeAiLaunchSpec {
-        runtime_id: RuntimeId(definition.id.to_string()),
+        runtime_id: RuntimeId(definition.id.as_str().to_string()),
         owner_window_id: input.window_id.clone(),
         project_id: input.project_id.clone(),
         worktree_id: input.worktree_id.clone(),
@@ -139,28 +139,38 @@ pub fn prepare_runtime_launch(
 
 pub fn prepare_auth_terminal_launch(
     store: &RuntimeSetupStore,
-    definition: RuntimeDefinition,
+    definition: &RuntimeDefinition,
     method_id: &str,
 ) -> AiResult<RuntimeAuthTerminalLaunch> {
-    let mut setup = load_runtime_setup(store, definition.id)?;
+    let mut setup = load_runtime_setup(store, definition.id.as_str())?;
     setup.auth_method = Some(method_id.to_string());
     let command = resolve_runtime_command(definition, &setup);
-    let login_args =
-        auth_terminal_args(definition.id, method_id, &command.executable, &command.args)?;
-    let auth = runtime_auth_state(store, definition.id, &setup);
+    let login_args = auth_terminal_args(
+        definition.id.as_str(),
+        method_id,
+        &command.executable,
+        &command.args,
+    )?;
+    let auth = runtime_auth_state(store, definition.id.as_str(), &setup);
     let status = status_from_parts(definition, &setup, &command, &auth);
     if command.state != "ready" {
         return Err(AiError::RuntimeNotReady {
-            runtime_id: definition.id.to_string(),
+            runtime_id: definition.id.as_str().to_string(),
             message: status
                 .message
                 .clone()
                 .unwrap_or_else(|| "Native runtime binary is not ready.".to_string()),
         });
     }
-    let mut args = auth_terminal_base_args(definition.id, &command.args);
+    let mut args = auth_terminal_base_args(definition.id.as_str(), &command.args);
     args.extend(login_args);
-    let env = runtime_spawn_env(store, definition.id, &setup, &auth, &command.executable);
+    let env = runtime_spawn_env(
+        store,
+        definition.id.as_str(),
+        &setup,
+        &auth,
+        &command.executable,
+    );
     Ok(RuntimeAuthTerminalLaunch {
         program: command.executable,
         args,
@@ -171,15 +181,15 @@ pub fn prepare_auth_terminal_launch(
 
 pub fn prepare_auth_terminal_logout(
     store: &RuntimeSetupStore,
-    definition: RuntimeDefinition,
+    definition: &RuntimeDefinition,
 ) -> AiResult<RuntimeAuthTerminalLaunch> {
-    let setup = load_runtime_setup(store, definition.id)?;
+    let setup = load_runtime_setup(store, definition.id.as_str())?;
     let command = resolve_runtime_command(definition, &setup);
-    let auth = runtime_auth_state(store, definition.id, &setup);
+    let auth = runtime_auth_state(store, definition.id.as_str(), &setup);
     let status = status_from_parts(definition, &setup, &command, &auth);
     if !auth.can_logout {
         return Err(AiError::RuntimeAuthMissing {
-            runtime_id: definition.id.to_string(),
+            runtime_id: definition.id.as_str().to_string(),
             message: format!(
                 "{} does not have a terminal logout session to close.",
                 definition.display_name
@@ -188,20 +198,26 @@ pub fn prepare_auth_terminal_logout(
     }
     if command.state != "ready" {
         return Err(AiError::RuntimeNotReady {
-            runtime_id: definition.id.to_string(),
+            runtime_id: definition.id.as_str().to_string(),
             message: status
                 .message
                 .clone()
                 .unwrap_or_else(|| "Native runtime binary is not ready.".to_string()),
         });
     }
-    let mut args = auth_terminal_base_args(definition.id, &command.args);
+    let mut args = auth_terminal_base_args(definition.id.as_str(), &command.args);
     args.extend(auth_terminal_logout_args(
-        definition.id,
+        definition.id.as_str(),
         &command.executable,
         &command.args,
     )?);
-    let env = runtime_spawn_env(store, definition.id, &setup, &auth, &command.executable);
+    let env = runtime_spawn_env(
+        store,
+        definition.id.as_str(),
+        &setup,
+        &auth,
+        &command.executable,
+    );
     Ok(RuntimeAuthTerminalLaunch {
         program: command.executable,
         args,
@@ -212,17 +228,17 @@ pub fn prepare_auth_terminal_logout(
 
 pub fn prepare_runtime_auth_connection(
     store: &RuntimeSetupStore,
-    definition: RuntimeDefinition,
+    definition: &RuntimeDefinition,
     method_id: &str,
     cwd: String,
     owner_window_id: String,
     project_id: Option<comando_types::ids::ProjectId>,
     worktree_id: Option<comando_types::ids::WorktreeId>,
 ) -> AiResult<NativeAiLaunchSpec> {
-    let mut setup = load_runtime_setup(store, definition.id)?;
+    let mut setup = load_runtime_setup(store, definition.id.as_str())?;
     setup.auth_method = Some(method_id.to_string());
     let command = resolve_runtime_command(definition, &setup);
-    let auth = runtime_auth_state(store, definition.id, &setup);
+    let auth = runtime_auth_state(store, definition.id.as_str(), &setup);
     let status = status_from_parts(definition, &setup, &command, &auth);
     if !status
         .auth_methods
@@ -230,7 +246,7 @@ pub fn prepare_runtime_auth_connection(
         .any(|method| method.id == method_id)
     {
         return Err(AiError::RuntimeAuthMissing {
-            runtime_id: definition.id.to_string(),
+            runtime_id: definition.id.as_str().to_string(),
             message: format!(
                 "{} does not support the authentication method `{method_id}` on this machine.",
                 definition.display_name
@@ -239,7 +255,7 @@ pub fn prepare_runtime_auth_connection(
     }
     if command.state != "ready" {
         return Err(AiError::RuntimeNotReady {
-            runtime_id: definition.id.to_string(),
+            runtime_id: definition.id.as_str().to_string(),
             message: status
                 .message
                 .clone()
@@ -247,9 +263,9 @@ pub fn prepare_runtime_auth_connection(
         });
     }
     let executable = command.executable.clone();
-    let env = runtime_spawn_env(store, definition.id, &setup, &auth, &executable);
+    let env = runtime_spawn_env(store, definition.id.as_str(), &setup, &auth, &executable);
     Ok(NativeAiLaunchSpec {
-        runtime_id: RuntimeId(definition.id.to_string()),
+        runtime_id: RuntimeId(definition.id.as_str().to_string()),
         owner_window_id,
         project_id,
         worktree_id,
@@ -469,7 +485,7 @@ fn load_runtime_setup(store: &RuntimeSetupStore, runtime_id: &str) -> AiResult<R
 }
 
 fn status_from_parts(
-    definition: RuntimeDefinition,
+    definition: &RuntimeDefinition,
     _setup: &RuntimeSetupState,
     command: &ResolvedCommand,
     auth: &RuntimeAuthState,
@@ -481,14 +497,14 @@ fn status_from_parts(
         command.message.clone().or_else(|| auth.message.clone())
     };
     NativeAiRuntimeStatus {
-        runtime_id: RuntimeId(definition.id.to_string()),
+        runtime_id: RuntimeId(definition.id.as_str().to_string()),
         state: command.state.clone(),
         auth_method: auth.method.clone(),
-        auth_methods: auth_methods(definition.id),
+        auth_methods: auth_methods(definition.id.as_str()),
         auth_ready: auth.ready,
         auth_credential_source: Some(auth.credential_source.clone()),
         auth_credential_source_label: Some(credential_source_label(
-            definition.id,
+            definition.id.as_str(),
             &auth.credential_source,
         )),
         auth_session_message: Some(SESSION_AUTH_MESSAGE.to_string()),
@@ -513,10 +529,10 @@ fn status_from_parts(
 }
 
 fn resolve_runtime_command(
-    definition: RuntimeDefinition,
+    definition: &RuntimeDefinition,
     setup: &RuntimeSetupState,
 ) -> ResolvedCommand {
-    let env_var = match definition.id {
+    let env_var = match definition.id.as_str() {
         "codex" => "COMANDO_CODEX_ACP_BIN",
         "claude" => "COMANDO_CLAUDE_ACP_BIN",
         "grok" => "COMANDO_GROK_ACP_BIN",
@@ -534,7 +550,7 @@ fn resolve_runtime_command(
     {
         return resolve_command_candidate(definition, binary_path.trim(), "settings");
     }
-    if definition.id == "claude" {
+    if definition.id.as_str() == "claude" {
         if let Some(command) = find_explicit_ai_resource_runtime(definition) {
             return command;
         }
@@ -553,10 +569,11 @@ fn resolve_runtime_command(
     if let Some(candidate) = find_vendor_runtime(definition) {
         return command_from_existing_path(definition, candidate, "vendor");
     }
-    if let Some(candidate) = resolve_from_runtime_path(definition.default_executable, None) {
+    if let Some(candidate) = resolve_from_runtime_path(definition.default_executable.as_str(), None)
+    {
         return command_from_existing_path(definition, candidate, "path");
     }
-    if definition.id == "codex"
+    if definition.id.as_str() == "codex"
         && let Some(candidate) = resolve_from_runtime_path("codex", None)
     {
         return ResolvedCommand {
@@ -570,18 +587,18 @@ fn resolve_runtime_command(
         };
     }
     ResolvedCommand {
-        executable: definition.default_executable.to_string(),
+        executable: definition.default_executable.as_str().to_string(),
         args: definition_args(definition),
         command: None,
         source: None,
         state: "missing".to_string(),
-        message: Some(missing_binary_message(definition.id).to_string()),
+        message: Some(missing_binary_message(definition.id.as_str()).to_string()),
         has_custom_binary_path: false,
     }
 }
 
 fn resolve_command_candidate(
-    definition: RuntimeDefinition,
+    definition: &RuntimeDefinition,
     raw: &str,
     source: &str,
 ) -> ResolvedCommand {
@@ -631,15 +648,15 @@ fn resolve_command_candidate(
 }
 
 fn command_from_existing_path(
-    definition: RuntimeDefinition,
+    definition: &RuntimeDefinition,
     candidate: PathBuf,
     source: &str,
 ) -> ResolvedCommand {
     let executable = candidate.display().to_string();
-    if definition.id == "claude" && is_javascript_path(&candidate) {
+    if definition.id.as_str() == "claude" && is_javascript_path(&candidate) {
         return command_from_claude_javascript(candidate, source);
     }
-    if definition.id == "codex" && is_codex_mcp_cli(&candidate) {
+    if definition.id.as_str() == "codex" && is_codex_mcp_cli(&candidate) {
         return ResolvedCommand {
             executable: executable.clone(),
             args: Vec::new(),
@@ -1324,7 +1341,7 @@ fn normalize_auth_method(method: Option<&str>, allowed: &[&str]) -> Option<Strin
     allowed.contains(&method).then(|| method.to_string())
 }
 
-fn definition_args(definition: RuntimeDefinition) -> Vec<String> {
+fn definition_args(definition: &RuntimeDefinition) -> Vec<String> {
     definition
         .acp_args
         .iter()
@@ -1480,9 +1497,9 @@ fn packaged_darwin_arch() -> &'static str {
     }
 }
 
-fn find_explicit_ai_resource_runtime(definition: RuntimeDefinition) -> Option<ResolvedCommand> {
+fn find_explicit_ai_resource_runtime(definition: &RuntimeDefinition) -> Option<ResolvedCommand> {
     let resource_dir = explicit_ai_resource_dir()?;
-    if definition.id == "claude"
+    if definition.id.as_str() == "claude"
         && let Some(command) =
             claude_embedded_node_command_from_ai_resource_dir(&resource_dir, "bundled")
     {
@@ -1492,13 +1509,13 @@ fn find_explicit_ai_resource_runtime(definition: RuntimeDefinition) -> Option<Re
         .map(|candidate| command_from_existing_path(definition, candidate, "bundled"))
 }
 
-fn find_explicit_ai_resource_binary(definition: RuntimeDefinition) -> Option<PathBuf> {
+fn find_explicit_ai_resource_binary(definition: &RuntimeDefinition) -> Option<PathBuf> {
     let resource_dir = explicit_ai_resource_dir()?;
     find_ai_resource_binary(definition, &resource_dir)
 }
 
-fn find_ai_resource_binary(definition: RuntimeDefinition, resource_dir: &Path) -> Option<PathBuf> {
-    let name = runtime_binary_name(definition.default_executable);
+fn find_ai_resource_binary(definition: &RuntimeDefinition, resource_dir: &Path) -> Option<PathBuf> {
+    let name = runtime_binary_name(definition.default_executable.as_str());
     ai_resource_binary_candidates(resource_dir, &name)
         .into_iter()
         .find(|candidate| is_executable_or_script(candidate))
@@ -1518,9 +1535,9 @@ fn ai_resource_binary_candidates(resource_dir: &Path, name: &str) -> Vec<PathBuf
     candidates
 }
 
-fn find_bundled_runtime(definition: RuntimeDefinition) -> Option<PathBuf> {
+fn find_bundled_runtime(definition: &RuntimeDefinition) -> Option<PathBuf> {
     let app_root = find_app_root()?;
-    let name = runtime_binary_name(definition.default_executable);
+    let name = runtime_binary_name(definition.default_executable.as_str());
     [
         app_root
             .join("resources")
@@ -1542,7 +1559,7 @@ fn find_bundled_runtime(definition: RuntimeDefinition) -> Option<PathBuf> {
     .find(|candidate| is_executable_or_script(candidate))
 }
 
-fn find_claude_vendor_command(definition: RuntimeDefinition) -> Option<ResolvedCommand> {
+fn find_claude_vendor_command(definition: &RuntimeDefinition) -> Option<ResolvedCommand> {
     let app_root = find_app_root()?;
     let entry = app_root
         .join("vendor")
@@ -1638,10 +1655,10 @@ fn embedded_node_candidates(resource_dir: &Path) -> Vec<PathBuf> {
     candidates
 }
 
-fn find_vendor_runtime(definition: RuntimeDefinition) -> Option<PathBuf> {
+fn find_vendor_runtime(definition: &RuntimeDefinition) -> Option<PathBuf> {
     let app_root = find_app_root()?;
-    let name = runtime_binary_name(definition.default_executable);
-    let candidates = match definition.id {
+    let name = runtime_binary_name(definition.default_executable.as_str());
+    let candidates = match definition.id.as_str() {
         "codex" => vec![
             app_root
                 .join("resources")
@@ -2140,7 +2157,7 @@ mod tests {
             .get("codex")
             .unwrap();
 
-        let status = runtime_status(&store, definition).expect("status");
+        let status = runtime_status(&store, &definition).expect("status");
 
         assert_eq!(status.auth_method.as_deref(), Some("openai-api-key"));
         assert!(status.auth_ready);
@@ -2161,13 +2178,13 @@ mod tests {
         let definition = crate::runtime::RuntimeRegistry::default()
             .get("codex")
             .unwrap();
-        let ready = runtime_status(&store, definition).expect("ready status");
+        let ready = runtime_status(&store, &definition).expect("ready status");
         assert!(ready.auth_ready);
 
         let invalidated =
             invalidate_runtime_auth_on_error(&store, "codex", "authentication required")
                 .expect("invalidate");
-        let status = runtime_status(&store, definition).expect("status");
+        let status = runtime_status(&store, &definition).expect("status");
 
         assert!(invalidated);
         assert!(!status.auth_ready);
@@ -2223,12 +2240,12 @@ mod tests {
         let definition = crate::runtime::RuntimeRegistry::default()
             .get("claude")
             .unwrap();
-        let ready = runtime_status(&store, definition).expect("ready status");
+        let ready = runtime_status(&store, &definition).expect("ready status");
         assert!(ready.auth_ready);
 
         let invalidated = invalidate_runtime_auth_on_error(&store, "claude", "invalid api key")
             .expect("invalidate");
-        let status = runtime_status(&store, definition).expect("status");
+        let status = runtime_status(&store, &definition).expect("status");
 
         assert!(invalidated);
         assert!(!status.auth_ready);
@@ -2255,7 +2272,7 @@ mod tests {
         let definition = crate::runtime::RuntimeRegistry::default()
             .get("claude")
             .unwrap();
-        let ready = runtime_status(&store, definition).expect("ready status");
+        let ready = runtime_status(&store, &definition).expect("ready status");
         assert!(ready.auth_ready);
 
         let invalidated = invalidate_runtime_auth_on_error(
@@ -2264,7 +2281,7 @@ mod tests {
             "request failed with 401 unauthorized",
         )
         .expect("invalidate");
-        let status = runtime_status(&store, definition).expect("status");
+        let status = runtime_status(&store, &definition).expect("status");
         let setup = store.load_runtime("claude").expect("setup");
 
         assert!(invalidated);
@@ -2289,7 +2306,7 @@ mod tests {
             .get("claude")
             .unwrap();
 
-        let status = runtime_status(&store, definition).expect("status");
+        let status = runtime_status(&store, &definition).expect("status");
 
         assert!(!status.auth_ready);
         assert_eq!(
@@ -2400,7 +2417,7 @@ mod tests {
             .get("codex")
             .unwrap();
 
-        let resolved = find_ai_resource_binary(definition, &resource_dir).expect("binary");
+        let resolved = find_ai_resource_binary(&definition, &resource_dir).expect("binary");
 
         assert_eq!(resolved, binary);
     }
@@ -2416,13 +2433,13 @@ mod tests {
         let definition = crate::runtime::RuntimeRegistry::default()
             .get("grok")
             .unwrap();
-        let ready = runtime_status(&store, definition).expect("ready status");
+        let ready = runtime_status(&store, &definition).expect("ready status");
         assert!(ready.auth_ready);
 
         let invalidated =
             invalidate_grok_auth_on_error(&store, "grok authentication failed with 401")
                 .expect("invalidate");
-        let status = runtime_status(&store, definition).expect("status");
+        let status = runtime_status(&store, &definition).expect("status");
 
         assert!(invalidated);
         assert!(!status.auth_ready);
@@ -2440,13 +2457,13 @@ mod tests {
         let definition = crate::runtime::RuntimeRegistry::default()
             .get("kilo")
             .unwrap();
-        let ready = runtime_status(&store, definition).expect("ready status");
+        let ready = runtime_status(&store, &definition).expect("ready status");
         assert!(ready.auth_ready);
 
         let invalidated =
             invalidate_runtime_auth_on_error(&store, "kilo", "authentication required")
                 .expect("invalidate");
-        let status = runtime_status(&store, definition).expect("status");
+        let status = runtime_status(&store, &definition).expect("status");
 
         assert!(invalidated);
         assert!(!status.auth_ready);
@@ -2472,13 +2489,13 @@ mod tests {
         let definition = crate::runtime::RuntimeRegistry::default()
             .get("opencode")
             .unwrap();
-        let ready = runtime_status(&store, definition).expect("ready status");
+        let ready = runtime_status(&store, &definition).expect("ready status");
         assert!(ready.auth_ready);
 
         let invalidated =
             invalidate_runtime_auth_on_error(&store, "opencode", "no provider configured")
                 .expect("invalidate");
-        let status = runtime_status(&store, definition).expect("status");
+        let status = runtime_status(&store, &definition).expect("status");
         let setup = store.load_runtime("opencode").expect("setup");
 
         assert!(invalidated);
@@ -2562,7 +2579,7 @@ mod tests {
 
         let launch = prepare_runtime_auth_connection(
             &store,
-            definition,
+            &definition,
             "chatgpt",
             temp.path().display().to_string(),
             "window-1".to_string(),
@@ -2593,7 +2610,7 @@ mod tests {
             .get("codex")
             .unwrap();
 
-        let error = prepare_auth_terminal_launch(&store, definition, "chatgpt")
+        let error = prepare_auth_terminal_launch(&store, &definition, "chatgpt")
             .expect_err("codex chatgpt is ACP auth");
 
         assert!(matches!(error, AiError::RuntimeNotReady { .. }));
@@ -2615,19 +2632,19 @@ mod tests {
 
         let claude = prepare_auth_terminal_launch(
             &store,
-            registry.get("claude").unwrap(),
+            &registry.get("claude").unwrap(),
             "claude-ai-login",
         )
         .expect("claude terminal");
         let grok =
-            prepare_auth_terminal_launch(&store, registry.get("grok").unwrap(), "grok-login")
+            prepare_auth_terminal_launch(&store, &registry.get("grok").unwrap(), "grok-login")
                 .expect("grok terminal");
         let kilo =
-            prepare_auth_terminal_launch(&store, registry.get("kilo").unwrap(), "kilo-login")
+            prepare_auth_terminal_launch(&store, &registry.get("kilo").unwrap(), "kilo-login")
                 .expect("kilo terminal");
         let opencode = prepare_auth_terminal_launch(
             &store,
-            registry.get("opencode").unwrap(),
+            &registry.get("opencode").unwrap(),
             "opencode-login",
         )
         .expect("opencode terminal");
@@ -2652,7 +2669,7 @@ mod tests {
         let definition = crate::runtime::RuntimeRegistry::default()
             .get("claude")
             .unwrap();
-        let wrapper_launch = prepare_auth_terminal_launch(&store, definition, "claude-ai-login")
+        let wrapper_launch = prepare_auth_terminal_launch(&store, &definition, "claude-ai-login")
             .expect("wrapper terminal");
         assert_eq!(
             wrapper_launch.args,
@@ -2666,7 +2683,7 @@ mod tests {
                 state.binary_path = Some(direct_cli.display().to_string());
             })
             .expect("direct setup");
-        let direct_launch = prepare_auth_terminal_launch(&store, definition, "claude-ai-login")
+        let direct_launch = prepare_auth_terminal_launch(&store, &definition, "claude-ai-login")
             .expect("direct terminal");
         assert_eq!(direct_launch.args, vec!["auth", "login", "--claudeai"]);
     }
