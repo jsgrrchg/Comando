@@ -55,6 +55,7 @@ import type {
     WorkspaceSnapshot,
 } from "@shared/ipc";
 import {
+    assertCustomAcpRuntimeCapacity,
     createCustomAcpRuntimeDefinition,
     normalizeCustomAcpRuntimesSettings,
     updateCustomAcpRuntimeDefinition,
@@ -935,6 +936,9 @@ class NativeSettingsClient implements SettingsGateway {
         if (!deletedDefinition) {
             throw new Error("Deleted custom ACP runtime was not found.");
         }
+        // Restoring consumes the same bounded active slot as creating.
+        // Check before removing the tombstone so a failed restore stays recoverable.
+        assertCustomAcpRuntimeCapacity(definitions);
         const normalized = validateCustomAcpRuntimeInput(deletedDefinition, {
             existingDefinitions: definitions,
         });

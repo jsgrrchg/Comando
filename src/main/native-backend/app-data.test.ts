@@ -111,6 +111,59 @@ describe("createNativeAppDataClient", () => {
         await afterDelete.close();
     });
 
+    it("keeps a deleted custom ACP runtime recoverable when restore is at capacity", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+        const client = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const definitions = Array.from({ length: 32 }, (_, index) =>
+            client.settings.createCustomAcpRuntime({
+                args: [],
+                authMode: "external",
+                command: `/usr/local/bin/acp-${index}`,
+                displayName: `Runtime ${index}`,
+                env: {},
+            }),
+        );
+        const deleted = definitions[0];
+        if (!deleted) {
+            throw new Error("Expected a runtime to delete.");
+        }
+        client.settings.deleteCustomAcpRuntime(deleted.id);
+        client.settings.createCustomAcpRuntime({
+            args: [],
+            authMode: "external",
+            command: "/usr/local/bin/acp-replacement",
+            displayName: "Runtime replacement",
+            env: {},
+        });
+
+        expect(() =>
+            client.settings.restoreCustomAcpRuntime(deleted.id),
+        ).toThrow("At most 32 custom runtimes are supported.");
+        expect(client.settings.listCustomAcpRuntimes()).toHaveLength(32);
+        expect(client.settings.listDeletedCustomAcpRuntimes()).toEqual([
+            deleted,
+        ]);
+        await client.close();
+
+        const reopened = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        expect(reopened.settings.listCustomAcpRuntimes()).toHaveLength(32);
+        expect(reopened.settings.listDeletedCustomAcpRuntimes()).toEqual([
+            deleted,
+        ]);
+        await reopened.close();
+    });
+
     it("atomically restores isolated workspace snapshots for multiple windows", async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
         tempDirs.push(tempDir);

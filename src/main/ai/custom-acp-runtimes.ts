@@ -35,6 +35,14 @@ export interface CustomAcpRuntimeValidationOptions {
     readonly excludeId?: CustomAcpRuntimeId | null;
 }
 
+export function assertCustomAcpRuntimeCapacity(
+    existingDefinitions: readonly CustomAcpRuntimeDefinition[],
+): void {
+    if (existingDefinitions.length >= MAX_RUNTIME_COUNT) {
+        throw new Error(`At most ${MAX_RUNTIME_COUNT} custom runtimes are supported.`);
+    }
+}
+
 export function validateCustomAcpRuntimeInput(
     input: CustomAcpRuntimeDefinitionInput,
     options: CustomAcpRuntimeValidationOptions = {},
@@ -178,9 +186,7 @@ export function createCustomAcpRuntimeDefinition(
     existingDefinitions: readonly CustomAcpRuntimeDefinition[],
     idFactory: () => string = randomUUID,
 ): CustomAcpRuntimeDefinition {
-    if (existingDefinitions.length >= MAX_RUNTIME_COUNT) {
-        throw new Error(`At most ${MAX_RUNTIME_COUNT} custom runtimes are supported.`);
-    }
+    assertCustomAcpRuntimeCapacity(existingDefinitions);
     const normalized = validateCustomAcpRuntimeInput(input, {
         existingDefinitions,
     });
@@ -224,6 +230,11 @@ export function normalizeCustomAcpRuntimesSettings(
         return { runtimes: [], version: 1 };
     }
 
+    if (value.runtimes.length > MAX_RUNTIME_COUNT) {
+        onDiagnostic?.(
+            `Discarded custom ACP runtimes beyond the supported maximum of ${MAX_RUNTIME_COUNT}.`,
+        );
+    }
     const definitions: CustomAcpRuntimeDefinition[] = [];
     for (const candidate of value.runtimes.slice(0, MAX_RUNTIME_COUNT)) {
         try {
@@ -258,6 +269,11 @@ export function normalizeCustomAcpRuntimesSettings(
     const deletedCandidates = Array.isArray(value.deletedRuntimes)
         ? value.deletedRuntimes
         : [];
+    if (deletedCandidates.length > MAX_RUNTIME_COUNT) {
+        onDiagnostic?.(
+            `Discarded deleted custom ACP runtimes beyond the supported maximum of ${MAX_RUNTIME_COUNT}.`,
+        );
+    }
     for (const candidate of deletedCandidates.slice(0, MAX_RUNTIME_COUNT)) {
         try {
             if (

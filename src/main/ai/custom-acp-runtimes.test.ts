@@ -184,4 +184,25 @@ describe("custom ACP runtime definitions", () => {
         );
         expect(diagnostics).toHaveLength(1);
     });
+
+    it("reports persisted active runtimes beyond the supported maximum", () => {
+        const diagnostics: string[] = [];
+        const runtimes = Array.from({ length: 33 }, (_, index) => ({
+            ...INPUT,
+            displayName: `Runtime ${index}`,
+            id: `custom:550e8400-e29b-41d4-a716-${String(index).padStart(12, "0")}`,
+            launchFingerprint: "untrusted",
+            revision: 1,
+        }));
+
+        const settings = normalizeCustomAcpRuntimesSettings(
+            { runtimes, version: 1 },
+            (message) => diagnostics.push(message),
+        );
+
+        expect(settings.runtimes).toHaveLength(32);
+        expect(diagnostics).toContain(
+            "Discarded custom ACP runtimes beyond the supported maximum of 32.",
+        );
+    });
 });
