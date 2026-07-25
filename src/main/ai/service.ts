@@ -285,6 +285,7 @@ interface AiSchedulerDiagnostics {
 }
 
 interface AiSessionRetentionDiagnostics {
+    readonly activeCustomRuntimeLaunchCount: number;
     readonly closed: readonly AiSessionRetentionCloseRecord[];
     readonly hotSessions: readonly AiSessionRetentionHotSession[];
     readonly idleTtlMs: number;
@@ -654,6 +655,8 @@ export class AiService {
 
     getSessionRetentionDiagnostics(): AiSessionRetentionDiagnostics {
         return {
+            activeCustomRuntimeLaunchCount:
+                this.#activeCustomRuntimeLaunches.size,
             closed: [...this.#lastRetentionCloseRecords],
             hotSessions: [...this.#liveSessionContexts.values()]
                 .map((context) => {
@@ -3012,6 +3015,7 @@ export class AiService {
             }
         }
         for (const currentSessionId of sessionIdsToClear) {
+            this.#activeCustomRuntimeLaunches.delete(currentSessionId);
             this.#nativeChildParentSessionIds.delete(currentSessionId);
             this.#liveSnapshots.delete(currentSessionId);
             this.#liveTranscriptTails.clearSession(currentSessionId);

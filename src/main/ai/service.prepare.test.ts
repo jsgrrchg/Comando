@@ -2537,6 +2537,58 @@ describe("custom ACP prepare launches", () => {
         ).not.toHaveProperty("OPENAI_API_KEY");
     });
 
+    it("releases the immutable launch after a normal session close", async () => {
+        const runtimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+        const definition: CustomAcpRuntimeDefinition = {
+            args: ["--profile", "test"],
+            authMode: "external",
+            command: process.execPath,
+            displayName: "Pi",
+            env: { PI_PROFILE: "test" },
+            id: runtimeId,
+            launchFingerprint: "a".repeat(64),
+            revision: 1,
+        };
+        const service = createPrepareService({
+            customAcpRuntimes: [definition],
+            nativeAi: createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ input }) =>
+                        Promise.resolve(
+                            createSnapshot({
+                                runtimeId,
+                                sessionId: input.sessionId,
+                                title: input.title,
+                            }),
+                        ),
+                ),
+                shouldHandleRuntime: vi.fn(() => true),
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId,
+                sessionId: "custom-session",
+                title: "Pi 1",
+            },
+            "window-1",
+        );
+        expect(
+            service.getSessionRetentionDiagnostics()
+                .activeCustomRuntimeLaunchCount,
+        ).toBe(1);
+
+        await service.closeSession("custom-session");
+
+        expect(
+            service.getSessionRetentionDiagnostics()
+                .activeCustomRuntimeLaunchCount,
+        ).toBe(0);
+    });
+
     it("keeps the immutable launch for an active session after its definition is deleted", async () => {
         const runtimeId =
             "custom:550e8400-e29b-41d4-a716-446655440000" as const;
