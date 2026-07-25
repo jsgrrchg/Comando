@@ -71,6 +71,7 @@ import {
     attachNativeReviewDeltaToTrackedFile,
     toNativeReviewDeltaReference,
 } from "@shared/ai-review-delta";
+import { createCustomRuntimeChangeConfirmationErrorMessage } from "@shared/ai-session-errors";
 import {
     beginReviewWorkCycle,
     consolidateReviewDiffs,
@@ -4568,7 +4569,9 @@ export class AiService {
             !input.confirmCustomRuntimeChange
         ) {
             throw new Error(
-                `The ${sourceSnapshot.runtimeDisplayName ?? "custom ACP runtime"} definition changed since this session was created. Confirm that you want to continue with the modified configuration.`,
+                createCustomRuntimeChangeConfirmationErrorMessage(
+                    `The ${sourceSnapshot.runtimeDisplayName ?? "custom ACP runtime"} definition changed since this session was created. Continue with the modified configuration?`,
+                ),
             );
         }
         if (

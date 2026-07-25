@@ -169,7 +169,10 @@ import {
 } from "./chat/transcriptBlockVirtualization";
 import { splitLongContentRows } from "./chat/longContentVirtualization";
 import { useChatStreamingFrameProbe } from "./chat/useChatStreamingFrameProbe";
-import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
+import {
+    requestCustomRuntimeChangeConfirmation,
+    requestStopAgentSession,
+} from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
     resolveProjectFileReference,
@@ -683,7 +686,19 @@ export const ChatTabView = memo(function ChatTabView({
                 return;
             }
 
-            await ensureSession(liveSessionTab, { force: true });
+            try {
+                await ensureSession(liveSessionTab, { force: true });
+            } catch (error) {
+                const confirmed =
+                    requestCustomRuntimeChangeConfirmation(error);
+                if (confirmed !== true) {
+                    throw error;
+                }
+                await ensureSession(liveSessionTab, {
+                    confirmCustomRuntimeChange: true,
+                    force: true,
+                });
+            }
         },
         [ensureSession, liveSessionTab, tab.sessionId],
     );
@@ -2572,6 +2587,9 @@ export const ChatTabView = memo(function ChatTabView({
         beginNewTurnAnchor();
 
         try {
+            if (tab.sessionOpenMode === "history") {
+                await ensureLiveAgentSession(false);
+            }
             await sendPrompt(tab, prompt, {
                 attachments: submittedAttachments,
                 composerPartsSnapshot: submittedParts,
