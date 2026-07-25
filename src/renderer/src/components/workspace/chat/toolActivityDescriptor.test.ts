@@ -5,6 +5,7 @@ import type { AiToolActivity, AiTrackedFile } from "@shared/ipc";
 import {
     getStructuredToolCommand,
     getStructuredToolTarget,
+    getToolActivityHeaderPresentation,
     getToolActivityDescriptor,
 } from "./toolActivityDescriptor";
 import { isEditedFileToolActivity } from "./toolActivityKinds";
@@ -46,7 +47,7 @@ describe("toolActivityDescriptor", () => {
         });
     });
 
-    it("prefers structured input over locations and never derives from titles", () => {
+    it("prefers ACP locations over raw input and never derives targets from titles", () => {
         const activity = createActivity({
             locations: [
                 {
@@ -59,7 +60,46 @@ describe("toolActivityDescriptor", () => {
             title: "Read src/from-title.ts",
         });
 
+        expect(getStructuredToolTarget(activity)).toBe(
+            "src/from-location.ts",
+        );
+    });
+
+    it("uses raw input as a fallback when ACP locations are missing", () => {
+        const activity = createActivity({
+            rawInputJson: JSON.stringify({ path: "src/from-input.ts" }),
+            title: "Read src/from-title.ts",
+        });
+
         expect(getStructuredToolTarget(activity)).toBe("src/from-input.ts");
+    });
+
+    it("separates the displayed title target from the structured navigation target", () => {
+        const genericTitle = createActivity({
+            locations: [
+                {
+                    endLine: null,
+                    line: 12,
+                    path: "/workspace/src/app.ts",
+                },
+            ],
+            title: "read",
+        });
+        const descriptiveTitle = createActivity({
+            locations: genericTitle.locations,
+            title: "Read src/app.ts",
+        });
+
+        expect(getToolActivityHeaderPresentation(genericTitle)).toEqual({
+            displayTarget: "/workspace/src/app.ts",
+            prefix: "Read ",
+            target: "/workspace/src/app.ts",
+        });
+        expect(getToolActivityHeaderPresentation(descriptiveTitle)).toEqual({
+            displayTarget: "src/app.ts",
+            prefix: "Read ",
+            target: "/workspace/src/app.ts",
+        });
     });
 
     it("preserves basename-only structured targets for later resolution", () => {
