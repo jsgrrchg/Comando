@@ -43,6 +43,16 @@ export function assertCustomAcpRuntimeCapacity(
     }
 }
 
+export function assertDeletedCustomAcpRuntimeCapacity(
+    deletedDefinitions: readonly CustomAcpRuntimeDefinition[],
+): void {
+    if (deletedDefinitions.length >= MAX_RUNTIME_COUNT) {
+        throw new Error(
+            `At most ${MAX_RUNTIME_COUNT} deleted custom runtimes can be retained. Restore one before deleting another.`,
+        );
+    }
+}
+
 export function validateCustomAcpRuntimeInput(
     input: CustomAcpRuntimeDefinitionInput,
     options: CustomAcpRuntimeValidationOptions = {},

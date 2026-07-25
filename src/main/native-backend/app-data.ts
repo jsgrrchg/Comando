@@ -56,6 +56,7 @@ import type {
 } from "@shared/ipc";
 import {
     assertCustomAcpRuntimeCapacity,
+    assertDeletedCustomAcpRuntimeCapacity,
     createCustomAcpRuntimeDefinition,
     normalizeCustomAcpRuntimesSettings,
     updateCustomAcpRuntimeDefinition,
@@ -918,6 +919,9 @@ class NativeSettingsClient implements SettingsGateway {
         if (!deletedDefinition) {
             return { deleted: false, historyReferenceCount: 0 };
         }
+        // Refuse the transition before changing either collection. Evicting a
+        // tombstone would make its historical runtime definition unrecoverable.
+        assertDeletedCustomAcpRuntimeCapacity(deletedDefinitions);
         this.#setCustomAcpRuntimes(nextDefinitions, [
             ...deletedDefinitions.filter((definition) => definition.id !== id),
             deletedDefinition,
