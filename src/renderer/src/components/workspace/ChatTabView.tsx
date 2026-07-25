@@ -29,6 +29,7 @@ import {
     MAX_IMAGE_ATTACHMENT_BYTES,
 } from "@shared/ai-attachments";
 import { deriveTrackedFilesFromActionLog } from "@shared/ai-review-action-log";
+import { getAiRuntimeDisplayName } from "@shared/ai-runtimes";
 import { getChatDisplayTitle } from "@shared/chatTitle";
 import { resolveEditorLanguage } from "@shared/editor-language";
 
@@ -59,6 +60,7 @@ import { chatActivationScheduler } from "@renderer/app/workspace/chatActivationS
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
+import { useSettingsStore } from "@renderer/app/store/settings-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { getRendererTaskScheduler } from "@renderer/app/runtime/renderer-task-scheduler";
@@ -167,7 +169,10 @@ import {
 } from "./chat/transcriptBlockVirtualization";
 import { splitLongContentRows } from "./chat/longContentVirtualization";
 import { useChatStreamingFrameProbe } from "./chat/useChatStreamingFrameProbe";
-import { requestStopAgentSession } from "./chat/aiSessionLifecycle";
+import {
+    requestCustomRuntimeChangeConfirmation,
+    requestStopAgentSession,
+} from "./chat/aiSessionLifecycle";
 import {
     collectProjectFileRoots,
     resolveProjectFileReference,
@@ -246,6 +251,7 @@ type ChatSessionViewState = Pick<
     ReturnType<typeof useAiStore.getState>["sessions"][string],
     | "dismissedPlanUpdatedAt"
     | "isPlanCollapsed"
+    | "isPendingReviewCollapsed"
     | "draftAttachments"
     | "draftComposerParts"
     | "draftFileContexts"
@@ -281,6 +287,7 @@ function selectChatSessionViewState(
     return {
         dismissedPlanUpdatedAt: session.dismissedPlanUpdatedAt,
         isPlanCollapsed: session.isPlanCollapsed,
+        isPendingReviewCollapsed: session.isPendingReviewCollapsed,
         draftAttachments: session.draftAttachments,
         draftComposerParts: session.draftComposerParts,
         draftFileContexts: session.draftFileContexts,
@@ -361,8 +368,6 @@ export const ChatTabView = memo(function ChatTabView({
     onOpenReview,
     tab,
 }: ChatTabViewProps) {
-    // Keep the rail preference while its virtualized surface is temporarily unmounted.
-    const [pendingReviewCollapsed, setPendingReviewCollapsed] = useState(true);
     const aiChatSettings = useAiChatSettings();
     const cancelQueuedPromptEdit = useAiStore((s) => s.cancelQueuedPromptEdit);
     const clearQueuedPrompts = useAiStore((s) => s.clearQueuedPrompts);
@@ -395,6 +400,9 @@ export const ChatTabView = memo(function ChatTabView({
     const setSessionPlanCollapsed = useAiStore(
         (s) => s.setSessionPlanCollapsed,
     );
+    const setSessionPendingReviewCollapsed = useAiStore(
+        (s) => s.setSessionPendingReviewCollapsed,
+    );
 
     const keepAllTrackedFiles = useAiStore((s) => s.keepAllTrackedFiles);
     const keepTrackedFile = useAiStore((s) => s.keepTrackedFile);
@@ -420,6 +428,11 @@ export const ChatTabView = memo(function ChatTabView({
     const sendPrompt = useAiStore((s) => s.sendPrompt);
     const runtimeCatalog = useAiStore(
         (s) => s.runtimeCatalogById[tab.runtimeId] ?? null,
+    );
+    const aiRuntimeCatalog = useSettingsStore((state) => state.runtimeCatalog);
+    const catalogRuntimeDisplayName = getAiRuntimeDisplayName(
+        tab.runtimeId,
+        aiRuntimeCatalog,
     );
     const frozenSessionStateRef = useRef<ChatSessionViewState | null>(null);
     const sessionState = useAiStore(
@@ -673,7 +686,19 @@ export const ChatTabView = memo(function ChatTabView({
                 return;
             }
 
-            await ensureSession(liveSessionTab, { force: true });
+            try {
+                await ensureSession(liveSessionTab, { force: true });
+            } catch (error) {
+                const confirmed =
+                    requestCustomRuntimeChangeConfirmation(error);
+                if (confirmed !== true) {
+                    throw error;
+                }
+                await ensureSession(liveSessionTab, {
+                    confirmCustomRuntimeChange: true,
+                    force: true,
+                });
+            }
         },
         [ensureSession, liveSessionTab, tab.sessionId],
     );
@@ -766,9 +791,16 @@ export const ChatTabView = memo(function ChatTabView({
             getChatDisplayTitle({
                 manualTitle: snapshot.manualTitle,
                 messages: snapshot.messages,
+                runtimeDisplayName: catalogRuntimeDisplayName,
                 title: snapshot.title || tab.title,
             }),
-        [snapshot.manualTitle, snapshot.messages, snapshot.title, tab.title],
+        [
+            catalogRuntimeDisplayName,
+            snapshot.manualTitle,
+            snapshot.messages,
+            snapshot.title,
+            tab.title,
+        ],
     );
     const storedTranscript =
         sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;
@@ -882,6 +914,8 @@ export const ChatTabView = memo(function ChatTabView({
         sessionState?.draftFileContexts ?? EMPTY_DRAFT_FILE_CONTEXTS;
     const dismissedPlanUpdatedAt = sessionState?.dismissedPlanUpdatedAt ?? null;
     const isPlanCollapsed = sessionState?.isPlanCollapsed ?? false;
+    const pendingReviewCollapsed =
+        sessionState?.isPendingReviewCollapsed ?? true;
     const editingQueuedPrompt = sessionState?.editingQueuedPrompt ?? null;
     const queuedPrompts = sessionState?.queue ?? [];
     const pendingPermission = snapshot.pendingPermission;
@@ -2553,6 +2587,9 @@ export const ChatTabView = memo(function ChatTabView({
         beginNewTurnAnchor();
 
         try {
+            if (tab.sessionOpenMode === "history") {
+                await ensureLiveAgentSession(false);
+            }
             await sendPrompt(tab, prompt, {
                 attachments: submittedAttachments,
                 composerPartsSnapshot: submittedParts,
@@ -3107,7 +3144,12 @@ export const ChatTabView = memo(function ChatTabView({
                                     onKeepItem={handleKeepPendingReviewItem}
                                     onOpenItem={handleOpenPendingReviewItem}
                                     onOpenReview={handleOpenReviewTab}
-                                    onCollapsedChange={setPendingReviewCollapsed}
+                                    onCollapsedChange={(collapsed) =>
+                                        setSessionPendingReviewCollapsed(
+                                            tab.sessionId,
+                                            collapsed,
+                                        )
+                                    }
                                     onRejectAll={handleRejectAllPendingReview}
                                     onRejectHunk={handleRejectPendingReviewHunk}
                                     onRejectItem={handleRejectPendingReviewItem}

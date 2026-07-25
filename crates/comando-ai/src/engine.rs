@@ -35,7 +35,7 @@ use crate::history::{
     AiHistorySessionMetadata, AiHistorySessionMetadataInput, AiHistoryStore,
     AiHistorySubagentMetadata,
 };
-use crate::runtime::RuntimeRegistry;
+use crate::runtime::{RuntimeDefinition, RuntimeRegistry};
 use crate::runtime_setup::{
     RuntimeAuthTerminalLaunch, prepare_auth_terminal_launch, prepare_auth_terminal_logout,
     prepare_runtime_auth_connection, prepare_runtime_launch, runtime_status,
@@ -134,7 +134,7 @@ impl AiEngine {
         let runtime_id = input.runtime_id.0;
         if let Some(store) = self.runtime_setup_store()? {
             let definition = self.registry.get(&runtime_id)?;
-            return runtime_status(&store, definition);
+            return runtime_status(&store, &definition);
         }
         let launch_status = input.launch.map(|launch| launch.status);
         self.registry.status_from_launch(&runtime_id, launch_status)
@@ -152,7 +152,7 @@ impl AiEngine {
                     runtime_id: runtime_id.to_string(),
                     message: "Native runtime setup is not initialized.".to_string(),
                 })?;
-        prepare_auth_terminal_launch(&store, definition, method_id)
+        prepare_auth_terminal_launch(&store, &definition, method_id)
     }
 
     pub fn prepare_auth_terminal_logout(
@@ -166,7 +166,7 @@ impl AiEngine {
                     runtime_id: runtime_id.to_string(),
                     message: "Native runtime setup is not initialized.".to_string(),
                 })?;
-        prepare_auth_terminal_logout(&store, definition)
+        prepare_auth_terminal_logout(&store, &definition)
     }
 
     pub fn authenticate_runtime_auth(
@@ -187,14 +187,14 @@ impl AiEngine {
                 })?;
         let launch = prepare_runtime_auth_connection(
             &store,
-            definition,
+            &definition,
             method_id,
             cwd,
             owner_window_id,
             project_id,
             worktree_id,
         )?;
-        let spec = AcpProcessSpec::from_launch(definition, &launch)?;
+        let spec = AcpProcessSpec::from_launch(&definition, &launch)?;
         run_acp_runtime_auth(
             &self.runtime,
             spec,
@@ -214,14 +214,14 @@ impl AiEngine {
                 })?;
         let launch = prepare_runtime_auth_connection(
             &store,
-            definition,
+            &definition,
             "chatgpt",
             cwd,
             String::new(),
             None,
             None,
         )?;
-        let spec = AcpProcessSpec::from_launch(definition, &launch)?;
+        let spec = AcpProcessSpec::from_launch(&definition, &launch)?;
         run_acp_runtime_auth(&self.runtime, spec, AcpRuntimeAuthAction::Logout)
     }
 
@@ -229,18 +229,38 @@ impl AiEngine {
         &self,
         input: NativeAiPrepareSessionInput,
     ) -> AiResult<NativeAiSessionSummary> {
-        let definition = self.registry.require_native(&input.runtime_id.0)?;
-        let resolved_launch = match input.launch.clone() {
-            Some(launch) => launch,
-            None => {
-                let store = self.runtime_setup_store()?.ok_or_else(|| {
-                    AiError::RuntimeLaunchContextInvalid {
-                        runtime_id: input.runtime_id.0.clone(),
-                        message: "Native runtime setup is not initialized.".to_string(),
-                    }
-                })?;
-                prepare_runtime_launch(&store, definition, &input)?.launch
-            }
+        let custom_launch = input.custom_acp_launch.clone();
+        let definition = match custom_launch.as_ref() {
+            Some(launch) => RuntimeDefinition::from_custom_launch(launch)?,
+            None => self.registry.require_native(&input.runtime_id.0)?,
+        };
+        if input.runtime_id.0 != definition.id {
+            return Err(AiError::RuntimeLaunchContextInvalid {
+                runtime_id: input.runtime_id.0.clone(),
+                message: "Runtime launch identity does not match the requested session."
+                    .to_string(),
+            });
+        }
+        if custom_launch.is_some() && input.launch.is_some() {
+            return Err(AiError::RuntimeLaunchContextInvalid {
+                runtime_id: input.runtime_id.0.clone(),
+                message: "Custom runtimes cannot include a built-in launch context.".to_string(),
+            });
+        }
+        let resolved_launch = match custom_launch.as_ref() {
+            Some(_) => None,
+            None => Some(match input.launch.clone() {
+                Some(launch) => launch,
+                None => {
+                    let store = self.runtime_setup_store()?.ok_or_else(|| {
+                        AiError::RuntimeLaunchContextInvalid {
+                            runtime_id: input.runtime_id.0.clone(),
+                            message: "Native runtime setup is not initialized.".to_string(),
+                        }
+                    })?;
+                    prepare_runtime_launch(&store, &definition, &input)?.launch
+                }
+            }),
         };
         let mut history_metadata =
             AiHistorySessionMetadata::new_native(AiHistorySessionMetadataInput {
@@ -250,7 +270,12 @@ impl AiEngine {
                     .launch
                     .as_ref()
                     .and_then(|launch| launch.persisted_runtime_session_id.clone())
-                    .or_else(|| resolved_launch.persisted_runtime_session_id.clone()),
+                    .or_else(|| input.persisted_runtime_session_id.clone())
+                    .or_else(|| {
+                        resolved_launch
+                            .as_ref()
+                            .and_then(|launch| launch.persisted_runtime_session_id.clone())
+                    }),
                 parent_session_id: None,
                 project_id: input.project_id.clone(),
                 worktree_id: input.worktree_id.clone(),
@@ -263,8 +288,24 @@ impl AiEngine {
                 cwd: input.cwd.clone(),
                 additional_roots: input.additional_roots.clone(),
             });
+        if let Some(launch) = custom_launch.as_ref() {
+            history_metadata.runtime_display_name = Some(launch.display_name.clone());
+            history_metadata.runtime_launch_fingerprint = Some(launch.launch_fingerprint.clone());
+            history_metadata.runtime_revision = Some(launch.revision);
+        }
 
-        let launch = resolved_launch;
+        let spec = match custom_launch.as_ref() {
+            Some(launch) => AcpProcessSpec::from_custom_launch(&definition, launch, &input)?,
+            None => AcpProcessSpec::from_launch(
+                &definition,
+                resolved_launch
+                    .as_ref()
+                    .ok_or_else(|| AiError::RuntimeLaunchContextInvalid {
+                        runtime_id: input.runtime_id.0.clone(),
+                        message: "Built-in runtime launch details are missing.".to_string(),
+                    })?,
+            )?,
+        };
         let session = NativeAiSession::from_prepare_input(input)?;
         let mut sessions = self.lock_sessions()?;
         if let Ok(existing) = sessions.get_mut(&session.session_id) {
@@ -280,7 +321,6 @@ impl AiEngine {
         }
         let event_sender = self.event_sender()?;
         drop(sessions);
-        let spec = AcpProcessSpec::from_launch(definition, &launch)?;
         let (session, controller) = start_acp_session(
             &self.runtime,
             spec,
@@ -292,6 +332,8 @@ impl AiEngine {
         let summary = sessions.insert_with_acp_controller(session, controller)?;
         drop(sessions);
         history_metadata.runtime_session_id = summary.runtime_session_id.clone();
+        history_metadata.custom_acp_continuation_strategy =
+            summary.custom_acp_continuation_strategy.clone();
         let initial_history_messages = self.initialize_history_session(history_metadata)?;
         self.history_messages
             .lock()
@@ -617,6 +659,7 @@ impl AiEngine {
         )?;
 
         Ok(NativeAiSession {
+            custom_acp_continuation_strategy: metadata.custom_acp_continuation_strategy,
             owner_window_id: String::new(),
             runtime_id: metadata.runtime_id,
             runtime_session_id: metadata.runtime_session_id,
@@ -746,6 +789,16 @@ impl AiEngine {
         let snapshot = store.load_session_snapshot(&metadata.session_id)?;
         let mut current = store.load_metadata(&metadata.session_id)?;
         current.runtime_id = metadata.runtime_id;
+        current.custom_acp_continuation_strategy = metadata
+            .custom_acp_continuation_strategy
+            .or(current.custom_acp_continuation_strategy);
+        current.runtime_display_name = metadata
+            .runtime_display_name
+            .or(current.runtime_display_name);
+        current.runtime_launch_fingerprint = metadata
+            .runtime_launch_fingerprint
+            .or(current.runtime_launch_fingerprint);
+        current.runtime_revision = metadata.runtime_revision.or(current.runtime_revision);
         current.runtime_session_id = metadata.runtime_session_id.or(current.runtime_session_id);
         current.parent_session_id = metadata.parent_session_id;
         current.project_id = metadata.project_id;
@@ -772,6 +825,10 @@ impl AiEngine {
         {
             let mut metadata = store.load_metadata(&summary.session_id)?;
             metadata.runtime_session_id = summary.runtime_session_id.clone();
+            metadata.custom_acp_continuation_strategy = summary
+                .custom_acp_continuation_strategy
+                .clone()
+                .or(metadata.custom_acp_continuation_strategy);
             metadata.status = summary.status.clone();
             metadata.title = preferred_status_title(&metadata, &summary.title);
             metadata.updated_at = summary.updated_at.clone();
@@ -1287,6 +1344,11 @@ impl AiEngine {
                 .as_ref()
                 .and_then(|parent_id| store.load_metadata(parent_id).ok());
             if let Some(parent_metadata) = parent_metadata {
+                metadata.custom_acp_continuation_strategy =
+                    parent_metadata.custom_acp_continuation_strategy;
+                metadata.runtime_display_name = parent_metadata.runtime_display_name;
+                metadata.runtime_launch_fingerprint = parent_metadata.runtime_launch_fingerprint;
+                metadata.runtime_revision = parent_metadata.runtime_revision;
                 metadata.project_id = metadata.project_id.or(parent_metadata.project_id);
                 metadata.worktree_id = metadata.worktree_id.or(parent_metadata.worktree_id);
                 if metadata.cwd.as_deref().is_none_or(str::is_empty) {
@@ -1385,6 +1447,13 @@ impl AiEngine {
                 .map(|metadata| metadata.additional_roots.clone())
                 .unwrap_or_default(),
         });
+        if let Some(parent_metadata) = parent_metadata {
+            metadata.custom_acp_continuation_strategy =
+                parent_metadata.custom_acp_continuation_strategy;
+            metadata.runtime_display_name = parent_metadata.runtime_display_name;
+            metadata.runtime_launch_fingerprint = parent_metadata.runtime_launch_fingerprint;
+            metadata.runtime_revision = parent_metadata.runtime_revision;
+        }
         if let Some(parent_session_id) = parent_session_id {
             metadata.subagent = Some(AiHistorySubagentMetadata {
                 parent_session_id,
@@ -1865,12 +1934,15 @@ fn native_config_value(value: serde_json::Value) -> AiResult<NativeAiConfigValue
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::time::Duration;
 
     use comando_types::ai::{
         NativeAiDesiredSelections, NativeAiImageAttachment, NativeAiLaunchSpec,
-        NativeAiRuntimeStatus,
+        NativeAiPromptInput, NativeAiRuntimeStatus, NativeCustomAcpLaunchSpec,
     };
-    use comando_types::ids::{RuntimeId, SessionId};
+    use comando_types::ids::{MessageId, RuntimeId, SessionId};
+    use serde::Serialize;
+    use sha2::{Digest, Sha256};
 
     fn prepare_input(session_id: &str, runtime_id: &str) -> NativeAiPrepareSessionInput {
         NativeAiPrepareSessionInput {
@@ -1885,6 +1957,8 @@ mod tests {
             mode_id: None,
             config_options: Default::default(),
             additional_roots: Vec::new(),
+            custom_acp_continuation_strategy: None,
+            custom_acp_launch: None,
             persisted_runtime_session_id: None,
             persisted_subagent_session_mappings: Vec::new(),
             launch: None,
@@ -1957,6 +2031,223 @@ mod tests {
             name: Some("capture.png".to_string()),
             size_bytes: Some(5),
         }
+    }
+
+    #[cfg(unix)]
+    fn custom_fixture_input(
+        session_id: &str,
+        project_root: &std::path::Path,
+        additional_root: &std::path::Path,
+    ) -> NativeAiPrepareSessionInput {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct FingerprintInput<'a> {
+            args: &'a [String],
+            auth_mode: &'a str,
+            command: &'a str,
+            env: &'a BTreeMap<String, String>,
+            profile: &'static str,
+        }
+
+        let runtime_id = RuntimeId("custom:550e8400-e29b-41d4-a716-446655440000".to_string());
+        let executable = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/custom-acp-fixture.mjs")
+            .canonicalize()
+            .expect("fixture executable");
+        let command = executable.to_string_lossy().to_string();
+        let args = Vec::new();
+        let configured_env = BTreeMap::new();
+        let fingerprint = FingerprintInput {
+            args: &args,
+            auth_mode: "external",
+            command: &command,
+            env: &configured_env,
+            profile: "acp-current14-custom-v1",
+        };
+        let launch_fingerprint = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&fingerprint).expect("serialize fingerprint"))
+        );
+        let mut env = BTreeMap::new();
+        env.insert(
+            "PATH".to_string(),
+            std::env::var("PATH").expect("test PATH must locate node"),
+        );
+        let mut input = prepare_input(session_id, &runtime_id.0);
+        input.cwd = project_root.to_string_lossy().to_string();
+        input.additional_roots = vec![additional_root.to_string_lossy().to_string()];
+        input.custom_acp_launch = Some(NativeCustomAcpLaunchSpec {
+            args,
+            auth_mode: "external".to_string(),
+            command,
+            configured_env,
+            display_name: "Fixture ACP".to_string(),
+            env,
+            executable: executable.to_string_lossy().to_string(),
+            launch_fingerprint,
+            product_profile: "conservative".to_string(),
+            protocol_version: "acp-current14".to_string(),
+            revision: 1,
+            runtime_id,
+            state: "ready".to_string(),
+        });
+        input
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn custom_acp_fixture_projects_protocol_and_lifecycle_events() {
+        let app_data = tempfile::tempdir().expect("app data");
+        let project = tempfile::tempdir().expect("project");
+        let additional_root = tempfile::tempdir().expect("additional root");
+        let history = AiHistoryStore::new(app_data.path()).expect("history store");
+        let engine = AiEngine::default();
+        engine
+            .set_history_store(Some(history.clone()))
+            .expect("install history store");
+        let (sender, receiver) = mpsc::sync_channel(128);
+        engine
+            .set_event_sender(sender)
+            .expect("install event sender");
+
+        let summary = engine
+            .prepare_session(custom_fixture_input(
+                "custom-fixture-session",
+                project.path(),
+                additional_root.path(),
+            ))
+            .expect("prepare fixture session");
+        assert_eq!(
+            summary.custom_acp_continuation_strategy.as_deref(),
+            Some("resume")
+        );
+
+        let (_, streaming) = engine
+            .send_prompt(NativeAiSendPromptInput {
+                session_id: summary.session_id.clone(),
+                target_session_id: None,
+                runtime_session_id: summary.runtime_session_id.clone(),
+                message_id: MessageId("fixture-prompt".to_string()),
+                prompt: NativeAiPromptInput {
+                    text: "exercise the fixture".to_string(),
+                    display_text: None,
+                    attachments: vec![image_attachment("fixture-image")],
+                },
+            })
+            .expect("send fixture prompt");
+        assert_eq!(streaming.status, NativeAiSessionStatus::Streaming);
+
+        let mut event_names = Vec::new();
+        let mut observed_text = String::new();
+        let mut observed_catalog = false;
+        let mut observed_permission = false;
+        let mut observed_idle = false;
+        while !observed_idle {
+            let event = receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|error| {
+                    panic!("fixture event timeout after {event_names:?}: {error}")
+                });
+            engine
+                .record_history_event(&event)
+                .expect("record fixture history event");
+            event_names.push(event.event_name.clone());
+            if event.event_name == AI_MESSAGE_DELTA_EVENT {
+                observed_text.push_str(event.payload["content"].as_str().unwrap_or_default());
+            }
+            if event.event_name == AI_SESSION_CATALOG_UPDATED_EVENT {
+                observed_catalog |= event.payload["configOptions"]
+                    .as_array()
+                    .is_some_and(|options| !options.is_empty())
+                    || event.payload["availableCommands"]
+                        .as_array()
+                        .is_some_and(|commands| !commands.is_empty());
+            }
+            if event.event_name == AI_PERMISSION_REQUEST_EVENT {
+                observed_permission = true;
+                engine
+                    .respond_permission(NativeAiPermissionResponseInput {
+                        session_id: summary.session_id.clone(),
+                        target_session_id: None,
+                        request_id: event.payload["requestId"]
+                            .as_str()
+                            .expect("permission request id")
+                            .to_string(),
+                        option_id: Some("allow".to_string()),
+                    })
+                    .expect("respond to fixture permission");
+            }
+            if event.event_name == AI_STATUS_EVENT
+                && observed_permission
+                && event.payload["status"] != serde_json::json!("streaming")
+            {
+                observed_idle = true;
+            }
+        }
+
+        assert!(observed_catalog);
+        assert!(observed_permission);
+        assert!(observed_text.contains(&additional_root.path().to_string_lossy().to_string()));
+        assert!(observed_text.contains("image: true"));
+        assert!(
+            event_names
+                .iter()
+                .any(|event_name| event_name == AI_TOOL_ACTIVITY_EVENT)
+        );
+        assert!(
+            event_names
+                .iter()
+                .any(|event_name| event_name == AI_TOKEN_USAGE_EVENT)
+        );
+        assert!(
+            event_names
+                .iter()
+                .any(|event_name| event_name == AI_MESSAGE_COMPLETED_EVENT)
+        );
+
+        engine
+            .send_prompt(NativeAiSendPromptInput {
+                session_id: summary.session_id.clone(),
+                target_session_id: None,
+                runtime_session_id: summary.runtime_session_id.clone(),
+                message_id: MessageId("fixture-cancel".to_string()),
+                prompt: NativeAiPromptInput {
+                    text: "wait for cancellation".to_string(),
+                    display_text: None,
+                    attachments: Vec::new(),
+                },
+            })
+            .expect("send cancellable fixture prompt");
+        let (_, cancelled) = engine
+            .cancel_session(NativeAiSessionIdInput {
+                session_id: summary.session_id.clone(),
+                target_session_id: None,
+                runtime_session_id: summary.runtime_session_id.clone(),
+            })
+            .expect("cancel fixture prompt");
+        assert_eq!(cancelled.status, NativeAiSessionStatus::Idle);
+
+        let snapshot = history
+            .load_session_snapshot(&summary.session_id)
+            .expect("load fixture history")
+            .expect("fixture history snapshot");
+        assert_eq!(
+            snapshot.runtime_id,
+            RuntimeId("custom:550e8400-e29b-41d4-a716-446655440000".to_string())
+        );
+        assert_eq!(
+            snapshot.custom_acp_continuation_strategy.as_deref(),
+            Some("resume")
+        );
+        assert!(!snapshot.messages.is_empty());
+
+        engine
+            .close_session(NativeAiSessionIdInput {
+                session_id: summary.session_id,
+                target_session_id: None,
+                runtime_session_id: summary.runtime_session_id,
+            })
+            .expect("close fixture session");
     }
 
     #[test]

@@ -31,6 +31,9 @@ import type {
     AppEditorSettings,
     ClaudeRuntimeSettings,
     CodexRuntimeSettings,
+    CustomAcpRuntimeDefinition,
+    CustomAcpRuntimeDefinitionInput,
+    CustomAcpRuntimeId,
     DatabaseStatus,
     GetAiSessionTranscriptPageInput,
     GrokRuntimeSettings,
@@ -51,6 +54,14 @@ import type {
     WindowWorkspaceRestoreRecord,
     WorkspaceSnapshot,
 } from "@shared/ipc";
+import {
+    assertCustomAcpRuntimeCapacity,
+    assertDeletedCustomAcpRuntimeCapacity,
+    createCustomAcpRuntimeDefinition,
+    normalizeCustomAcpRuntimesSettings,
+    updateCustomAcpRuntimeDefinition,
+    validateCustomAcpRuntimeInput,
+} from "@main/ai/custom-acp-runtimes";
 import {
     createWindowWorkspaceRestoreRecord,
     normalizeWindowWorkspaceRestoreRecord,
@@ -748,7 +759,12 @@ class NativeSettingsClient implements SettingsGateway {
     }
 
     saveSnapshot(snapshot: SettingsSnapshot): void {
-        this.#snapshot = normalizeSettingsSnapshot(snapshot);
+        // Dedicated CRUD keeps renderer snapshots from choosing IDs, revisions,
+        // fingerprints, or silently replacing the custom runtime collection.
+        this.#snapshot = normalizeSettingsSnapshot({
+            ...snapshot,
+            customAcpRuntimes: this.#snapshot.customAcpRuntimes,
+        });
         this.#persistSoon();
     }
 
@@ -841,6 +857,108 @@ class NativeSettingsClient implements SettingsGateway {
         this.#setRuntime("opencode", settings);
     }
 
+    listCustomAcpRuntimes(): readonly CustomAcpRuntimeDefinition[] {
+        return structuredClone(
+            normalizeCustomAcpRuntimesSettings(
+                this.#snapshot.customAcpRuntimes,
+            ).runtimes,
+        );
+    }
+
+    listDeletedCustomAcpRuntimes(): readonly CustomAcpRuntimeDefinition[] {
+        return structuredClone(
+            normalizeCustomAcpRuntimesSettings(
+                this.#snapshot.customAcpRuntimes,
+            ).deletedRuntimes ?? [],
+        );
+    }
+
+    createCustomAcpRuntime(
+        input: CustomAcpRuntimeDefinitionInput,
+    ): CustomAcpRuntimeDefinition {
+        const definitions = this.listCustomAcpRuntimes();
+        const definition = createCustomAcpRuntimeDefinition(
+            input,
+            definitions,
+        );
+        this.#setCustomAcpRuntimes([...definitions, definition]);
+        return structuredClone(definition);
+    }
+
+    updateCustomAcpRuntime(
+        id: CustomAcpRuntimeId,
+        input: CustomAcpRuntimeDefinitionInput,
+    ): CustomAcpRuntimeDefinition {
+        const definitions = this.listCustomAcpRuntimes();
+        const current = definitions.find((definition) => definition.id === id);
+        if (!current) {
+            throw new Error("Custom ACP runtime was not found.");
+        }
+        const updated = updateCustomAcpRuntimeDefinition(
+            current,
+            input,
+            definitions,
+        );
+        this.#setCustomAcpRuntimes(
+            definitions.map((definition) =>
+                definition.id === id ? updated : definition,
+            ),
+        );
+        return structuredClone(updated);
+    }
+
+    deleteCustomAcpRuntime(id: CustomAcpRuntimeId) {
+        const definitions = this.listCustomAcpRuntimes();
+        const deletedDefinitions = this.listDeletedCustomAcpRuntimes();
+        const deletedDefinition = definitions.find(
+            (definition) => definition.id === id,
+        );
+        const nextDefinitions = definitions.filter(
+            (definition) => definition.id !== id,
+        );
+        if (!deletedDefinition) {
+            return { deleted: false, historyReferenceCount: 0 };
+        }
+        // Refuse the transition before changing either collection. Evicting a
+        // tombstone would make its historical runtime definition unrecoverable.
+        assertDeletedCustomAcpRuntimeCapacity(deletedDefinitions);
+        this.#setCustomAcpRuntimes(nextDefinitions, [
+            ...deletedDefinitions.filter((definition) => definition.id !== id),
+            deletedDefinition,
+        ]);
+        return { deleted: true, historyReferenceCount: 0 };
+    }
+
+    restoreCustomAcpRuntime(
+        id: CustomAcpRuntimeId,
+    ): CustomAcpRuntimeDefinition {
+        const definitions = this.listCustomAcpRuntimes();
+        const deletedDefinitions = this.listDeletedCustomAcpRuntimes();
+        const deletedDefinition = deletedDefinitions.find(
+            (definition) => definition.id === id,
+        );
+        if (!deletedDefinition) {
+            throw new Error("Deleted custom ACP runtime was not found.");
+        }
+        // Restoring consumes the same bounded active slot as creating.
+        // Check before removing the tombstone so a failed restore stays recoverable.
+        assertCustomAcpRuntimeCapacity(definitions);
+        const normalized = validateCustomAcpRuntimeInput(deletedDefinition, {
+            existingDefinitions: definitions,
+        });
+        const restored = {
+            ...normalized,
+            id: deletedDefinition.id,
+            launchFingerprint: deletedDefinition.launchFingerprint,
+            revision: deletedDefinition.revision,
+        };
+        this.#setCustomAcpRuntimes(
+            [...definitions, restored],
+            deletedDefinitions.filter((definition) => definition.id !== id),
+        );
+        return structuredClone(restored);
+    }
+
     async saveCodexAuth(
         settings: CodexRuntimeSettings,
         secrets: readonly SecretRecordPatch[],
@@ -883,6 +1001,27 @@ class NativeSettingsClient implements SettingsGateway {
             ai: {
                 ...ai,
                 [runtimeId]: settings,
+            },
+        };
+        this.#persistSoon();
+    }
+
+    #setCustomAcpRuntimes(
+        definitions: readonly CustomAcpRuntimeDefinition[],
+        deletedDefinitions: readonly CustomAcpRuntimeDefinition[] =
+            this.listDeletedCustomAcpRuntimes(),
+    ): void {
+        this.#snapshot = {
+            ...this.#snapshot,
+            customAcpRuntimes: {
+                ...(deletedDefinitions.length > 0
+                    ? {
+                          deletedRuntimes:
+                              structuredClone(deletedDefinitions),
+                      }
+                    : {}),
+                runtimes: structuredClone(definitions),
+                version: 1,
             },
         };
         this.#persistSoon();
@@ -2125,6 +2264,10 @@ function createDefaultSettingsSnapshot(): CompleteSettingsSnapshot {
             suggestionsEnabled: true,
             vimModeEnabled: false,
         },
+        customAcpRuntimes: {
+            runtimes: [],
+            version: 1,
+        },
         shellState: null,
         terminal: DEFAULT_APP_TERMINAL_SETTINGS,
     };
@@ -2153,6 +2296,14 @@ function normalizeSettingsSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot
             ...defaults.appearance,
             ...(snapshot.appearance ?? {}),
         },
+        customAcpRuntimes: normalizeCustomAcpRuntimesSettings(
+            snapshot.customAcpRuntimes,
+            (message) =>
+                debugBenignError(
+                    "nativeAppData.customAcpRuntimeSettings",
+                    new Error(message),
+                ),
+        ),
         editor: snapshot.editor ?? defaults.editor,
         shellState: snapshot.shellState ?? null,
         terminal: snapshot.terminal ?? defaults.terminal,

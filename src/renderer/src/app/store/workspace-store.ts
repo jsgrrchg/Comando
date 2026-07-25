@@ -22,7 +22,7 @@ import type {
 } from "@shared/ipc";
 import {
     getAiRuntimeDisplayName,
-    type ActiveAiRuntimeId,
+    resolveAvailableAiRuntimeId,
 } from "@shared/ai-runtimes";
 import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
 import {
@@ -100,10 +100,11 @@ import {
 } from "@renderer/app/debug/fileSyncProbe";
 import { useAiStore } from "./ai-store";
 import { useProjectsStore } from "./projects-store";
+import { useSettingsStore } from "./settings-store";
 import { getProjectContextKey } from "../projects/context-key";
 
 export type WorkspaceQuickCreateAction =
-    | ActiveAiRuntimeId
+    | AiRuntimeId
     | "git"
     | "history"
     | "file"
@@ -170,7 +171,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
     createChatTab: (
         projectId: string | null,
         worktreeId?: string | null,
-        runtimeId?: ActiveAiRuntimeId,
+        runtimeId?: AiRuntimeId,
     ) => Promise<void>;
     createTerminalTab: (
         projectId: string | null,
@@ -769,10 +770,20 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     createChatTab: async (
         projectId: string | null,
         worktreeId: string | null = null,
-        runtimeId: ActiveAiRuntimeId = "codex",
+        requestedRuntimeId: AiRuntimeId = "codex",
     ) => {
         const paneId = get().activePaneId;
-        const runtimeTitle = getAiRuntimeDisplayName(runtimeId);
+        const runtimeCatalog = useSettingsStore.getState().runtimeCatalog;
+        // New chats must never inherit a deleted or disabled runtime. History
+        // restoration uses a separate path and keeps its original identity.
+        const runtimeId = resolveAvailableAiRuntimeId(
+            requestedRuntimeId,
+            runtimeCatalog,
+        );
+        const runtimeTitle = getAiRuntimeDisplayName(
+            runtimeId,
+            runtimeCatalog,
+        );
         const tab: WorkspaceChatTab = {
             createdAt: new Date().toISOString(),
             draft: "",

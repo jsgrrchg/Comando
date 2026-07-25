@@ -5,8 +5,11 @@ const relativeTimeFormatter = new Intl.RelativeTimeFormat("en", {
     numeric: "auto",
 });
 
-export function getHistoryRuntimeLabel(runtimeId: AiRuntimeId): string {
-    return getAiRuntimeDisplayName(runtimeId);
+export function getHistoryRuntimeLabel(
+    runtimeId: AiRuntimeId,
+    lastKnownDisplayName?: string | null,
+): string {
+    return lastKnownDisplayName?.trim() || getAiRuntimeDisplayName(runtimeId);
 }
 
 export function formatHistoryRelativeDate(

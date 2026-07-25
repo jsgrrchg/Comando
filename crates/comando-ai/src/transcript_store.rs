@@ -11,7 +11,9 @@ use comando_types::ai::{
     NativeAiTranscriptPayloadWrite, NativeAiTranscriptTerminalStatus,
 };
 use comando_types::ids::SessionId;
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OptionalExtension, Transaction, TransactionBehavior, params, params_from_iter,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -22,7 +24,7 @@ use crate::events::now_iso8601;
 const TRANSCRIPT_DATABASE_FILE: &str = "transcript-v2.sqlite3";
 const LEGACY_TRANSCRIPT_ENTRIES_FILE: &str = "transcript-entries.json";
 const TRANSCRIPT_PAYLOADS_DIR: &str = "transcript-payloads";
-pub(crate) const TRANSCRIPT_SCHEMA_VERSION: u32 = 5;
+pub(crate) const TRANSCRIPT_SCHEMA_VERSION: u32 = 6;
 const TRANSCRIPT_BLOCK_SIZE: usize = 256;
 const INLINE_PAYLOAD_MAX_BYTES: usize = 64 * 1024;
 const TRANSCRIPT_PAYLOAD_REF_MAX_BYTES: usize = 512;
@@ -84,7 +86,89 @@ impl TranscriptStore {
         Ok(state.unwrap_or(1) == 1)
     }
 
+    pub(crate) fn uses_legacy_transcript_backfill(&self, session_id: &SessionId) -> AiResult<bool> {
+        if !self.database_path.exists() {
+            return Ok(true);
+        }
+        let connection = self.open(session_id, false)?;
+        let backfill_incomplete = connection
+            .query_row(
+                "SELECT
+                    transcript_origin = 'legacy_backfill'
+                    AND legacy_transcript_backfill_complete = 0
+                 FROM transcript_sessions
+                 WHERE session_id = ?1",
+                params![session_id.0],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map_err(|error| transcript_sql("load transcript backfill origin", error))?
+            == Some(1);
+        if backfill_incomplete {
+            return Ok(true);
+        }
+        let has_native_entries = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM transcript_entries AS entries
+                    LEFT JOIN transcript_blocks AS blocks
+                        ON blocks.session_id = entries.session_id
+                        AND blocks.block_id = entries.block_id
+                    WHERE entries.session_id = ?1
+                        AND (blocks.turn_id IS NULL
+                            OR blocks.turn_id NOT GLOB 'legacy-transcript:*')
+                )",
+                params![session_id.0],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| transcript_sql("detect native transcript entries", error))?
+            == 1;
+        // Native entries are authoritative even when the session began as a
+        // legacy backfill. An empty native-default row is not sufficient.
+        Ok(!has_native_entries)
+    }
+
+    pub(crate) fn native_transcript_entry_ids(
+        &self,
+        session_id: &SessionId,
+        entry_ids: &[String],
+    ) -> AiResult<BTreeSet<String>> {
+        if !self.database_path.exists() || entry_ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let connection = self.open(session_id, false)?;
+        let placeholders = std::iter::repeat_n("?", entry_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT entries.entry_id
+             FROM transcript_entries AS entries
+             JOIN transcript_blocks AS blocks
+                ON blocks.session_id = entries.session_id
+                AND blocks.block_id = entries.block_id
+             WHERE entries.session_id = ?
+                AND entries.entry_id IN ({placeholders})
+                AND (blocks.turn_id IS NULL
+                    OR blocks.turn_id NOT GLOB 'legacy-transcript:*')"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| transcript_sql("prepare native transcript entry lookup", error))?;
+        let parameters =
+            std::iter::once(session_id.0.as_str()).chain(entry_ids.iter().map(String::as_str));
+        statement
+            .query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))
+            .map_err(|error| transcript_sql("query native transcript entries", error))?
+            .collect::<Result<BTreeSet<_>, _>>()
+            .map_err(|error| transcript_sql("read native transcript entry", error))
+    }
+
     pub(crate) fn begin_legacy_transcript_backfill(&self, session_id: &SessionId) -> AiResult<()> {
+        if !self.uses_legacy_transcript_backfill(session_id)? {
+            return Err(AiError::InvalidInput(
+                "A native transcript cannot start a legacy backfill".to_string(),
+            ));
+        }
         let connection = self.open(session_id, true)?;
         connection
             .execute(
@@ -92,10 +176,12 @@ impl TranscriptStore {
                     session_id,
                     next_sequence,
                     legacy_entries_imported,
-                    legacy_transcript_backfill_complete
-                 ) VALUES (?1, 1, 1, 0)
+                    legacy_transcript_backfill_complete,
+                    transcript_origin
+                 ) VALUES (?1, 1, 1, 0, 'legacy_backfill')
                  ON CONFLICT (session_id) DO UPDATE SET
-                    legacy_transcript_backfill_complete = 0",
+                    legacy_transcript_backfill_complete = 0,
+                    transcript_origin = 'legacy_backfill'",
                 params![session_id.0],
             )
             .map_err(|error| transcript_sql("start legacy transcript backfill", error))?;
@@ -118,6 +204,64 @@ impl TranscriptStore {
             .optional()
             .map_err(|error| transcript_sql("load legacy transcript backfill checkpoint", error))
             .map(|offset| offset.unwrap_or(0).max(0) as usize)
+    }
+
+    pub(crate) fn legacy_transcript_backfill_is_current(
+        &self,
+        session_id: &SessionId,
+        legacy_record_count: usize,
+    ) -> AiResult<bool> {
+        if !self.legacy_transcript_backfill_complete(session_id)? {
+            return Ok(false);
+        }
+        Ok(self.legacy_transcript_backfill_next_offset(session_id)? >= legacy_record_count)
+    }
+
+    pub(crate) fn invalidate_legacy_transcript_backfill_from(
+        &self,
+        session_id: &SessionId,
+        first_changed_offset: usize,
+        stale_entry_ids: &[String],
+    ) -> AiResult<()> {
+        if !self.database_path.exists() {
+            return Ok(());
+        }
+        if !self.uses_legacy_transcript_backfill(session_id)? {
+            return Ok(());
+        }
+
+        let mut connection = self.open(session_id, false)?;
+        // The JSONL writer can revise streaming messages in place, so retain
+        // the earliest affected cursor instead of trusting a completed flag.
+        let obsolete_payload_files = (|| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| {
+                    transcript_sql("start legacy transcript invalidation transaction", error)
+                })?;
+            let obsolete_payload_files =
+                purge_legacy_transcript_entries_from(&transaction, session_id, stale_entry_ids)?;
+            transaction
+                .execute(
+                    "UPDATE transcript_sessions
+                 SET
+                    legacy_transcript_backfill_complete = 0,
+                    legacy_transcript_backfill_next_offset = MIN(
+                        legacy_transcript_backfill_next_offset,
+                        ?2
+                    )
+                 WHERE session_id = ?1",
+                    params![session_id.0, first_changed_offset as i64],
+                )
+                .map_err(|error| transcript_sql("invalidate legacy transcript backfill", error))?;
+            transaction
+                .commit()
+                .map_err(|error| transcript_sql("commit legacy transcript invalidation", error))?;
+            Ok(obsolete_payload_files)
+        })()?;
+        self.remove_unreferenced_payload_files(&connection, session_id, &obsolete_payload_files);
+
+        Ok(())
     }
 
     pub(crate) fn advance_legacy_transcript_backfill(
@@ -266,6 +410,7 @@ impl TranscriptStore {
                 .map_err(|error| {
                     transcript_sql("start open transcript checkpoint transaction", error)
                 })?;
+            validate_open_tail_turn_transition(&transaction, &session_id, &turn_id)?;
             let obsolete_payload_files =
                 persist_payloads(&transaction, &session_id, &prepared_payloads)?;
             append_entries_in_transaction(&transaction, &session_id, entries)?;
@@ -296,6 +441,99 @@ impl TranscriptStore {
                 Err(error)
             }
         }
+    }
+
+    pub(crate) fn reconcile_terminal_open_tail(
+        &self,
+        session_id: &SessionId,
+        turn_id: &str,
+    ) -> AiResult<Vec<NativeAiTranscriptBlockMetadata>> {
+        if turn_id.trim().is_empty() {
+            return Err(AiError::InvalidInput(
+                "Open transcript turn ID must not be empty".to_string(),
+            ));
+        }
+        let mut connection = self.open(session_id, true)?;
+        (|| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|error| {
+                    transcript_sql("start terminal open transcript reconciliation", error)
+                })?;
+            let state = transaction
+                .query_row(
+                    "SELECT turn_id, terminal_status
+                     FROM transcript_open_tails
+                     WHERE session_id = ?1",
+                    params![session_id.0],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                )
+                .optional()
+                .map_err(|error| transcript_sql("load terminal open transcript tail", error))?;
+            let Some((stored_turn_id, terminal_status)) = state else {
+                return load_all_block_metadata(&transaction, session_id);
+            };
+            if stored_turn_id != turn_id {
+                return Err(AiError::InvalidInput(
+                    "Open transcript tail belongs to a different turn".to_string(),
+                ));
+            }
+            if terminal_status.is_none() {
+                return Err(AiError::InvalidInput(
+                    "Open transcript tail is not terminal".to_string(),
+                ));
+            }
+
+            let mut statement = transaction
+                .prepare(
+                    "SELECT entry_id
+                     FROM transcript_open_tail_entries
+                     WHERE session_id = ?1
+                     ORDER BY ordinal ASC",
+                )
+                .map_err(|error| transcript_sql("prepare terminal open tail entries", error))?;
+            let entry_ids = statement
+                .query_map(params![session_id.0], |row| row.get::<_, String>(0))
+                .map_err(|error| transcript_sql("query terminal open tail entries", error))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| transcript_sql("read terminal open tail entry", error))?;
+            drop(statement);
+
+            let block_ids = block_ids_for_entries(&transaction, session_id, &entry_ids)?;
+            validate_block_payload_references(&transaction, session_id, &block_ids)?;
+            let mut open_block_ids = Vec::new();
+            for block_id in &block_ids {
+                let is_sealed = transaction
+                    .query_row(
+                        "SELECT is_sealed
+                         FROM transcript_blocks
+                         WHERE session_id = ?1 AND block_id = ?2",
+                        params![session_id.0, block_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .map_err(|error| {
+                        transcript_sql("load transcript block reconciliation state", error)
+                    })?;
+                if is_sealed == 0 {
+                    open_block_ids.push(block_id.clone());
+                }
+            }
+
+            // Blocks already sealed by another turn are durable and must not be reassigned.
+            seal_blocks(&transaction, session_id, turn_id, &open_block_ids)?;
+            let metadata = load_block_metadata_by_ids(&transaction, session_id, &block_ids)?;
+            transaction
+                .execute(
+                    "DELETE FROM transcript_open_tails
+                     WHERE session_id = ?1 AND turn_id = ?2",
+                    params![session_id.0, turn_id],
+                )
+                .map_err(|error| transcript_sql("clear reconciled open transcript tail", error))?;
+            transaction.commit().map_err(|error| {
+                transcript_sql("commit terminal open transcript reconciliation", error)
+            })?;
+            Ok(metadata)
+        })()
     }
 
     pub(crate) fn load_open_tail(
@@ -864,7 +1102,9 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                 legacy_transcript_backfill_complete INTEGER NOT NULL DEFAULT 1
                     CHECK (legacy_transcript_backfill_complete IN (0, 1)),
                 legacy_transcript_backfill_next_offset INTEGER NOT NULL DEFAULT 0
-                    CHECK (legacy_transcript_backfill_next_offset >= 0)
+                    CHECK (legacy_transcript_backfill_next_offset >= 0),
+                transcript_origin TEXT NOT NULL DEFAULT 'native'
+                    CHECK (transcript_origin IN ('native', 'legacy_backfill'))
              ) STRICT;
 
              CREATE TABLE IF NOT EXISTS transcript_entries (
@@ -906,6 +1146,14 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                  CHECK (legacy_transcript_backfill_next_offset >= 0);",
             )
             .map_err(|error| transcript_sql("add legacy transcript backfill checkpoint", error))?;
+    } else if locked_version == 5 {
+        transaction
+            .execute_batch(
+                "ALTER TABLE transcript_sessions
+                 ADD COLUMN transcript_origin TEXT NOT NULL DEFAULT 'native'
+                 CHECK (transcript_origin IN ('native', 'legacy_backfill'));",
+            )
+            .map_err(|error| transcript_sql("add transcript origin", error))?;
     } else {
         return Err(AiError::Internal(format!(
             "Transcript database schema version {locked_version} cannot be migrated"
@@ -930,6 +1178,16 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                  CHECK (legacy_transcript_backfill_next_offset >= 0);",
             )
             .map_err(|error| transcript_sql("add legacy transcript backfill checkpoint", error))?;
+    }
+
+    if matches!(locked_version, 1..=4) {
+        transaction
+            .execute_batch(
+                "ALTER TABLE transcript_sessions
+                 ADD COLUMN transcript_origin TEXT NOT NULL DEFAULT 'native'
+                 CHECK (transcript_origin IN ('native', 'legacy_backfill'));",
+            )
+            .map_err(|error| transcript_sql("add transcript origin", error))?;
     }
 
     transaction
@@ -1087,6 +1345,30 @@ fn migrate_schema(connection: &mut Connection) -> AiResult<()> {
                 params![now_iso8601()],
             )
             .map_err(|error| transcript_sql("seal migrated transcript blocks", error))?;
+    }
+    if matches!(locked_version, 1..=5) {
+        // Existing backfills are identifiable by their own turns. A native
+        // block always wins so a failed legacy attempt cannot poison it.
+        transaction
+            .execute_batch(
+                "UPDATE transcript_sessions AS sessions
+                 SET transcript_origin = 'legacy_backfill'
+                 WHERE sessions.legacy_transcript_backfill_complete = 0
+                    OR (
+                        EXISTS (
+                        SELECT 1 FROM transcript_blocks AS blocks
+                        WHERE blocks.session_id = sessions.session_id
+                            AND blocks.turn_id GLOB 'legacy-transcript:*'
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM transcript_blocks AS blocks
+                            WHERE blocks.session_id = sessions.session_id
+                                AND (blocks.turn_id IS NULL
+                                    OR blocks.turn_id NOT GLOB 'legacy-transcript:*')
+                        )
+                    );",
+            )
+            .map_err(|error| transcript_sql("classify transcript origins", error))?;
     }
     transaction
         .pragma_update(None, "user_version", i64::from(TRANSCRIPT_SCHEMA_VERSION))
@@ -1362,6 +1644,35 @@ fn persist_open_tail(
     Ok(())
 }
 
+fn validate_open_tail_turn_transition(
+    transaction: &Transaction<'_>,
+    session_id: &SessionId,
+    turn_id: &str,
+) -> AiResult<()> {
+    let state = transaction
+        .query_row(
+            "SELECT turn_id, terminal_status
+             FROM transcript_open_tails
+             WHERE session_id = ?1",
+            params![session_id.0],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+        .map_err(|error| transcript_sql("load open transcript turn transition", error))?;
+    let Some((existing_turn_id, terminal_status)) = state else {
+        return Ok(());
+    };
+    if existing_turn_id == turn_id {
+        return Ok(());
+    }
+    let message = if terminal_status.is_some() {
+        "Terminal open transcript tail must be reconciled before changing turns"
+    } else {
+        "Open transcript tail belongs to another unresolved turn"
+    };
+    Err(AiError::InvalidInput(message.to_string()))
+}
+
 fn reserve_open_tail_ordinals(
     transaction: &Transaction<'_>,
     session_id: &SessionId,
@@ -1533,6 +1844,132 @@ fn refresh_block_metadata(
         ));
     }
     Ok(())
+}
+
+fn purge_legacy_transcript_entries_from(
+    transaction: &Transaction<'_>,
+    session_id: &SessionId,
+    stale_entry_ids: &[String],
+) -> AiResult<Vec<String>> {
+    let mut affected_blocks = BTreeSet::new();
+    // IDs preserve the JSONL-to-SQLite mapping even when native entries were
+    // skipped during backfill and therefore consumed no SQLite sequence.
+    for entry_ids in stale_entry_ids.chunks(500) {
+        let placeholders = std::iter::repeat_n("?", entry_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let parameters = std::iter::once(session_id.0.as_str())
+            .chain(entry_ids.iter().map(String::as_str))
+            .collect::<Vec<_>>();
+        let lookup_sql = format!(
+            "SELECT DISTINCT entries.block_id
+             FROM transcript_entries AS entries
+             JOIN transcript_blocks AS blocks
+                ON blocks.session_id = entries.session_id
+                AND blocks.block_id = entries.block_id
+             WHERE entries.session_id = ?
+                AND entries.entry_id IN ({placeholders})
+                AND blocks.turn_id GLOB 'legacy-transcript:*'"
+        );
+        let mut statement = transaction
+            .prepare(&lookup_sql)
+            .map_err(|error| transcript_sql("prepare legacy transcript purge blocks", error))?;
+        let block_ids = statement
+            .query_map(params_from_iter(parameters.iter()), |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|error| transcript_sql("query legacy transcript purge blocks", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| transcript_sql("read legacy transcript purge block", error))?;
+        affected_blocks.extend(block_ids);
+
+        // Only backfill turns participate here so native transcript entries
+        // keep their own lifecycle during compatibility reconciliation.
+        let delete_sql = format!(
+            "DELETE FROM transcript_entries
+             WHERE session_id = ?
+                AND entry_id IN (
+                    SELECT entries.entry_id
+                    FROM transcript_entries AS entries
+                    JOIN transcript_blocks AS blocks
+                        ON blocks.session_id = entries.session_id
+                        AND blocks.block_id = entries.block_id
+                    WHERE entries.session_id = ?
+                        AND entries.entry_id IN ({placeholders})
+                        AND blocks.turn_id GLOB 'legacy-transcript:*'
+                )"
+        );
+        let delete_parameters = std::iter::once(session_id.0.as_str())
+            .chain(std::iter::once(session_id.0.as_str()))
+            .chain(entry_ids.iter().map(String::as_str));
+        transaction
+            .execute(&delete_sql, params_from_iter(delete_parameters))
+            .map_err(|error| transcript_sql("remove stale legacy transcript entries", error))?;
+    }
+
+    if affected_blocks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    for block_id in affected_blocks {
+        let has_entries = transaction
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM transcript_entries
+                    WHERE session_id = ?1 AND block_id = ?2
+                )",
+                params![session_id.0, block_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| transcript_sql("check legacy transcript block after purge", error))?
+            == 1;
+        if has_entries {
+            refresh_block_metadata(transaction, session_id, &block_id)?;
+        } else {
+            transaction
+                .execute(
+                    "DELETE FROM transcript_blocks
+                     WHERE session_id = ?1 AND block_id = ?2",
+                    params![session_id.0, block_id],
+                )
+                .map_err(|error| transcript_sql("remove empty legacy transcript block", error))?;
+        }
+    }
+
+    let obsolete_payload_files = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT file_name
+                 FROM transcript_payloads AS payloads
+                 WHERE payloads.session_id = ?1
+                    AND payloads.file_name IS NOT NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM transcript_entries AS entries
+                        WHERE entries.session_id = payloads.session_id
+                            AND entries.payload_ref = payloads.payload_ref
+                    )",
+            )
+            .map_err(|error| transcript_sql("prepare stale transcript payload cleanup", error))?;
+        statement
+            .query_map(params![session_id.0], |row| row.get::<_, String>(0))
+            .map_err(|error| transcript_sql("query stale transcript payload files", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| transcript_sql("read stale transcript payload file", error))?
+    };
+    transaction
+        .execute(
+            "DELETE FROM transcript_payloads
+             WHERE session_id = ?1
+                AND NOT EXISTS (
+                    SELECT 1 FROM transcript_entries AS entries
+                    WHERE entries.session_id = transcript_payloads.session_id
+                        AND entries.payload_ref = transcript_payloads.payload_ref
+                )",
+            params![session_id.0],
+        )
+        .map_err(|error| transcript_sql("remove stale transcript payloads", error))?;
+
+    Ok(obsolete_payload_files)
 }
 
 #[derive(Debug)]
@@ -2120,6 +2557,32 @@ mod tests {
         }
     }
 
+    fn open_tail_checkpoint(
+        session_id: &SessionId,
+        turn_id: &str,
+        terminal_status: Option<NativeAiTranscriptTerminalStatus>,
+        entries: Vec<NativeAiTranscriptEntryEnvelope>,
+    ) -> NativeAiCheckpointOpenTranscriptTailInput {
+        let entry_order = entries
+            .iter()
+            .enumerate()
+            .map(|(ordinal, entry)| NativeAiOpenTranscriptEntryRef {
+                entry_id: entry.id.clone(),
+                entry_revision: 1,
+                ordinal,
+            })
+            .collect();
+        NativeAiCheckpointOpenTranscriptTailInput {
+            session_id: session_id.clone(),
+            turn_id: turn_id.to_string(),
+            terminal_status,
+            entries,
+            payloads: Vec::new(),
+            removed_entry_ids: Vec::new(),
+            entry_order,
+        }
+    }
+
     #[test]
     fn newer_schema_is_rejected_without_touching_provisional_entries() {
         let temp = tempfile::tempdir().unwrap();
@@ -2306,6 +2769,185 @@ mod tests {
                 .map(|entry| &entry.id)
                 .collect::<Vec<_>>(),
             vec![&first.id]
+        );
+    }
+
+    #[test]
+    fn checkpoint_rejects_replacing_an_unresolved_open_tail() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_id = SessionId("unresolved-turn-transition".to_string());
+        let store = TranscriptStore::new(temp.path());
+        let first = entry(&session_id, "entry-a");
+        let second = entry(&session_id, "entry-b");
+
+        store
+            .checkpoint_open_tail(open_tail_checkpoint(
+                &session_id,
+                "turn-a",
+                None,
+                vec![first.clone()],
+            ))
+            .unwrap();
+
+        let error = store
+            .checkpoint_open_tail(open_tail_checkpoint(
+                &session_id,
+                "turn-b",
+                None,
+                vec![second],
+            ))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Open transcript tail belongs to another unresolved turn")
+        );
+        let tail = store.load_open_tail(&session_id).unwrap().unwrap();
+        assert_eq!(tail.turn_id, "turn-a");
+        assert_eq!(
+            tail.entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![first.id.as_str()]
+        );
+    }
+
+    #[test]
+    fn checkpoint_requires_terminal_tail_reconciliation_before_turn_change() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_id = SessionId("terminal-turn-transition".to_string());
+        let store = TranscriptStore::new(temp.path());
+        let first = entry(&session_id, "entry-a");
+        let second = entry(&session_id, "entry-b");
+
+        store
+            .checkpoint_open_tail(open_tail_checkpoint(
+                &session_id,
+                "turn-a",
+                Some(NativeAiTranscriptTerminalStatus::Completed),
+                vec![first],
+            ))
+            .unwrap();
+
+        let error = store
+            .checkpoint_open_tail(open_tail_checkpoint(
+                &session_id,
+                "turn-b",
+                None,
+                vec![second.clone()],
+            ))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Terminal open transcript tail must be reconciled")
+        );
+
+        store
+            .reconcile_terminal_open_tail(&session_id, "turn-a")
+            .unwrap();
+        store
+            .checkpoint_open_tail(open_tail_checkpoint(
+                &session_id,
+                "turn-b",
+                None,
+                vec![second.clone()],
+            ))
+            .unwrap();
+
+        let tail = store.load_open_tail(&session_id).unwrap().unwrap();
+        assert_eq!(tail.turn_id, "turn-b");
+        assert_eq!(
+            tail.entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![second.id.as_str()]
+        );
+    }
+
+    #[test]
+    fn terminal_open_tail_reconciles_a_foreign_sealed_block() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_id = SessionId("foreign-sealed-tail".to_string());
+        let store = TranscriptStore::new(temp.path());
+        let first = entry(&session_id, "entry-in-sealed-block");
+        let second = entry(&session_id, "entry-in-open-block");
+
+        store.append(&session_id, vec![first.clone()]).unwrap();
+        store
+            .seal_turn(&session_id, "turn-a", vec![first.clone()], Vec::new())
+            .unwrap();
+
+        // The recovered terminal tail deliberately retains a reference owned by turn-a.
+        store
+            .checkpoint_open_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-b".to_string(),
+                terminal_status: Some(NativeAiTranscriptTerminalStatus::Completed),
+                entries: vec![first.clone(), second.clone()],
+                payloads: Vec::new(),
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: first.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 0,
+                    },
+                    NativeAiOpenTranscriptEntryRef {
+                        entry_id: second.id.clone(),
+                        entry_revision: 1,
+                        ordinal: 1,
+                    },
+                ],
+            })
+            .unwrap();
+
+        let metadata = store
+            .reconcile_terminal_open_tail(&session_id, "turn-b")
+            .unwrap();
+
+        assert!(store.load_open_tail(&session_id).unwrap().is_none());
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(store.load_block_metadata(&session_id).unwrap().len(), 2);
+        assert_eq!(
+            store
+                .reconcile_terminal_open_tail(&session_id, "turn-b")
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let connection = store.open(&session_id, false).unwrap();
+        let (sealed, open): (i64, i64) = connection
+            .query_row(
+                "SELECT
+                    SUM(CASE WHEN is_sealed = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN is_sealed = 0 THEN 1 ELSE 0 END)
+                 FROM transcript_blocks
+                 WHERE session_id = ?1",
+                params![session_id.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((sealed, open), (2, 0));
+        let owners = connection
+            .prepare(
+                "SELECT turn_id
+                 FROM transcript_blocks
+                 WHERE session_id = ?1
+                 ORDER BY ordinal ASC",
+            )
+            .unwrap()
+            .query_map(params![session_id.0], |row| row.get::<_, Option<String>>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            owners,
+            vec![Some("turn-a".to_string()), Some("turn-b".to_string())]
         );
     }
 

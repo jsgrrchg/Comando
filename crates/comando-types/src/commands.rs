@@ -154,6 +154,7 @@ pub const AI_COMMANDS: &[&str] = &[
     "ai_set_session_config_option",
     "ai_rename_session",
     "ai_list_session_history",
+    "ai_count_session_history_by_runtime",
     "ai_load_session_transcript_page",
     "ai_append_transcript_entries",
     "ai_checkpoint_open_transcript_tail",

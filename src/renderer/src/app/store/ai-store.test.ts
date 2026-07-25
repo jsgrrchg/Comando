@@ -18,6 +18,7 @@ import {
     createReviewActionLogFromTrackedFiles,
     deriveTrackedFilesFromActionLog,
 } from "@shared/ai-review-action-log";
+import { createCustomRuntimeChangeConfirmationErrorMessage } from "@shared/ai-session-errors";
 
 import { getSessionReviewPreferencesStorageKey } from "@renderer/app/ai/sessionReviewPreferences";
 import { buildBlockNativeTranscript } from "@renderer/app/ai/transcriptWindowProjection";
@@ -3070,6 +3071,90 @@ describe("ai-store queue", () => {
         expect(session?.snapshot?.modelId).toBe("gpt-5");
     });
 
+    it("surfaces changed custom runtime confirmation and retries only when approved", async () => {
+        const historyTab: WorkspaceChatTab = {
+            ...TAB,
+            runtimeId: "custom:550e8400-e29b-41d4-a716-446655440000",
+            sessionOpenMode: "history",
+        };
+        const historySnapshot = createSnapshot({
+            runtimeId: historyTab.runtimeId,
+        });
+        const prepareAiSession = vi
+            .fn()
+            .mockRejectedValueOnce(
+                new Error(
+                    createCustomRuntimeChangeConfirmationErrorMessage(
+                        "The Pi definition changed since this session was created. Continue with the modified configuration?",
+                    ),
+                ),
+            )
+            .mockResolvedValueOnce(historySnapshot);
+
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiRuntimeStatus: vi
+                        .fn()
+                        .mockResolvedValue(
+                            createRuntimeStatus({
+                                runtimeId: historyTab.runtimeId,
+                            }),
+                        ),
+                    getAiSessionSnapshot: vi
+                        .fn()
+                        .mockResolvedValue(historySnapshot),
+                    prepareAiSession,
+                },
+            },
+            writable: true,
+        });
+
+        await useAiStore.getState().ensureSession(historyTab);
+        await expect(
+            useAiStore
+                .getState()
+                .ensureSession(historyTab, { force: true }),
+        ).rejects.toThrow("definition changed");
+
+        expect(prepareAiSession).toHaveBeenNthCalledWith(1, {
+            projectId: historyTab.projectId,
+            runtimeId: historyTab.runtimeId,
+            sessionId: historyTab.sessionId,
+            title: historyTab.title,
+            worktreeId: historyTab.worktreeId,
+        });
+        expect(
+            useAiStore.getState().sessions[historyTab.sessionId]?.localError,
+        ).toBe(
+            "The Pi definition changed since this session was created. Continue with the modified configuration?",
+        );
+        expect(
+            useAiStore.getState().sessions[historyTab.sessionId]?.runtimeState,
+        ).toBe("history");
+
+        await useAiStore.getState().ensureSession(historyTab, {
+            confirmCustomRuntimeChange: true,
+            force: true,
+        });
+
+        expect(prepareAiSession).toHaveBeenNthCalledWith(2, {
+            confirmCustomRuntimeChange: true,
+            projectId: historyTab.projectId,
+            runtimeId: historyTab.runtimeId,
+            sessionId: historyTab.sessionId,
+            title: historyTab.title,
+            worktreeId: historyTab.worktreeId,
+        });
+        expect(
+            useAiStore.getState().sessions[historyTab.sessionId]?.localError,
+        ).toBeNull();
+        expect(
+            useAiStore.getState().sessions[historyTab.sessionId]?.runtimeState,
+        ).toBe("live");
+    });
+
     it("hydrates a registered history tab instead of mistaking its placeholder for history", async () => {
         const historyTab: WorkspaceChatTab = {
             ...TAB,
@@ -4552,6 +4637,19 @@ describe("ai-store queue", () => {
         expect(
             useAiStore.getState().sessions[TAB.sessionId]?.isPlanCollapsed,
         ).toBe(true);
+    });
+
+    it("keeps the pending review collapse preference per session", () => {
+        useAiStore.getState().registerSessionTab(TAB);
+
+        useAiStore
+            .getState()
+            .setSessionPendingReviewCollapsed(TAB.sessionId, false);
+
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]
+                ?.isPendingReviewCollapsed,
+        ).toBe(false);
     });
 
     it("merges incremental session patches without replacing the whole snapshot", () => {

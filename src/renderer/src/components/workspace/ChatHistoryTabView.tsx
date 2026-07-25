@@ -1371,6 +1371,7 @@ export function ChatHistoryTabLayout({
                                                     <span className="shrink-0">
                                                         {getHistoryRuntimeLabel(
                                                             session.runtimeId,
+                                                            session.runtimeDisplayName,
                                                         )}
                                                     </span>
                                                     <span
@@ -1493,6 +1494,7 @@ export function ChatHistoryTabLayout({
                                     <span className="shrink-0">
                                         {getHistoryRuntimeLabel(
                                             selectedSession.runtimeId,
+                                            selectedSession.runtimeDisplayName,
                                         )}
                                     </span>
                                     {isSubagentSession(selectedSession) ? (

@@ -19,6 +19,8 @@ export const IPC_CHANNELS = {
     getWindowContext: "app:get-window-context",
     readClipboardText: "app:read-clipboard-text",
     writeClipboardText: "app:write-clipboard-text",
+    writeClipboardImage: "app:write-clipboard-image",
+    saveImageAs: "app:save-image-as",
     openExternalUrl: "app:open-external-url",
     openGeneratedImage: "app:open-generated-image",
     revealGeneratedImage: "app:reveal-generated-image",
@@ -34,6 +36,13 @@ export const IPC_CHANNELS = {
     saveGrokRuntimeSettings: "settings:save-grok-runtime-settings",
     saveKiloRuntimeSettings: "settings:save-kilo-runtime-settings",
     saveOpenCodeRuntimeSettings: "settings:save-opencode-runtime-settings",
+    listCustomAcpRuntimes: "settings:list-custom-acp-runtimes",
+    listDeletedCustomAcpRuntimes: "settings:list-deleted-custom-acp-runtimes",
+    createCustomAcpRuntime: "settings:create-custom-acp-runtime",
+    updateCustomAcpRuntime: "settings:update-custom-acp-runtime",
+    deleteCustomAcpRuntime: "settings:delete-custom-acp-runtime",
+    restoreCustomAcpRuntime: "settings:restore-custom-acp-runtime",
+    verifyCustomAcpRuntime: "settings:verify-custom-acp-runtime",
     getSystemTheme: "app:get-system-theme",
     saveSettingsSnapshot: "settings:save-snapshot",
     saveProjectSettings: "settings:save-project-settings",
@@ -383,12 +392,36 @@ export interface ReadClaudeCodeTranscriptResult {
     readonly title: string | null;
 }
 
-export type AiRuntimeId =
+export type BuiltInAiRuntimeId =
     | "claude"
     | "codex"
     | "grok"
     | "kilo"
     | "opencode";
+
+export type CustomAcpRuntimeId = `custom:${string}`;
+
+export type AiRuntimeId = BuiltInAiRuntimeId | CustomAcpRuntimeId;
+export type CustomAcpContinuationStrategy =
+    | "load"
+    | "new-session-only"
+    | "resume";
+
+export type AiRuntimeKind = "built-in" | "custom-acp";
+
+export interface AiRuntimeProductCapabilities {
+    readonly internalAuthentication: boolean;
+    readonly proprietaryActions: boolean;
+    readonly subagents: boolean;
+}
+
+export interface AiRuntimeDescriptor {
+    readonly available: boolean;
+    readonly capabilities: AiRuntimeProductCapabilities;
+    readonly displayName: string;
+    readonly id: AiRuntimeId;
+    readonly kind: AiRuntimeKind;
+}
 
 export interface AiAuthMethod {
     readonly description: string;
@@ -502,6 +535,69 @@ export interface AiSettingsSnapshot {
     readonly grok: GrokRuntimeSettings;
     readonly kilo: KiloRuntimeSettings;
     readonly opencode: OpenCodeRuntimeSettings;
+}
+
+export interface CustomAcpRuntimeDefinition {
+    readonly args: readonly string[];
+    readonly authMode: "external";
+    readonly command: string;
+    readonly displayName: string;
+    readonly env: Readonly<Record<string, string>>;
+    readonly id: CustomAcpRuntimeId;
+    readonly launchFingerprint: string;
+    readonly revision: number;
+}
+
+export interface CustomAcpRuntimeDefinitionInput {
+    readonly args: readonly string[];
+    readonly authMode: "external";
+    readonly command: string;
+    readonly displayName: string;
+    readonly env: Readonly<Record<string, string>>;
+}
+
+export interface CustomAcpLaunchSpec {
+    readonly args: readonly string[];
+    readonly authMode: "external";
+    readonly command: string;
+    readonly configuredEnv: Readonly<Record<string, string>>;
+    readonly displayName: string;
+    readonly env: Readonly<Record<string, string>>;
+    readonly executable: string;
+    readonly launchFingerprint: string;
+    readonly productProfile: "conservative";
+    readonly protocolVersion: "acp-current14";
+    readonly revision: number;
+    readonly runtimeId: CustomAcpRuntimeId;
+    readonly state: "ready";
+}
+
+export interface CustomAcpRuntimesSettings {
+    readonly deletedRuntimes?: readonly CustomAcpRuntimeDefinition[];
+    readonly runtimes: readonly CustomAcpRuntimeDefinition[];
+    readonly version: 1;
+}
+
+export interface UpdateCustomAcpRuntimeInput {
+    readonly definition: CustomAcpRuntimeDefinitionInput;
+    readonly id: CustomAcpRuntimeId;
+}
+
+export interface DeleteCustomAcpRuntimeInput {
+    readonly id: CustomAcpRuntimeId;
+}
+
+export interface RestoreCustomAcpRuntimeInput {
+    readonly id: CustomAcpRuntimeId;
+}
+
+export interface DeleteCustomAcpRuntimeResult {
+    readonly deleted: boolean;
+    readonly historyReferenceCount: number;
+}
+
+export interface VerifyCustomAcpRuntimeInput {
+    readonly definition: CustomAcpRuntimeDefinitionInput;
 }
 
 export type AiRuntimeSource =
@@ -653,6 +749,7 @@ export interface SettingsSnapshot {
     readonly ai?: AiSettingsSnapshot | null;
     readonly aiChat?: AppAiChatSettings | null;
     readonly appearance?: AppAppearanceSettings | null;
+    readonly customAcpRuntimes?: CustomAcpRuntimesSettings | null;
     readonly editor?: AppEditorSettings | null;
     readonly shellState: PersistedShellState | null;
     readonly terminal?: AppTerminalSettings | null;
@@ -2764,6 +2861,10 @@ export interface AiSessionSnapshot {
     readonly projectId: string | null;
     readonly reasoningEffort?: string | null;
     readonly runtimeId: AiRuntimeId;
+    readonly customAcpContinuationStrategy?: CustomAcpContinuationStrategy | null;
+    readonly runtimeDisplayName?: string | null;
+    readonly runtimeLaunchFingerprint?: string | null;
+    readonly runtimeRevision?: number | null;
     readonly runtimeSessionId: string | null;
     readonly reviewActionLog?: AiReviewActionLogState | null;
     readonly reviewDeltas?: readonly AiReviewDeltaSummary[];
@@ -2953,6 +3054,11 @@ export interface AiSealTranscriptTurnInput {
     readonly turnId: string;
     readonly entries: readonly AiTranscriptEntryEnvelope[];
     readonly payloads: readonly AiTranscriptPayloadWrite[];
+}
+
+export interface AiReconcileTerminalOpenTranscriptTailInput {
+    readonly sessionId: string;
+    readonly turnId: string;
 }
 
 export const AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION = 1;
@@ -3290,6 +3396,7 @@ export interface UpdateAiQueuedPromptInput extends EnqueueAiPromptInput {
 }
 
 export interface PrepareAiSessionInput {
+    readonly confirmCustomRuntimeChange?: boolean;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
     readonly sessionId: string;
@@ -3342,6 +3449,10 @@ export interface AiHistorySessionSummary {
     readonly preview: string | null;
     readonly projectId: string | null;
     readonly runtimeId: AiRuntimeId;
+    readonly customAcpContinuationStrategy?: CustomAcpContinuationStrategy | null;
+    readonly runtimeDisplayName?: string | null;
+    readonly runtimeLaunchFingerprint?: string | null;
+    readonly runtimeRevision?: number | null;
     readonly runtimeSessionId?: string | null;
     readonly sessionId: string;
     readonly title: string;
@@ -3420,6 +3531,15 @@ export interface ConfirmWorkspaceCloseInput {
     readonly workspaceName: string;
 }
 
+export interface ImageClipboardInput {
+    readonly dataBase64: string;
+    readonly mimeType: string;
+}
+
+export interface SaveImageAsInput extends ImageClipboardInput {
+    readonly suggestedName: string;
+}
+
 export interface ComandoApi {
     getBootstrapSnapshot: () => Promise<AppBootstrapSnapshot>;
     getAppUpdateState: () => Promise<AppUpdateState>;
@@ -3432,6 +3552,8 @@ export interface ComandoApi {
     readClipboardText: () => Promise<string>;
     resolveDroppedFilePath: (file: File | null) => string | null;
     writeClipboardText: (text: string) => Promise<void>;
+    writeClipboardImage: (input: ImageClipboardInput) => Promise<void>;
+    saveImageAs: (input: SaveImageAsInput) => Promise<void>;
     openExternalUrl: (url: string) => Promise<void>;
     openGeneratedImage: (path: string) => Promise<void>;
     revealGeneratedImage: (path: string) => Promise<void>;
@@ -3446,6 +3568,27 @@ export interface ComandoApi {
         input: ReadClaudeCodeTranscriptInput,
     ) => Promise<ReadClaudeCodeTranscriptResult>;
     getSettingsSnapshot: () => Promise<SettingsSnapshot>;
+    listCustomAcpRuntimes: () => Promise<
+        readonly CustomAcpRuntimeDefinition[]
+    >;
+    listDeletedCustomAcpRuntimes: () => Promise<
+        readonly CustomAcpRuntimeDefinition[]
+    >;
+    createCustomAcpRuntime: (
+        definition: CustomAcpRuntimeDefinitionInput,
+    ) => Promise<CustomAcpRuntimeDefinition>;
+    updateCustomAcpRuntime: (
+        input: UpdateCustomAcpRuntimeInput,
+    ) => Promise<CustomAcpRuntimeDefinition>;
+    deleteCustomAcpRuntime: (
+        input: DeleteCustomAcpRuntimeInput,
+    ) => Promise<DeleteCustomAcpRuntimeResult>;
+    restoreCustomAcpRuntime: (
+        input: RestoreCustomAcpRuntimeInput,
+    ) => Promise<CustomAcpRuntimeDefinition>;
+    verifyCustomAcpRuntime: (
+        input: VerifyCustomAcpRuntimeInput,
+    ) => Promise<AiRuntimeStatus>;
     getProjectSettings: (
         projectId: string,
     ) => Promise<ProjectSettingsSnapshot | null>;

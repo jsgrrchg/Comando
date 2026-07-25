@@ -21,6 +21,7 @@ import type {
     AiRuntimeAuthLaunchInput,
     AiRuntimeAuthLogoutInput,
     AiRuntimeStatus,
+    CustomAcpLaunchSpec,
     AiSessionDomainEvent,
     AiSessionSnapshot,
     AiSessionUpdate,
@@ -36,6 +37,7 @@ import type {
     AiTranscriptPayload,
     AiTranscriptPayloadsOutput,
     AiTranscriptStorageState,
+    AiReconcileTerminalOpenTranscriptTailInput,
     AiSealTranscriptTurnInput,
     AiUserInputResponseInput,
     FileBufferNotificationInput,
@@ -162,6 +164,9 @@ export interface NativeAiGateway {
     closeOwnedByWindow(ownerWindowId: string): Promise<void> | void;
     closeSession(sessionId: string): Promise<void>;
     deleteSession(sessionId: string): Promise<void>;
+    countSessionHistoryByRuntime?(
+        runtimeId: AiRuntimeId,
+    ): Promise<number>;
     listSessionHistory(
         input: ListAiSessionHistoryInput,
     ): Promise<readonly AiHistorySessionSummary[]>;
@@ -208,6 +213,9 @@ export interface NativeAiGateway {
     respondUserInput(input: AiUserInputResponseInput): Promise<void>;
     sealTranscriptTurn?(
         input: AiSealTranscriptTurnInput,
+    ): Promise<readonly AiTranscriptBlockMetadata[]>;
+    reconcileTerminalOpenTranscriptTail?(
+        input: AiReconcileTerminalOpenTranscriptTailInput,
     ): Promise<readonly AiTranscriptBlockMetadata[]>;
     sendPrompt(input: NativeAiSendPromptRpcInput): Promise<AiPromptResult>;
     setSessionPinned(input: AiSessionPinnedMutationInput): Promise<void>;
@@ -302,6 +310,7 @@ export interface ResolvedAcpRuntime {
         readonly meta?: Record<string, unknown>;
     };
     readonly command: string;
+    readonly customAcpLaunch?: CustomAcpLaunchSpec;
     readonly env: NodeJS.ProcessEnv;
     readonly executable: string;
     readonly status: AiRuntimeStatus;
@@ -310,7 +319,12 @@ export interface ResolvedAcpRuntime {
 
 export type SessionDescriptor = Pick<
     PrepareAiSessionInput,
-    "projectId" | "runtimeId" | "sessionId" | "title" | "worktreeId"
+    | "confirmCustomRuntimeChange"
+    | "projectId"
+    | "runtimeId"
+    | "sessionId"
+    | "title"
+    | "worktreeId"
 > & {
     readonly additionalRoots?: readonly string[];
 };

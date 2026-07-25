@@ -27,6 +27,195 @@ afterEach(() => {
 });
 
 describe("createNativeAppDataClient", () => {
+    it("persists custom ACP CRUD without trusting renderer snapshots", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+        const firstClient = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const first = firstClient.settings.createCustomAcpRuntime({
+            args: [],
+            authMode: "external",
+            command: "/opt/homebrew/bin/pi-acp",
+            displayName: "Pi",
+            env: {},
+        });
+        const second = firstClient.settings.createCustomAcpRuntime({
+            args: ["--profile", "development"],
+            authMode: "external",
+            command: "/usr/local/bin/internal-acp",
+            displayName: "Internal development",
+            env: { INTERNAL_PROFILE: "development" },
+        });
+        const updated = firstClient.settings.updateCustomAcpRuntime(first.id, {
+            args: [],
+            authMode: "external",
+            command: "/opt/homebrew/bin/pi-acp",
+            displayName: "Pi renamed",
+            env: {},
+        });
+        const untrustedSnapshot = firstClient.settings.loadSnapshot();
+        firstClient.settings.saveSnapshot({
+            ...untrustedSnapshot,
+            customAcpRuntimes: { runtimes: [], version: 1 },
+        });
+
+        expect(updated).toMatchObject({
+            id: first.id,
+            revision: 2,
+        });
+        expect(updated.launchFingerprint).toBe(first.launchFingerprint);
+        expect(firstClient.settings.listCustomAcpRuntimes()).toHaveLength(2);
+        await firstClient.close();
+
+        const restored = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        expect(restored.settings.listCustomAcpRuntimes()).toEqual([
+            updated,
+            second,
+        ]);
+        expect(restored.settings.deleteCustomAcpRuntime(first.id)).toEqual({
+            deleted: true,
+            historyReferenceCount: 0,
+        });
+        expect(restored.settings.listCustomAcpRuntimes()).toEqual([second]);
+        expect(restored.settings.listDeletedCustomAcpRuntimes()).toEqual([
+            updated,
+        ]);
+        await restored.close();
+
+        const afterDelete = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        expect(afterDelete.settings.listDeletedCustomAcpRuntimes()).toEqual([
+            updated,
+        ]);
+        expect(
+            afterDelete.settings.restoreCustomAcpRuntime(first.id),
+        ).toEqual(updated);
+        expect(afterDelete.settings.listCustomAcpRuntimes()).toEqual([
+            second,
+            updated,
+        ]);
+        expect(afterDelete.settings.listDeletedCustomAcpRuntimes()).toEqual(
+            [],
+        );
+        await afterDelete.close();
+    });
+
+    it("keeps a deleted custom ACP runtime recoverable when restore is at capacity", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+        const client = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const definitions = Array.from({ length: 32 }, (_, index) =>
+            client.settings.createCustomAcpRuntime({
+                args: [],
+                authMode: "external",
+                command: `/usr/local/bin/acp-${index}`,
+                displayName: `Runtime ${index}`,
+                env: {},
+            }),
+        );
+        const deleted = definitions[0];
+        if (!deleted) {
+            throw new Error("Expected a runtime to delete.");
+        }
+        client.settings.deleteCustomAcpRuntime(deleted.id);
+        client.settings.createCustomAcpRuntime({
+            args: [],
+            authMode: "external",
+            command: "/usr/local/bin/acp-replacement",
+            displayName: "Runtime replacement",
+            env: {},
+        });
+
+        expect(() =>
+            client.settings.restoreCustomAcpRuntime(deleted.id),
+        ).toThrow("At most 32 custom runtimes are supported.");
+        expect(client.settings.listCustomAcpRuntimes()).toHaveLength(32);
+        expect(client.settings.listDeletedCustomAcpRuntimes()).toEqual([
+            deleted,
+        ]);
+        await client.close();
+
+        const reopened = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        expect(reopened.settings.listCustomAcpRuntimes()).toHaveLength(32);
+        expect(reopened.settings.listDeletedCustomAcpRuntimes()).toEqual([
+            deleted,
+        ]);
+        await reopened.close();
+    });
+
+    it("rejects deletion when all tombstone slots are occupied", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+        const client = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const deletedDefinitions = Array.from({ length: 32 }, (_, index) => {
+            const definition = client.settings.createCustomAcpRuntime({
+                args: [],
+                authMode: "external",
+                command: `/usr/local/bin/deleted-acp-${index}`,
+                displayName: `Deleted runtime ${index}`,
+                env: {},
+            });
+            client.settings.deleteCustomAcpRuntime(definition.id);
+            return definition;
+        });
+        const retained = client.settings.createCustomAcpRuntime({
+            args: [],
+            authMode: "external",
+            command: "/usr/local/bin/retained-acp",
+            displayName: "Retained runtime",
+            env: {},
+        });
+
+        expect(() =>
+            client.settings.deleteCustomAcpRuntime(retained.id),
+        ).toThrow(
+            "At most 32 deleted custom runtimes can be retained. Restore one before deleting another.",
+        );
+        expect(client.settings.listCustomAcpRuntimes()).toEqual([retained]);
+        expect(client.settings.listDeletedCustomAcpRuntimes()).toEqual(
+            deletedDefinitions,
+        );
+        await client.close();
+
+        const reopened = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        expect(reopened.settings.listCustomAcpRuntimes()).toEqual([retained]);
+        expect(reopened.settings.listDeletedCustomAcpRuntimes()).toEqual(
+            deletedDefinitions,
+        );
+        await reopened.close();
+    });
+
     it("atomically restores isolated workspace snapshots for multiple windows", async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
         tempDirs.push(tempDir);

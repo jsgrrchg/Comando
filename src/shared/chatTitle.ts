@@ -12,8 +12,25 @@ const PILL_CLOSE = "\u00BB\u200B";
 const MAX_TITLE_WORDS = 12;
 const ELLIPSIS = "\u2026";
 
-export function isDefaultChatTitle(title: string): boolean {
-    return DEFAULT_CHAT_TITLE_PATTERN.test(title.trim());
+export function isDefaultChatTitle(
+    title: string,
+    runtimeDisplayName?: string | null,
+): boolean {
+    const trimmedTitle = title.trim();
+    if (DEFAULT_CHAT_TITLE_PATTERN.test(trimmedTitle)) {
+        return true;
+    }
+
+    const trimmedDisplayName = runtimeDisplayName?.trim();
+    if (!trimmedDisplayName) {
+        return false;
+    }
+
+    const defaultTitlePrefix = `${trimmedDisplayName} `;
+    return (
+        trimmedTitle.startsWith(defaultTitlePrefix) &&
+        /^\d+$/.test(trimmedTitle.slice(defaultTitlePrefix.length))
+    );
 }
 
 export function truncateChatTitle(title: string, maxChars: number): string {
@@ -93,6 +110,7 @@ type ChatTitleMessage = {
 export function getChatDisplayTitle(input: {
     readonly manualTitle?: string | null;
     readonly messages?: readonly ChatTitleMessage[];
+    readonly runtimeDisplayName?: string | null;
     readonly title: string;
 }): string {
     const manualTitle = input.manualTitle?.trim();
@@ -102,7 +120,7 @@ export function getChatDisplayTitle(input: {
 
     const storedTitle = input.title.trim();
     if (
-        !isDefaultChatTitle(storedTitle) &&
+        !isDefaultChatTitle(storedTitle, input.runtimeDisplayName) &&
         !GENERIC_CHAT_TITLES.has(storedTitle)
     ) {
         return storedTitle || "Chat";
@@ -119,6 +137,7 @@ export function getChatDisplayTitle(input: {
 export function getReviewChatDisplayTitle(input: {
     readonly manualTitle?: string | null;
     readonly messages?: readonly ChatTitleMessage[];
+    readonly runtimeDisplayName?: string | null;
     readonly title: string;
 }): string {
     const title = input.title.startsWith(REVIEW_TITLE_PREFIX)

@@ -62,6 +62,86 @@ describe("NativeAiGateway", () => {
         expect(payload.launch).toBeNull();
     });
 
+    it("attaches an immutable custom launch only to prepare requests", async () => {
+        const client = createClient();
+        const runtimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+        client.request.mockResolvedValueOnce({
+            projectId: null,
+            runtimeId,
+            runtimeSessionId: "runtime-custom-1",
+            sessionId: "session-custom-1",
+            status: "idle",
+            title: "Pi 1",
+            updatedAt: "2026-07-24T00:00:00.000Z",
+            worktreeId: null,
+        });
+        const gateway = createGateway(client);
+        const baseLaunch = createLaunch();
+        const customAcpLaunch = {
+            args: [] as const,
+            authMode: "external" as const,
+            command: "pi-acp",
+            configuredEnv: {},
+            displayName: "Pi",
+            env: { HOME: "/Users/example", PATH: "/usr/bin:/bin" },
+            executable: "/opt/homebrew/bin/pi-acp",
+            launchFingerprint: "a".repeat(64),
+            productProfile: "conservative" as const,
+            protocolVersion: "acp-current14" as const,
+            revision: 1,
+            runtimeId,
+            state: "ready" as const,
+        };
+        const launch: AiSessionLaunchInput = {
+            ...baseLaunch,
+            input: {
+                ...baseLaunch.input,
+                projectId: null,
+                runtimeId,
+                sessionId: "session-custom-1",
+                title: "Pi 1",
+                worktreeId: null,
+            },
+            persistedSnapshot: createEmptyAiSessionSnapshot({
+                projectId: null,
+                runtimeId,
+                runtimeSessionId: "runtime-custom-previous",
+                sessionId: "session-custom-1",
+                title: "Pi 1",
+                worktreeId: null,
+            }),
+            resolvedRuntime: {
+                args: [],
+                command: "pi-acp",
+                customAcpLaunch,
+                env: customAcpLaunch.env,
+                executable: customAcpLaunch.executable,
+                status: {
+                    ...baseLaunch.resolvedRuntime.status,
+                    authMethod: "external",
+                    runtimeId,
+                },
+            },
+        };
+
+        await gateway.prepareSession({
+            input: launch.input,
+            launch,
+        });
+
+        const prepareCall = client.request.mock.calls.find(
+            ([command]) => command === "ai_prepare_session",
+        );
+        expect(prepareCall?.[1]).toMatchObject({
+            customAcpContinuationStrategy: null,
+            customAcpLaunch,
+            persistedRuntimeSessionId: null,
+            runtimeId,
+            sessionId: "session-custom-1",
+        });
+    });
+
     it("preserves the active turn start when a streaming session is prepared again", async () => {
         const client = createClient();
         client.request.mockResolvedValueOnce({
@@ -721,6 +801,9 @@ describe("NativeAiGateway", () => {
                         },
                     ] as T);
                 }
+                if (command === "ai_count_session_history_by_runtime") {
+                    return Promise.resolve({ count: 2 } as T);
+                }
                 return Promise.resolve({ ok: true } as T);
             },
         );
@@ -755,6 +838,9 @@ describe("NativeAiGateway", () => {
                 runtimeSessionId: "runtime-child",
             },
         ]);
+        await expect(
+            gateway.countSessionHistoryByRuntime("opencode"),
+        ).resolves.toBe(2);
         await gateway.setSessionPinned({ pinned: true, sessionId: "session-1" });
         await gateway.renameSession({ sessionId: "session-1", title: "Renamed" });
         await gateway.deleteSession("session-1");
@@ -796,6 +882,22 @@ describe("NativeAiGateway", () => {
                         },
                     ] as T);
                 }
+                if (command === "ai_reconcile_terminal_open_transcript_tail") {
+                    return Promise.resolve([
+                        {
+                            blockId: "session-1:0",
+                            endSequence: 1,
+                            entryCount: 1,
+                            estimatedHeight: 72,
+                            estimatedRowCount: 1,
+                            firstCreatedAt: TURN_STARTED_AT,
+                            lastCreatedAt: TURN_STARTED_AT,
+                            revision: 2,
+                            sessionId: "session-1",
+                            startSequence: 1,
+                        },
+                    ] as T);
+                }
                 return Promise.resolve({ ok: true } as T);
             },
         );
@@ -822,6 +924,12 @@ describe("NativeAiGateway", () => {
                 turnId: tail.turnId,
             }),
         ).resolves.toMatchObject([{ blockId: "session-1:0" }]);
+        await expect(
+            gateway.reconcileTerminalOpenTranscriptTail({
+                sessionId: tail.sessionId,
+                turnId: tail.turnId,
+            }),
+        ).resolves.toMatchObject([{ blockId: "session-1:0" }]);
 
         expect(client.request).toHaveBeenCalledWith(
             "ai_checkpoint_open_transcript_tail",
@@ -830,6 +938,10 @@ describe("NativeAiGateway", () => {
         expect(client.request).toHaveBeenCalledWith(
             "ai_load_open_transcript_tail",
             { sessionId: "session-1" },
+        );
+        expect(client.request).toHaveBeenCalledWith(
+            "ai_reconcile_terminal_open_transcript_tail",
+            { sessionId: "session-1", turnId: tail.turnId },
         );
     });
 

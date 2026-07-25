@@ -12,6 +12,7 @@ use crate::scope::SessionScope;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeAiSession {
+    pub custom_acp_continuation_strategy: Option<String>,
     pub owner_window_id: String,
     pub runtime_id: RuntimeId,
     pub runtime_session_id: Option<RuntimeSessionId>,
@@ -33,9 +34,11 @@ impl NativeAiSession {
         let runtime_session_id = input
             .launch
             .as_ref()
-            .and_then(|launch| launch.persisted_runtime_session_id.clone());
+            .and_then(|launch| launch.persisted_runtime_session_id.clone())
+            .or_else(|| input.persisted_runtime_session_id.clone());
 
         Ok(Self {
+            custom_acp_continuation_strategy: input.custom_acp_continuation_strategy,
             owner_window_id: input.window_id,
             runtime_id: input.runtime_id,
             runtime_session_id,
@@ -58,6 +61,7 @@ impl NativeAiSession {
 
     pub fn summary(&self) -> NativeAiSessionSummary {
         NativeAiSessionSummary {
+            custom_acp_continuation_strategy: self.custom_acp_continuation_strategy.clone(),
             session_id: self.session_id.clone(),
             runtime_id: self.runtime_id.clone(),
             runtime_session_id: self.runtime_session_id.clone(),
@@ -287,6 +291,8 @@ mod tests {
             mode_id: None,
             config_options: Default::default(),
             additional_roots: Vec::new(),
+            custom_acp_continuation_strategy: None,
+            custom_acp_launch: None,
             persisted_runtime_session_id: None,
             persisted_subagent_session_mappings: Vec::new(),
             launch: None,

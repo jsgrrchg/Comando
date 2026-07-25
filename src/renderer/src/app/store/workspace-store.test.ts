@@ -7,12 +7,17 @@ import type {
     WorkspacePaneNode,
     WorkspaceSnapshot,
 } from "@shared/ipc";
+import { buildAiRuntimeCatalog } from "@shared/ai-runtimes";
 
 import {
     createDefaultWorkspaceState,
     type WorkspaceTreeState,
 } from "../workspace/tree";
 import { useAiStore } from "./ai-store";
+import {
+    resetSettingsStoreForTests,
+    useSettingsStore,
+} from "./settings-store";
 import {
     flushWorkspacePersistenceForTests,
     flushWorkspacePersistenceNow,
@@ -185,6 +190,7 @@ function installActivationFrameQueue(): FrameRequestCallback[] {
 describe("workspace file opening", () => {
     beforeEach(() => {
         resetWorkspacePersistenceForTests();
+        resetSettingsStoreForTests();
         saveWorkspaceSnapshotMock.mockClear();
         closeAiSessionMock.mockClear();
         closeTerminalSessionMock.mockClear();
@@ -300,6 +306,7 @@ describe("workspace file opening", () => {
 
     afterEach(() => {
         resetWorkspacePersistenceForTests();
+        resetSettingsStoreForTests();
         useAiStore.setState(
             (state) => ({
                 ...state,
@@ -1457,6 +1464,55 @@ describe("workspace file opening", () => {
         });
         expect(state.lastFocusedRuntimeId).toBe("grok");
         expect(state.lastQuickCreateAction).toBe("grok");
+    });
+
+    it("creates custom runtime tabs with their configured display name", async () => {
+        const runtimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+        useSettingsStore.setState({
+            runtimeCatalog: buildAiRuntimeCatalog([
+                { displayName: "Pi development", id: runtimeId },
+            ]),
+        });
+
+        await useWorkspaceStore
+            .getState()
+            .createChatTab("project-1", null, runtimeId);
+
+        const state = useWorkspaceStore.getState();
+        const chatTab = Object.values(state.tabsById).find(
+            (tab) => tab.kind === "chat" && tab.runtimeId === runtimeId,
+        );
+
+        expect(chatTab).toMatchObject({
+            kind: "chat",
+            runtimeId,
+            title: "Pi development 1",
+        });
+        expect(state.lastFocusedRuntimeId).toBe(runtimeId);
+        expect(state.lastQuickCreateAction).toBe(runtimeId);
+    });
+
+    it("falls back to Codex when a new chat requests a deleted custom runtime", async () => {
+        const deletedRuntimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+
+        await useWorkspaceStore
+            .getState()
+            .createChatTab("project-1", null, deletedRuntimeId);
+
+        const state = useWorkspaceStore.getState();
+        const chatTab = Object.values(state.tabsById).find(
+            (tab) => tab.kind === "chat",
+        );
+
+        expect(chatTab).toMatchObject({
+            kind: "chat",
+            runtimeId: "codex",
+            title: "Codex 1",
+        });
+        expect(state.lastFocusedRuntimeId).toBe("codex");
+        expect(state.lastQuickCreateAction).toBe("codex");
     });
 
     it("opens a file in the requested pane instead of the globally active pane", async () => {

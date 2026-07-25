@@ -71,6 +71,7 @@ import {
     attachNativeReviewDeltaToTrackedFile,
     toNativeReviewDeltaReference,
 } from "@shared/ai-review-delta";
+import { createCustomRuntimeChangeConfirmationErrorMessage } from "@shared/ai-session-errors";
 import {
     beginReviewWorkCycle,
     consolidateReviewDiffs,
@@ -88,6 +89,7 @@ import {
     type AiReviewActionLogTarget,
 } from "@shared/ai-review-action-log";
 import { isReasoningEffortConfigOption } from "@shared/ai-config-options";
+import { isCustomAcpRuntimeId } from "@shared/ai-runtimes";
 
 import type { ProjectService } from "@main/projects/service";
 import type { SettingsGateway } from "@main/settings/service";
@@ -152,6 +154,10 @@ import {
     shouldSuppressToolActivityUpdate,
 } from "./review-core";
 import { buildRuntimeSpawnEnv } from "./runtime-env";
+import {
+    createMissingCustomAcpRuntimeStatus,
+    resolveCustomAcpRuntime,
+} from "./custom-acp-launch";
 import { resolveCodexRuntime } from "./resolver/runtime-resolver";
 import {
     AiLiveTranscriptTailStore,
@@ -279,6 +285,7 @@ interface AiSchedulerDiagnostics {
 }
 
 interface AiSessionRetentionDiagnostics {
+    readonly activeCustomRuntimeLaunchCount: number;
     readonly closed: readonly AiSessionRetentionCloseRecord[];
     readonly hotSessions: readonly AiSessionRetentionHotSession[];
     readonly idleTtlMs: number;
@@ -487,12 +494,19 @@ export class AiService {
     readonly #retentionFreezePromises = new Map<string, Promise<void>>();
     readonly #lastRetentionCloseRecords: AiSessionRetentionCloseRecord[] = [];
     readonly #lastRetentionSkippedRecords: AiSessionRetentionSkippedRecord[] = [];
+    readonly #activeCustomRuntimeLaunches = new Map<
+        string,
+        ResolvedAcpRuntime
+    >();
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
     readonly #liveTranscriptTails = new AiLiveTranscriptTailStore();
     readonly #loadedTranscriptBlockMetadataSessionIds = new Set<string>();
     readonly #legacyTranscriptSessionIds = new Set<string>();
     readonly #loadingTranscriptBlockMetadataSessionIds = new Set<string>();
+    readonly #loadingTranscriptBlockMetadataRequestSessionIds = new Set<string>();
+    readonly #pendingTranscriptBlockMetadataReloadSessionIds = new Set<string>();
+    readonly #transcriptBlockMetadataGenerations = new Map<string, number>();
     readonly #recoveredTranscriptTailSessionIds = new Set<string>();
     readonly #transcriptRecoveryPromises = new Map<string, Promise<void>>();
     readonly #transcriptMigrationTimers = new Map<
@@ -614,11 +628,15 @@ export class AiService {
         this.#reviewMutationChains.clear();
         this.#nativeSessionIds.clear();
         this.#pendingNativeCatalogPatches.clear();
+        this.#activeCustomRuntimeLaunches.clear();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
         this.#liveTranscriptTails.clear();
         this.#loadedTranscriptBlockMetadataSessionIds.clear();
         this.#loadingTranscriptBlockMetadataSessionIds.clear();
+        this.#loadingTranscriptBlockMetadataRequestSessionIds.clear();
+        this.#pendingTranscriptBlockMetadataReloadSessionIds.clear();
+        this.#transcriptBlockMetadataGenerations.clear();
         this.#recoveredTranscriptTailSessionIds.clear();
         this.#transcriptRecoveryPromises.clear();
         for (const timer of this.#transcriptMigrationTimers.values()) {
@@ -637,6 +655,8 @@ export class AiService {
 
     getSessionRetentionDiagnostics(): AiSessionRetentionDiagnostics {
         return {
+            activeCustomRuntimeLaunchCount:
+                this.#activeCustomRuntimeLaunches.size,
             closed: [...this.#lastRetentionCloseRecords],
             hotSessions: [...this.#liveSessionContexts.values()]
                 .map((context) => {
@@ -764,8 +784,9 @@ export class AiService {
         this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
         // Snapshots can be the only delivery path during a reconnect, so their
         // active tail must enter the same durable queue as event-driven updates.
-        this.#transcriptPersistence?.scheduleCheckpoint(nextSnapshot.sessionId);
-        this.#scheduleTranscriptRecovery(nextSnapshot.sessionId);
+        // Recovery runs first so a restarted runtime cannot overwrite an older
+        // persisted tail before it is restored or reconciled.
+        this.#scheduleTranscriptCheckpointAfterRecovery(nextSnapshot.sessionId);
         this.#scheduleTranscriptBlockMetadataLoad(nextSnapshot.sessionId);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
             preserveCanonicalTranscriptArrays(
@@ -805,7 +826,7 @@ export class AiService {
         }
 
         this.#liveTranscriptTails.applyEvent(event);
-        this.#transcriptPersistence?.scheduleCheckpoint(event.sessionId);
+        this.#scheduleTranscriptCheckpointAfterRecovery(event.sessionId);
         if (event.kind === "turn-status") {
             this.#transcriptPersistence?.requestSeal(
                 event.sessionId,
@@ -978,7 +999,9 @@ export class AiService {
     }
 
     async getRuntimeStatus(runtimeId: AiRuntimeId): Promise<AiRuntimeStatus> {
-        const nativeAi = this.#nativeAuthGateway(runtimeId);
+        const nativeAi = isCustomAcpRuntimeId(runtimeId)
+            ? null
+            : this.#nativeAuthGateway(runtimeId);
         if (nativeAi?.getRuntimeStatus) {
             await this.#migrateNativeRuntimeSettingsIfNeeded(runtimeId);
             const status = this.#withPersistedRuntimeCatalog(
@@ -1317,10 +1340,13 @@ export class AiService {
             preserveLegacyFallback: true,
         });
         if (this.#usesBlockNativeTranscript(sessionId)) {
-            // Open tails are intentionally absent from sealed block metadata.
-            // Restore one before projecting the historical snapshot so an
-            // interrupted streaming turn remains visible after restart.
-            await this.#recoverTranscriptTail(sessionId);
+            // Historical sessions cannot receive the terminal event that
+            // would normally seal an interrupted tail after a restart.
+            await this.#recoverTranscriptTail(sessionId, {
+                sealInterruptedTail: !isResyncEligibleAiSessionStatus(
+                    persistedSnapshot.status,
+                ),
+            });
         }
         return this.#toRendererSessionSnapshot(
             this.#hydrateSnapshotRuntimeCatalog(persistedSnapshot),
@@ -1334,6 +1360,15 @@ export class AiService {
             return await this.#nativeAi.listSessionHistory(input);
         }
         return await this.#persistence.listSessionHistory(input);
+    }
+
+    async countSessionHistoryByRuntime(
+        runtimeId: AiRuntimeId,
+    ): Promise<number> {
+        return (
+            (await this.#nativeAi?.countSessionHistoryByRuntime?.(runtimeId)) ??
+            0
+        );
     }
 
     async setSessionPinned(
@@ -1387,6 +1422,32 @@ export class AiService {
         ) {
             return null;
         }
+        if (!(await this.#refreshTranscriptStorageMode(sessionId))) {
+            return null;
+        }
+        const hasLiveSnapshot = this.#liveSnapshots.has(sessionId);
+        if (!hasLiveSnapshot) {
+            const persistedSnapshot =
+                await this.#loadPersistedSessionSnapshot(sessionId);
+            if (
+                persistedSnapshot &&
+                !isResyncEligibleAiSessionStatus(persistedSnapshot.status)
+            ) {
+                // Metadata can race ahead of session hydration after restart.
+                // Resolve the historical tail before exposing sealed blocks.
+                await this.#recoverTranscriptTail(sessionId, {
+                    sealInterruptedTail: true,
+                });
+            } else {
+                await this.#recoverTranscriptTail(sessionId);
+            }
+        } else {
+            // A live snapshot can arrive before the persisted tail is loaded.
+            // Do not expose block metadata until that predecessor is resolved.
+            await this.#recoverTranscriptTail(sessionId);
+        }
+        // Recovery can seal blocks and advance the storage revision. Re-read
+        // the mode before returning metadata from the post-recovery state.
         if (!(await this.#refreshTranscriptStorageMode(sessionId))) {
             return null;
         }
@@ -1521,6 +1582,12 @@ export class AiService {
                 },
             );
             this.#nativeSessionIds.add(snapshot.sessionId);
+            if (nativePrepareLaunch.launch.resolvedRuntime.customAcpLaunch) {
+                this.#activeCustomRuntimeLaunches.set(
+                    snapshot.sessionId,
+                    nativePrepareLaunch.launch.resolvedRuntime,
+                );
+            }
             const acceptedSnapshot = this.#acceptPreparedLiveSnapshot(
                 snapshot,
                 ownerWindowId,
@@ -1694,6 +1761,15 @@ export class AiService {
                             launch: nativePrepareLaunch.launch,
                         });
                         this.#nativeSessionIds.add(snapshot.sessionId);
+                        if (
+                            nativePrepareLaunch.launch.resolvedRuntime
+                                .customAcpLaunch
+                        ) {
+                            this.#activeCustomRuntimeLaunches.set(
+                                snapshot.sessionId,
+                                nativePrepareLaunch.launch.resolvedRuntime,
+                            );
+                        }
                         nativeSendState.preparedSessionContext = {
                             ownerWindowId,
                             runtimeId: nativePrepareLaunch.input.runtimeId,
@@ -2629,6 +2705,7 @@ export class AiService {
                 };
             }
         }
+        return null;
     }
 
     #isNativeAiSession(sessionId: string): boolean {
@@ -2648,28 +2725,68 @@ export class AiService {
         if (
             !nativeAi?.loadTranscriptBlockMetadata ||
             !nativeAi.getTranscriptCapability?.().blockNativeVersion ||
-            this.#loadedTranscriptBlockMetadataSessionIds.has(sessionId) ||
-            this.#loadingTranscriptBlockMetadataSessionIds.has(sessionId)
+            (this.#loadedTranscriptBlockMetadataSessionIds.has(sessionId) &&
+                !this.#pendingTranscriptBlockMetadataReloadSessionIds.has(
+                    sessionId,
+                ))
         ) {
+            return;
+        }
+        if (this.#loadingTranscriptBlockMetadataSessionIds.has(sessionId)) {
+            if (
+                this.#loadingTranscriptBlockMetadataRequestSessionIds.has(
+                    sessionId,
+                )
+            ) {
+                this.#pendingTranscriptBlockMetadataReloadSessionIds.add(
+                    sessionId,
+                );
+            }
             return;
         }
         const loadTranscriptBlockMetadata = (targetSessionId: string) =>
             nativeAi.loadTranscriptBlockMetadata!(targetSessionId);
 
         this.#loadingTranscriptBlockMetadataSessionIds.add(sessionId);
-        void this.#refreshTranscriptStorageMode(sessionId)
-            .then((isBlockNative) =>
-                isBlockNative
-                    ? loadTranscriptBlockMetadata(sessionId)
-                    : null,
-            )
-            .then((output) => {
-                if (!output || this.#deletedSessionIds.has(sessionId)) {
+        void this.#recoverTranscriptTail(sessionId)
+            .then(() => this.#refreshTranscriptStorageMode(sessionId))
+            .then(async (isBlockNative) => {
+                if (!isBlockNative) {
+                    return null;
+                }
+                const generation =
+                    this.#transcriptBlockMetadataGenerations.get(sessionId) ??
+                    0;
+                this.#loadingTranscriptBlockMetadataRequestSessionIds.add(
+                    sessionId,
+                );
+                const output = await loadTranscriptBlockMetadata(sessionId)
+                    .finally(() => {
+                        this.#loadingTranscriptBlockMetadataRequestSessionIds.delete(
+                            sessionId,
+                        );
+                    });
+                return { generation, output };
+            })
+            .then((result) => {
+                if (!result || this.#deletedSessionIds.has(sessionId)) {
+                    return;
+                }
+                if (
+                    result.generation !==
+                    (this.#transcriptBlockMetadataGenerations.get(sessionId) ??
+                        0)
+                ) {
+                    // A seal completed while this request was in flight. Drop
+                    // the stale response and reload after the active request.
+                    this.#pendingTranscriptBlockMetadataReloadSessionIds.add(
+                        sessionId,
+                    );
                     return;
                 }
                 this.#liveTranscriptTails.setStableBlocks(
                     sessionId,
-                    output.blocks,
+                    result.output.blocks,
                 );
                 this.#loadedTranscriptBlockMetadataSessionIds.add(sessionId);
             })
@@ -2681,7 +2798,28 @@ export class AiService {
             })
             .finally(() => {
                 this.#loadingTranscriptBlockMetadataSessionIds.delete(sessionId);
+                if (
+                    this.#pendingTranscriptBlockMetadataReloadSessionIds.delete(
+                        sessionId,
+                    )
+                ) {
+                    this.#loadedTranscriptBlockMetadataSessionIds.delete(sessionId);
+                    this.#scheduleTranscriptBlockMetadataLoad(sessionId);
+                }
             });
+    }
+
+    #invalidateTranscriptBlockMetadata(sessionId: string): void {
+        this.#loadedTranscriptBlockMetadataSessionIds.delete(sessionId);
+        this.#transcriptBlockMetadataGenerations.set(
+            sessionId,
+            (this.#transcriptBlockMetadataGenerations.get(sessionId) ?? 0) + 1,
+        );
+        if (
+            this.#loadingTranscriptBlockMetadataRequestSessionIds.has(sessionId)
+        ) {
+            this.#pendingTranscriptBlockMetadataReloadSessionIds.add(sessionId);
+        }
     }
 
     #createTranscriptPersistence(
@@ -2690,6 +2828,7 @@ export class AiService {
         if (
             !nativeAi?.checkpointOpenTranscriptTail ||
             !nativeAi.loadOpenTranscriptTail ||
+            !nativeAi.reconcileTerminalOpenTranscriptTail ||
             !nativeAi.sealTranscriptTurn ||
             !nativeAi.getTranscriptCapability?.().blockNativeVersion
         ) {
@@ -2697,10 +2836,11 @@ export class AiService {
         }
         const checkpoint = nativeAi.checkpointOpenTranscriptTail.bind(nativeAi);
         const load = nativeAi.loadOpenTranscriptTail.bind(nativeAi);
+        const reconcile = nativeAi.reconcileTerminalOpenTranscriptTail.bind(nativeAi);
         const seal = nativeAi.sealTranscriptTurn.bind(nativeAi);
         return new AiTranscriptPersistenceCoordinator(
             this.#liveTranscriptTails,
-            { checkpoint, load, seal },
+            { checkpoint, load, reconcile, seal },
             undefined,
             {
                 onSealed: (sessionId) => {
@@ -2708,7 +2848,7 @@ export class AiService {
                         return;
                     }
                     this.#transcriptStorageModes.set(sessionId, "block-native");
-                    this.#loadedTranscriptBlockMetadataSessionIds.delete(sessionId);
+                    this.#invalidateTranscriptBlockMetadata(sessionId);
                     this.#scheduleTranscriptBlockMetadataLoad(sessionId);
                     this.#emitSealedTranscriptSnapshot(sessionId);
                 },
@@ -2716,26 +2856,39 @@ export class AiService {
         );
     }
 
-    #scheduleTranscriptRecovery(sessionId: string): void {
-        void this.#recoverTranscriptTail(sessionId).catch((error: unknown) => {
-            debugBenignError("ai.service.recoverTranscriptTail", error);
-        });
+    #scheduleTranscriptCheckpointAfterRecovery(sessionId: string): void {
+        void this.#recoverTranscriptTail(sessionId)
+            .then(() => {
+                this.#transcriptPersistence?.scheduleCheckpoint(sessionId);
+            })
+            .catch((error: unknown) => {
+                debugBenignError(
+                    "ai.service.recoverTranscriptTailBeforeCheckpoint",
+                    error,
+                );
+            });
     }
 
-    async #recoverTranscriptTail(sessionId: string): Promise<void> {
+    async #recoverTranscriptTail(
+        sessionId: string,
+        options: { readonly sealInterruptedTail?: boolean } = {},
+    ): Promise<void> {
         if (
             !this.#transcriptPersistence ||
-            this.#recoveredTranscriptTailSessionIds.has(sessionId)
+            (!options.sealInterruptedTail &&
+                this.#recoveredTranscriptTailSessionIds.has(sessionId))
         ) {
             return;
         }
         const existing = this.#transcriptRecoveryPromises.get(sessionId);
         if (existing) {
             await existing;
-            return;
+            if (!options.sealInterruptedTail) {
+                return;
+            }
         }
         const recovery = this.#transcriptPersistence
-            .recover(sessionId)
+            .recover(sessionId, options)
             .then(() => {
                 this.#recoveredTranscriptTailSessionIds.add(sessionId);
             })
@@ -2862,6 +3015,7 @@ export class AiService {
             }
         }
         for (const currentSessionId of sessionIdsToClear) {
+            this.#activeCustomRuntimeLaunches.delete(currentSessionId);
             this.#nativeChildParentSessionIds.delete(currentSessionId);
             this.#liveSnapshots.delete(currentSessionId);
             this.#liveTranscriptTails.clearSession(currentSessionId);
@@ -2881,6 +3035,13 @@ export class AiService {
             this.#loadingTranscriptBlockMetadataSessionIds.delete(
                 currentSessionId,
             );
+            this.#loadingTranscriptBlockMetadataRequestSessionIds.delete(
+                currentSessionId,
+            );
+            this.#pendingTranscriptBlockMetadataReloadSessionIds.delete(
+                currentSessionId,
+            );
+            this.#transcriptBlockMetadataGenerations.delete(currentSessionId);
             this.#liveSessionContexts.delete(currentSessionId);
             this.#liveSessionTouches.delete(currentSessionId);
             this.#freezingSessionIds.delete(currentSessionId);
@@ -2919,6 +3080,7 @@ export class AiService {
     }
 
     #detachLiveSession(sessionId: string): void {
+        this.#activeCustomRuntimeLaunches.delete(sessionId);
         this.#liveSnapshots.delete(sessionId);
         this.#liveSessionContexts.delete(sessionId);
         this.#liveSessionTouches.delete(sessionId);
@@ -3326,7 +3488,7 @@ export class AiService {
         this.#liveTranscriptTails.synchronizeSnapshot(nextSnapshot);
         // A prepared session may already contain streamed output before events
         // resume, so do not wait for a later event to make it crash-safe.
-        this.#transcriptPersistence?.scheduleCheckpoint(nextSnapshot.sessionId);
+        this.#scheduleTranscriptCheckpointAfterRecovery(nextSnapshot.sessionId);
         const cachedSnapshot = this.#cacheLiveSessionSnapshot(
             preserveCanonicalTranscriptArrays(
                 previousSnapshot,
@@ -3335,7 +3497,6 @@ export class AiService {
             ownerWindowId,
         );
         this.#scheduleTranscriptBlockMetadataLoad(cachedSnapshot.sessionId);
-        this.#scheduleTranscriptRecovery(cachedSnapshot.sessionId);
         if (!this.#isNativeAiSession(cachedSnapshot.sessionId)) {
             this.#persistence.saveSessionSnapshot(cachedSnapshot);
         }
@@ -4361,7 +4522,29 @@ export class AiService {
             input,
             projectRoot,
         );
-        const resolvedRuntimeBase = this.#resolveRuntimeCommand(input.runtimeId);
+        const liveSnapshot = this.#liveSnapshots.get(input.sessionId) ?? null;
+        const storedSnapshot =
+            !snapshotOverride && !liveSnapshot
+                ? await this.#loadPersistedSessionSnapshot(input.sessionId)
+                : null;
+        const sourceSnapshot =
+            snapshotOverride ??
+            liveSnapshot ??
+            storedSnapshot ??
+            createEmptyAiSessionSnapshot({
+                projectId: input.projectId,
+                runtimeId: input.runtimeId,
+                sessionId: input.sessionId,
+                title: input.title,
+                worktreeId: input.worktreeId ?? null,
+            });
+        const activeCustomRuntime =
+            liveSnapshot && isCustomAcpRuntimeId(input.runtimeId)
+                ? this.#activeCustomRuntimeLaunches.get(input.sessionId)
+                : undefined;
+        const resolvedRuntimeBase =
+            activeCustomRuntime ??
+            this.#resolveRuntimeCommand(input.runtimeId);
         const resolvedRuntime = {
             ...resolvedRuntimeBase,
             status: await this.#resolveLaunchRuntimeStatus(
@@ -4380,24 +4563,44 @@ export class AiService {
             );
         }
 
-        const liveSnapshot = this.#liveSnapshots.get(input.sessionId) ?? null;
-        const storedSnapshot =
-            !snapshotOverride && !liveSnapshot
-                ? await this.#loadPersistedSessionSnapshot(input.sessionId)
-                : null;
-        const sourceSnapshot =
-            snapshotOverride ??
-            liveSnapshot ??
-            storedSnapshot ??
-            createEmptyAiSessionSnapshot({
-                projectId: input.projectId,
-                runtimeId: input.runtimeId,
-                sessionId: input.sessionId,
-                title: input.title,
-                worktreeId: input.worktreeId ?? null,
-            });
+        const customLaunch = resolvedRuntime.customAcpLaunch;
+        if (
+            customLaunch &&
+            !liveSnapshot &&
+            sourceSnapshot.runtimeLaunchFingerprint &&
+            sourceSnapshot.runtimeLaunchFingerprint !==
+                customLaunch.launchFingerprint &&
+            !input.confirmCustomRuntimeChange
+        ) {
+            throw new Error(
+                createCustomRuntimeChangeConfirmationErrorMessage(
+                    `The ${sourceSnapshot.runtimeDisplayName ?? "custom ACP runtime"} definition changed since this session was created. Continue with the modified configuration?`,
+                ),
+            );
+        }
+        if (
+            customLaunch &&
+            !liveSnapshot &&
+            sourceSnapshot.runtimeSessionId &&
+            sourceSnapshot.customAcpContinuationStrategy ===
+                "new-session-only"
+        ) {
+            throw new Error(
+                `${sourceSnapshot.runtimeDisplayName ?? customLaunch.displayName} does not support continuing this runtime session. The transcript is still available; start a new session to keep working.`,
+            );
+        }
+        const identitySnapshot =
+            customLaunch && !snapshotOverride && !liveSnapshot && !storedSnapshot
+                ? {
+                      ...sourceSnapshot,
+                      runtimeDisplayName: customLaunch.displayName,
+                      runtimeLaunchFingerprint:
+                          customLaunch.launchFingerprint,
+                      runtimeRevision: customLaunch.revision,
+                  }
+                : sourceSnapshot;
         const persistedSnapshot =
-            this.#hydrateSnapshotRuntimeCatalog(sourceSnapshot);
+            this.#hydrateSnapshotRuntimeCatalog(identitySnapshot);
         const shouldCaptureRuntimeDefaults =
             !snapshotOverride &&
             !liveSnapshot &&
@@ -5634,6 +5837,14 @@ export class AiService {
     }
 
     #resolveRuntimeStatus(runtimeId: AiRuntimeId): AiRuntimeStatus {
+        if (isCustomAcpRuntimeId(runtimeId)) {
+            const definition = this.#settingsService
+                .listCustomAcpRuntimes()
+                .find((candidate) => candidate.id === runtimeId);
+            return definition
+                ? resolveCustomAcpRuntime(definition).status
+                : createMissingCustomAcpRuntimeStatus(runtimeId);
+        }
         if (runtimeId === "claude") {
             return getClaudeRuntimeStatus(
                 this.#settingsService.loadClaudeRuntimeSettings(),
@@ -5880,9 +6091,7 @@ export class AiService {
             void this.#refreshTranscriptStorageMode(sessionId)
                 .then((isBlockNative) => {
                     if (isBlockNative) {
-                        this.#loadedTranscriptBlockMetadataSessionIds.delete(
-                            sessionId,
-                        );
+                        this.#invalidateTranscriptBlockMetadata(sessionId);
                         this.#scheduleTranscriptBlockMetadataLoad(sessionId);
                         // The renderer may have observed an empty block-native
                         // snapshot while this migration was still pending.
@@ -5931,6 +6140,9 @@ export class AiService {
         runtimeId: AiRuntimeId,
         fallbackStatus: AiRuntimeStatus,
     ): Promise<AiRuntimeStatus> {
+        if (isCustomAcpRuntimeId(runtimeId)) {
+            return fallbackStatus;
+        }
         const nativeAi = this.#nativeAuthGateway(runtimeId);
         if (!nativeAi?.getRuntimeStatus) {
             return fallbackStatus;
@@ -5946,6 +6158,21 @@ export class AiService {
         runtimeId: AiRuntimeId,
         codexSettingsOverride?: CodexRuntimeSettings,
     ): ResolvedAcpRuntime {
+        if (isCustomAcpRuntimeId(runtimeId)) {
+            const definition = this.#settingsService
+                .listCustomAcpRuntimes()
+                .find((candidate) => candidate.id === runtimeId);
+            if (!definition) {
+                return {
+                    args: [],
+                    command: runtimeId,
+                    env: {},
+                    executable: runtimeId,
+                    status: createMissingCustomAcpRuntimeStatus(runtimeId),
+                };
+            }
+            return resolveCustomAcpRuntime(definition);
+        }
         if (runtimeId === "claude") {
             const settings = this.#settingsService.loadClaudeRuntimeSettings();
             const resolved = resolveClaudeRuntime(settings, this.#secretStore);

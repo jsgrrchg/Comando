@@ -224,11 +224,13 @@ impl NativeBackend {
             | "ai_set_session_config_option"
             | "ai_rename_session"
             | "ai_list_session_history"
+            | "ai_count_session_history_by_runtime"
             | "ai_load_session_transcript_page"
             | "ai_append_transcript_entries"
             | "ai_checkpoint_open_transcript_tail"
             | "ai_load_open_transcript_tail"
             | "ai_seal_transcript_turn"
+            | "ai_reconcile_terminal_open_transcript_tail"
             | "ai_load_transcript_block_metadata"
             | "ai_load_transcript_block"
             | "ai_load_transcript_payload"
@@ -362,11 +364,13 @@ impl NativeBackend {
             | "ai_set_session_config_option"
             | "ai_rename_session"
             | "ai_list_session_history"
+            | "ai_count_session_history_by_runtime"
             | "ai_load_session_transcript_page"
             | "ai_append_transcript_entries"
             | "ai_checkpoint_open_transcript_tail"
             | "ai_load_open_transcript_tail"
             | "ai_seal_transcript_turn"
+            | "ai_reconcile_terminal_open_transcript_tail"
             | "ai_load_transcript_block_metadata"
             | "ai_load_transcript_block"
             | "ai_load_transcript_payload"
@@ -2375,6 +2379,22 @@ impl NativeBackend {
                     Err(error) => error_only(request.id, error),
                 }
             }
+            "ai_count_session_history_by_runtime" => {
+                let input = match parse_args::<native_ai::NativeAiCountSessionHistoryByRuntimeInput>(
+                    &request,
+                ) {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .count_session_history_by_runtime(&input.runtime_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(count) => response_only(request.id, json!({ "count": count })),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
             "ai_load_session_transcript_page" => {
                 let input =
                     match parse_args::<native_ai::NativeAiLoadSessionTranscriptPageInput>(&request)
@@ -2459,6 +2479,27 @@ impl NativeBackend {
                         request.id,
                         serde_json::to_value(metadata)
                             .expect("AI sealed transcript metadata serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_reconcile_terminal_open_transcript_tail" => {
+                let input = match parse_args::<
+                    native_ai::NativeAiReconcileTerminalOpenTranscriptTailInput,
+                >(&request)
+                {
+                    Ok(input) => input,
+                    Err(error) => return error_only(request.id, error),
+                };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .reconcile_terminal_open_transcript_tail(&input.session_id, &input.turn_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(metadata) => response_only(
+                        request.id,
+                        serde_json::to_value(metadata)
+                            .expect("AI reconciled transcript metadata serializes"),
                     ),
                     Err(error) => error_only(request.id, error),
                 }
@@ -5044,6 +5085,7 @@ mod tests {
                 session_id: SessionId("session-1".to_string()),
             },
             native_ai::NativeAiSessionSummary {
+                custom_acp_continuation_strategy: None,
                 session_id: SessionId("session-1".to_string()),
                 runtime_id: RuntimeId("codex".to_string()),
                 runtime_session_id: Some("runtime-1".into()),

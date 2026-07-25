@@ -33,16 +33,19 @@ import type {
     AiTranscriptPayload,
     AiTranscriptPayloadsOutput,
     AiTranscriptStorageState,
+    AiReconcileTerminalOpenTranscriptTailInput,
     AiSealTranscriptTurnInput,
     AiTrackedFile,
     AiTrackedFileHunkMutationInput,
     AiTrackedFileMutationInput,
     AiUserInputResponseInput,
+    CustomAcpContinuationStrategy,
     FileBufferNotificationInput,
     GetAiSessionTranscriptPageInput,
     ListAiSessionHistoryInput,
 } from "@shared/ipc";
 import { AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX } from "@shared/ipc";
+import { isCustomAcpRuntimeId } from "@shared/ai-runtimes";
 import { toNativeReviewDeltaReference } from "@shared/ai-review-delta";
 import {
     getNativeAiTranscriptBlockCapabilityVersion,
@@ -171,7 +174,10 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     }
 
     shouldHandleRuntime(runtimeId: AiRuntimeId): boolean {
-        return this.#enabledRuntimeIds.has(runtimeId);
+        return (
+            this.#enabledRuntimeIds.has(runtimeId) ||
+            isCustomAcpRuntimeId(runtimeId)
+        );
     }
 
     getTranscriptCapability(): AiTranscriptCapability {
@@ -394,6 +400,32 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         );
     }
 
+    async countSessionHistoryByRuntime(
+        runtimeId: AiRuntimeId,
+    ): Promise<number> {
+        if (!this.#historyEnabled) {
+            return 0;
+        }
+        const output = requireRecord(
+            await this.#client.request<unknown>(
+                "ai_count_session_history_by_runtime",
+                { runtimeId },
+            ),
+            "Native AI history runtime count",
+        );
+        const count = output.count;
+        if (
+            typeof count !== "number" ||
+            !Number.isSafeInteger(count) ||
+            count < 0
+        ) {
+            throw new Error(
+                "Native AI history runtime count must be a non-negative integer.",
+            );
+        }
+        return count;
+    }
+
     async listSessionRuntimeMappingsForParent(
         parentSessionId: string,
     ): Promise<readonly AiRuntimeSessionMapping[]> {
@@ -483,6 +515,22 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         );
         if (!Array.isArray(output)) {
             throw new Error("Native sealed transcript metadata must be an array.");
+        }
+        return output as NativeAiTranscriptBlockMetadata[];
+    }
+
+    async reconcileTerminalOpenTranscriptTail(
+        input: AiReconcileTerminalOpenTranscriptTailInput,
+    ): Promise<readonly AiTranscriptBlockMetadata[]> {
+        const output = await this.#client.request<unknown>(
+            "ai_reconcile_terminal_open_transcript_tail",
+            {
+                sessionId: input.sessionId,
+                turnId: input.turnId,
+            },
+        );
+        if (!Array.isArray(output)) {
+            throw new Error("Native reconciled transcript metadata must be an array.");
         }
         return output as NativeAiTranscriptBlockMetadata[];
     }
@@ -674,8 +722,18 @@ export class NativeAiGateway implements NativeAiGatewayContract {
     async #prepareSessionWithStaleRuntimeRetry(
         request: NativeAiPrepareSessionRpcInput,
     ): Promise<NativeAiSessionSummary> {
+        const continuationStrategy =
+            request.launch.persistedSnapshot
+                .customAcpContinuationStrategy ?? null;
+        const isCustomRuntime =
+            request.launch.resolvedRuntime.customAcpLaunch !== undefined;
+        const canContinueCustomRuntime =
+            continuationStrategy === "load" ||
+            continuationStrategy === "resume";
         const persistedRuntimeSessionId =
-            request.launch.persistedSnapshot.runtimeSessionId ?? null;
+            !isCustomRuntime || canContinueCustomRuntime
+                ? (request.launch.persistedSnapshot.runtimeSessionId ?? null)
+                : null;
 
         try {
             return await this.#requestPrepareSession(
@@ -707,6 +765,15 @@ export class NativeAiGateway implements NativeAiGatewayContract {
                 additionalRoots: request.launch.additionalRoots,
                 configOptions: nativeConfigOptionsFromLaunch(request.launch),
                 cwd: request.launch.cwd,
+                ...(request.launch.resolvedRuntime.customAcpLaunch
+                    ? {
+                          customAcpContinuationStrategy:
+                              request.launch.persistedSnapshot
+                                  .customAcpContinuationStrategy ?? null,
+                          customAcpLaunch:
+                              request.launch.resolvedRuntime.customAcpLaunch,
+                      }
+                    : {}),
                 launch: null,
                 modeId: request.launch.desiredSelections.modeId,
                 modelId: request.launch.desiredSelections.modelId,
@@ -1337,10 +1404,26 @@ function nativeSummaryToSnapshot(
         // history snapshot was closed before the application restarted.
         closedAt: null,
         configOptions: launch.desiredSelections.configOptions,
+        customAcpContinuationStrategy:
+            summary.customAcpContinuationStrategy ??
+            launch.persistedSnapshot.customAcpContinuationStrategy ??
+            null,
         modeId: launch.desiredSelections.modeId,
         modelId: launch.desiredSelections.modelId,
         projectId: summary.projectId,
         runtimeId: summary.runtimeId as AiRuntimeId,
+        runtimeDisplayName:
+            launch.resolvedRuntime.customAcpLaunch?.displayName ??
+            launch.persistedSnapshot.runtimeDisplayName ??
+            null,
+        runtimeLaunchFingerprint:
+            launch.resolvedRuntime.customAcpLaunch?.launchFingerprint ??
+            launch.persistedSnapshot.runtimeLaunchFingerprint ??
+            null,
+        runtimeRevision:
+            launch.resolvedRuntime.customAcpLaunch?.revision ??
+            launch.persistedSnapshot.runtimeRevision ??
+            null,
         runtimeSessionId: summary.runtimeSessionId,
         sessionId: summary.sessionId,
         status,
@@ -1400,7 +1483,19 @@ function nativeHistorySummaryToIpc(
         pinnedAt: nullableString(summary.pinnedAt),
         preview: nullableString(summary.preview),
         projectId: nullableString(summary.projectId),
+        customAcpContinuationStrategy:
+            normalizeCustomContinuationStrategy(
+                summary.customAcpContinuationStrategy,
+            ),
         runtimeId: summary.runtimeId as AiRuntimeId,
+        runtimeDisplayName: nullableString(summary.runtimeDisplayName),
+        runtimeLaunchFingerprint: nullableString(
+            summary.runtimeLaunchFingerprint,
+        ),
+        runtimeRevision:
+            typeof summary.runtimeRevision === "number"
+                ? summary.runtimeRevision
+                : null,
         runtimeSessionId: nullableString(summary.runtimeSessionId),
         sessionId: summary.sessionId,
         title: summary.title,
@@ -1461,6 +1556,10 @@ function nativeSnapshotToIpc(snapshot: NativeAiSessionSnapshot): AiSessionSnapsh
             snapshot.configOptions,
             "Native AI snapshot configOptions",
         ) as AiSessionSnapshot["configOptions"],
+        customAcpContinuationStrategy:
+            normalizeCustomContinuationStrategy(
+                snapshot.customAcpContinuationStrategy,
+            ),
         lastError: nullableString(snapshot.lastError),
         manualTitle: nullableString(snapshot.manualTitle),
         messages: requireRecordArray(
@@ -1493,6 +1592,14 @@ function nativeSnapshotToIpc(snapshot: NativeAiSessionSnapshot): AiSessionSnapsh
         projectId: nullableString(snapshot.projectId),
         reasoningEffort: nullableString(snapshot.reasoningEffort),
         runtimeId: snapshot.runtimeId as AiRuntimeId,
+        runtimeDisplayName: nullableString(snapshot.runtimeDisplayName),
+        runtimeLaunchFingerprint: nullableString(
+            snapshot.runtimeLaunchFingerprint,
+        ),
+        runtimeRevision:
+            typeof snapshot.runtimeRevision === "number"
+                ? snapshot.runtimeRevision
+                : null,
         runtimeSessionId: nullableString(snapshot.runtimeSessionId),
         sessionId: snapshot.sessionId,
         status: nativeSessionStatusToIpc(snapshot.status),
@@ -1591,6 +1698,16 @@ function requireString(value: unknown, label: string): string {
 
 function nullableString(value: unknown): string | null {
     return typeof value === "string" ? value : null;
+}
+
+function normalizeCustomContinuationStrategy(
+    value: unknown,
+): CustomAcpContinuationStrategy | null {
+    return value === "load" ||
+        value === "new-session-only" ||
+        value === "resume"
+        ? value
+        : null;
 }
 
 function requireNumber(value: unknown, label: string): number {

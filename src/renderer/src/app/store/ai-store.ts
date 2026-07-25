@@ -47,6 +47,8 @@ import {
     attachNativeReviewDeltaToTrackedFile,
 } from "@shared/ai-review-delta";
 import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
+import { getCustomRuntimeChangeConfirmationMessage } from "@shared/ai-session-errors";
+import { getAiRuntimeDisplayName } from "@shared/ai-runtimes";
 import { getAiTranscriptToolEntryId } from "@shared/ai-transcript";
 import {
     deriveTrackedFilesFromActionLog,
@@ -228,6 +230,7 @@ interface AiSessionClientState {
     readonly draftFileContexts: readonly AiFileContextAttachment[];
     readonly dismissedPlanUpdatedAt: string | null;
     readonly isPlanCollapsed: boolean;
+    readonly isPendingReviewCollapsed: boolean;
     readonly diffZoom: number | null;
     readonly editingQueuedPromptState: QueuedPromptEditState | null;
     readonly editingQueuedPrompt: QueuedPrompt | null;
@@ -298,6 +301,10 @@ interface AiStore {
     clearDraftAttachments: (sessionId: string) => void;
     dismissSessionPlan: (sessionId: string, planUpdatedAt: string) => void;
     setSessionPlanCollapsed: (sessionId: string, collapsed: boolean) => void;
+    setSessionPendingReviewCollapsed: (
+        sessionId: string,
+        collapsed: boolean,
+    ) => void;
     attachSelectionMention: (
         sessionId: string,
         selection: {
@@ -322,6 +329,7 @@ interface AiStore {
     ensureSession: (
         tab: RuntimeAiSessionTab,
         options?: {
+            readonly confirmCustomRuntimeChange?: boolean;
             readonly force?: boolean;
         },
     ) => Promise<void>;
@@ -1720,6 +1728,26 @@ export const useAiStore = create<AiStore>((set, get) => ({
         });
     },
 
+    setSessionPendingReviewCollapsed: (sessionId, collapsed) => {
+        set((state) => {
+            const session = state.sessions[sessionId];
+            if (!session || session.isPendingReviewCollapsed === collapsed) {
+                return state;
+            }
+
+            return {
+                sessions: {
+                    ...state.sessions,
+                    [sessionId]: {
+                        ...session,
+                        // Keep this UI preference with the session when its view is cooled.
+                        isPendingReviewCollapsed: collapsed,
+                    },
+                },
+            };
+        });
+    },
+
     ensureSession: async (tab, options) => {
         const currentSession = get().sessions[tab.sessionId] ?? null;
         const shouldHydratePassively =
@@ -1743,7 +1771,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             return;
         }
 
-        const requestKey = `${tab.sessionId}:${shouldHydratePassively ? "history" : "live"}`;
+        const requestKey = `${tab.sessionId}:${shouldHydratePassively ? "history" : "live"}:${options?.confirmCustomRuntimeChange ? "confirmed" : "standard"}`;
         const existingRequest = ensureSessionInFlight.get(requestKey);
         if (existingRequest) {
             await existingRequest;
@@ -1752,7 +1780,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
 
         const request = shouldHydratePassively
             ? executePassiveSessionHydration(tab, get, set)
-            : executeSessionPrepare(tab, get, set);
+            : executeSessionPrepare(tab, get, set, {
+                  confirmCustomRuntimeChange:
+                      options?.confirmCustomRuntimeChange ?? false,
+              });
         ensureSessionInFlight.set(requestKey, request);
 
         try {
@@ -2912,6 +2943,7 @@ function createSessionState(
         draftFileContexts: [],
         dismissedPlanUpdatedAt: null,
         isPlanCollapsed: false,
+        isPendingReviewCollapsed: true,
         diffZoom: preferences?.diffZoom ?? null,
         editingQueuedPromptState: null,
         editingQueuedPrompt: null,
@@ -3129,6 +3161,9 @@ async function executeSessionPrepare(
     tab: RuntimeAiSessionTab,
     get: GetAiState,
     set: SetAiState,
+    options: {
+        readonly confirmCustomRuntimeChange: boolean;
+    },
 ): Promise<void> {
     get().registerSessionTab(tab);
 
@@ -3137,6 +3172,7 @@ async function executeSessionPrepare(
             ...state.sessions,
             [tab.sessionId]: {
                 ...(state.sessions[tab.sessionId] ?? createSessionState()),
+                localError: null,
                 meta: buildSessionMeta(tab),
                 runtimeState: "live",
             },
@@ -3149,6 +3185,9 @@ async function executeSessionPrepare(
         );
         const snapshotPromise = getComandoApi()
             .prepareAiSession({
+                ...(options.confirmCustomRuntimeChange
+                    ? { confirmCustomRuntimeChange: true }
+                    : {}),
                 projectId: tab.projectId,
                 runtimeId: tab.runtimeId,
                 sessionId: tab.sessionId,
@@ -3156,6 +3195,9 @@ async function executeSessionPrepare(
                 worktreeId: tab.worktreeId ?? null,
             })
             .catch(async (error) => {
+                if (getCustomRuntimeChangeConfirmationMessage(error)) {
+                    throw error;
+                }
                 const fallbackSnapshot =
                     await getComandoApi().getAiSessionSnapshot(tab.sessionId);
                 if (fallbackSnapshot) {
@@ -3226,6 +3268,7 @@ async function executeSessionPrepare(
                                       null,
                               }),
                         meta: buildSessionMeta(tab),
+                        localError: null,
                         runtimeState: "live",
                         snapshot: nextSnapshot,
                         transcript: nextTranscript,
@@ -3240,6 +3283,8 @@ async function executeSessionPrepare(
             );
         }
     } catch (error) {
+        const customRuntimeChangeMessage =
+            getCustomRuntimeChangeConfirmationMessage(error);
         set((state) => ({
             runtimeCatalogById: {
                 ...state.runtimeCatalogById,
@@ -3255,9 +3300,10 @@ async function executeSessionPrepare(
                 [tab.sessionId]: {
                     ...(state.sessions[tab.sessionId] ?? createSessionState()),
                     localError:
-                        error instanceof Error
+                        customRuntimeChangeMessage ??
+                        (error instanceof Error
                             ? error.message
-                            : `Could not hydrate the ${getRuntimeDisplayName(tab.runtimeId)} session.`,
+                            : `Could not hydrate the ${getRuntimeDisplayName(tab.runtimeId)} session.`),
                     meta: buildSessionMeta(tab),
                     runtimeState: "history",
                     // Keep the readable history on screen when reconnecting the
@@ -3274,6 +3320,10 @@ async function executeSessionPrepare(
                 },
             },
         }));
+        if (customRuntimeChangeMessage) {
+            // The initiating UI must own the confirmation before retrying.
+            throw error;
+        }
     }
 }
 
@@ -5910,17 +5960,5 @@ function getComandoApi() {
 }
 
 function getRuntimeDisplayName(runtimeId: AiRuntimeId): string {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude";
-        case "grok":
-            return "Grok";
-        case "kilo":
-            return "Kilo";
-        case "opencode":
-            return "OpenCode";
-        case "codex":
-        default:
-            return "Codex";
-    }
+    return getAiRuntimeDisplayName(runtimeId);
 }

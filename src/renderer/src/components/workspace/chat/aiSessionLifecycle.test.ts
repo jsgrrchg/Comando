@@ -1,8 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AiSessionSnapshot } from "@shared/ipc";
+import { createCustomRuntimeChangeConfirmationErrorMessage } from "@shared/ai-session-errors";
 
-import { getStopAgentConfirmationMessage } from "./aiSessionLifecycle";
+import {
+    getStopAgentConfirmationMessage,
+    requestCustomRuntimeChangeConfirmation,
+} from "./aiSessionLifecycle";
 
 function createSnapshot(
     overrides: Partial<AiSessionSnapshot> = {},
@@ -128,5 +132,43 @@ describe("getStopAgentConfirmationMessage", () => {
                 title: "Galileo",
             }),
         ).toBeNull();
+    });
+});
+
+describe("requestCustomRuntimeChangeConfirmation", () => {
+    it("confirms only marked custom runtime definition changes", () => {
+        const confirm = vi.fn(() => true);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: { confirm },
+            writable: true,
+        });
+        const message =
+            "The Pi definition changed since this session was created. Continue with the modified configuration?";
+
+        expect(
+            requestCustomRuntimeChangeConfirmation(
+                new Error(
+                    `Error invoking remote method: ${createCustomRuntimeChangeConfirmationErrorMessage(message)}`,
+                ),
+            ),
+        ).toBe(true);
+        expect(confirm).toHaveBeenCalledWith(message);
+    });
+
+    it("ignores unrelated session errors", () => {
+        const confirm = vi.fn();
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: { confirm },
+            writable: true,
+        });
+
+        expect(
+            requestCustomRuntimeChangeConfirmation(
+                new Error("Runtime executable was not found."),
+            ),
+        ).toBeNull();
+        expect(confirm).not.toHaveBeenCalled();
     });
 });

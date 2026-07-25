@@ -21,6 +21,7 @@ import { useShallow } from "zustand/react/shallow";
 import type {
     AiFileContextAttachment,
     AiImageAttachment,
+    AiRuntimeDescriptor,
     AiRuntimeId,
     AiTrackedFile,
     GitChangeEntry,
@@ -29,10 +30,9 @@ import type {
     ProjectFileDocument,
 } from "@shared/ipc";
 import {
-    ACTIVE_AI_RUNTIME_IDS,
+    BUILT_IN_AI_RUNTIME_CATALOG,
     getAiRuntimeDisplayName,
-    isActiveAiRuntimeId,
-    type ActiveAiRuntimeId,
+    resolveAvailableAiRuntimeId,
 } from "@shared/ai-runtimes";
 import {
     resolveEditorLanguage,
@@ -237,6 +237,7 @@ interface WorkspaceViewProps {
     readonly onOpenProject: (projectId: string) => void;
     readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
+    readonly runtimeCatalog: readonly AiRuntimeDescriptor[];
 }
 
 type SplitDragState = {
@@ -630,6 +631,7 @@ export function buildWorkspaceAgentsQuickCreateEntries({
     defaultWorktreeId,
     onCreateChatTab,
     onOpenClaudeCodeTerminal,
+    runtimeCatalog = BUILT_IN_AI_RUNTIME_CATALOG,
 }: {
     readonly claudeCodeAvailable: boolean | null;
     readonly defaultProjectId: string | null;
@@ -637,20 +639,24 @@ export function buildWorkspaceAgentsQuickCreateEntries({
     readonly onCreateChatTab: (
         projectId: string | null,
         worktreeId: string | null,
-        runtimeId: ActiveAiRuntimeId,
+        runtimeId: AiRuntimeId,
     ) => void;
     readonly onOpenClaudeCodeTerminal: () => void;
+    readonly runtimeCatalog?: readonly AiRuntimeDescriptor[];
 }): readonly QuickCreateMenuEntry[] {
     const createRuntimeEntry = (
-        runtimeId: ActiveAiRuntimeId,
+        runtime: AiRuntimeDescriptor,
     ): QuickCreateMenuEntry => ({
         action: () =>
-            onCreateChatTab(defaultProjectId, defaultWorktreeId, runtimeId),
-        label: getAiRuntimeDisplayName(runtimeId),
+            onCreateChatTab(defaultProjectId, defaultWorktreeId, runtime.id),
+        label: runtime.displayName,
     });
+    const availableRuntimes = runtimeCatalog.filter(
+        (runtime) => runtime.available,
+    );
 
     return [
-        ...ACTIVE_AI_RUNTIME_IDS.slice(0, 2).map(createRuntimeEntry),
+        ...availableRuntimes.slice(0, 2).map(createRuntimeEntry),
         {
             action: onOpenClaudeCodeTerminal,
             label: "Claude Code",
@@ -659,12 +665,8 @@ export function buildWorkspaceAgentsQuickCreateEntries({
                     ? CLAUDE_CODE_NOT_FOUND_MESSAGE
                     : CLAUDE_CODE_TERMINAL_DESCRIPTION,
         },
-        ...ACTIVE_AI_RUNTIME_IDS.slice(2).map(createRuntimeEntry),
+        ...availableRuntimes.slice(2).map(createRuntimeEntry),
     ];
-}
-
-function resolveActiveRuntimeId(runtimeId: AiRuntimeId): ActiveAiRuntimeId {
-    return isActiveAiRuntimeId(runtimeId) ? runtimeId : "codex";
 }
 
 export function WorkspaceView({
@@ -674,6 +676,7 @@ export function WorkspaceView({
     onOpenProject,
     onOpenProjects,
     onRequestCreateFile,
+    runtimeCatalog,
 }: WorkspaceViewProps) {
     const closeTab = useWorkspaceStore((state) => state.closeTab);
     const chatViewBudgetWorkspaceState = useWorkspaceStore(
@@ -1152,14 +1155,15 @@ export function WorkspaceView({
             >
                 <ChatViewResourceBudgetContext.Provider value={hotChatTabIds}>
                     <WorkspaceNodeView
-                    defaultProjectId={defaultProjectId}
-                    defaultWorktreeId={defaultWorktreeId}
-                    recentProjects={recentProjects}
-                    nodeId={rootNodeId}
-                    onOpenProject={onOpenProject}
-                    onOpenProjects={onOpenProjects}
-                    onRequestCreateFile={onRequestCreateFile}
-                    tabDrag={tabDrag}
+                        defaultProjectId={defaultProjectId}
+                        defaultWorktreeId={defaultWorktreeId}
+                        recentProjects={recentProjects}
+                        nodeId={rootNodeId}
+                        onOpenProject={onOpenProject}
+                        onOpenProjects={onOpenProjects}
+                        onRequestCreateFile={onRequestCreateFile}
+                        runtimeCatalog={runtimeCatalog}
+                        tabDrag={tabDrag}
                     />
                 </ChatViewResourceBudgetContext.Provider>
             </WorkspaceTabLifecycleContext.Provider>
@@ -1229,6 +1233,7 @@ function WorkspaceNodeView({
     onOpenProject,
     onOpenProjects,
     onRequestCreateFile,
+    runtimeCatalog,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
@@ -1238,6 +1243,7 @@ function WorkspaceNodeView({
     readonly onOpenProject: (projectId: string) => void;
     readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
+    readonly runtimeCatalog: readonly AiRuntimeDescriptor[];
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     const node = useWorkspaceStore(
@@ -1261,6 +1267,7 @@ function WorkspaceNodeView({
                 onOpenProject={onOpenProject}
                 onOpenProjects={onOpenProjects}
                 onRequestCreateFile={onRequestCreateFile}
+                runtimeCatalog={runtimeCatalog}
                 tabDrag={tabDrag}
             />
         );
@@ -1275,6 +1282,7 @@ function WorkspaceNodeView({
             onOpenProject={onOpenProject}
             onOpenProjects={onOpenProjects}
             onRequestCreateFile={onRequestCreateFile}
+            runtimeCatalog={runtimeCatalog}
             tabDrag={tabDrag}
         />
     );
@@ -1492,6 +1500,7 @@ function WorkspaceSplitView({
     onOpenProject,
     onOpenProjects,
     onRequestCreateFile,
+    runtimeCatalog,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
@@ -1501,6 +1510,7 @@ function WorkspaceSplitView({
     readonly onOpenProject: (projectId: string) => void;
     readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
+    readonly runtimeCatalog: readonly AiRuntimeDescriptor[];
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     const node = useWorkspaceStore(
@@ -1652,6 +1662,7 @@ function WorkspaceSplitView({
                         });
                     }}
                     size={sizes[index] ?? 1 / node.children.length}
+                    runtimeCatalog={runtimeCatalog}
                     tabDrag={tabDrag}
                 />
             ))}
@@ -1681,6 +1692,7 @@ function FragmentPane({
     onOpenProjects,
     onRequestCreateFile,
     onPointerDown,
+    runtimeCatalog,
     size,
     tabDrag,
 }: {
@@ -1695,6 +1707,7 @@ function FragmentPane({
     readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
     readonly onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+    readonly runtimeCatalog: readonly AiRuntimeDescriptor[];
     readonly size: number;
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
@@ -1716,6 +1729,7 @@ function FragmentPane({
                     onOpenProject={onOpenProject}
                     onOpenProjects={onOpenProjects}
                     onRequestCreateFile={onRequestCreateFile}
+                    runtimeCatalog={runtimeCatalog}
                     tabDrag={tabDrag}
                 />
             </div>
@@ -1762,6 +1776,7 @@ function WorkspacePaneView({
     onOpenProject,
     onOpenProjects,
     onRequestCreateFile,
+    runtimeCatalog,
     tabDrag,
 }: {
     readonly defaultProjectId: string | null;
@@ -1771,6 +1786,7 @@ function WorkspacePaneView({
     readonly onOpenProject: (projectId: string) => void;
     readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
+    readonly runtimeCatalog: readonly AiRuntimeDescriptor[];
     readonly tabDrag: ReturnType<typeof useWorkspaceTabDrag>;
 }) {
     const hotChatTabIds = useContext(ChatViewResourceBudgetContext);
@@ -1934,6 +1950,10 @@ function WorkspacePaneView({
                             const titleInput = {
                                 manualTitle: snapshot?.manualTitle,
                                 messages: snapshot?.messages,
+                                runtimeDisplayName: getAiRuntimeDisplayName(
+                                    tab.runtimeId,
+                                    runtimeCatalog,
+                                ),
                                 title: snapshot?.title || tab.title,
                             };
                             return [[
@@ -1944,7 +1964,7 @@ function WorkspacePaneView({
                             ]];
                         }),
                     ),
-                [paneTabs],
+                [paneTabs, runtimeCatalog],
             ),
         ),
     );
@@ -2320,7 +2340,7 @@ function WorkspacePaneView({
         void createChatTab(
             defaultProjectId,
             defaultWorktreeId ?? null,
-            resolveActiveRuntimeId(lastFocusedRuntimeId),
+            lastFocusedRuntimeId,
         );
     }, [
         createChatTab,
@@ -2394,7 +2414,7 @@ function WorkspacePaneView({
             await createChatTab(
                 context.projectId,
                 worktreeId,
-                resolveActiveRuntimeId(currentState.lastFocusedRuntimeId),
+                currentState.lastFocusedRuntimeId,
             );
 
             const createdChatTab = Object.values(
@@ -2435,35 +2455,17 @@ function WorkspacePaneView({
     );
 
     function handleOpenLastQuickCreateAction() {
+        const runtimeId = getQuickCreateRuntimeId(lastQuickCreateAction);
+        if (runtimeId) {
+            void createChatTab(
+                defaultProjectId,
+                defaultWorktreeId ?? null,
+                resolveAvailableAiRuntimeId(runtimeId, runtimeCatalog),
+            );
+            return;
+        }
+
         switch (lastQuickCreateAction) {
-            case "claude":
-                void createChatTab(
-                    defaultProjectId,
-                    defaultWorktreeId ?? null,
-                    "claude",
-                );
-                return;
-            case "grok":
-                void createChatTab(
-                    defaultProjectId,
-                    defaultWorktreeId ?? null,
-                    "grok",
-                );
-                return;
-            case "kilo":
-                void createChatTab(
-                    defaultProjectId,
-                    defaultWorktreeId ?? null,
-                    "kilo",
-                );
-                return;
-            case "opencode":
-                void createChatTab(
-                    defaultProjectId,
-                    defaultWorktreeId ?? null,
-                    "opencode",
-                );
-                return;
             case "terminal":
                 void createTerminalTab(
                     defaultProjectId,
@@ -2509,8 +2511,9 @@ function WorkspacePaneView({
                     "codex",
                 );
                 return;
-            case "codex":
             default:
+                // Non-runtime actions fall back to Codex when their preferred
+                // surface cannot be opened without a project.
                 void createChatTab(
                     defaultProjectId,
                     defaultWorktreeId ?? null,
@@ -2531,6 +2534,7 @@ function WorkspacePaneView({
                         void createChatTab(projectId, worktreeId, runtimeId);
                     },
                     onOpenClaudeCodeTerminal: handleOpenClaudeCodeTerminal,
+                    runtimeCatalog,
                 }),
             },
             { type: "separator" },
@@ -2580,12 +2584,14 @@ function WorkspacePaneView({
             handleOpenClaudeCodeTerminal,
             openChatHistoryTab,
             openGitTab,
+            runtimeCatalog,
         ],
     );
 
     const lastQuickCreateTitle = getQuickCreateButtonTitle(
         lastQuickCreateAction,
         Boolean(defaultProjectId),
+        runtimeCatalog,
     );
 
     // Keep the latest handler references in a ref so the keydown listener can
@@ -3662,16 +3668,18 @@ function QuickCreateMenu({
 export function getQuickCreateButtonTitle(
     action: WorkspaceQuickCreateAction,
     hasProject: boolean,
+    runtimeCatalog: readonly AiRuntimeDescriptor[] = BUILT_IN_AI_RUNTIME_CATALOG,
 ) {
+    const runtimeId = getQuickCreateRuntimeId(action);
+    if (runtimeId) {
+        const availableRuntimeId = resolveAvailableAiRuntimeId(
+            runtimeId,
+            runtimeCatalog,
+        );
+        return `Open last item: ${getAiRuntimeDisplayName(availableRuntimeId, runtimeCatalog)} chat`;
+    }
+
     switch (action) {
-        case "claude":
-            return "Open last item: Claude chat";
-        case "grok":
-            return "Open last item: Grok chat";
-        case "kilo":
-            return "Open last item: Kilo chat";
-        case "opencode":
-            return "Open last item: OpenCode chat";
         case "terminal":
             return "Open last item: terminal";
         case "git":
@@ -3686,9 +3694,22 @@ export function getQuickCreateButtonTitle(
             return hasProject
                 ? "Open last item: new file"
                 : "Open last item: Codex chat";
-        case "codex":
         default:
             return "Open last item: Codex chat";
+    }
+}
+
+export function getQuickCreateRuntimeId(
+    action: WorkspaceQuickCreateAction,
+): AiRuntimeId | null {
+    switch (action) {
+        case "file":
+        case "git":
+        case "history":
+        case "terminal":
+            return null;
+        default:
+            return action;
     }
 }
 
@@ -7219,18 +7240,40 @@ function ImageFileView({
     readonly document: ProjectFileDocument;
 }) {
     const imageSrc = buildImageDataUrl(document);
+    const imageClipboardInput =
+        imageSrc && document.imageDataBase64 && document.mimeType
+            ? {
+                  dataBase64: document.imageDataBase64,
+                  mimeType: document.mimeType,
+              }
+            : null;
     const [scale, setScale] = useState(1);
     const [translate, setTranslate] = useState({ x: 0, y: 0 });
+    const [fitToView, setFitToView] = useState(true);
     const [isDragging, setIsDragging] = useState(false);
+    const [contextMenu, setContextMenu] =
+        useState<ContextMenuState<void> | null>(null);
     const isDraggingRef = useRef(false);
     const lastPointer = useRef({ x: 0, y: 0 });
     const containerRef = useRef<HTMLDivElement>(null);
 
-    const isZoomed = scale !== 1;
-
     const resetView = useCallback(() => {
         setScale(1);
         setTranslate({ x: 0, y: 0 });
+        setFitToView(true);
+    }, []);
+
+    const setActualSize = useCallback(() => {
+        setScale(1);
+        setTranslate({ x: 0, y: 0 });
+        setFitToView(false);
+    }, []);
+
+    const updateZoom = useCallback((factor: number) => {
+        setFitToView(false);
+        setScale((current) =>
+            Math.min(IMAGE_ZOOM_MAX, Math.max(IMAGE_ZOOM_MIN, current * factor)),
+        );
     }, []);
 
     // Reset view when document changes
@@ -7271,15 +7314,18 @@ function ImageFileView({
                 }));
                 return next;
             });
+            setFitToView(false);
         };
 
         container.addEventListener("wheel", onWheel, { passive: false });
         return () => container.removeEventListener("wheel", onWheel);
     }, []);
 
+    const isPannable = scale !== 1 || !fitToView;
+
     const handlePointerDown = useCallback(
         (event: React.PointerEvent<HTMLDivElement>) => {
-            if (!isZoomed) return;
+            if (!isPannable) return;
             isDraggingRef.current = true;
             setIsDragging(true);
             lastPointer.current = { x: event.clientX, y: event.clientY };
@@ -7287,7 +7333,7 @@ function ImageFileView({
                 event.pointerId,
             );
         },
-        [isZoomed],
+        [isPannable],
     );
 
     const handlePointerMove = useCallback(
@@ -7318,7 +7364,15 @@ function ImageFileView({
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
-                style={{ cursor: isZoomed ? "grab" : undefined }}
+                onContextMenu={(event) => {
+                    event.preventDefault();
+                    setContextMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        payload: undefined,
+                    });
+                }}
+                style={{ cursor: isPannable ? "grab" : undefined }}
             >
                 {imageSrc ? (
                     <img
@@ -7328,8 +7382,8 @@ function ImageFileView({
                         onDoubleClick={resetView}
                         src={imageSrc}
                         style={{
-                            maxHeight: scale === 1 ? "100%" : undefined,
-                            maxWidth: scale === 1 ? "100%" : undefined,
+                            maxHeight: fitToView ? "100%" : undefined,
+                            maxWidth: fitToView ? "100%" : undefined,
                             transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
                             transformOrigin: "center center",
                             transition: isDragging
@@ -7347,7 +7401,7 @@ function ImageFileView({
                         </p>
                     </div>
                 )}
-                {isZoomed && (
+                {isPannable && (
                     <div
                         className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-md px-2 py-0.5 text-[10px] font-medium tabular-nums text-text-secondary"
                         style={{
@@ -7362,6 +7416,66 @@ function ImageFileView({
                     </div>
                 )}
             </div>
+            {contextMenu && imageClipboardInput ? (
+                <ContextMenu
+                    entries={[
+                        {
+                            label: "Copy Image",
+                            action: () =>
+                                void window.comando.writeClipboardImage({
+                                    ...imageClipboardInput,
+                                }),
+                        },
+                        {
+                            label: "Copy File Path",
+                            action: () =>
+                                void window.comando.writeClipboardText(
+                                    document.absolutePath,
+                                ),
+                        },
+                        {
+                            label: "Save As…",
+                            action: () =>
+                                void window.comando.saveImageAs({
+                                    ...imageClipboardInput,
+                                    suggestedName: document.name,
+                                }),
+                        },
+                        { type: "separator" },
+                        {
+                            label: "Zoom In",
+                            action: () => updateZoom(1.25),
+                            disabled: scale >= IMAGE_ZOOM_MAX,
+                        },
+                        {
+                            label: "Zoom Out",
+                            action: () => updateZoom(0.8),
+                            disabled: scale <= IMAGE_ZOOM_MIN,
+                        },
+                        {
+                            label: "Actual Size",
+                            action: setActualSize,
+                            disabled: scale === 1 && !fitToView,
+                        },
+                        {
+                            label: "Fit to View",
+                            action: resetView,
+                            disabled: fitToView && scale === 1,
+                        },
+                        {
+                            label: "Reset View",
+                            action: resetView,
+                            disabled:
+                                fitToView &&
+                                scale === 1 &&
+                                translate.x === 0 &&
+                                translate.y === 0,
+                        },
+                    ]}
+                    menu={contextMenu}
+                    onClose={() => setContextMenu(null)}
+                />
+            ) : null}
         </div>
     );
 }

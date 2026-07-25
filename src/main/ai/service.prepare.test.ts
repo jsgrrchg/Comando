@@ -6,6 +6,7 @@ import type {
     AiSessionSnapshot,
     AiSessionUpdate,
     AiTrackedFile,
+    CustomAcpRuntimeDefinition,
 } from "@shared/ipc";
 
 import type { NativeAiGateway } from "./contracts";
@@ -2481,6 +2482,310 @@ describe("AiService prepareSession", () => {
     });
 });
 
+describe("custom ACP prepare launches", () => {
+    it("passes the resolved immutable launch only for the selected custom runtime", async () => {
+        const runtimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+        const definition: CustomAcpRuntimeDefinition = {
+            args: ["--profile", "test"],
+            authMode: "external",
+            command: process.execPath,
+            displayName: "Pi",
+            env: { PI_PROFILE: "test" },
+            id: runtimeId,
+            launchFingerprint: "a".repeat(64),
+            revision: 4,
+        };
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            () =>
+                Promise.resolve(createSnapshot({
+                    runtimeId,
+                    sessionId: "custom-session",
+                    title: "Pi 1",
+                })),
+        );
+        const service = createPrepareService({
+            customAcpRuntimes: [definition],
+            nativeAi: createNativeAi({
+                prepareSession,
+                shouldHandleRuntime: vi.fn(() => true),
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId,
+                sessionId: "custom-session",
+                title: "Pi 1",
+            },
+            "window-1",
+        );
+
+        const request = prepareSession.mock.calls[0]?.[0];
+        expect(request?.launch.resolvedRuntime.customAcpLaunch).toMatchObject({
+            args: ["--profile", "test"],
+            authMode: "external",
+            displayName: "Pi",
+            executable: process.execPath,
+            launchFingerprint: "a".repeat(64),
+            revision: 4,
+            runtimeId,
+        });
+        expect(
+            request?.launch.resolvedRuntime.customAcpLaunch?.env,
+        ).not.toHaveProperty("OPENAI_API_KEY");
+    });
+
+    it("releases the immutable launch after a normal session close", async () => {
+        const runtimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+        const definition: CustomAcpRuntimeDefinition = {
+            args: ["--profile", "test"],
+            authMode: "external",
+            command: process.execPath,
+            displayName: "Pi",
+            env: { PI_PROFILE: "test" },
+            id: runtimeId,
+            launchFingerprint: "a".repeat(64),
+            revision: 1,
+        };
+        const service = createPrepareService({
+            customAcpRuntimes: [definition],
+            nativeAi: createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ input }) =>
+                        Promise.resolve(
+                            createSnapshot({
+                                runtimeId,
+                                sessionId: input.sessionId,
+                                title: input.title,
+                            }),
+                        ),
+                ),
+                shouldHandleRuntime: vi.fn(() => true),
+            }),
+        });
+
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId,
+                sessionId: "custom-session",
+                title: "Pi 1",
+            },
+            "window-1",
+        );
+        expect(
+            service.getSessionRetentionDiagnostics()
+                .activeCustomRuntimeLaunchCount,
+        ).toBe(1);
+
+        await service.closeSession("custom-session");
+
+        expect(
+            service.getSessionRetentionDiagnostics()
+                .activeCustomRuntimeLaunchCount,
+        ).toBe(0);
+    });
+
+    it("keeps the immutable launch for an active session after its definition is deleted", async () => {
+        const runtimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+        const definitions: CustomAcpRuntimeDefinition[] = [
+            {
+                args: [],
+                authMode: "external",
+                command: process.execPath,
+                displayName: "Pi",
+                env: {},
+                id: runtimeId,
+                launchFingerprint: "a".repeat(64),
+                revision: 1,
+            },
+        ];
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            ({ input }) =>
+                Promise.resolve(
+                    createSnapshot({
+                        runtimeId,
+                        sessionId: input.sessionId,
+                        title: input.title,
+                    }),
+                ),
+        );
+        const service = createPrepareService({
+            customAcpRuntimes: definitions,
+            nativeAi: createNativeAi({
+                prepareSession,
+                shouldHandleRuntime: vi.fn(() => true),
+            }),
+        });
+        const input = {
+            projectId: null,
+            runtimeId,
+            sessionId: "custom-session",
+            title: "Pi 1",
+        };
+
+        await service.prepareSession(input, "window-1");
+        definitions.length = 0;
+        await expect(
+            service.prepareSession(input, "window-1"),
+        ).resolves.toMatchObject({ sessionId: "custom-session" });
+
+        expect(
+            prepareSession.mock.calls[1]?.[0].launch.resolvedRuntime
+                .customAcpLaunch?.launchFingerprint,
+        ).toBe("a".repeat(64));
+    });
+
+    it("requires confirmation before using a modified definition for history", async () => {
+        const runtimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+        const definition: CustomAcpRuntimeDefinition = {
+            args: [],
+            authMode: "external",
+            command: process.execPath,
+            displayName: "Pi renamed",
+            env: {},
+            id: runtimeId,
+            launchFingerprint: "b".repeat(64),
+            revision: 2,
+        };
+        const persistedSnapshot = createSnapshot({
+            customAcpContinuationStrategy: "load",
+            runtimeDisplayName: "Pi",
+            runtimeId,
+            runtimeLaunchFingerprint: "a".repeat(64),
+            runtimeRevision: 1,
+            runtimeSessionId: "runtime-pi",
+            sessionId: "custom-history",
+            title: "Pi history",
+        });
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>(
+            () => Promise.resolve(persistedSnapshot),
+        );
+        const service = createPrepareService({
+            customAcpRuntimes: [definition],
+            nativeAi: createNativeAi({
+                prepareSession,
+                shouldHandleRuntime: vi.fn(() => true),
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {},
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+        const input = {
+            projectId: null,
+            runtimeId,
+            sessionId: "custom-history",
+            title: "Pi history",
+        };
+
+        await expect(
+            service.prepareSession(input, "window-1"),
+        ).rejects.toThrow("definition changed");
+        expect(prepareSession).not.toHaveBeenCalled();
+
+        await expect(
+            service.prepareSession(
+                { ...input, confirmCustomRuntimeChange: true },
+                "window-1",
+            ),
+        ).resolves.toMatchObject({ sessionId: "custom-history" });
+    });
+
+    it("does not start missing or new-session-only historical runtimes implicitly", async () => {
+        const runtimeId =
+            "custom:550e8400-e29b-41d4-a716-446655440000" as const;
+        const prepareSession = vi.fn<NativeAiGateway["prepareSession"]>();
+        const missingService = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession,
+                shouldHandleRuntime: vi.fn(() => true),
+            }),
+        });
+
+        await expect(
+            missingService.prepareSession(
+                {
+                    projectId: null,
+                    runtimeId,
+                    sessionId: "missing-history",
+                    title: "Missing",
+                },
+                "window-1",
+            ),
+        ).rejects.toThrow("Restore it in Settings");
+        expect(prepareSession).not.toHaveBeenCalled();
+
+        const definition: CustomAcpRuntimeDefinition = {
+            args: [],
+            authMode: "external",
+            command: process.execPath,
+            displayName: "Pi",
+            env: {},
+            id: runtimeId,
+            launchFingerprint: "a".repeat(64),
+            revision: 1,
+        };
+        const persistedSnapshot = createSnapshot({
+            customAcpContinuationStrategy: "new-session-only",
+            runtimeDisplayName: "Pi",
+            runtimeId,
+            runtimeLaunchFingerprint: definition.launchFingerprint,
+            runtimeRevision: 1,
+            runtimeSessionId: "runtime-pi",
+            sessionId: "new-only-history",
+            title: "Pi history",
+        });
+        const newOnlyService = createPrepareService({
+            customAcpRuntimes: [definition],
+            nativeAi: createNativeAi({
+                prepareSession,
+                shouldHandleRuntime: vi.fn(() => true),
+            }),
+            persistence: {
+                loadLatestRuntimeCatalog: vi.fn(() => null),
+                loadRuntimeSelectionPreferences: vi.fn(() => ({
+                    configOptions: {},
+                    modeId: null,
+                    modelId: null,
+                })),
+                loadSessionSnapshot: vi.fn(() => persistedSnapshot),
+                saveRuntimeSelectionPreferenceOption: vi.fn(),
+                saveRuntimeModePreference: vi.fn(),
+                saveRuntimeModelPreference: vi.fn(),
+                saveSessionSnapshot: vi.fn(),
+            } as never,
+        });
+
+        await expect(
+            newOnlyService.prepareSession(
+                {
+                    projectId: null,
+                    runtimeId,
+                    sessionId: "new-only-history",
+                    title: "Pi history",
+                },
+                "window-1",
+            ),
+        ).rejects.toThrow("does not support continuing");
+        expect(prepareSession).not.toHaveBeenCalled();
+    });
+});
+
 function createNativeAi(
     overrides: Partial<NativeAiGateway> = {},
 ): NativeAiGateway {
@@ -2604,6 +2909,7 @@ function createPrepareService(
             typeof AiService
         >[0]["aiSessionRetention"];
         readonly nativeAi?: NativeAiGateway;
+        readonly customAcpRuntimes?: readonly CustomAcpRuntimeDefinition[];
         readonly onSessionSnapshot?: (
             ownerWindowId: string,
             update: AiSessionUpdate,
@@ -2642,6 +2948,9 @@ function createPrepareService(
             saveSecret: vi.fn(),
         },
         settingsService: {
+            listCustomAcpRuntimes: vi.fn(
+                () => options.customAcpRuntimes ?? [],
+            ),
             loadClaudeRuntimeSettings: vi.fn(() => ({
                 authInvalidatedAtMs: null,
                 authMethod: null,

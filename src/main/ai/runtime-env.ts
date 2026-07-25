@@ -83,6 +83,17 @@ export function resolveExecutableFromRuntimePath(
     return null;
 }
 
+export function resolveExecutableFromControlledRuntimePath(
+    command: string,
+    env: NodeJS.ProcessEnv = process.env,
+): string | null {
+    return resolveExecutableInEntries(
+        command,
+        buildRuntimePathEntries(undefined, command, env),
+        env,
+    );
+}
+
 function resolveExecutableInEntries(
     command: string,
     pathEntries: readonly string[],

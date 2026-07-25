@@ -8,6 +8,10 @@ import {
 
 import { SectionLabel } from "./primitives";
 import {
+    CustomAcpRuntimesSettings,
+    type CustomAcpRuntimesSettingsProps,
+} from "./CustomAcpRuntimesSettings";
+import {
     AI_PROVIDER_DEFINITIONS,
     buildSecretPatch,
     createClearSecretDraft,
@@ -36,6 +40,7 @@ import {
 
 export interface AIProvidersSettingsProps {
     readonly busyProviderId?: AiProviderId | null;
+    readonly customAcpRuntimes?: CustomAcpRuntimesSettingsProps;
     readonly defaultExpandedProviderIds?: readonly AiProviderId[];
     readonly diagnostics?: AiProviderDiagnosticsState | null;
     readonly disabled?: boolean;
@@ -135,6 +140,7 @@ const TEXTAREA_STYLE: CSSProperties = {
 
 export function AIProvidersSettings({
     busyProviderId = null,
+    customAcpRuntimes,
     defaultExpandedProviderIds = ["codex"],
     diagnostics = null,
     disabled = false,
@@ -351,9 +357,10 @@ export function AIProvidersSettings({
     };
 
     return (
-        <section aria-label="AI provider settings">
-            <SectionLabel>AI Providers</SectionLabel>
-            <div>
+        <>
+            <section aria-label="AI provider settings">
+                <SectionLabel>AI Providers</SectionLabel>
+                <div>
                 <ProviderCard
                     error={errorByProviderId?.codex ?? localErrors.codex}
                     expanded={expandedProviderIds.has("codex")}
@@ -724,15 +731,20 @@ export function AIProvidersSettings({
                         save: saveOpenCode,
                     })}
                 </ProviderCard>
-            </div>
+                </div>
 
-            {diagnostics ? (
-                <DiagnosticsPanel
-                    diagnostics={diagnostics}
-                    onRefresh={onRefreshDiagnostics}
-                />
-            ) : null}
-        </section>
+                {diagnostics ? (
+                    <DiagnosticsPanel
+                        diagnostics={diagnostics}
+                        onRefresh={onRefreshDiagnostics}
+                    />
+                ) : null}
+            </section>
+            <CustomAcpRuntimesSettings
+                {...customAcpRuntimes}
+                disabled={disabled || customAcpRuntimes?.disabled}
+            />
+        </>
     );
 }
 

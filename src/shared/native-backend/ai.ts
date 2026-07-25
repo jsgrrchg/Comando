@@ -7,6 +7,10 @@ import type {
     NativeToolCallId,
     NativeWorktreeId,
 } from "./ids";
+import type {
+    CustomAcpContinuationStrategy,
+    CustomAcpLaunchSpec,
+} from "../ipc";
 
 export type NativeAiRuntimeId = NativeRuntimeId;
 export type ReviewDeltaId = string;
@@ -233,6 +237,8 @@ export type NativeAiPrepareSessionInput = {
     readonly modeId: string | null;
     readonly configOptions: Readonly<Record<string, unknown>>;
     readonly additionalRoots: readonly string[];
+    readonly customAcpContinuationStrategy?: CustomAcpContinuationStrategy | null;
+    readonly customAcpLaunch?: CustomAcpLaunchSpec | null;
     readonly persistedRuntimeSessionId?: NativeRuntimeSessionId | null;
     readonly persistedSubagentSessionMappings?: readonly NativeAiRuntimeSessionMapping[];
     readonly launch: NativeAiLaunchSpec | null;
@@ -337,6 +343,7 @@ export type NativeAiConfigOption = {
 };
 
 export type NativeAiSessionSummary = {
+    readonly customAcpContinuationStrategy?: CustomAcpContinuationStrategy | null;
     readonly sessionId: NativeSessionId;
     readonly runtimeId: NativeRuntimeId;
     readonly runtimeSessionId: NativeRuntimeSessionId | null;
@@ -354,9 +361,13 @@ export type NativeAiListSessionHistoryInput = {
 };
 
 export type NativeAiHistorySessionSummary = {
+    readonly customAcpContinuationStrategy?: CustomAcpContinuationStrategy | null;
     readonly sessionId: NativeSessionId;
     readonly parentSessionId: NativeSessionId | null;
     readonly runtimeId: NativeRuntimeId;
+    readonly runtimeDisplayName?: string | null;
+    readonly runtimeLaunchFingerprint?: string | null;
+    readonly runtimeRevision?: number | null;
     readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly projectId: NativeProjectId | null;
     readonly worktreeId: NativeWorktreeId | null;
@@ -465,9 +476,13 @@ export type NativeAiListSessionRuntimeMappingsInput = {
 };
 
 export type NativeAiSessionSnapshot = {
+    readonly customAcpContinuationStrategy?: CustomAcpContinuationStrategy | null;
     readonly sessionId: NativeSessionId;
     readonly parentSessionId: NativeSessionId | null;
     readonly runtimeId: NativeRuntimeId;
+    readonly runtimeDisplayName?: string | null;
+    readonly runtimeLaunchFingerprint?: string | null;
+    readonly runtimeRevision?: number | null;
     readonly runtimeSessionId: NativeRuntimeSessionId | null;
     readonly projectId: NativeProjectId | null;
     readonly worktreeId: NativeWorktreeId | null;

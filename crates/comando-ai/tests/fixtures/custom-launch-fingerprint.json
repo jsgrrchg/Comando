@@ -1,0 +1,11 @@
+{
+  "args": ["--stdio"],
+  "authMode": "external",
+  "command": "pi-acp",
+  "env": {
+    "a": "one",
+    "B": "two"
+  },
+  "expectedFingerprint": "e626f7d81631dc88386df06f9732b8d70d2a82e49f5fdc1ae0a0cf7e8080566e",
+  "profile": "acp-current14-custom-v1"
+}
