@@ -598,6 +598,18 @@ fn native_unavailable_status(definition: &RuntimeDefinition) -> NativeAiRuntimeS
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FingerprintContractFixture {
+        args: Vec<String>,
+        auth_mode: String,
+        command: String,
+        env: BTreeMap<String, String>,
+        expected_fingerprint: String,
+        profile: String,
+    }
 
     fn custom_launch(runtime_id: &str, display_name: &str) -> NativeCustomAcpLaunchSpec {
         let configured_env = BTreeMap::from([("PI_PROFILE".to_string(), "test".to_string())]);
@@ -699,6 +711,42 @@ mod tests {
             AiError::RuntimeLaunchContextInvalid { message, .. }
                 if message.contains("fingerprint")
         ));
+    }
+
+    #[test]
+    fn accepts_typescript_fingerprint_contract_with_mixed_case_environment() {
+        let fixture: FingerprintContractFixture = serde_json::from_str(include_str!(
+            "../tests/fixtures/custom-launch-fingerprint.json"
+        ))
+        .expect("shared fingerprint fixture");
+        assert_eq!(fixture.profile, "acp-current14-custom-v1");
+        let normalized = CustomLaunchFingerprintInput {
+            args: &fixture.args,
+            auth_mode: &fixture.auth_mode,
+            command: &fixture.command,
+            env: &fixture.env,
+            profile: "acp-current14-custom-v1",
+        };
+        let actual_fingerprint = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&normalized).unwrap())
+        );
+        assert_eq!(actual_fingerprint, fixture.expected_fingerprint);
+
+        let mut launch = custom_launch("custom:550e8400-e29b-41d4-a716-446655440000", "Pi");
+        launch.args = fixture.args;
+        launch.auth_mode = fixture.auth_mode;
+        launch.command = fixture.command;
+        launch.configured_env = fixture.env;
+        launch.env = BTreeMap::from([
+            ("HOME".to_string(), "/tmp/custom-home".to_string()),
+            ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+        ]);
+        launch.env.extend(launch.configured_env.clone());
+        launch.launch_fingerprint = fixture.expected_fingerprint;
+
+        RuntimeDefinition::from_custom_launch(&launch)
+            .expect("native runtime should accept the TypeScript fingerprint");
     }
 
     #[test]

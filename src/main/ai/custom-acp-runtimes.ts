@@ -24,6 +24,12 @@ const SECRET_LIKE_ENV_KEY_PATTERN =
 const PROTECTED_ENV_KEYS = new Set(["PATH", "PATHEXT"]);
 const CUSTOM_ACP_LAUNCH_PROFILE = "acp-current14-custom-v1";
 
+function compareCanonicalLaunchKeys(left: string, right: string): number {
+    // Environment keys are ASCII-only, so ordinal comparison matches Rust's
+    // BTreeMap ordering without depending on the JavaScript host locale.
+    return left < right ? -1 : left > right ? 1 : 0;
+}
+
 export interface CustomAcpRuntimeValidationOptions {
     readonly existingDefinitions?: readonly CustomAcpRuntimeDefinition[];
     readonly excludeId?: CustomAcpRuntimeId | null;
@@ -80,7 +86,7 @@ export function validateCustomAcpRuntimeInput(
     }
     const env: Record<string, string> = {};
     for (const [key, value] of envEntries.sort(([left], [right]) =>
-        left.localeCompare(right),
+        compareCanonicalLaunchKeys(left, right),
     )) {
         if (!ENV_KEY_PATTERN.test(key)) {
             throw new Error(`Environment variable "${key}" has an invalid name.`);
@@ -154,7 +160,7 @@ export function calculateCustomAcpLaunchFingerprint(
         command: definition.command,
         env: Object.fromEntries(
             Object.entries(definition.env).sort(([left], [right]) =>
-                left.localeCompare(right),
+                compareCanonicalLaunchKeys(left, right),
             ),
         ),
         profile: CUSTOM_ACP_LAUNCH_PROFILE,

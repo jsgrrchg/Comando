@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -14,6 +16,22 @@ const INPUT = {
     command: "/opt/homebrew/bin/pi-acp",
     displayName: "Pi",
     env: {},
+};
+const FINGERPRINT_CONTRACT_FIXTURE = JSON.parse(
+    readFileSync(
+        new URL(
+            "../../../crates/comando-ai/tests/fixtures/custom-launch-fingerprint.json",
+            import.meta.url,
+        ),
+        "utf8",
+    ),
+) as {
+    readonly args: readonly string[];
+    readonly authMode: "external";
+    readonly command: string;
+    readonly env: Readonly<Record<string, string>>;
+    readonly expectedFingerprint: string;
+    readonly profile: string;
 };
 
 describe("custom ACP runtime definitions", () => {
@@ -55,6 +73,30 @@ describe("custom ACP runtime definitions", () => {
         });
 
         expect(changed).not.toBe(base);
+    });
+
+    it("matches the native fingerprint contract for mixed-case environment keys", () => {
+        const fingerprint = calculateCustomAcpLaunchFingerprint(
+            FINGERPRINT_CONTRACT_FIXTURE,
+        );
+        const normalized = validateCustomAcpRuntimeInput({
+            ...FINGERPRINT_CONTRACT_FIXTURE,
+            displayName: "Pi",
+        });
+
+        expect(FINGERPRINT_CONTRACT_FIXTURE.profile).toBe(
+            "acp-current14-custom-v1",
+        );
+        expect(Object.keys(normalized.env)).toEqual(["B", "a"]);
+        expect(fingerprint).toBe(
+            FINGERPRINT_CONTRACT_FIXTURE.expectedFingerprint,
+        );
+        expect(
+            calculateCustomAcpLaunchFingerprint({
+                ...FINGERPRINT_CONTRACT_FIXTURE,
+                env: { B: "two", a: "one" },
+            }),
+        ).toBe(fingerprint);
     });
 
     it("rejects duplicate names case-insensitively", () => {
