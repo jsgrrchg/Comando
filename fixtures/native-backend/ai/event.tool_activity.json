@@ -11,6 +11,12 @@
     "kind": "read_file",
     "status": "completed",
     "summary": "Read src/main.ts",
+    "locations": [
+      {
+        "path": "/workspace/src/main.ts",
+        "line": 8
+      }
+    ],
     "terminalOutput": "export function main() {}\n",
     "exitCode": 0,
     "rawInput": {

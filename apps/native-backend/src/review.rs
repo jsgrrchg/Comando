@@ -2992,6 +2992,7 @@ mod tests {
             diffs,
             exit_code: Some(0),
             kind: "edit".into(),
+            locations: Vec::new(),
             raw_input: None,
             raw_output: None,
             status: "completed".into(),
