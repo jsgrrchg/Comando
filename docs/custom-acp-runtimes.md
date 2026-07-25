@@ -1,69 +1,69 @@
-# Runtimes ACP personalizados
+# Custom ACP runtimes
 
-Comando puede registrar varios agentes locales compatibles con ACP sin incorporar lógica específica para cada proveedor. Cada registro es una instancia independiente con ID estable, revisión y fingerprint de lanzamiento propios, por lo que `Pi`, `Pi development` y un adaptador interno pueden convivir sin compartir sesiones.
+Comando can register multiple local ACP-compatible agents without adding provider-specific logic. Each definition is an independent runtime with a stable ID, revision, and launch fingerprint, so different adapters and configurations can coexist without sharing sessions.
 
-## Registrar `pi-acp`
+## Add a runtime
 
-`pi-acp` debe estar instalado y autenticado por separado antes de configurarlo. Comando no instala paquetes, no ejecuta `npx` implícitamente y no administra el login del adaptador.
+Install and authenticate the ACP-compatible adapter before configuring it. Comando does not install packages, implicitly run package runners, or manage adapter sign-in.
 
-En **Settings → AI Providers → Custom ACP runtimes**, usar **Add runtime** con una definición equivalente a:
+In **Settings → AI Providers → Custom ACP runtimes**, select **Add runtime** and provide a definition such as:
 
 ```text
-Name: Pi
-Command: /opt/homebrew/bin/pi-acp
+Name: Local ACP agent
+Command: /absolute/path/to/your-acp-adapter
 Arguments:
 Environment:
 Authentication: managed by the runtime
 ```
 
-La ruta puede cambiar según el sistema. **Verify executable** sólo resuelve el comando y comprueba que sea ejecutable; no inicia una sesión, no instala dependencias y no verifica credenciales.
+The command can be an absolute path or an executable available from the controlled runtime PATH. **Verify executable** only resolves the command and checks whether it is executable; it does not start a session, install dependencies, or validate credentials.
 
-Los argumentos se escriben uno por línea y se transmiten como elementos separados, nunca mediante un shell. El entorno usa líneas `NAME=value`. No se admiten `PATH`, `PATHEXT` ni claves con apariencia de token, password, credential, secret o API key.
+Enter one argument per line. Comando passes each line as a separate argument and never invokes a shell. Enter environment variables as `NAME=value` lines. `PATH`, `PATHEXT`, and keys that look like tokens, passwords, credentials, secrets, or API keys are not allowed.
 
-## Modelo de seguridad
+## Security model
 
-Un runtime personalizado ejecuta un programa local con los permisos de la cuenta de usuario. Debe registrarse únicamente software de confianza.
+A custom runtime executes a local program with your user account's permissions. Only register software you trust.
 
-El proceso parte de un entorno vacío. Comando agrega una allowlist mínima de variables de plataforma, un `PATH` controlado y las variables no secretas declaradas en la definición. No hereda el entorno completo de Electron ni recibe credenciales de los runtimes integrados.
+The process starts with an empty environment. Comando adds a minimal allowlist of platform variables, a controlled `PATH`, and the non-secret variables declared in the definition. It does not inherit Electron's full environment or receive credentials from built-in runtimes.
 
-`Authentication managed by the runtime` evita el gating de autenticación de Comando, pero no garantiza que el adaptador esté autenticado. Un error de credenciales durante el handshake o el primer turno se presenta como error del runtime.
+**Authentication managed by the runtime** bypasses Comando's authentication gating, but it does not guarantee that the adapter is signed in. Credential failures during the handshake or first turn are reported as runtime errors.
 
-## Historial y continuación
+## History and continuation
 
-El historial local y la continuación remota son capacidades distintas. El transcript permanece visible aunque el adaptador no pueda volver a abrir su sesión remota.
+Local history and remote session continuation are separate capabilities. The transcript remains visible even when an adapter cannot reopen its remote session.
 
-| Estrategia observada | Comportamiento al reabrir |
+| Observed strategy | Reopen behavior |
 | --- | --- |
-| `resume` | Comando usa `session/resume` con el ID remoto persistido. |
-| `load` | Comando usa `session/load` y evita duplicar en el transcript los eventos reproducidos por el adaptador. |
-| `new-session-only` | El historial se abre como transcript, pero para conversar se debe crear una sesión nueva. Comando no intenta continuar silenciosamente. |
+| `resume` | Comando uses `session/resume` with the persisted remote ID. |
+| `load` | Comando uses `session/load` and avoids duplicating replayed adapter events in the transcript. |
+| `new-session-only` | History opens as a transcript, but continuing the conversation requires a new session. Comando does not attempt a silent continuation. |
 
-La estrategia se deriva de las capacidades anunciadas durante `initialize`; nunca del nombre del adaptador. Si las capacidades cambian y ya no sostienen la estrategia guardada, la continuación falla antes de enviar un prompt.
+Comando derives the strategy from capabilities advertised during `initialize`, never from the adapter name. If those capabilities no longer support the saved strategy, continuation fails before a prompt is sent.
 
-Una sesión activa conserva el executable, los argumentos y el entorno con los que fue creada. Editar o eliminar la definición no reemplaza el proceso que ya está ejecutándose.
+An active session keeps the executable, arguments, and environment it was created with. Editing or deleting a definition does not replace an already-running process.
 
-Si sólo cambia el nombre, el contrato de lanzamiento conserva su fingerprint. Si cambian comando, argumentos o entorno, el historial conserva el fingerprint anterior y Comando exige confirmación antes de continuar con la definición modificada.
+Changing only the display name preserves the launch fingerprint. Changing the command, arguments, or environment leaves the historical fingerprint in place and requires confirmation before continuing with the modified definition.
 
-Eliminar una definición no borra ni reasigna su historial. Settings conserva un tombstone no seleccionable en **Deleted definitions retained for history**. **Restore** recupera exactamente el mismo ID, revisión y fingerprint; si otro runtime activo ya usa el mismo nombre, primero debe renombrarse para mantener la unicidad del catálogo.
+Deleting a definition does not delete or reassign its history. Settings retains a non-selectable tombstone under **Deleted definitions retained for history**. **Restore** recovers the same ID, revision, and fingerprint. If an active runtime already uses the same name, rename it first to keep the catalog unique.
 
-Restaurar habilita nuevamente la preparación de sesiones históricas, pero no fuerza una continuación incompatible: siguen aplicándose la estrategia observada y la comprobación de fingerprint. Si se prefiere abandonar la identidad anterior, se puede registrar una definición nueva y comenzar otra sesión.
+Restoring a definition enables historical session preparation again, but does not force an incompatible continuation: the observed strategy and fingerprint checks still apply. To leave the previous identity behind, register a new definition and start a new session.
 
-## Capacidades ACP
+## ACP capabilities
 
-Los runtimes personalizados usan el transporte ACP estándar para texto, herramientas, permisos, catálogo de comandos, modelos y modos, y `usage_update`. Las imágenes sólo se envían después de que el handshake anuncie soporte de prompt con imágenes.
+Custom runtimes use the standard ACP transport for text, tools, permissions, command catalogs, models, modes, and `usage_update`. Images are sent only after the handshake advertises image-prompt support.
 
-Comando transmite `additionalDirectories` en las operaciones de sesión compatibles. Esto confirma el transporte multi-root, no que el adaptador vaya a usar cada root. La barra de contexto existente muestra `usage_update` cuando el adaptador lo emite.
+Comando sends `additionalDirectories` in compatible session operations. This confirms multi-root transport, not that an adapter will use every root. The existing context bar displays `usage_update` when the adapter emits it.
 
-Quedan fuera de alcance:
+Out of scope:
 
-- Instalación o actualización automática de adaptadores.
-- Secretos personalizados en Settings o herencia completa del entorno.
-- Login, logout, API keys o UI específica del proveedor.
-- Subagentes y comandos propietarios por defecto.
-- Garantizar extensiones ACP no anunciadas o compensar capacidades que el adaptador no implemente.
+- Automatic adapter installation or updates.
+- Custom secrets in Settings or full environment inheritance.
+- Login, logout, API keys, or provider-specific UI.
+- Subagents and proprietary commands by default.
+- Guaranteeing unadvertised ACP extensions or compensating for adapter capabilities that are not implemented.
 
-## Diagnóstico
+## Troubleshooting
 
-Si **Verify executable** informa `missing`, revisar la ruta y la instalación. Si informa que no es ejecutable, corregir los permisos del archivo fuera de Comando. Los errores de handshake inválido, cierre prematuro o autenticación pertenecen al proceso registrado y no modifican las sesiones de otros runtimes.
+If **Verify executable** reports `missing`, check the command path and installation. If it reports that the file is not executable, correct its permissions outside Comando. Invalid handshakes, early exits, and authentication failures belong to the registered process and do not change sessions for other runtimes.
 
-Para comprobar una edición incompatible, cerrar la sesión, reabrirla desde el historial y confirmar el aviso de definición modificada. Para comprobar la eliminación, borrar la definición y verificar que el transcript siga visible y que Comando no inicie un proceso con otro runtime como reemplazo.
+To test an incompatible edit, close a session, reopen it from history, and confirm the modified-definition prompt. To test deletion, remove a definition and verify that its transcript remains visible and Comando does not start another runtime as a replacement.
