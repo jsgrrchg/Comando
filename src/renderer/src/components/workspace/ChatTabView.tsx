@@ -29,6 +29,7 @@ import {
     MAX_IMAGE_ATTACHMENT_BYTES,
 } from "@shared/ai-attachments";
 import { deriveTrackedFilesFromActionLog } from "@shared/ai-review-action-log";
+import { getAiRuntimeDisplayName } from "@shared/ai-runtimes";
 import { getChatDisplayTitle } from "@shared/chatTitle";
 import { resolveEditorLanguage } from "@shared/editor-language";
 
@@ -59,6 +60,7 @@ import { chatActivationScheduler } from "@renderer/app/workspace/chatActivationS
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useFileReferenceValidator } from "@renderer/app/store/projectFileIndexStore";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
+import { useSettingsStore } from "@renderer/app/store/settings-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import { useRenderProbe } from "@renderer/app/debug/renderProbe";
 import { getRendererTaskScheduler } from "@renderer/app/runtime/renderer-task-scheduler";
@@ -424,6 +426,11 @@ export const ChatTabView = memo(function ChatTabView({
     const runtimeCatalog = useAiStore(
         (s) => s.runtimeCatalogById[tab.runtimeId] ?? null,
     );
+    const aiRuntimeCatalog = useSettingsStore((state) => state.runtimeCatalog);
+    const catalogRuntimeDisplayName = getAiRuntimeDisplayName(
+        tab.runtimeId,
+        aiRuntimeCatalog,
+    );
     const frozenSessionStateRef = useRef<ChatSessionViewState | null>(null);
     const sessionState = useAiStore(
         useShallow((s) => {
@@ -769,9 +776,16 @@ export const ChatTabView = memo(function ChatTabView({
             getChatDisplayTitle({
                 manualTitle: snapshot.manualTitle,
                 messages: snapshot.messages,
+                runtimeDisplayName: catalogRuntimeDisplayName,
                 title: snapshot.title || tab.title,
             }),
-        [snapshot.manualTitle, snapshot.messages, snapshot.title, tab.title],
+        [
+            catalogRuntimeDisplayName,
+            snapshot.manualTitle,
+            snapshot.messages,
+            snapshot.title,
+            tab.title,
+        ],
     );
     const storedTranscript =
         sessionState?.transcript ?? EMPTY_TRANSCRIPT_MODEL;

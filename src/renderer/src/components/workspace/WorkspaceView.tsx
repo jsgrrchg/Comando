@@ -1950,6 +1950,10 @@ function WorkspacePaneView({
                             const titleInput = {
                                 manualTitle: snapshot?.manualTitle,
                                 messages: snapshot?.messages,
+                                runtimeDisplayName: getAiRuntimeDisplayName(
+                                    tab.runtimeId,
+                                    runtimeCatalog,
+                                ),
                                 title: snapshot?.title || tab.title,
                             };
                             return [[
@@ -1960,7 +1964,7 @@ function WorkspacePaneView({
                             ]];
                         }),
                     ),
-                [paneTabs],
+                [paneTabs, runtimeCatalog],
             ),
         ),
     );
