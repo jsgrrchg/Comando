@@ -33,6 +33,7 @@ Current scope in Comando:
   - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.62.0`
   - synced against upstream commit `53a0c36ce3b0b76929d11d8b9565e319da745608`
   - uses `@agentclientprotocol/sdk` `1.3.0` and `@anthropic-ai/claude-agent-sdk` `0.3.219`
+  - runs with the pinned official Node.js `22.23.1` distribution, verified by SHA-256 during preparation
   - matches the upstream source snapshot without Comando-specific source changes
 
 ## Current Codex Delta
@@ -97,6 +98,8 @@ What should not be committed under vendor:
 - `target/`
 - `node_modules/`
 - temporary caches
+
+Claude staging downloads and caches the official Node.js `22.23.1` distribution for the host platform and architecture under the ignored `resources/ai/prebuilt/node/` directory. Each supported archive has a pinned SHA-256 digest, and staging executes the copied binary before accepting it. `COMANDO_EMBEDDED_NODE_BIN` remains available as an explicit development override for a compatible standalone Node binary.
 
 Current status:
 

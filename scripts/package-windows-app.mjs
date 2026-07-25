@@ -377,10 +377,9 @@ function stageCodexBinary(targetArch) {
 
 function stageEmbeddedNodeBinary(targetArch) {
     const aiSourceRoot = resolveAiSourceRoot(targetArch);
+    const sourceNodeRoot = path.join(aiSourceRoot, "embedded", "node");
     const sourceNodeBinary = path.join(
-        aiSourceRoot,
-        "embedded",
-        "node",
+        sourceNodeRoot,
         "bin",
         "node.exe",
     );
@@ -392,6 +391,15 @@ function stageEmbeddedNodeBinary(targetArch) {
     }
 
     copyExecutable(sourceNodeBinary, packagedNodeBinary);
+    for (const fileName of ["LICENSE", "README.md"]) {
+        const sourcePath = path.join(sourceNodeRoot, fileName);
+        if (isFile(sourcePath)) {
+            fs.copyFileSync(
+                sourcePath,
+                path.join(path.dirname(path.dirname(packagedNodeBinary)), fileName),
+            );
+        }
+    }
     console.log(
         `[package:win] Staged embedded Node from ${relativeToRepo(sourceNodeBinary)}.`,
     );

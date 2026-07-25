@@ -182,11 +182,7 @@ in their bundled `LICENSE.md` files.
 
 ### Embedded Node Runtime
 
-The Claude runtime staging script copies a Node.js executable into
-`resources/ai/embedded/node/`. Node.js is distributed under the MIT license
-with its own bundled third-party notices. Release packaging should preserve
-the required Node.js license and notice materials for any redistributed Node
-binary.
+The Claude runtime staging script downloads the pinned official Node.js `22.23.1` distribution, verifies its SHA-256 digest, and stages its executable and notices under `resources/ai/embedded/node/`. Node.js is distributed under the MIT license with its own bundled third-party notices. Release packaging preserves the required Node.js license and notice materials for every redistributed Node binary.
 
 ### External AI Runtimes
 
