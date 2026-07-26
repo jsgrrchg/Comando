@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -16,6 +15,7 @@ import {
     resolveFromPath,
     spawnPreparedSync,
 } from "./ai/_shared.mjs";
+import { prepareOfficialNodeRuntime } from "./ai/node-runtime.mjs";
 
 const supportedTargets = new Map([
     [
@@ -37,11 +37,9 @@ const supportedTargets = new Map([
 ]);
 
 const buildRoot = path.join(repoRoot, "build", "windows-acp");
-const nodeCacheRoot = path.join(buildRoot, ".cache", "node");
 const cargoTargetRoot = path.join(buildRoot, ".cargo-target");
-const nodeVersion = process.version.replace(/^v/, "");
 
-function main() {
+async function main() {
     if (process.platform !== "win32") {
         throw new Error("This Windows ACP build only runs on Windows.");
     }
@@ -51,7 +49,7 @@ function main() {
     ensureClaudeVendorReady();
 
     for (const target of targets) {
-        buildTargetBundle(target);
+        await buildTargetBundle(target);
     }
 }
 
@@ -79,7 +77,7 @@ function resolveTargets(args) {
     return [...new Set(resolvedTargets)];
 }
 
-function buildTargetBundle(target) {
+async function buildTargetBundle(target) {
     const config = supportedTargets.get(target);
     const outputRoot = path.join(buildRoot, `win-${config.outputArch}`);
     const tempOutputRoot = path.join(buildRoot, `.tmp-win-${config.outputArch}`);
@@ -99,11 +97,18 @@ function buildTargetBundle(target) {
 
     try {
         const codexRuntime = buildCodexRuntime(config.rustTarget);
-        const nodeBinary = resolveNodeBinary(config.nodeArch);
+        const nodeRuntime = await prepareOfficialNodeRuntime({
+            arch: config.nodeArch,
+            platform: "win32",
+        });
 
         copyExecutable(codexRuntime.codex, codexOutput);
         copyExecutable(codexRuntime.codeModeHost, codeModeHostOutput);
-        copyExecutable(nodeBinary, nodeOutput);
+        copyExecutable(nodeRuntime.binaryPath, nodeOutput);
+        copyNodeNotices(
+            nodeRuntime.runtimeRoot,
+            path.dirname(path.dirname(nodeOutput)),
+        );
         stageClaudeProject(claudeOutputRoot);
 
         fs.rmSync(outputRoot, { force: true, recursive: true });
@@ -115,6 +120,15 @@ function buildTargetBundle(target) {
     } catch (error) {
         fs.rmSync(tempOutputRoot, { force: true, recursive: true });
         throw error;
+    }
+}
+
+function copyNodeNotices(sourceRoot, destinationRoot) {
+    for (const fileName of ["LICENSE", "README.md"]) {
+        const sourcePath = path.join(sourceRoot, fileName);
+        if (isFile(sourcePath)) {
+            fs.copyFileSync(sourcePath, path.join(destinationRoot, fileName));
+        }
     }
 }
 
@@ -218,73 +232,6 @@ function ensureRustTarget(rustTarget) {
     run("rustup", ["target", "add", rustTarget]);
 }
 
-function resolveNodeBinary(nodeArch) {
-    if (nodeArch === "x64" && isExecutableFile(process.execPath)) {
-        return process.execPath;
-    }
-
-    const cachedBinary = path.join(
-        nodeCacheRoot,
-        `node-v${nodeVersion}-win-${nodeArch}`,
-        "node.exe",
-    );
-    if (isExecutableFile(cachedBinary)) {
-        return cachedBinary;
-    }
-
-    ensureDir(nodeCacheRoot);
-
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "comando-node-"));
-    const zipPath = path.join(tempRoot, `node-v${nodeVersion}-win-${nodeArch}.zip`);
-    const extractRoot = path.join(tempRoot, "extract");
-    const downloadUrl = `https://nodejs.org/dist/v${nodeVersion}/node-v${nodeVersion}-win-${nodeArch}.zip`;
-
-    console.log(`[build:windows-acp] Downloading Node ${nodeVersion} for ${nodeArch}.`);
-    downloadFile(downloadUrl, zipPath);
-    ensureDir(extractRoot);
-    extractZip(zipPath, extractRoot);
-
-    const extractedBinary = path.join(
-        extractRoot,
-        `node-v${nodeVersion}-win-${nodeArch}`,
-        "node.exe",
-    );
-    if (!isExecutableFile(extractedBinary)) {
-        throw new Error(
-            `Downloaded Node archive did not contain ${path.basename(extractedBinary)}.`,
-        );
-    }
-
-    ensureDir(path.dirname(cachedBinary));
-    copyExecutable(extractedBinary, cachedBinary);
-    fs.rmSync(tempRoot, { force: true, recursive: true });
-
-    return cachedBinary;
-}
-
-function downloadFile(url, destinationPath) {
-    const curlCommand = resolveFromPath("curl.exe") ?? resolveFromPath("curl");
-    if (!curlCommand) {
-        throw new Error("curl is required to download Node runtime archives.");
-    }
-
-    run(curlCommand, ["-fsSL", url, "-o", destinationPath]);
-}
-
-function extractZip(zipPath, destinationDir) {
-    const powershellCommand =
-        resolveFromPath("powershell.exe") ?? resolveFromPath("powershell");
-    if (!powershellCommand) {
-        throw new Error("PowerShell is required to extract Node runtime archives.");
-    }
-
-    run(powershellCommand, [
-        "-NoProfile",
-        "-Command",
-        `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${destinationDir.replace(/'/g, "''")}' -Force`,
-    ]);
-}
-
 function isNewerThan(sourcePath, outputPath) {
     try {
         return fs.statSync(sourcePath).mtimeMs > fs.statSync(outputPath).mtimeMs;
@@ -370,5 +317,5 @@ function run(command, args, options = {}) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-    main();
+    await main();
 }

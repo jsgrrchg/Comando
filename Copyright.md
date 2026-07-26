@@ -169,10 +169,10 @@ was checked with `cargo metadata --format-version=1 --locked`.
 | Vendored path | `vendor/Claude-agent-acp-upstream` |
 | Staged path | `resources/ai/embedded/claude-agent-acp` |
 | Upstream package | `@agentclientprotocol/claude-agent-acp` |
-| Upstream baseline | `0.59.0`, commit `30b7c06f7640fb6a0530ba18f85e26fe2bc08882` |
+| Upstream baseline | `0.62.0`, commit `53a0c36ce3b0b76929d11d8b9565e319da745608` |
 | Package license | Apache-2.0 |
-| ACP SDK dependency | `@agentclientprotocol/sdk` `1.2.1`, Apache-2.0, vendored inside the Claude runtime only |
-| Claude Agent SDK dependency | `@anthropic-ai/claude-agent-sdk` `0.3.207`, Anthropic legal terms |
+| ACP SDK dependency | `@agentclientprotocol/sdk` `1.3.0`, Apache-2.0, vendored inside the Claude runtime only |
+| Claude Agent SDK dependency | `@anthropic-ai/claude-agent-sdk` `0.3.219`, Anthropic legal terms |
 
 The Claude ACP adapter itself is Apache-2.0. Its runtime dependency
 `@anthropic-ai/claude-agent-sdk` and the platform-specific
@@ -182,11 +182,7 @@ in their bundled `LICENSE.md` files.
 
 ### Embedded Node Runtime
 
-The Claude runtime staging script copies a Node.js executable into
-`resources/ai/embedded/node/`. Node.js is distributed under the MIT license
-with its own bundled third-party notices. Release packaging should preserve
-the required Node.js license and notice materials for any redistributed Node
-binary.
+The Claude runtime staging script downloads the pinned official Node.js `22.23.1` distribution, verifies its SHA-256 digest, and stages its executable and notices under `resources/ai/embedded/node/`. Node.js is distributed under the MIT license with its own bundled third-party notices. Release packaging preserves the required Node.js license and notice materials for every redistributed Node binary.
 
 ### External AI Runtimes
 
@@ -234,12 +230,7 @@ The currently tracked local delta includes:
 
 ### `vendor/Claude-agent-acp-upstream` - Agent Client Protocol Claude ACP
 
-The vendored Claude ACP runtime is based on upstream
-`@agentclientprotocol/claude-agent-acp` `0.59.0`. The Claude vendor source does
-not carry Comando-specific review metadata. Claude PostToolUse structured patch
-responses are translated inside Comando's internal review adapter so review
-snippets can retain real line anchors while keeping the vendored runtime aligned
-with upstream source.
+The vendored Claude ACP runtime is based on upstream `@agentclientprotocol/claude-agent-acp` `0.62.0` at commit `53a0c36ce3b0b76929d11d8b9565e319da745608`. The Claude vendor source matches upstream without Comando-specific changes; the Agent/Task trailer parser hardening is now part of upstream commit `06c3d7bdbd8cc9415c8cabac060a50e0951c758b`. Claude PostToolUse structured patch responses are translated inside Comando's internal review adapter so review snippets can retain real line anchors while keeping the vendored runtime aligned with upstream source.
 
 This vendor directory should be reviewed intentionally whenever syncing against
 upstream.
@@ -267,4 +258,4 @@ upstream.
 
 ---
 
-*This file is maintained from project dependency metadata. Last updated: 2026-07-07.*
+*This file is maintained from project dependency metadata. Last updated: 2026-07-25.*

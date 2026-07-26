@@ -1242,16 +1242,26 @@ function hostMacArchitecture() {
 function stageEmbeddedNodeForMacArchitectures() {
     for (const target of macTargets) {
         const sourceBinary = resolvePrebuiltNodeBinary(target.arch);
-        const stagedNodePath = path.join(
+        const sourceRoot = path.dirname(path.dirname(sourceBinary));
+        const stagedRoot = path.join(
             packagedNodeRoot,
             `darwin-${target.arch}`,
-            "bin",
-            "node",
         );
+        const stagedNodePath = path.join(stagedRoot, "bin", "node");
         copyExecutable(sourceBinary, stagedNodePath);
+        copyNodeNotices(sourceRoot, stagedRoot);
         console.log(
             `[package:mac] Staged embedded Node (${target.arch}) from ${relativeToRepo(sourceBinary)}.`,
         );
+    }
+}
+
+function copyNodeNotices(sourceRoot, destinationRoot) {
+    for (const fileName of ["LICENSE", "README.md"]) {
+        const sourcePath = path.join(sourceRoot, fileName);
+        if (isFile(sourcePath)) {
+            fs.copyFileSync(sourcePath, path.join(destinationRoot, fileName));
+        }
     }
 }
 

@@ -89,20 +89,7 @@ jobs:
                   chmod +x resources/ai/prebuilt/codex-acp/darwin-x64/codex-acp
 
             - name: Prepare macOS embedded Node payload
-              run: |
-                  node_version="$(node -p 'process.version')"
-                  node_tmp="$RUNNER_TEMP/comando-node-prebuilt"
-                  rm -rf "$node_tmp"
-                  mkdir -p "$node_tmp"
-
-                  for arch in arm64 x64; do
-                    archive="node-${node_version}-darwin-${arch}.tar.gz"
-                    curl -fsSL "https://nodejs.org/dist/${node_version}/${archive}" -o "$node_tmp/$archive"
-                    tar -xzf "$node_tmp/$archive" -C "$node_tmp"
-                    mkdir -p "resources/ai/prebuilt/node/darwin-${arch}/bin"
-                    cp "$node_tmp/node-${node_version}-darwin-${arch}/bin/node" "resources/ai/prebuilt/node/darwin-${arch}/bin/node"
-                    chmod +x "resources/ai/prebuilt/node/darwin-${arch}/bin/node"
-                  done
+              run: pnpm run prepare:node-runtime --platform darwin --arch arm64 --arch x64
 
             - name: Package unsigned macOS app
               run: pnpm run package:mac

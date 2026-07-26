@@ -30,9 +30,10 @@ Current scope in Comando:
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.59.0`
-  - synced against upstream commit `30b7c06f7640fb6a0530ba18f85e26fe2bc08882`
-  - uses `@agentclientprotocol/sdk` `1.2.1` and `@anthropic-ai/claude-agent-sdk` `0.3.207`
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.62.0`
+  - synced against upstream commit `53a0c36ce3b0b76929d11d8b9565e319da745608`
+  - uses `@agentclientprotocol/sdk` `1.3.0` and `@anthropic-ai/claude-agent-sdk` `0.3.219`
+  - runs with the pinned official Node.js `22.23.1` distribution, verified by SHA-256 during preparation
   - matches the upstream source snapshot without Comando-specific source changes
 
 ## Current Codex Delta
@@ -74,24 +75,15 @@ The remaining Comando-specific delta exists to preserve desktop product behavior
 
 When updating Codex again, treat `863d433` plus the current OpenAI Codex crate tag as the comparison base, and review those files intentionally instead of replacing the whole directory blindly.
 
-Comando's primary ACP boundary lives in the Rust native backend. Electron main
-adapts runtime settings, IPC DTOs, review state, and UI-facing status, but it
-does not depend on the TypeScript ACP SDK from the root package. Claude is the
-intentional exception: its vendored runtime carries its own encapsulated
-`@agentclientprotocol/sdk` dependency and is staged separately with the Claude
-runtime payload.
+Comando's primary ACP boundary lives in the Rust native backend. Electron main adapts runtime settings, IPC DTOs, review state, and UI-facing status, but it does not depend on the TypeScript ACP SDK from the root package. Claude is the intentional exception: its vendored runtime carries its own encapsulated `@agentclientprotocol/sdk` dependency and is staged separately with the Claude runtime payload.
 
 ## Current Claude Delta
 
-The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp`
-`0.59.0` with no Comando-specific source delta. Claude PostToolUse structured
-patch responses are translated inside Comando's internal review adapter, which
-keeps review behavior out of the vendored runtime and allows future updates to
-remain direct upstream syncs.
+The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.62.0` with no Comando-specific source delta. The Agent/Task trailer parser hardening that previously existed as a local patch is now provided by upstream commit `06c3d7bdbd8cc9415c8cabac060a50e0951c758b`, so it is no longer maintained separately. Claude PostToolUse structured patch responses are translated inside Comando's internal review adapter, which keeps review behavior out of the vendored runtime and allows future updates to remain direct upstream syncs.
 
-When updating Claude again, compare against upstream commit
-`30b7c06f7640fb6a0530ba18f85e26fe2bc08882` and review any ACP event-shape or
-Claude Agent SDK changes before replacing the vendor snapshot.
+The runtime includes the optional `providers/*` and `_session/steering` capabilities, but Comando does not consume them. Prompt queuing and “Send now” continue to use Comando's shared queue and cancel-then-dispatch flow.
+
+When updating Claude again, compare against upstream commit `53a0c36ce3b0b76929d11d8b9565e319da745608` and review any ACP event-shape or Claude Agent SDK changes before replacing the vendor snapshot.
 
 ## Updating Vendored Runtimes
 
@@ -106,6 +98,8 @@ What should not be committed under vendor:
 - `target/`
 - `node_modules/`
 - temporary caches
+
+Claude staging downloads and caches the official Node.js `22.23.1` distribution for the host platform and architecture under the ignored `resources/ai/prebuilt/node/` directory. Each supported archive has a pinned SHA-256 digest, and staging executes the copied binary before accepting it. `COMANDO_EMBEDDED_NODE_BIN` remains available as an explicit development override for a compatible standalone Node binary.
 
 Current status:
 

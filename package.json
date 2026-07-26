@@ -53,6 +53,7 @@
         "lint:config": "eslint electron.vite.config.ts vitest.config.ts vitest.setup.ts",
         "stage:ai": "node scripts/ai/stage-ai-runtimes.mjs",
         "stage:codex-runtime": "node scripts/ai/stage-codex-runtime.mjs",
+        "prepare:node-runtime": "node scripts/ai/node-runtime.mjs",
         "native:build": "node scripts/native/build-native-backend.mjs",
         "native:dev": "pnpm run native:build -- --debug && pnpm run native:stage -- --debug",
         "native:wasm": "cargo build -p comando-diff --release --target wasm32-unknown-unknown && wasm-bindgen target/wasm32-unknown-unknown/release/comando_diff.wasm --out-dir src/shared/ai-review-engine/wasm --target web",
