@@ -1114,6 +1114,14 @@ pub type NativeAiThinkingCompletedPayload = NativeAiMessageCompletedPayload;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeAiToolActivityLocation {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeAiToolActivityPayload {
     #[serde(flatten)]
     pub base: NativeAiEventBase,
@@ -1132,6 +1140,8 @@ pub struct NativeAiToolActivityPayload {
     pub raw_output: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diffs: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub locations: Vec<NativeAiToolActivityLocation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

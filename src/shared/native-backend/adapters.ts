@@ -627,7 +627,7 @@ function nativeAiToolActivityToIpc(
                 : null,
         id: payload.toolCallId,
         kind: payload.kind,
-        locations: [],
+        locations: nativeAiToolActivityLocationsToIpc(payload.locations),
         rawInputJson: stringifyNativeJson(payload.rawInput),
         rawOutputJson: stringifyNativeJson(payload.rawOutput),
         sessionId: payload.sessionId,
@@ -644,6 +644,44 @@ function nativeAiToolActivityToIpc(
         activity,
         kind: "tool-activity",
     };
+}
+
+function nativeAiToolActivityLocationsToIpc(
+    value: unknown,
+): AiToolActivity["locations"] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+
+    return value.flatMap((entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+            return [];
+        }
+
+        const record = entry as Record<string, unknown>;
+        if (typeof record.path !== "string" || record.path.trim().length === 0) {
+            return [];
+        }
+
+        const line = record.line;
+        if (
+            line !== undefined &&
+            line !== null &&
+            (typeof line !== "number" ||
+                !Number.isFinite(line) ||
+                line < 0)
+        ) {
+            return [];
+        }
+
+        return [
+            {
+                endLine: null,
+                line: typeof line === "number" ? line : null,
+                path: record.path.trim(),
+            },
+        ];
+    });
 }
 
 function nativeAiToolActivityChangeStatsToIpc(
