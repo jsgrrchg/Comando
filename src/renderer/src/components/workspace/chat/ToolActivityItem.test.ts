@@ -254,8 +254,8 @@ describe("ToolActivityItem", () => {
         );
 
         expect(markup).toContain('data-tool-activity-surface="rail-row"');
-        expect(markup).toContain("Read file");
-        expect(markup).toContain("src/app.ts");
+        expect(markup).toContain("Read src/app.ts");
+        expect(markup).not.toContain("Read file");
         expect(markup).not.toContain("raw-secret");
         expect(markup).not.toContain("rounded-lg");
     });
@@ -939,12 +939,12 @@ describe("ToolActivityItem", () => {
         expect(onOpenFile).not.toHaveBeenCalled();
     });
 
-    it("prefers structured read input over basename-only locations", () => {
+    it("prefers ACP read locations over raw input", () => {
         const onOpenFile = vi.fn(async () => {});
-        const fullPath = "src/domain/contracts.ts";
+        const locationPath = "src/domain/contracts.ts";
         mockProjectFileIndexState.paths = new Set([
             ...DEFAULT_PROJECT_FILE_INDEX_PATHS,
-            fullPath,
+            locationPath,
         ]);
         const container = renderInteractiveToolActivityItem({
             activity: createActivity({
@@ -953,10 +953,12 @@ describe("ToolActivityItem", () => {
                     {
                         endLine: null,
                         line: null,
-                        path: "contracts.ts",
+                        path: locationPath,
                     },
                 ],
-                rawInputJson: JSON.stringify({ file_path: fullPath }),
+                rawInputJson: JSON.stringify({
+                    file_path: "src/from-input/contracts.ts",
+                }),
                 summary: null,
                 title: "Read contracts.ts",
             }),
@@ -966,7 +968,7 @@ describe("ToolActivityItem", () => {
             worktreeId: null,
         });
         const linkButton = container.querySelector<HTMLButtonElement>(
-            `button[title="Open ${fullPath}"]`,
+            `button[title="Open ${locationPath}"]`,
         );
 
         expect(linkButton).not.toBeNull();
@@ -977,10 +979,95 @@ describe("ToolActivityItem", () => {
 
         expect(onOpenFile).toHaveBeenCalledWith(
             "project-1",
-            fullPath,
+            locationPath,
             null,
         );
     });
+
+    it.each(["card", "rail-row"] as const)(
+        "renders and opens a generic ACP read location on the %s surface",
+        (surface) => {
+            const onOpenFileReference = vi.fn();
+            const absolutePath = "/workspace/src/app.ts";
+            const reference = {
+                endLine: null,
+                isAbsolute: true,
+                path: absolutePath,
+                relativePath: "src/app.ts",
+                startLine: null,
+            };
+            const container = renderInteractiveToolActivityItem({
+                activity: createActivity({
+                    kind: "read",
+                    locations: [
+                        {
+                            endLine: null,
+                            line: null,
+                            path: absolutePath,
+                        },
+                    ],
+                    rawInputJson: null,
+                    summary: null,
+                    title: "read",
+                }),
+                canRenderFileReference: () => true,
+                onOpenFile: async () => {},
+                onOpenFileReference,
+                projectId: "project-1",
+                resolveFileReference: () => reference,
+                surface,
+                trackedFiles: [],
+                worktreeId: null,
+            });
+            const openButton = container.querySelector<HTMLButtonElement>(
+                `button[title="${surface === "card" ? "Open " : ""}${absolutePath}"]`,
+            );
+
+            expect(container.textContent).toContain("Read …/src/app.ts");
+            expect(openButton).not.toBeNull();
+            act(() => openButton?.click());
+            expect(onOpenFileReference).toHaveBeenCalledWith(reference);
+        },
+    );
+
+    it.each(["card", "rail-row"] as const)(
+        "does not duplicate descriptive read titles on the %s surface",
+        (surface) => {
+            const container = renderInteractiveToolActivityItem({
+                activity: createActivity({
+                    kind: "read",
+                    locations: [
+                        {
+                            endLine: null,
+                            line: null,
+                            path: "/workspace/src/app.ts",
+                        },
+                    ],
+                    rawInputJson: null,
+                    summary: null,
+                    title: "Read src/app.ts",
+                }),
+                canRenderFileReference: () => true,
+                onOpenFile: async () => {},
+                projectId: "project-1",
+                resolveFileReference: () => ({
+                    endLine: null,
+                    isAbsolute: true,
+                    path: "/workspace/src/app.ts",
+                    relativePath: "src/app.ts",
+                    startLine: null,
+                }),
+                surface,
+                trackedFiles: [],
+                worktreeId: null,
+            });
+
+            expect(container.textContent?.match(/Read src\/app\.ts/g)).toHaveLength(
+                1,
+            );
+            expect(container.textContent).not.toContain("/workspace/src/app.ts");
+        },
+    );
 
     it("passes raw relative location line ranges when no resolver is available", () => {
         const onOpenFile = vi.fn(async () => {});

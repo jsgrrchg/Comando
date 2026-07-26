@@ -27,9 +27,9 @@ use comando_types::ai::{
     NativeAiSessionCatalogUpdatedPayload, NativeAiSessionConfigOptionPayload,
     NativeAiSessionConfigSelectEntryPayload, NativeAiSessionStatus, NativeAiSessionSummary,
     NativeAiSubagentBreadcrumbPayload, NativeAiSubagentCreatedPayload, NativeAiTokenUsageCost,
-    NativeAiTokenUsagePayload, NativeAiToolActivityPayload, NativeAiUserInputQuestionOptionPayload,
-    NativeAiUserInputQuestionPayload, NativeAiUserInputRequestPayload,
-    NativeAiUserInputResponseInput, NativeCustomAcpLaunchSpec,
+    NativeAiTokenUsagePayload, NativeAiToolActivityLocation, NativeAiToolActivityPayload,
+    NativeAiUserInputQuestionOptionPayload, NativeAiUserInputQuestionPayload,
+    NativeAiUserInputRequestPayload, NativeAiUserInputResponseInput, NativeCustomAcpLaunchSpec,
 };
 use comando_types::ids::{
     MessageId, RuntimeId, RuntimeSessionId, SessionId, ToolCallId as NativeToolCallId,
@@ -2153,6 +2153,7 @@ struct PendingContentChunk {
 struct PendingToolActivity {
     diffs: Vec<serde_json::Value>,
     kind: String,
+    locations: Vec<NativeAiToolActivityLocation>,
     raw_input: Option<serde_json::Value>,
     raw_output: Option<serde_json::Value>,
     status: String,
@@ -2562,6 +2563,7 @@ impl NotificationContextInner {
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
                 diffs,
+                locations: native_tool_activity_locations(&tool_call.locations),
                 terminal_output: terminal_update.terminal_output,
                 exit_code: terminal_update.exit_code,
             },
@@ -2612,6 +2614,7 @@ impl NotificationContextInner {
                 title: tool_call.title,
                 tool_call_id: tool_call_id.clone(),
                 diffs,
+                locations: native_tool_activity_locations(&tool_call.locations),
                 terminal_output: terminal_update.terminal_output,
                 exit_code: terminal_update.exit_code,
             },
@@ -2666,6 +2669,7 @@ impl NotificationContextInner {
         let pending = PendingToolActivity {
             diffs,
             kind: serde_label(&tool_call.kind),
+            locations: native_tool_activity_locations(&tool_call.locations),
             raw_input: tool_call.raw_input.clone(),
             raw_output: tool_call.raw_output.clone(),
             status: serde_label(&tool_call.status),
@@ -2712,6 +2716,7 @@ impl NotificationContextInner {
                     title: activity.title,
                     tool_call_id: activity.tool_call_id,
                     diffs: activity.diffs,
+                    locations: activity.locations,
                     terminal_output: activity.terminal_output,
                     exit_code: activity.exit_code,
                 },
@@ -4591,6 +4596,20 @@ fn default_true() -> bool {
     true
 }
 
+fn native_tool_activity_locations(
+    locations: &[agent_client_protocol::schema::v1::ToolCallLocation],
+) -> Vec<NativeAiToolActivityLocation> {
+    locations
+        .iter()
+        .map(|location| NativeAiToolActivityLocation {
+            // ACP paths originate in JSON, so this preserves absolute paths while
+            // keeping the native contract independent from the protocol SDK.
+            path: location.path.to_string_lossy().into_owned(),
+            line: location.line,
+        })
+        .collect()
+}
+
 fn tool_call_content_diffs(
     content: &[ToolCallContent],
     meta: &Meta,
@@ -5235,7 +5254,9 @@ impl<T> MaybeUndefinedExt<T> for agent_client_protocol::schema::MaybeUndefined<T
 mod tests {
     use super::*;
     use crate::runtime::RuntimeRegistry;
-    use agent_client_protocol::schema::v1::{ToolCallStatus, ToolCallUpdateFields, ToolKind};
+    use agent_client_protocol::schema::v1::{
+        ToolCallLocation, ToolCallStatus, ToolCallUpdateFields, ToolKind,
+    };
     use comando_types::ai::{
         NativeAiAuthHandshakeSpec, NativeAiDesiredSelections, NativeAiImageAttachment,
         NativeAiPrepareSessionInput, NativeAiRuntimeStatus, NativeAiUserInputAnswer,
@@ -5859,6 +5880,102 @@ mod tests {
         assert_eq!(event.event_name, AI_TOOL_ACTIVITY_EVENT);
         assert_eq!(event.payload["toolCallId"], "tool-1");
         assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn notification_context_projects_tool_call_locations() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "read")
+                    .kind(ToolKind::Read)
+                    .locations(vec![
+                        ToolCallLocation::new("/workspace/src/app.ts").line(12),
+                    ]),
+            ),
+        ));
+
+        let event = receiver.recv().unwrap();
+        assert_eq!(event.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(
+            event.payload["locations"],
+            serde_json::json!([{
+                "path": "/workspace/src/app.ts",
+                "line": 12
+            }])
+        );
+    }
+
+    #[test]
+    fn notification_context_preserves_locations_across_partial_tool_updates() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(ToolCall::new("tool-1", "read").locations(vec![
+                ToolCallLocation::new("/workspace/src/app.ts").line(12),
+            ])),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+            )),
+        ));
+
+        let _initial = receiver.recv().unwrap();
+        let updated = receiver.recv().unwrap();
+        assert_eq!(
+            updated.payload["locations"],
+            serde_json::json!([{
+                "path": "/workspace/src/app.ts",
+                "line": 12
+            }])
+        );
+    }
+
+    #[test]
+    fn notification_context_projects_replaced_tool_locations() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "read")
+                    .locations(vec![ToolCallLocation::new("/workspace/src/old.ts")]),
+            ),
+        ));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new().locations(vec![
+                    ToolCallLocation::new("/workspace/src/new.ts").line(27),
+                ]),
+            )),
+        ));
+
+        let _initial = receiver.recv().unwrap();
+        let updated = receiver.recv().unwrap();
+        assert_eq!(
+            updated.payload["locations"],
+            serde_json::json!([{
+                "path": "/workspace/src/new.ts",
+                "line": 27
+            }])
+        );
     }
 
     #[test]

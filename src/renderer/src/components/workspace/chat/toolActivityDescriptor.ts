@@ -1,5 +1,6 @@
 import type { AiToolActivity } from "@shared/ipc";
 
+import { isLikelyProjectFileReference } from "../projectFileReferences";
 import {
     FILE_TOOL_KINDS,
     isStatusToolActivity,
@@ -29,6 +30,12 @@ export interface ToolActivityDescriptor {
     readonly category: ToolActivityDescriptorCategory;
     readonly command: string | null;
     readonly target: string | null;
+}
+
+export interface ToolActivityHeaderPresentation {
+    readonly displayTarget: string;
+    readonly prefix: string;
+    readonly target: string;
 }
 
 function isRecordValue(value: unknown): value is Record<string, unknown> {
@@ -74,16 +81,16 @@ function readFirstString(
 export function getStructuredToolTarget(
     activity: AiToolActivity,
 ): string | null {
-    const rawInput = parseRawInput(activity.rawInputJson);
-    const rawTarget = readFirstString(rawInput, PATH_INPUT_KEYS);
-    if (rawTarget) {
-        return rawTarget;
+    const locationTarget =
+        activity.locations.find(
+            (location) => location.path.trim().length > 0,
+        )?.path.trim() ?? null;
+    if (locationTarget) {
+        return locationTarget;
     }
 
-    return (
-        activity.locations.find((location) => location.path.trim().length > 0)
-            ?.path.trim() ?? null
-    );
+    const rawInput = parseRawInput(activity.rawInputJson);
+    return readFirstString(rawInput, PATH_INPUT_KEYS);
 }
 
 export function getStructuredToolCommand(
@@ -116,6 +123,85 @@ function getDescriptorCategory(
         return "file";
     }
     return "unknown";
+}
+
+function parseToolTitleReference(
+    title: string,
+): ToolActivityHeaderPresentation | null {
+    const match =
+        /^(Read|Edit|Write|Create|Delete|Move|Search)\s+(.+)$/i.exec(
+            title.trim(),
+        );
+    const target = match?.[2]?.trim() ?? "";
+    if (
+        !target ||
+        /^\.{2,}$/.test(target) ||
+        !isLikelyProjectFileReference(target)
+    ) {
+        return null;
+    }
+
+    return {
+        displayTarget: target,
+        prefix: `${match?.[1] ?? ""} `,
+        target,
+    };
+}
+
+function getToolActionPrefix(kind: string): string {
+    const normalizedKind = kind.toLowerCase();
+    if (normalizedKind === "read" || normalizedKind === "read_file") {
+        return "Read ";
+    }
+    if (normalizedKind === "search" || normalizedKind === "grep") {
+        return "Search ";
+    }
+    if (normalizedKind === "edit" || normalizedKind === "update") {
+        return "Edit ";
+    }
+    if (normalizedKind === "write") return "Write ";
+    if (normalizedKind === "create") return "Create ";
+    if (normalizedKind === "delete" || normalizedKind === "remove") {
+        return "Delete ";
+    }
+    if (normalizedKind === "move" || normalizedKind === "rename") {
+        return "Move ";
+    }
+    return "";
+}
+
+function shouldUseStructuredHeaderTarget(kind: string): boolean {
+    const normalizedKind = kind.toLowerCase();
+    return (
+        normalizedKind === "read" ||
+        normalizedKind === "read_file" ||
+        normalizedKind === "search" ||
+        normalizedKind === "grep"
+    );
+}
+
+export function getToolActivityHeaderPresentation(
+    activity: AiToolActivity,
+): ToolActivityHeaderPresentation | null {
+    const titleReference = parseToolTitleReference(activity.title);
+    if (!shouldUseStructuredHeaderTarget(activity.kind)) {
+        return titleReference;
+    }
+
+    const structuredTarget = getStructuredToolTarget(activity);
+    if (structuredTarget && isLikelyProjectFileReference(structuredTarget)) {
+        return {
+            // Keep a useful provider title for display, but never use it as the
+            // navigation target when structured protocol metadata exists.
+            displayTarget: titleReference?.displayTarget ?? structuredTarget,
+            prefix:
+                titleReference?.prefix ??
+                getToolActionPrefix(activity.kind),
+            target: structuredTarget,
+        };
+    }
+
+    return titleReference;
 }
 
 export function getToolActivityDescriptor(

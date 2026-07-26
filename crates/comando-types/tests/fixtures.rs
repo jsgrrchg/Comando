@@ -156,6 +156,33 @@ fn ai_fixtures_deserialize() {
         Some("export function main() {}\n")
     );
     assert_eq!(payload.exit_code, Some(0));
+    assert_eq!(
+        payload.locations,
+        vec![comando_types::ai::NativeAiToolActivityLocation {
+            path: "/workspace/src/main.ts".to_string(),
+            line: Some(8),
+        }]
+    );
+
+    let legacy_payload: NativeAiToolActivityPayload = serde_json::from_value(serde_json::json!({
+        "sessionId": "session_legacy",
+        "runtimeId": "codex",
+        "runtimeSessionId": "runtime_legacy",
+        "updatedAt": "2026-06-20T00:00:00.200Z",
+        "toolCallId": "tool_legacy",
+        "title": "Read file",
+        "kind": "read",
+        "status": "completed",
+        "summary": null
+    }))
+    .expect("legacy payload should deserialize without locations");
+    assert!(legacy_payload.locations.is_empty());
+    assert!(
+        serde_json::to_value(legacy_payload)
+            .expect("legacy payload should serialize")
+            .get("locations")
+            .is_none()
+    );
 
     let review_delta: NativeRpcOutput = fixture("ai/event.review_delta_ready.json");
     let NativeRpcOutput::Event(review_delta) = review_delta else {
