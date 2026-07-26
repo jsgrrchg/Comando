@@ -76,6 +76,72 @@ describe("transcriptWindowProjection", () => {
         });
     });
 
+    it("keeps 100k sealed entries untouched across ten thousand live deltas", () => {
+        const { blocksById, metadata } = createSealedBlocks(100, 1_000);
+        const payloadsByRef = new Map();
+        let live = createLiveTranscript("");
+        let projection = buildBlockNativeTranscriptProjection(
+            live,
+            blocksById,
+            metadata,
+            payloadsByRef,
+        );
+        const sealed = projection.sealed;
+        const tailEntryId = "message:streaming-assistant";
+
+        resetChatPerformanceCounters();
+        for (let index = 1; index <= 10_000; index += 1) {
+            live = applyAiSessionDomainEventToTranscript(
+                live,
+                createMessageDelta(`delta ${index}`, ` ${index}`, index),
+            );
+            const previousProjection = projection;
+            projection = buildBlockNativeTranscriptProjection(
+                live,
+                blocksById,
+                metadata,
+                payloadsByRef,
+                projection,
+            );
+
+            expect(projection.sealed).toBe(sealed);
+            expect(projection.hot.parent).toBe(previousProjection.hot);
+            expect(projection.hot.mutation).toEqual({
+                entryId: tailEntryId,
+                kind: "patch",
+            });
+            expect(projection.hot.transcript.orderedEntryIds).toEqual([
+                tailEntryId,
+            ]);
+        }
+
+        expect(projection.hot.transcript.messages).toEqual([
+            expect.objectContaining({
+                content: "delta 10000",
+                id: "streaming-assistant",
+            }),
+        ]);
+        expect(readChatPerformanceCounters()).toMatchObject({
+            stable_history_entries_visited: 0,
+            timeline_blocks_built: 0,
+            transcript_blocks_projected: 0,
+            transcript_entries_visited: 0,
+        });
+
+        const replay = createMessageDelta("delta 10000", " 10000", 10_000);
+        const replayedLive = applyAiSessionDomainEventToTranscript(live, replay);
+        expect(replayedLive).toBe(live);
+        expect(
+            buildBlockNativeTranscriptProjection(
+                replayedLive,
+                blocksById,
+                metadata,
+                payloadsByRef,
+                projection,
+            ),
+        ).toBe(projection);
+    });
+
     it("reuses unchanged block projections and carries entry ownership", () => {
         const { blocksById, metadata } = createSealedBlocks(2);
         const payloadsByRef = new Map();
@@ -272,10 +338,14 @@ function createLiveTranscript(
     });
 }
 
-function createMessageDelta(content: string): AiSessionDomainEvent {
+function createMessageDelta(
+    content: string,
+    delta = content,
+    sequence = 1,
+): AiSessionDomainEvent {
     return {
         content,
-        delta: content,
+        delta,
         kind: "message-delta",
         messageId: "streaming-assistant",
         messageKind: "assistant",
@@ -284,27 +354,28 @@ function createMessageDelta(content: string): AiSessionDomainEvent {
         runtimeId: "codex",
         runtimeSessionId: "runtime-session",
         sessionId: SESSION_ID,
-        updatedAt: "2026-01-01T00:00:01.000Z",
+        updatedAt: `2026-01-01T00:00:${String(sequence % 60).padStart(2, "0")}.000Z`,
     };
 }
 
-function createSealedBlocks(count: number): {
+function createSealedBlocks(count: number, entriesPerBlock = 1): {
     readonly blocksById: ReadonlyMap<string, AiTranscriptBlock>;
     readonly metadata: readonly AiTranscriptBlockMetadata[];
 } {
     const metadata = Array.from({ length: count }, (_, index) => {
-        const sequence = index + 1;
+        const startSequence = index * entriesPerBlock + 1;
+        const endSequence = startSequence + entriesPerBlock - 1;
         return {
-            blockId: `block-${sequence}`,
-            endSequence: sequence,
-            entryCount: 1,
-            estimatedHeight: 72,
-            estimatedRowCount: 1,
-            firstCreatedAt: `2025-12-31T23:59:0${sequence}.000Z`,
-            lastCreatedAt: `2025-12-31T23:59:0${sequence}.000Z`,
+            blockId: `block-${index + 1}`,
+            endSequence,
+            entryCount: entriesPerBlock,
+            estimatedHeight: entriesPerBlock * 72,
+            estimatedRowCount: entriesPerBlock,
+            firstCreatedAt: "2025-12-31T23:59:00.000Z",
+            lastCreatedAt: "2025-12-31T23:59:00.000Z",
             revision: 1,
             sessionId: SESSION_ID,
-            startSequence: sequence,
+            startSequence,
         } satisfies AiTranscriptBlockMetadata;
     });
     const blocksById = new Map<string, AiTranscriptBlock>();
@@ -312,22 +383,23 @@ function createSealedBlocks(count: number): {
         blocksById.set(item.blockId, {
             ...item,
             capabilityVersion: 1,
-            entries: [
-                {
+            entries: Array.from({ length: item.entryCount }, (_, index) => {
+                const sequence = item.startSequence + index;
+                return {
                     createdAt: item.firstCreatedAt,
-                    id: `message:sealed-${item.startSequence}`,
-                    kind: "message",
+                    id: `message:sealed-${sequence}`,
+                    kind: "message" as const,
                     payloadRef: null,
-                    sequence: item.startSequence,
+                    sequence,
                     sessionId: SESSION_ID,
                     summary: {
-                        label: `Sealed ${item.startSequence}`,
-                        preview: `Sealed ${item.startSequence}`,
-                        status: "completed",
+                        label: `Sealed ${sequence}`,
+                        preview: `Sealed ${sequence}`,
+                        status: "completed" as const,
                     },
                     updatedAt: item.lastCreatedAt,
-                },
-            ],
+                };
+            }),
             transcriptRevision: 1,
         });
     }
