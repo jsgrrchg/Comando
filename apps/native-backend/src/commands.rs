@@ -19,8 +19,8 @@ use comando_git::{
     GitBranchListScope, GitError, GitFileDiffRequest, GitRunOptions, GitRunner, checkout_branch,
     commit, create_branch, create_worktree, delete_local_branch, delete_remote_branch,
     discard_paths, fetch, get_commit_detail, get_diff_stats, get_file_diff, get_original_file,
-    get_repository_snapshot, get_status, init_repository, list_branches, list_history,
-    list_remotes, list_worktree_diff, list_worktrees, pull, push, remove_worktree,
+    get_repository_snapshot, get_status, init_repository, list_branch_diff, list_branches,
+    list_history, list_remotes, list_worktree_diff, list_worktrees, pull, push, remove_worktree,
     resolve_repository, stage_paths, unstage_paths,
 };
 use comando_index::{
@@ -333,6 +333,7 @@ impl NativeBackend {
             "git_list_remotes" => self.git_list_remotes(request),
             "git_get_diff_stats" => self.git_get_diff_stats(request),
             "git_list_worktree_diff" => self.git_list_worktree_diff(request),
+            "git_list_branch_diff" => self.git_list_branch_diff(request),
             "git_init_repository" => self.git_init_repository(request),
             "git_clone_repository" => self.git_clone_repository(request),
             "git_stage_paths" => self.git_stage_paths(request),
@@ -3476,6 +3477,24 @@ impl NativeBackend {
                 input.scopes.as_deref(),
             ),
             "git worktree diff serializes",
+        )
+    }
+
+    fn git_list_branch_diff(&mut self, request: RpcRequest) -> CommandResult {
+        let scope = match parse_args::<native_git::NativeGitRepositoryScope>(&request) {
+            Ok(scope) => scope,
+            Err(error) => return error_only(request.id, error),
+        };
+
+        git_response(
+            request.id,
+            list_branch_diff(
+                &self.git_runner,
+                scope.root_path,
+                scope.project_id,
+                scope.worktree_id,
+            ),
+            "git branch diff serializes",
         )
     }
 

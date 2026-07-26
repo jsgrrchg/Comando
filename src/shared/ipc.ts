@@ -59,6 +59,7 @@ export const IPC_CHANNELS = {
     listGitChanges: "git:list-changes",
     listGitHistory: "git:list-history",
     listGitWorktreeDiff: "git:list-worktree-diff",
+    listGitBranchDiff: "git:list-branch-diff",
     getGitDiff: "git:get-diff",
     getGitOriginalFile: "git:get-original-file",
     getGitCommitDetail: "git:get-commit-detail",
@@ -1110,6 +1111,29 @@ export interface GitWorktreeDiffResult {
     readonly projectId: string;
     readonly worktreeId: string | null;
     readonly sections: readonly GitWorktreeDiffSection[];
+    readonly updatedAt: string;
+}
+
+export type GitBranchDiffInput = GitRepositoryScopeInput;
+
+export interface GitBranchDiffFile {
+    readonly additions: number | null;
+    readonly deletions: number | null;
+    readonly diff: GitFileDiff | null;
+    readonly error: string | null;
+    readonly isBinary: boolean;
+    readonly kind: GitChangeKind;
+    readonly path: string;
+    readonly previousPath: string | null;
+}
+
+export interface GitBranchDiffResult {
+    readonly projectId: string;
+    readonly worktreeId: string | null;
+    readonly baseRef: string | null;
+    readonly headRef: string;
+    readonly files: readonly GitBranchDiffFile[];
+    readonly unavailableReason: string | null;
     readonly updatedAt: string;
 }
 
@@ -3649,6 +3673,9 @@ export interface ComandoApi {
     listGitWorktreeDiff: (
         input: GitWorktreeDiffInput,
     ) => Promise<GitWorktreeDiffResult | null>;
+    listGitBranchDiff: (
+        input: GitBranchDiffInput,
+    ) => Promise<GitBranchDiffResult | null>;
     getGitDiff: (input: GitDiffInput) => Promise<GitFileDiff | null>;
     getGitOriginalFile: (
         input: GitOriginalFileInput,

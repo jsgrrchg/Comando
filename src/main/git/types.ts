@@ -185,6 +185,25 @@ export interface GitWorktreeDiffOptions {
     readonly scopes?: readonly GitChangeScope[];
 }
 
+export interface GitBranchDiffFile {
+    readonly additions: number | null;
+    readonly deletions: number | null;
+    readonly diff: GitFileDiff | null;
+    readonly error: string | null;
+    readonly isBinary: boolean;
+    readonly kind: GitChangeKind;
+    readonly path: string;
+    readonly previousPath: string | null;
+}
+
+export interface GitBranchDiffResult {
+    readonly baseRef: string | null;
+    readonly headRef: string;
+    readonly files: readonly GitBranchDiffFile[];
+    readonly unavailableReason: string | null;
+    readonly updatedAt: string;
+}
+
 export type GitFileTextReference = "head" | "index";
 
 export interface GitListBranchesOptions {

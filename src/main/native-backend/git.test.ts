@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+    NativeGitBranchDiffResult,
     NativeGitCommitDetail,
     NativeGitDiffStatRecord,
     NativeGitFileDiff,
@@ -196,6 +197,25 @@ describe("NativeGitGateway", () => {
             expect.objectContaining({
                 scopes: ["unstaged"],
             }),
+        );
+    });
+
+    it("adapts native branch diffs through the native command", async () => {
+        const requestMock = vi.fn(() =>
+            fixture<NativeGitBranchDiffResult>("branch.diff.json"),
+        );
+        const gateway = gatewayWith(requestMock);
+
+        await expect(
+            gateway.listBranchDiff("/tmp/comando-project"),
+        ).resolves.toMatchObject({
+            baseRef: "origin/main",
+            files: [{ kind: "modified", path: "src/main.ts" }],
+            headRef: "feature/review",
+        });
+        expect(requestMock).toHaveBeenCalledWith(
+            "git_list_branch_diff",
+            expect.objectContaining({ rootPath: "/tmp/comando-project" }),
         );
     });
 

@@ -32,6 +32,7 @@ import type {
 } from "./ai";
 import type { NativeBackendErrorPayload } from "./errors";
 import type {
+    NativeGitBranchDiffResult,
     NativeGitBranchSummary,
     NativeGitChangeEntry,
     NativeGitCommitDetail,
@@ -746,6 +747,9 @@ describe("native backend fixtures", () => {
             fixture<NativeGitWorktreeDiffResult>("git/worktree.diff.json")
                 .sections,
         ).toHaveLength(1);
+        expect(
+            fixture<NativeGitBranchDiffResult>("git/branch.diff.json").baseRef,
+        ).toBe("origin/main");
         expect(
             fixture<NativeGitRepositoryInvalidation>(
                 "git/repository.invalidation.json",

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
+    GitBranchDiffResult,
     GitRepositorySnapshot,
     GitWorktreeDiffResult,
     GitWorktreeSummary,
@@ -70,6 +71,67 @@ describe("git-store history", () => {
                 createWorktree("project-1:primary", "main", true),
                 createWorktree("worktree-2", "feature/new"),
             ]);
+    });
+});
+
+describe("git-store branch diff cache", () => {
+    afterEach(() => {
+        resetGitStoreForTests();
+        vi.unstubAllGlobals();
+    });
+
+    it("keeps branch and worktree resources isolated", async () => {
+        const branchResult = createBranchDiffResult();
+        const listGitBranchDiff = vi.fn().mockResolvedValue(branchResult);
+        const listGitWorktreeDiff = vi.fn().mockResolvedValue(createWorktreeDiffResult());
+        stubComando({ listGitBranchDiff, listGitWorktreeDiff });
+
+        await useGitStore.getState().refreshBranchDiff("project-1", null);
+
+        expect(useGitStore.getState().branchDiffsByContext["project-1::primary"]).toBe(
+            branchResult,
+        );
+        expect(useGitStore.getState().worktreeDiffsByContext).toEqual({});
+        expect(listGitWorktreeDiff).not.toHaveBeenCalled();
+    });
+
+    it("ignores an older branch response after a newer request", async () => {
+        let resolveFirst: (result: GitBranchDiffResult) => void;
+        const newer = createBranchDiffResult({ headRef: "newer" });
+        const listGitBranchDiff = vi
+            .fn()
+            .mockImplementationOnce(
+                () =>
+                    new Promise<GitBranchDiffResult>((resolve) => {
+                        resolveFirst = resolve;
+                    }),
+            )
+            .mockResolvedValueOnce(newer);
+        stubComando({ listGitBranchDiff });
+
+        const first = useGitStore.getState().refreshBranchDiff("project-1", null);
+        await useGitStore.getState().refreshBranchDiff("project-1", null);
+        resolveFirst!(createBranchDiffResult({ headRef: "older" }));
+        await first;
+
+        expect(
+            useGitStore.getState().branchDiffsByContext["project-1::primary"],
+        ).toBe(newer);
+    });
+
+    it("marks both cached diff modes stale after a snapshot", () => {
+        const contextKey = "project-1::primary";
+        useGitStore.setState({
+            branchDiffsByContext: { [contextKey]: createBranchDiffResult() },
+            worktreeDiffsByContext: { [contextKey]: createWorktreeDiffResult() },
+        });
+
+        useGitStore.getState().ingestSnapshot(
+            createSnapshot({ changedPaths: ["src/changed.ts"] }),
+        );
+
+        expect(useGitStore.getState().staleBranchDiffContexts[contextKey]).toBe(true);
+        expect(useGitStore.getState().staleWorktreeDiffContexts[contextKey]).toBe(true);
     });
 });
 
@@ -259,6 +321,21 @@ function createWorktree(
     };
 }
 
+function createBranchDiffResult(
+    overrides: Partial<GitBranchDiffResult> = {},
+): GitBranchDiffResult {
+    return {
+        baseRef: "main",
+        files: [],
+        headRef: "feature",
+        projectId: "project-1",
+        unavailableReason: null,
+        updatedAt: "2026-07-14T12:00:00.000Z",
+        worktreeId: null,
+        ...overrides,
+    };
+}
+
 function createWorktreeDiffResult(
     overrides: Partial<GitWorktreeDiffResult> = {},
 ): GitWorktreeDiffResult {
@@ -279,6 +356,15 @@ function stubComando(api: Record<string, unknown>): void {
 
 function resetGitStoreForTests(): void {
     useGitStore.setState({
+        activeDiffModesByContext: {},
+        branchDiffErrorsByContext: {},
+        branchDiffRequestKeysByContext: {},
+        branchDiffsByContext: {},
+        collapsedBranchDiffFileIds: {},
+        failedBranchDiffContexts: {},
+        loadingBranchDiffContexts: {},
+        selectedBranchDiffFileIds: {},
+        staleBranchDiffContexts: {},
         activeWorktreeIds: {},
         branchesByProject: {},
         changeExpandedPaths: {},
