@@ -6,7 +6,10 @@ import type {
     ChatTimelineActivitySegmentRow,
 } from "./chatTimelineModel";
 import { formatDiffStat } from "../review/reviewDiff";
-import { getToolActivityDescriptor } from "./toolActivityDescriptor";
+import {
+    getToolActivityDescriptor,
+    getToolActivityHeaderPresentation,
+} from "./toolActivityDescriptor";
 import {
     ToolActivityItem,
     type ToolActivityItemProps,
@@ -110,8 +113,14 @@ function getLatestActivityLabel(
     }
 
     const descriptor = getToolActivityDescriptor(latestActivity);
+    const headerPresentation =
+        getToolActivityHeaderPresentation(latestActivity);
     return (
-        descriptor.command ?? descriptor.target ?? segment.summary.latestTitle
+        descriptor.command ??
+        (headerPresentation
+            ? `${headerPresentation.prefix}${headerPresentation.displayTarget}`
+            : descriptor.target) ??
+        segment.summary.latestTitle
     );
 }
 

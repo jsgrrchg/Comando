@@ -258,6 +258,13 @@ describe("native backend fixtures", () => {
             activity: {
                 id: "tool_1",
                 diffs: [],
+                locations: [
+                    {
+                        endLine: null,
+                        line: 8,
+                        path: "/workspace/src/main.ts",
+                    },
+                ],
                 rawInputJson: JSON.stringify({ file_path: "src/main.ts" }),
                 rawOutputJson: JSON.stringify("export function main() {}\n"),
                 terminalOutput: "export function main() {}\n",
@@ -325,6 +332,12 @@ describe("native backend fixtures", () => {
             payload: {
                 exitCode: 0,
                 kind: "edit",
+                locations: [
+                    {
+                        path: "/workspace/src/main.ts",
+                        line: 8,
+                    },
+                ],
                 runtimeId: "codex",
                 runtimeSessionId: "runtime-1",
                 sessionId: "session-1",
@@ -340,10 +353,57 @@ describe("native backend fixtures", () => {
         expect(compactActivityEvent).toMatchObject({
             activity: {
                 diffs: [],
+                locations: [
+                    {
+                        endLine: null,
+                        line: 8,
+                        path: "/workspace/src/main.ts",
+                    },
+                ],
                 rawInputJson: null,
                 rawOutputJson: null,
                 terminalOutput: null,
                 toolActivityDetailId: "tool-detail:session-1:tool-1",
+            },
+            kind: "tool-activity",
+        });
+        const malformedLocationsEvent = nativeAiEventToIpc({
+            eventName: "ai://tool-activity",
+            payload: {
+                kind: "read",
+                locations: [
+                    null,
+                    { path: "" },
+                    { path: "src/negative.ts", line: -1 },
+                    { path: "src/infinite.ts", line: Number.POSITIVE_INFINITY },
+                    { path: " src/valid.ts ", line: 4 },
+                    { path: "src/without-line.ts" },
+                ],
+                runtimeId: "custom-acp",
+                runtimeSessionId: "runtime-1",
+                sessionId: "session-1",
+                status: "completed",
+                summary: null,
+                title: "read",
+                toolCallId: "tool-locations",
+                updatedAt: "2026-07-20T00:00:00.000Z",
+            },
+            type: "event",
+        });
+        expect(malformedLocationsEvent).toMatchObject({
+            activity: {
+                locations: [
+                    {
+                        endLine: null,
+                        line: 4,
+                        path: "src/valid.ts",
+                    },
+                    {
+                        endLine: null,
+                        line: null,
+                        path: "src/without-line.ts",
+                    },
+                ],
             },
             kind: "tool-activity",
         });

@@ -23,15 +23,14 @@ import type {
 
 import { MarkdownContent } from "../MarkdownContent";
 import {
-    isLikelyProjectFileReference,
     parseProjectFileReference,
     type ResolvedProjectFileReference,
 } from "../projectFileReferences";
 import { ChangeReviewPanel } from "./ChangeReviewPanel";
 import {
+    getToolActivityHeaderPresentation,
     getToolActivityDescriptor,
     getStructuredToolCommand,
-    getStructuredToolTarget,
 } from "./toolActivityDescriptor";
 import {
     isEditedFileToolActivity,
@@ -282,49 +281,6 @@ function summarizeDiff(oldText: string | null, newText: string | null): string {
         : `Updates ${nl} line(s).`;
 }
 
-function parseToolTitleReference(
-    title: string,
-): {
-    readonly displayTarget: string;
-    readonly prefix: string;
-    readonly target: string;
-} | null {
-    const match =
-        /^(Read|Edit|Write|Create|Delete|Move|Search)\s+(.+)$/i.exec(
-            title.trim(),
-        );
-    const target = match?.[2]?.trim() ?? "";
-    if (
-        !target ||
-        isPlaceholderToolTarget(target) ||
-        !isLikelyProjectFileReference(target)
-    ) {
-        return null;
-    }
-
-    return {
-        displayTarget: target,
-        prefix: `${match?.[1] ?? ""} `,
-        target,
-    };
-}
-
-function isPlaceholderToolTarget(target: string): boolean {
-    return /^\.{2,}$/.test(target.trim());
-}
-
-function getToolActionPrefix(kind: string): string {
-    const lk = kind.toLowerCase();
-    if (lk === "read" || lk === "read_file") return "Read ";
-    if (lk === "search" || lk === "grep") return "Search ";
-    if (lk === "edit" || lk === "update") return "Edit ";
-    if (lk === "write") return "Write ";
-    if (lk === "create") return "Create ";
-    if (lk === "delete" || lk === "remove") return "Delete ";
-    if (lk === "move" || lk === "rename") return "Move ";
-    return "";
-}
-
 function buildCompactedToolPathCandidate({
     leadingSegments,
     separator,
@@ -347,15 +303,22 @@ function buildCompactedToolPathCandidate({
 
 function compactToolTitleTarget(target: string): string {
     const trimmedTarget = target.trim();
-    if (trimmedTarget.length <= TOOL_TITLE_TARGET_MAX_LENGTH) {
-        return trimmedTarget;
-    }
-
     const separator =
         trimmedTarget.includes("\\") && !trimmedTarget.includes("/")
             ? "\\"
             : "/";
     const rawSegments = trimmedTarget.split(/[\\/]+/).filter(Boolean);
+    const isAbsolute =
+        trimmedTarget.startsWith("/") ||
+        trimmedTarget.startsWith("\\") ||
+        /^[A-Za-z]:[\\/]/.test(trimmedTarget);
+    if (isAbsolute && rawSegments.length > 2) {
+        return `…${separator}${rawSegments.slice(-2).join(separator)}`;
+    }
+    if (trimmedTarget.length <= TOOL_TITLE_TARGET_MAX_LENGTH) {
+        return trimmedTarget;
+    }
+
     const segments =
         separator === "/" && trimmedTarget.startsWith("/")
             ? ["", ...rawSegments]
@@ -396,40 +359,6 @@ function compactToolTitleTarget(target: string): string {
         candidates.find(
             (candidate) => candidate.length <= TOOL_TITLE_TARGET_MAX_LENGTH,
         ) ?? candidates.at(-1) ?? trimmedTarget
-    );
-}
-
-function getToolTitleReference(
-    activity: AiToolActivity,
-): {
-    readonly displayTarget: string;
-    readonly prefix: string;
-    readonly target: string;
-} | null {
-    const titleReference = parseToolTitleReference(activity.title);
-    if (!shouldDeriveStructuredToolTarget(activity.kind)) {
-        return titleReference;
-    }
-
-    const structuredTarget = getStructuredToolTarget(activity);
-    if (structuredTarget && isLikelyProjectFileReference(structuredTarget)) {
-        return {
-            displayTarget: titleReference?.target ?? structuredTarget,
-            prefix: titleReference?.prefix ?? getToolActionPrefix(activity.kind),
-            target: structuredTarget,
-        };
-    }
-
-    return titleReference;
-}
-
-function shouldDeriveStructuredToolTarget(kind: string): boolean {
-    const lk = kind.toLowerCase();
-    return (
-        lk === "read" ||
-        lk === "read_file" ||
-        lk === "search" ||
-        lk === "grep"
     );
 }
 
@@ -1031,7 +960,7 @@ function FileToolMessage({
     const isInProgress = activity.status === "in_progress";
     const isCompleted = activity.status === "completed";
     const accent = getToolAccent(activity.kind);
-    const titleReference = getToolTitleReference(activity);
+    const titleReference = getToolActivityHeaderPresentation(activity);
     const compactTitleTarget = titleReference
         ? compactToolTitleTarget(titleReference.displayTarget)
         : null;
@@ -1887,8 +1816,12 @@ function CompactToolActivityRow({
     readonly worktreeId: string | null;
 }) {
     const descriptor = getToolActivityDescriptor(activity);
+    const headerPresentation =
+        getToolActivityHeaderPresentation(activity);
     const rawTarget =
-        descriptor.category === "file" ? descriptor.target : null;
+        descriptor.category === "file"
+            ? (headerPresentation?.target ?? descriptor.target)
+            : null;
     const canOpenReference =
         rawTarget !== null &&
         canOpenToolFileReference({
@@ -1898,13 +1831,11 @@ function CompactToolActivityRow({
             resolveFileReference,
             target: rawTarget,
         });
-    const displayTarget =
-        descriptor.target &&
-        !activity.title
-            .toLocaleLowerCase()
-            .includes(descriptor.target.toLocaleLowerCase())
-            ? descriptor.target
-            : null;
+    const displayTitle = headerPresentation
+        ? `${headerPresentation.prefix}${compactToolTitleTarget(
+              headerPresentation.displayTarget,
+          )}`
+        : activity.title;
     const hasRawInput = activity.rawInputJson !== null;
     const hasRawOutput = activity.rawOutputJson !== null;
     const hasTerminalOutput = activity.terminalOutput !== null;
@@ -1969,13 +1900,8 @@ function CompactToolActivityRow({
                         type="button"
                     >
                         <span className="min-w-0 truncate">
-                            {activity.title}
+                            {displayTitle}
                         </span>
-                        {displayTarget ? (
-                            <span className="min-w-0 truncate font-mono text-[10px] text-text-secondary">
-                                {displayTarget}
-                            </span>
-                        ) : null}
                     </button>
                 ) : (
                     <span
@@ -1983,13 +1909,8 @@ function CompactToolActivityRow({
                         title={activity.title}
                     >
                         <span className="min-w-0 truncate">
-                            {activity.title}
+                            {displayTitle}
                         </span>
-                        {displayTarget ? (
-                            <span className="min-w-0 truncate font-mono text-[10px] text-text-secondary">
-                                {displayTarget}
-                            </span>
-                        ) : null}
                     </span>
                 )}
                 {status ? (

@@ -1125,7 +1125,9 @@ impl AiEngine {
                 "exitCode": payload.get("exitCode").filter(|value| value.is_number()).cloned().unwrap_or(Value::Null),
                 "id": tool_call_id,
                 "kind": payload.get("kind").and_then(Value::as_str).unwrap_or("tool"),
-                "locations": [],
+                // Locations are header-scale metadata and must remain available
+                // after the addressable detail payload is compacted.
+                "locations": payload.get("locations").cloned().unwrap_or_else(|| json!([])),
                 "rawInputJson": null,
                 "rawOutputJson": null,
                 "sessionId": session_id.0,
@@ -2853,6 +2855,10 @@ mod tests {
             json!({
                 "diffs": [],
                 "kind": "execute",
+                "locations": [{
+                    "path": "/tmp/project/src/app.ts",
+                    "line": 9
+                }],
                 "rawInput": { "command": "pnpm test" },
                 "runtimeId": "codex",
                 "runtimeSessionId": "runtime-history",
@@ -2897,6 +2903,13 @@ mod tests {
         assert_eq!(activity["rawOutputJson"], Value::Null);
         assert_eq!(activity["summary"], "Running tests");
         assert_eq!(activity["terminalOutput"], Value::Null);
+        assert_eq!(
+            activity["locations"],
+            json!([{
+                "path": "/tmp/project/src/app.ts",
+                "line": 9
+            }])
+        );
         let detail = engine
             .load_tool_activity_detail(&session_id, "tool-detail:s-history:tool-1")
             .expect("load detail")

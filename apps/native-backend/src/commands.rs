@@ -4990,6 +4990,10 @@ mod tests {
             &json!({
                 "sessionId": "session-1",
                 "toolCallId": "edit-1",
+                "locations": [{
+                    "path": "/workspace/src/app.ts",
+                    "line": 14
+                }],
                 "diffs": [{
                     "hunks": [{
                         "lines": [
@@ -5017,6 +5021,13 @@ mod tests {
             })
         );
         assert!(compacted.payload.get("diffs").is_none());
+        assert_eq!(
+            compacted.payload["locations"],
+            json!([{
+                "path": "/workspace/src/app.ts",
+                "line": 14
+            }])
+        );
         assert_eq!(
             compacted.payload["toolActivityDetailId"],
             "tool-detail:session-1:edit-1"

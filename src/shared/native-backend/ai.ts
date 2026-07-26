@@ -694,6 +694,11 @@ export type NativeAiThinkingDeltaPayload = NativeAiMessageDeltaPayload;
 export type NativeAiThinkingStartedPayload = NativeAiMessageStartedPayload;
 export type NativeAiThinkingCompletedPayload = NativeAiMessageCompletedPayload;
 
+export type NativeAiToolActivityLocation = {
+    readonly path: string;
+    readonly line?: number | null;
+};
+
 export type NativeAiToolActivityPayload = NativeAiEventBase & {
     readonly changeStats?: {
         readonly additions: number;
@@ -710,6 +715,7 @@ export type NativeAiToolActivityPayload = NativeAiEventBase & {
     readonly rawInput?: unknown;
     readonly rawOutput?: unknown;
     readonly diffs?: readonly unknown[];
+    readonly locations?: readonly NativeAiToolActivityLocation[];
     readonly terminalOutput?: string | null;
     readonly exitCode?: number | null;
 };
