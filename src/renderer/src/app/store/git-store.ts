@@ -53,6 +53,8 @@ type GitPushRepositoryOptions = {
     readonly setUpstream?: boolean;
 };
 
+export type GitDiffMode = "branch" | "worktree";
+
 type GitHistorySearchOptions = {
     readonly caseSensitive?: boolean;
     readonly query?: string;
@@ -65,6 +67,7 @@ type GitHistorySearchState = {
 };
 
 interface GitStoreState {
+    readonly activeDiffModesByContext: Record<string, GitDiffMode>;
     readonly branchDiffErrorsByContext: Record<string, string | null>;
     readonly branchDiffRequestKeysByContext: Record<string, string>;
     readonly branchDiffsByContext: Record<string, GitBranchDiffResult | null>;
@@ -260,6 +263,11 @@ interface GitStoreState {
         fileIds: readonly string[],
         worktreeId?: string | null,
     ) => void;
+    setActiveDiffMode: (
+        projectId: string,
+        mode: GitDiffMode,
+        worktreeId?: string | null,
+    ) => void;
     setActiveWorktree: (
         projectId: string,
         worktreeId: string | null,
@@ -310,6 +318,7 @@ interface GitStoreState {
 }
 
 export const useGitStore = create<GitStoreState>((set, get) => ({
+    activeDiffModesByContext: {},
     branchDiffErrorsByContext: {},
     branchDiffRequestKeysByContext: {},
     branchDiffsByContext: {},
@@ -1337,6 +1346,14 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             },
         })),
 
+    setActiveDiffMode: (projectId, mode, worktreeId = null) =>
+        set((state) => ({
+            activeDiffModesByContext: {
+                ...state.activeDiffModesByContext,
+                [getContextKey(projectId, worktreeId)]: mode,
+            },
+        })),
+
     setActiveWorktree: (projectId, worktreeId) => {
         set((state) => ({
             activeWorktreeIds: {
@@ -1815,10 +1832,12 @@ function refreshCachedWorktreeDiff(
     projectId: string,
     worktreeId: string | null,
 ): void {
-    // Explicit Git mutations refresh immediately; filesystem invalidations
-    // only mark the cached diff stale.
+    // Only the visible resource refreshes immediately; the other cache remains stale.
     const contextKey = getContextKey(projectId, worktreeId);
-    if (hasOwn(get().worktreeDiffsByContext, contextKey)) {
+    if (
+        get().activeDiffModesByContext[contextKey] === "worktree" &&
+        hasOwn(get().worktreeDiffsByContext, contextKey)
+    ) {
         void get().refreshWorktreeDiff(projectId, worktreeId);
     }
 }

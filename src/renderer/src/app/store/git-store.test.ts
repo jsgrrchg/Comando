@@ -356,6 +356,7 @@ function stubComando(api: Record<string, unknown>): void {
 
 function resetGitStoreForTests(): void {
     useGitStore.setState({
+        activeDiffModesByContext: {},
         branchDiffErrorsByContext: {},
         branchDiffRequestKeysByContext: {},
         branchDiffsByContext: {},
