@@ -412,9 +412,8 @@ export function SidebarGitPanel({
                 <div className="flex items-center gap-1">
                     <button
                         className="sidebar-toolbar-action"
-                        disabled={!hasChanges}
                         onClick={handleReviewChanges}
-                        title="Open Uncommitted Changes"
+                        title="Open Changes Review"
                         type="button"
                     >
                         Review
