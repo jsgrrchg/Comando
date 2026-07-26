@@ -9,6 +9,7 @@ import type { GitBranchDiffResult, GitWorktreeDiffResult } from "@shared/ipc";
 
 const mockGitStoreState = vi.hoisted(() => ({
     current: {
+        activeDiffModesByContext: {},
         branchDiffErrorsByContext: {},
         branchDiffsByContext: {},
         collapsedBranchDiffFileIds: {},
@@ -157,6 +158,7 @@ function createBranchDiffResult(): GitBranchDiffResult {
 }
 
 function resetStoreState() {
+    mockGitStoreState.current.activeDiffModesByContext = {};
     mockGitStoreState.current.branchDiffErrorsByContext = {};
     mockGitStoreState.current.branchDiffsByContext = {
         [CONTEXT_KEY]: createBranchDiffResult(),
@@ -215,6 +217,17 @@ describe("GitWorktreeDiffTabView", () => {
         expect(markup).toContain("worktree-file.ts");
     });
 
+    it("restores the selected branch mode after the view remounts", () => {
+        mockGitStoreState.current.activeDiffModesByContext = {
+            [CONTEXT_KEY]: "branch",
+        };
+
+        const markup = renderWorktreeMarkup();
+
+        expect(markup).toContain("branch-file.ts");
+        expect(markup).not.toContain("stage all");
+    });
+
     it("switches to read-only branch changes and back", () => {
         const container = document.createElement("div");
         document.body.appendChild(container);
@@ -233,6 +246,19 @@ describe("GitWorktreeDiffTabView", () => {
             );
         });
 
+        expect(mockGitStoreState.current.setActiveDiffMode).toHaveBeenCalledWith(
+            TAB.projectId,
+            "branch",
+            TAB.worktreeId,
+        );
+
+        mockGitStoreState.current.activeDiffModesByContext = {
+            [CONTEXT_KEY]: "branch",
+        };
+        act(() => {
+            root.render(createElement(GitWorktreeDiffTabView, { tab: TAB }));
+        });
+
         expect(container.textContent).toContain("branch-file.ts");
         expect(container.textContent).not.toContain("stage all");
         expect(container.textContent).not.toContain("unstage all");
@@ -247,6 +273,15 @@ describe("GitWorktreeDiffTabView", () => {
             worktreeTab?.dispatchEvent(
                 new MouseEvent("click", { bubbles: true }),
             );
+        });
+        expect(mockGitStoreState.current.setActiveDiffMode).toHaveBeenLastCalledWith(
+            TAB.projectId,
+            "worktree",
+            TAB.worktreeId,
+        );
+        mockGitStoreState.current.activeDiffModesByContext = {};
+        act(() => {
+            root.render(createElement(GitWorktreeDiffTabView, { tab: TAB }));
         });
         expect(container.textContent).toContain("worktree-file.ts");
         expect(container.textContent).toContain("stage all");

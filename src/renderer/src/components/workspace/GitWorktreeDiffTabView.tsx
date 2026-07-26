@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import {
@@ -26,7 +26,6 @@ import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/useP
 import { IdeActionButton } from "./ide-bar";
 
 const EMPTY_COLLAPSED_FILE_IDS: readonly string[] = [];
-type DiffMode = "branch" | "worktree";
 
 function getContextKey(projectId: string, worktreeId: string | null): string {
     return getGitContextKey(projectId, worktreeId);
@@ -40,7 +39,9 @@ export function GitWorktreeDiffTabView({
     const projectId = tab.projectId;
     const worktreeId = tab.worktreeId ?? null;
     const contextKey = getContextKey(projectId, worktreeId);
-    const [mode, setMode] = useState<DiffMode>("worktree");
+    const mode = useGitStore(
+        (state) => state.activeDiffModesByContext[contextKey] ?? "worktree",
+    );
     const { handleScroll: handleDiffScroll, scrollRef: diffScrollRef } =
         usePersistedWorkspaceScroll<HTMLDivElement>({
             projectId,
@@ -362,10 +363,6 @@ export function GitWorktreeDiffTabView({
     );
 
     useEffect(() => {
-        setActiveDiffMode(projectId, mode, worktreeId);
-    }, [mode, projectId, setActiveDiffMode, worktreeId]);
-
-    useEffect(() => {
         if (!snapshot) {
             void refreshProject(projectId, worktreeId);
             return;
@@ -422,7 +419,13 @@ export function GitWorktreeDiffTabView({
                                             : "text-text-secondary hover:bg-bg-secondary hover:text-text-primary"
                                     }`}
                                     key={value}
-                                    onClick={() => setMode(value)}
+                                    onClick={() =>
+                                        setActiveDiffMode(
+                                            projectId,
+                                            value,
+                                            worktreeId,
+                                        )
+                                    }
                                     onKeyDown={(event) => {
                                         if (
                                             event.key !== "ArrowLeft" &&
@@ -433,7 +436,8 @@ export function GitWorktreeDiffTabView({
                                             return;
                                         }
                                         event.preventDefault();
-                                        setMode(
+                                        setActiveDiffMode(
+                                            projectId,
                                             event.key === "Home"
                                                 ? "worktree"
                                                 : event.key === "End"
@@ -441,6 +445,7 @@ export function GitWorktreeDiffTabView({
                                                   : value === "worktree"
                                                     ? "branch"
                                                     : "worktree",
+                                            worktreeId,
                                         );
                                     }}
                                     role="tab"
