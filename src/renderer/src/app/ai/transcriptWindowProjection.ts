@@ -105,7 +105,14 @@ export function buildSealedTranscriptProjection(
                 if (!canReuseBlock) {
                     incrementChatPerformanceCounter("timeline_blocks_built");
                     incrementChatPerformanceCounter(
+                        "transcript_blocks_projected",
+                    );
+                    incrementChatPerformanceCounter(
                         "stable_history_entries_visited",
+                        block.entries.length,
+                    );
+                    incrementChatPerformanceCounter(
+                        "transcript_entries_visited",
                         block.entries.length,
                     );
                 }

@@ -725,6 +725,7 @@ function reuseToolActivitySegmentRow(
         return previousRow;
     }
 
+    incrementChatPerformanceCounter("activity_segments_rebuilt");
     return {
         // Diff aggregation is expensive; only rebuild it with a changed segment.
         blockId,
@@ -948,6 +949,11 @@ export function reconcileChatTimelineModel(
         readonly blockIdByEntryId?: ReadonlyMap<string, string>;
     },
 ): ChatTimelineModel {
+    incrementChatPerformanceCounter("timeline_full_rebuilds");
+    incrementChatPerformanceCounter(
+        "timeline_rows_reconciled",
+        snapshot.messages.length + snapshot.toolActivity.length,
+    );
     const reviewIndex = createToolActivityReviewIndex(snapshot.trackedFiles);
     const toolEntries = deriveToolActivityReviewEntriesFromIndex(
         prepareTimelineToolActivity(snapshot),
@@ -1118,7 +1124,6 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
     buildFallbackTranscript: (() => AiSessionTranscriptModel) | null = null,
 ): ChatTimelineModel {
     if (!previous || !previousTranscript) {
-        incrementChatPerformanceCounter("timeline_full_rebuilds");
         return reconcileChatTimelineModelFromTranscript(previous, {
             ...input,
             transcript: buildFallbackTranscript?.() ?? input.transcript,
@@ -1131,7 +1136,6 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
         )
     ) {
         chatTimelineFallbackCount += 1;
-        incrementChatPerformanceCounter("timeline_full_rebuilds");
         return reconcileChatTimelineModelFromTranscript(previous, {
             ...input,
             transcript: buildFallbackTranscript?.() ?? input.transcript,
@@ -1155,11 +1159,12 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
               : null;
     if (incrementalModel) {
         chatTimelineIncrementalCount += 1;
+        incrementChatPerformanceCounter("timeline_rows_reconciled");
+        incrementChatPerformanceCounter("timeline_tail_patches");
         return incrementalModel;
     }
 
     chatTimelineFallbackCount += 1;
-    incrementChatPerformanceCounter("timeline_full_rebuilds");
     return reconcileChatTimelineModelFromTranscript(previous, {
         ...input,
         transcript: buildFallbackTranscript?.() ?? input.transcript,

@@ -26,6 +26,7 @@ use uuid::Uuid;
 
 use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
+use crate::storage_work_metrics::{AiStorageWorkMetricsSnapshot, StorageWorkMetrics};
 pub use crate::transcript_store::{AiTranscriptPayload, AiTranscriptPayloadWrite};
 use crate::transcript_store::{TRANSCRIPT_SCHEMA_VERSION, TranscriptStore};
 
@@ -55,6 +56,7 @@ pub struct AiHistoryStore {
     app_data_dir: PathBuf,
     compaction_policy: HistoryCompactionPolicy,
     legacy_transcript_backfill_indexes: Arc<Mutex<HashMap<String, AiTranscriptIndex>>>,
+    work_metrics: Arc<StorageWorkMetrics>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,12 +400,25 @@ impl AiHistoryStore {
             app_data_dir,
             compaction_policy: HistoryCompactionPolicy::default(),
             legacy_transcript_backfill_indexes: Arc::new(Mutex::new(HashMap::new())),
+            work_metrics: Arc::new(StorageWorkMetrics::default()),
         })
     }
 
     pub fn with_compaction_policy(mut self, policy: HistoryCompactionPolicy) -> Self {
         self.compaction_policy = policy;
         self
+    }
+
+    pub fn set_work_metrics_enabled(&self, enabled: bool) {
+        self.work_metrics.set_enabled(enabled);
+    }
+
+    pub fn reset_work_metrics(&self) {
+        self.work_metrics.reset();
+    }
+
+    pub fn work_metrics(&self) -> AiStorageWorkMetricsSnapshot {
+        self.work_metrics.snapshot()
     }
 
     pub fn storage_key(session_id: &str) -> String {
@@ -597,6 +612,7 @@ impl AiHistoryStore {
         let mut lines_to_append = Vec::with_capacity(records.len().saturating_sub(reuse_len));
         for record in records.iter().skip(reuse_len) {
             let line = serialize_record_line(record)?;
+            self.work_metrics.record_serialized(line.len());
             let length = line.len() as u64 + 1;
             next_index.message_offsets.push(append_offset);
             next_index.message_lengths.push(length);
@@ -636,6 +652,12 @@ impl AiHistoryStore {
         }
         file.sync_all()
             .map_err(|error| history_io("sync AI transcript", &transcript_path, error))?;
+        self.work_metrics.record_sync();
+        if self.work_metrics.is_enabled() {
+            // Summing serialized lines is diagnostic-only work.
+            self.work_metrics
+                .record_durable_write(lines_to_append.iter().map(|line| line.len() + 1).sum());
+        }
 
         metadata.message_count = next_session_metadata.message_count;
         metadata.preview = next_session_metadata.preview;
@@ -1729,6 +1751,7 @@ impl AiHistoryStore {
 
     fn transcript_store(&self, session_id: &SessionId) -> TranscriptStore {
         TranscriptStore::new(&self.session_dir(session_id))
+            .with_work_metrics(self.work_metrics.clone())
     }
 
     fn index_path(&self, session_id: &SessionId) -> PathBuf {
@@ -3326,6 +3349,58 @@ mod tests {
             },
             payload_ref: None,
         }
+    }
+
+    #[test]
+    fn storage_work_metrics_are_opt_in_numeric_and_resettable() {
+        let (_temp, store) = store();
+        let session_id = SessionId("storage-work-metrics".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+
+        store
+            .save_transcript_window(&session_id, vec![message("message-1", "disabled metrics")])
+            .unwrap();
+        assert_eq!(
+            store.work_metrics(),
+            AiStorageWorkMetricsSnapshot::default()
+        );
+
+        store.set_work_metrics_enabled(true);
+        store
+            .save_transcript_window(&session_id, vec![message("message-1", "enabled metrics")])
+            .unwrap();
+        let mut entry = transcript_entry(&session_id, "message:tail-1", "tail");
+        entry.payload_ref = Some("tail:message-1".to_string());
+        store
+            .checkpoint_open_transcript_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-1".to_string(),
+                terminal_status: None,
+                entries: vec![entry.clone()],
+                payloads: vec![AiTranscriptPayloadWrite {
+                    payload_ref: "tail:message-1".to_string(),
+                    value: json!({ "kind": "message", "content": "tail" }),
+                }],
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![NativeAiOpenTranscriptEntryRef {
+                    entry_id: entry.id,
+                    entry_revision: 1,
+                    ordinal: 0,
+                }],
+            })
+            .unwrap();
+
+        let metrics = store.work_metrics();
+        assert_eq!(metrics.checkpoint_count, 1);
+        assert!(metrics.durable_write_bytes > 0);
+        assert!(metrics.serialized_bytes > 0);
+        assert!(metrics.sync_count > 0);
+
+        store.reset_work_metrics();
+        assert_eq!(
+            store.work_metrics(),
+            AiStorageWorkMetricsSnapshot::default()
+        );
     }
 
     fn legacy_connection() -> Connection {

@@ -284,6 +284,7 @@ function projectInitialContent(
     content: string,
     sealAll: boolean,
 ): ParsedMarkdownBlocks {
+    incrementChatPerformanceCounter("markdown_full_parses");
     const stableContentLength = sealAll
         ? content.length
         : findSealablePrefixLength(content);
@@ -317,6 +318,7 @@ export function parseMarkdownBlocksProgressively(
         return projectInitialContent(content, sealAll);
     }
 
+    incrementChatPerformanceCounter("markdown_suffix_parses");
     const mutableContent = content.slice(previous.stableContentLength);
     const newlyStableLength = sealAll
         ? mutableContent.length

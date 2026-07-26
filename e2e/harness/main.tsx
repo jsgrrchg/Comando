@@ -10,6 +10,17 @@ import {
 } from "react";
 
 import type { AiSessionSnapshot } from "@shared/ipc";
+import { createChatLoadFixture } from "@shared/testing/chatLoadFactories";
+import {
+    createChatLoadDiagnosticSummary,
+    type ChatLoadDiagnosticSummary,
+    type ChatLoadScenario,
+} from "@shared/testing/chatLoadScenario";
+import {
+    readChatPerformanceCounters,
+    resetChatPerformanceCounters,
+    type ChatPerformanceCounterSnapshot,
+} from "@renderer/app/debug/chatPerformanceCounters";
 import {
     markChatPerformanceFrame,
     setChatPerformanceProbeEnabledForTests,
@@ -27,6 +38,17 @@ import "@renderer/styles.css";
 import "./transcript-harness.css";
 
 const INITIAL_HISTORY_SIZE = 2_000;
+const INITIAL_HISTORY_SCENARIO = {
+    activeTools: 0,
+    aggregateDiffBytes: 0,
+    deltaBytes: 0,
+    diffCount: 0,
+    historyMessages: INITIAL_HISTORY_SIZE,
+    seed: 2_000,
+    sessionCount: 1,
+    streamingDeltas: 0,
+    terminalOutputBytes: 0,
+} satisfies ChatLoadScenario;
 const HISTORY_ROW_ID = "message:assistant-1999";
 const STREAMING_ROW_ID = "message:assistant-live";
 
@@ -80,6 +102,7 @@ interface TranscriptStreamingViolations {
 }
 
 interface TranscriptStreamingDiagnostic {
+    readonly loadScenario: ChatLoadDiagnosticSummary;
     readonly mutations: readonly TranscriptDiagnosticEvent[];
     readonly performanceEvents: readonly ChatPerformanceProbeEvent[];
     readonly resizeEvents: readonly TranscriptDiagnosticEvent[];
@@ -87,6 +110,7 @@ interface TranscriptStreamingDiagnostic {
     readonly scrollWrites: readonly TranscriptScrollWrite[];
     readonly violations: TranscriptStreamingViolations;
     readonly virtualRanges: readonly TranscriptVirtualRangeEvent[];
+    readonly workCounters: ChatPerformanceCounterSnapshot;
 }
 
 interface TranscriptFastScrollViolations {
@@ -95,10 +119,12 @@ interface TranscriptFastScrollViolations {
 }
 
 interface TranscriptFastScrollDiagnostic {
+    readonly loadScenario: ChatLoadDiagnosticSummary;
     readonly longTasks: readonly TranscriptDiagnosticEvent[];
     readonly samples: readonly TranscriptDiagnosticSample[];
     readonly virtualRanges: readonly TranscriptVirtualRangeEvent[];
     readonly violations: TranscriptFastScrollViolations;
+    readonly workCounters: ChatPerformanceCounterSnapshot;
 }
 
 interface MutableTranscriptStreamingDiagnostic {
@@ -234,10 +260,12 @@ function createMessageRow(
 }
 
 function createInitialHistory(): readonly ChatTimelineRow[] {
-    return Array.from({ length: INITIAL_HISTORY_SIZE }, (_, index) =>
+    const fixture = createChatLoadFixture(INITIAL_HISTORY_SCENARIO);
+    const messages = fixture.sessions[0]?.messages ?? [];
+    return messages.map((message, index) =>
         createMessageRow(
             `assistant-${index}`,
-            `Historical assistant response ${index}. This content gives the row a measurable height.`,
+            `Historical assistant response ${index}. Deterministic token ${message.content.slice(-16)} gives the row a measurable height.`,
         ),
     );
 }
@@ -565,6 +593,7 @@ function TranscriptHarness() {
                 diagnostic.current = createEmptyDiagnostic();
                 diagnosticFrame.current = 0;
                 previousFrameAt.current = 0;
+                resetChatPerformanceCounters();
                 fastScrollActiveRef.current = true;
                 const maximum = Math.max(
                     0,
@@ -596,8 +625,12 @@ function TranscriptHarness() {
 
                     const samples = diagnostic.current.samples;
                     return {
+                        loadScenario: createChatLoadDiagnosticSummary(
+                            INITIAL_HISTORY_SCENARIO,
+                        ),
                         longTasks: diagnostic.current.longTasks,
                         samples,
+                        workCounters: readChatPerformanceCounters(),
                         virtualRanges: diagnostic.current.virtualRanges,
                         violations: {
                             longTaskCount: diagnostic.current.longTasks.length,
@@ -620,6 +653,7 @@ function TranscriptHarness() {
                 await waitForAnimationFrames(14);
                 const probeRoot = globalThis as PerformanceProbeRoot;
                 probeRoot.__comandoChatPerformanceProbeReset?.();
+                resetChatPerformanceCounters();
                 diagnostic.current = createEmptyDiagnostic();
                 diagnosticFrame.current = 0;
                 previousFrameAt.current = 0;
@@ -657,7 +691,11 @@ function TranscriptHarness() {
                 ];
                 return {
                     ...diagnostic.current,
+                    loadScenario: createChatLoadDiagnosticSummary(
+                        INITIAL_HISTORY_SCENARIO,
+                    ),
                     performanceEvents,
+                    workCounters: readChatPerformanceCounters(),
                     violations: collectViolations(
                         diagnostic.current,
                         performanceEvents,

@@ -71,6 +71,8 @@ describe("transcriptWindowProjection", () => {
         expect(readChatPerformanceCounters()).toMatchObject({
             stable_history_entries_visited: 0,
             timeline_blocks_built: 0,
+            transcript_blocks_projected: 0,
+            transcript_entries_visited: 0,
         });
     });
 
@@ -116,6 +118,8 @@ describe("transcriptWindowProjection", () => {
         expect(readChatPerformanceCounters()).toMatchObject({
             stable_history_entries_visited: 1,
             timeline_blocks_built: 1,
+            transcript_blocks_projected: 1,
+            transcript_entries_visited: 1,
         });
     });
 

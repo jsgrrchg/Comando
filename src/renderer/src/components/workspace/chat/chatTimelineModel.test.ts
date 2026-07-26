@@ -10,6 +10,10 @@ import {
     applyAiSessionDomainEventToTranscript,
     buildAiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
+import {
+    readChatPerformanceCounters,
+    resetChatPerformanceCounters,
+} from "@renderer/app/debug/chatPerformanceCounters";
 
 import {
     getChatTimelineReconciliationDiagnostics,
@@ -111,6 +115,28 @@ function createSessionEvent(
 }
 
 describe("chatTimelineModel", () => {
+    it("counts full reconciliation and rebuilt activity segments", () => {
+        resetChatPerformanceCounters();
+
+        reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [
+                createReadActivity(
+                    "read-1",
+                    "2026-04-14T00:00:01.000Z",
+                ),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(readChatPerformanceCounters()).toMatchObject({
+            activity_segments_rebuilt: 1,
+            timeline_full_rebuilds: 1,
+            timeline_rows_reconciled: 1,
+        });
+    });
+
     it("patches an assistant live tail incrementally while preserving earlier rows", () => {
         const trackedFiles: AiTrackedFile[] = [];
         const initialTranscript = buildAiSessionTranscriptModel({
@@ -147,6 +173,7 @@ describe("chatTimelineModel", () => {
         );
 
         resetChatTimelineReconciliationDiagnosticsForTests();
+        resetChatPerformanceCounters();
         const incrementalModel =
             reconcileChatTimelineModelIncrementallyFromTranscript(
                 initialModel,
@@ -157,6 +184,7 @@ describe("chatTimelineModel", () => {
                     transcript: updatedTranscript,
                 },
             );
+        const incrementalCounters = readChatPerformanceCounters();
         const fullModel = reconcileChatTimelineModelFromTranscript(
             initialModel,
             {
@@ -175,6 +203,11 @@ describe("chatTimelineModel", () => {
         expect(getChatTimelineReconciliationDiagnostics()).toEqual({
             fallbackCount: 0,
             incrementalCount: 1,
+        });
+        expect(incrementalCounters).toMatchObject({
+            timeline_full_rebuilds: 0,
+            timeline_rows_reconciled: 1,
+            timeline_tail_patches: 1,
         });
     });
 

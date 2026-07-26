@@ -10,6 +10,10 @@ import {
     serializeComposerDisplayFolderMention,
     serializeComposerDisplaySelectionMention,
 } from "@shared/composer-display-markers";
+import {
+    readChatPerformanceCounters,
+    resetChatPerformanceCounters,
+} from "@renderer/app/debug/chatPerformanceCounters";
 
 import {
     MarkdownContent,
@@ -24,6 +28,7 @@ const mountedRoots: Root[] = [];
 const mountedContainers: HTMLDivElement[] = [];
 
 afterEach(() => {
+    resetChatPerformanceCounters();
     for (const root of mountedRoots.splice(0)) {
         act(() => {
             root.unmount();
@@ -53,6 +58,23 @@ function renderInteractiveMarkdownContent(
 }
 
 describe("MarkdownContent", () => {
+    it("distinguishes full Markdown parses from mutable suffix parses", () => {
+        resetChatPerformanceCounters();
+        const first = parseMarkdownBlocksProgressively(
+            null,
+            "Stable paragraph.\n\nMutable",
+        );
+        parseMarkdownBlocksProgressively(
+            first,
+            "Stable paragraph.\n\nMutable suffix",
+        );
+
+        expect(readChatPerformanceCounters()).toMatchObject({
+            markdown_full_parses: 1,
+            markdown_suffix_parses: 1,
+        });
+    });
+
     it("reuses a stable plain-text prefix without changing the parsed blocks", () => {
         const initial = "First paragraph.\n\nSecond paragraph";
         const next = `${initial} grows safely`;

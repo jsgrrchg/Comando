@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use comando_types::ai::{
@@ -20,6 +21,7 @@ use uuid::Uuid;
 
 use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
+use crate::storage_work_metrics::StorageWorkMetrics;
 
 const TRANSCRIPT_DATABASE_FILE: &str = "transcript-v2.sqlite3";
 const LEGACY_TRANSCRIPT_ENTRIES_FILE: &str = "transcript-entries.json";
@@ -50,6 +52,7 @@ pub(crate) struct TranscriptStore {
     database_path: PathBuf,
     legacy_entries_path: PathBuf,
     payloads_dir: PathBuf,
+    work_metrics: Arc<StorageWorkMetrics>,
 }
 
 impl TranscriptStore {
@@ -58,7 +61,13 @@ impl TranscriptStore {
             database_path: session_dir.join(TRANSCRIPT_DATABASE_FILE),
             legacy_entries_path: session_dir.join(LEGACY_TRANSCRIPT_ENTRIES_FILE),
             payloads_dir: session_dir.join(TRANSCRIPT_PAYLOADS_DIR),
+            work_metrics: Arc::new(StorageWorkMetrics::default()),
         }
+    }
+
+    pub(crate) fn with_work_metrics(mut self, work_metrics: Arc<StorageWorkMetrics>) -> Self {
+        self.work_metrics = work_metrics;
+        self
     }
 
     pub(crate) fn has_data_source(&self) -> bool {
@@ -331,8 +340,12 @@ impl TranscriptStore {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| transcript_sql("start transcript seal transaction", error))?;
-            let obsolete_payload_files =
-                persist_payloads(&transaction, session_id, &prepared_payloads)?;
+            let persisted_payloads = persist_payloads(
+                &transaction,
+                session_id,
+                &prepared_payloads,
+                &self.work_metrics,
+            )?;
             append_entries_in_transaction(&transaction, session_id, entries)?;
             let block_ids = block_ids_for_entries(&transaction, session_id, &entry_ids)?;
             if block_ids.is_empty() {
@@ -353,7 +366,9 @@ impl TranscriptStore {
             transaction
                 .commit()
                 .map_err(|error| transcript_sql("commit transcript seal transaction", error))?;
-            Ok((metadata, obsolete_payload_files))
+            self.work_metrics
+                .record_durable_write(persisted_payloads.inline_bytes);
+            Ok((metadata, persisted_payloads.obsolete_file_names))
         })();
         match result {
             Ok((metadata, obsolete_payload_files)) => {
@@ -402,6 +417,7 @@ impl TranscriptStore {
         validate_entry_ownership(&session_id, &entries)?;
         validate_payload_writes(&payloads)?;
         validate_open_tail_entry_updates(&entry_order, &removed_entry_ids)?;
+        self.work_metrics.record_checkpoint();
         let mut connection = self.open(&session_id, true)?;
         let prepared_payloads = self.prepare_payloads(payloads)?;
         let result = (|| {
@@ -411,8 +427,12 @@ impl TranscriptStore {
                     transcript_sql("start open transcript checkpoint transaction", error)
                 })?;
             validate_open_tail_turn_transition(&transaction, &session_id, &turn_id)?;
-            let obsolete_payload_files =
-                persist_payloads(&transaction, &session_id, &prepared_payloads)?;
+            let persisted_payloads = persist_payloads(
+                &transaction,
+                &session_id,
+                &prepared_payloads,
+                &self.work_metrics,
+            )?;
             append_entries_in_transaction(&transaction, &session_id, entries)?;
             persist_open_tail(
                 &transaction,
@@ -425,7 +445,9 @@ impl TranscriptStore {
             transaction.commit().map_err(|error| {
                 transcript_sql("commit open transcript checkpoint transaction", error)
             })?;
-            Ok(obsolete_payload_files)
+            self.work_metrics
+                .record_durable_write(persisted_payloads.inline_bytes);
+            Ok(persisted_payloads.obsolete_file_names)
         })();
         match result {
             Ok(obsolete_payload_files) => {
@@ -789,6 +811,7 @@ impl TranscriptStore {
             .map(|payload| {
                 let bytes = serde_json::to_vec(&payload.value)
                     .map_err(|error| transcript_json("serialize transcript payload", error))?;
+                self.work_metrics.record_serialized(bytes.len());
                 if bytes.len() > AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX {
                     return Err(AiError::TooLarge(format!(
                         "Transcript payload exceeds the {AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX} byte limit"
@@ -819,7 +842,7 @@ impl TranscriptStore {
                 })?;
                 validate_payload_bytes(&payload.content_hash, payload.bytes.len(), &existing)
             } else {
-                let created = atomic_write_payload(&path, &payload.bytes)?;
+                let created = atomic_write_payload(&path, &payload.bytes, &self.work_metrics)?;
                 payload.created_file = created;
                 if created {
                     created_paths.push(path);
@@ -1989,11 +2012,18 @@ struct StoredPayload {
     file_name: Option<String>,
 }
 
+struct PersistedPayloads {
+    inline_bytes: usize,
+    obsolete_file_names: Vec<String>,
+}
+
 fn persist_payloads(
     transaction: &Transaction<'_>,
     session_id: &SessionId,
     payloads: &[PreparedPayload],
-) -> AiResult<Vec<String>> {
+    work_metrics: &StorageWorkMetrics,
+) -> AiResult<PersistedPayloads> {
+    let mut inline_bytes = 0_usize;
     let mut obsolete_file_names = BTreeSet::new();
     for payload in payloads {
         let existing = transaction
@@ -2058,6 +2088,9 @@ fn persist_payloads(
                     ],
                 )
                 .map_err(|error| transcript_sql("update open transcript payload", error))?;
+            if inline_data.is_some() && work_metrics.is_enabled() {
+                inline_bytes = inline_bytes.saturating_add(payload.bytes.len());
+            }
             transaction
                 .execute(
                     "UPDATE transcript_blocks
@@ -2103,8 +2136,14 @@ fn persist_payloads(
                 ],
             )
             .map_err(|error| transcript_sql("persist transcript payload", error))?;
+        if inline_data.is_some() && work_metrics.is_enabled() {
+            inline_bytes = inline_bytes.saturating_add(payload.bytes.len());
+        }
     }
-    Ok(obsolete_file_names.into_iter().collect())
+    Ok(PersistedPayloads {
+        inline_bytes,
+        obsolete_file_names: obsolete_file_names.into_iter().collect(),
+    })
 }
 
 fn block_ids_for_entries(
@@ -2470,7 +2509,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn atomic_write_payload(path: &Path, bytes: &[u8]) -> AiResult<bool> {
+fn atomic_write_payload(
+    path: &Path,
+    bytes: &[u8],
+    work_metrics: &StorageWorkMetrics,
+) -> AiResult<bool> {
     let parent = path
         .parent()
         .ok_or_else(|| AiError::Internal("Transcript payload path has no parent".to_string()))?;
@@ -2484,6 +2527,8 @@ fn atomic_write_payload(path: &Path, bytes: &[u8]) -> AiResult<bool> {
         file.write_all(bytes)
             .and_then(|_| file.sync_all())
             .map_err(|error| payload_io("write transcript payload temp file", &temp_path, error))?;
+        work_metrics.record_durable_write(bytes.len());
+        work_metrics.record_sync();
         Ok::<(), AiError>(())
     })();
     if let Err(error) = write_result {
