@@ -211,11 +211,13 @@ import {
     type ContextMenuEntry,
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
+import { writeClipboardText } from "@renderer/app/utils/clipboard";
 import {
     getViewportSafeMenuPosition,
     getViewportSafeSubmenuPosition,
     type MenuAnchorRect,
 } from "@renderer/app/utils/menu-position";
+import { resolveProjectFileFullPath } from "@renderer/app/utils/projectPath";
 import type { WorkspaceQuickCreateAction } from "@renderer/app/store/workspace-store";
 import {
     SIDEBAR_AGENT_DRAG_EVENT,
@@ -1291,6 +1293,7 @@ function WorkspaceNodeView({
 function useWorkspaceProjectRootPath(
     projectId: string | null,
     worktreeId: string | null,
+    fallbackToProjectRoot = true,
 ): string | null {
     const projectRootPath = useProjectsStore(
         useCallback(
@@ -1325,7 +1328,11 @@ function useWorkspaceProjectRootPath(
         ),
     );
 
-    return worktreeRootPath ?? projectRootPath;
+    // A worktree path must not silently resolve against the primary checkout.
+    return (
+        worktreeRootPath ??
+        (!worktreeId || fallbackToProjectRoot ? projectRootPath : null)
+    );
 }
 
 function areWorkspacePaneDropTargetsEqual(
@@ -1984,6 +1991,30 @@ function WorkspacePaneView({
             [contextTabId],
         ),
     );
+    const contextFileTab = contextTab?.kind === "file" ? contextTab : null;
+    const contextFileRootPath = useWorkspaceProjectRootPath(
+        contextFileTab?.projectId ?? null,
+        contextFileTab?.worktreeId ?? null,
+        false,
+    );
+    const contextFileFullPath = contextFileTab
+        ? resolveProjectFileFullPath({
+              absolutePath: contextFileTab.document?.absolutePath,
+              relativePath: contextFileTab.relativePath,
+              rootPath: contextFileRootPath,
+          })
+        : null;
+    const copyContextFileFullPath = useCallback(async () => {
+        if (!contextFileFullPath) {
+            return;
+        }
+
+        try {
+            await writeClipboardText(contextFileFullPath);
+        } catch {
+            window.alert("Could not copy the file path.");
+        }
+    }, [contextFileFullPath]);
     const activeTab = paneActiveTabId
         ? (paneTabs.find((tab) => tab.id === paneActiveTabId) ?? null)
         : null;
@@ -2205,6 +2236,11 @@ function WorkspacePaneView({
             const ext = contextTab.relativePath.split(".").pop() ?? null;
             entries.push(
                 { type: "separator" },
+                {
+                    label: "Copy Full Path",
+                    action: () => void copyContextFileFullPath(),
+                    disabled: !contextFileFullPath,
+                },
                 {
                     label: "Add to Chat",
                     action: () => {
