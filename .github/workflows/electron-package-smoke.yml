@@ -89,7 +89,7 @@ jobs:
                   chmod +x resources/ai/prebuilt/codex-acp/darwin-x64/codex-acp
 
             - name: Prepare macOS embedded Node payload
-              run: pnpm run prepare:node-runtime -- --platform darwin --arch arm64 --arch x64
+              run: pnpm run prepare:node-runtime --platform darwin --arch arm64 --arch x64
 
             - name: Package unsigned macOS app
               run: pnpm run package:mac

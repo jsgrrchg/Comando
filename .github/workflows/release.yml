@@ -263,7 +263,7 @@ jobs:
                   chmod +x resources/ai/prebuilt/codex-acp/darwin-arm64/codex-acp
                   chmod +x resources/ai/prebuilt/codex-acp/darwin-x64/codex-acp
 
-                  pnpm run prepare:node-runtime -- --platform darwin --arch arm64 --arch x64
+                  pnpm run prepare:node-runtime --platform darwin --arch arm64 --arch x64
 
             - name: Package macOS artifacts
               run: pnpm run package:mac -- --config.forceCodeSigning=true
