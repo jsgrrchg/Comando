@@ -29,6 +29,7 @@ import { resolveEditorLanguage } from "@shared/editor-language";
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
 import { writeClipboardText } from "./app/utils/clipboard";
+import { joinProjectPath } from "./app/utils/projectPath";
 import { setCachedAppEditorSettings } from "./app/settings/client";
 import {
     buildGitTreeNodesFromProjectTree,
@@ -5511,17 +5512,6 @@ function getSettingsUpdateMenuLabel(state: AppUpdateState): string | null {
     }
 
     return null;
-}
-
-function joinProjectPath(rootPath: string, relativePath: string): string {
-    if (!relativePath) {
-        return rootPath;
-    }
-
-    const separator = rootPath.includes("\\") ? "\\" : "/";
-    return `${rootPath.replace(/[\\/]+$/, "")}${separator}${relativePath
-        .split("/")
-        .join(separator)}`;
 }
 
 function normalizeFileTreeClipboardWorktreeId(
