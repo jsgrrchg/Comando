@@ -1,9 +1,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { GitChangeEntry, GitWorktreeDiffResult } from "@shared/ipc";
+import type {
+    GitBranchDiffResult,
+    GitChangeEntry,
+    GitWorktreeDiffResult,
+} from "@shared/ipc";
 
 import {
+    buildGitBranchDiffSections,
     buildGitChangeGroups,
     buildGitDiffFileId,
     buildGitWorktreeDiffSections,
@@ -84,6 +89,40 @@ describe("buildGitChangeGroups", () => {
 
         expect(markup).toContain("+6");
         expect(markup).toContain("-0");
+    });
+});
+
+describe("buildGitBranchDiffSections", () => {
+    it("exposes only the read-only open action", () => {
+        const result: GitBranchDiffResult = {
+            baseRef: "main",
+            files: [
+                {
+                    additions: 1,
+                    deletions: 0,
+                    diff: null,
+                    error: null,
+                    isBinary: false,
+                    kind: "modified",
+                    path: "src/example.ts",
+                    previousPath: null,
+                },
+            ],
+            headRef: "feature",
+            projectId: "project-1",
+            unavailableReason: null,
+            updatedAt: "2026-07-26T00:00:00.000Z",
+            worktreeId: null,
+        };
+
+        const sections = buildGitBranchDiffSections(result, {
+            onOpenFile: () => undefined,
+        });
+
+        expect(sections[0].files[0].actions?.map((action) => action.label)).toEqual([
+            "Open",
+        ]);
+        expect(sections[0].files[0].reversible).toBe(false);
     });
 });
 

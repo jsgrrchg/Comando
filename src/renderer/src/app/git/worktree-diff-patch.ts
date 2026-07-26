@@ -1,4 +1,6 @@
 import type {
+    GitBranchDiffFile,
+    GitBranchDiffResult,
     GitDiffLineType,
     GitWorktreeDiffFile,
     GitWorktreeDiffResult,
@@ -16,7 +18,9 @@ function linePrefix(type: GitDiffLineType): string {
     return " ";
 }
 
-function serializeFileDiff(file: GitWorktreeDiffFile): string | null {
+function serializeFileDiff(
+    file: GitWorktreeDiffFile | GitBranchDiffFile,
+): string | null {
     const path = file.path;
     const previousPath = file.previousPath ?? file.diff?.previousPath ?? null;
     const headerPath = previousPath ?? path;
@@ -85,4 +89,18 @@ export function serializeWorktreeDiffToPatch(
     }
 
     return blocks.join("");
+}
+
+/** Serializes the committed branch range without reading the working tree. */
+export function serializeBranchDiffToPatch(
+    result: GitBranchDiffResult | null,
+): string {
+    if (!result) {
+        return "";
+    }
+
+    return result.files
+        .map(serializeFileDiff)
+        .filter((block): block is string => block !== null)
+        .join("");
 }

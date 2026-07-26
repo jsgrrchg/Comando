@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import type { GitWorktreeDiffResult } from "@shared/ipc";
+import type { GitBranchDiffResult, GitWorktreeDiffResult } from "@shared/ipc";
 
-import { serializeWorktreeDiffToPatch } from "./worktree-diff-patch";
+import {
+    serializeBranchDiffToPatch,
+    serializeWorktreeDiffToPatch,
+} from "./worktree-diff-patch";
 
 function buildResult(
     overrides: Partial<GitWorktreeDiffResult> = {},
@@ -67,6 +70,36 @@ function buildResult(
         ...overrides,
     };
 }
+
+describe("serializeBranchDiffToPatch", () => {
+    it("serializes branch files and binary placeholders", () => {
+        const result: GitBranchDiffResult = {
+            baseRef: "main",
+            files: [
+                {
+                    additions: null,
+                    deletions: null,
+                    diff: null,
+                    error: null,
+                    isBinary: true,
+                    kind: "added",
+                    path: "assets/logo.png",
+                    previousPath: null,
+                },
+            ],
+            headRef: "feature",
+            projectId: "project-1",
+            unavailableReason: null,
+            updatedAt: "2026-07-26T00:00:00.000Z",
+            worktreeId: null,
+        };
+
+        expect(serializeBranchDiffToPatch(result)).toContain(
+            "Binary files a/assets/logo.png and b/assets/logo.png differ",
+        );
+        expect(serializeBranchDiffToPatch(null)).toBe("");
+    });
+});
 
 describe("serializeWorktreeDiffToPatch", () => {
     it("returns an empty string when there is no result", () => {
