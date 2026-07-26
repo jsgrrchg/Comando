@@ -90,7 +90,7 @@ pub fn parse_unified_diff(raw: &str, path: &str) -> ParsedUnifiedDiff {
     let mut is_binary = false;
 
     for line in raw.split('\n') {
-        if line.starts_with("Binary files ") {
+        if line.starts_with("Binary files ") || line == "GIT binary patch" {
             is_binary = true;
             continue;
         }
