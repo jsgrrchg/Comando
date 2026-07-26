@@ -48,6 +48,9 @@ import {
     type NativeContextMenuInput,
     type MoveWorkspaceContextInput,
     type EnqueueAiPromptInput,
+    type GitBranchDiffFile,
+    type GitBranchDiffInput,
+    type GitBranchDiffResult,
     type GitBranchListInput,
     type GitBranchSummary as SharedGitBranchSummary,
     type GitChangeEntry as SharedGitChangeEntry,
@@ -322,6 +325,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.listGitChanges);
     ipcMain.removeHandler(IPC_CHANNELS.listGitHistory);
     ipcMain.removeHandler(IPC_CHANNELS.listGitWorktreeDiff);
+    ipcMain.removeHandler(IPC_CHANNELS.listGitBranchDiff);
     ipcMain.removeHandler(IPC_CHANNELS.getGitDiff);
     ipcMain.removeHandler(IPC_CHANNELS.getGitOriginalFile);
     ipcMain.removeHandler(IPC_CHANNELS.getGitCommitDetail);
@@ -998,6 +1002,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             input: GitWorktreeDiffInput,
         ): Promise<GitWorktreeDiffResult | null> =>
             buildSharedGitWorktreeDiff(
+                options.projectService,
+                options.gitService,
+                input,
+            ),
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.listGitBranchDiff,
+        async (
+            _event,
+            input: GitBranchDiffInput,
+        ): Promise<GitBranchDiffResult | null> =>
+            buildSharedGitBranchDiff(
                 options.projectService,
                 options.gitService,
                 input,
@@ -2991,6 +3007,8 @@ type MainGitWorktreeDiffResult = Awaited<
 >;
 type MainGitWorktreeDiffFile =
     MainGitWorktreeDiffResult["sections"][number]["files"][number];
+type MainGitBranchDiffResult = Awaited<ReturnType<GitGateway["listBranchDiff"]>>;
+type MainGitBranchDiffFile = MainGitBranchDiffResult["files"][number];
 type DiffStatEntry = { additions: number; deletions: number };
 type DiffStatMap = Map<string, DiffStatEntry>;
 
@@ -3262,6 +3280,49 @@ function adaptGitWorktreeDiffFile(
     };
 }
 
+async function buildSharedGitBranchDiff(
+    projectService: ProjectService,
+    gitService: GitGateway,
+    input: GitBranchDiffInput,
+): Promise<GitBranchDiffResult | null> {
+    const scope = resolveGitScope(projectService, input);
+    const snapshot = await gitService.getRepositorySnapshot(scope.rootPath);
+    if (snapshot.resolution.state !== "ready") {
+        return null;
+    }
+
+    const result = await gitService.listBranchDiff(scope.rootPath);
+    return {
+        baseRef: result.baseRef,
+        files: result.files.map(adaptGitBranchDiffFile),
+        headRef: result.headRef,
+        projectId: input.projectId,
+        unavailableReason: result.unavailableReason,
+        updatedAt: result.updatedAt,
+        worktreeId: scope.worktreeId,
+    };
+}
+
+function adaptGitBranchDiffFile(file: MainGitBranchDiffFile): GitBranchDiffFile {
+    return {
+        additions: file.additions,
+        deletions: file.deletions,
+        diff: file.diff
+            ? adaptReadOnlyGitFileDiff(
+                  file.diff,
+                  file.kind,
+                  `branch:${file.diff.changedPath}`,
+                  false,
+              )
+            : null,
+        error: file.error,
+        isBinary: file.isBinary,
+        kind: mapSharedChangeKind(file.kind),
+        path: file.path,
+        previousPath: file.previousPath,
+    };
+}
+
 function adaptGitWorktreeDiffFileDiff(
     file: MainGitWorktreeDiffFile,
 ): SharedGitFileDiff {
@@ -3270,7 +3331,23 @@ function adaptGitWorktreeDiffFileDiff(
         throw new Error("Cannot adapt an empty worktree diff file.");
     }
 
-    const idPrefix = `${file.scope}:${diff.changedPath}`;
+    return adaptReadOnlyGitFileDiff(
+        diff,
+        file.kind,
+        `${file.scope}:${diff.changedPath}`,
+        !file.isConflicted,
+    );
+}
+
+function adaptReadOnlyGitFileDiff(
+    diff: MainGitWorktreeDiffFile["diff"],
+    kind: MainGitWorktreeDiffFile["kind"],
+    idPrefix: string,
+    reversible: boolean,
+): SharedGitFileDiff {
+    if (!diff) {
+        throw new Error("Cannot adapt an empty git file diff.");
+    }
 
     return {
         hunks: diff.hunks.map((hunk, hunkIndex) => ({
@@ -3286,12 +3363,12 @@ function adaptGitWorktreeDiffFileDiff(
             oldStart: hunk.oldStart,
         })),
         isText: !diff.isBinary,
-        kind: mapDiffKind(file.kind),
+        kind: mapDiffKind(kind),
         newText: null,
         oldText: null,
         path: diff.changedPath,
         previousPath: diff.previousPath,
-        reversible: !file.isConflicted,
+        reversible,
     };
 }
 

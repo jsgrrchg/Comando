@@ -73,6 +73,7 @@ export const NATIVE_GIT_COMMANDS = [
     "git_list_remotes",
     "git_get_diff_stats",
     "git_list_worktree_diff",
+    "git_list_branch_diff",
     "git_init_repository",
     "git_clone_repository",
     "git_stage_paths",

@@ -92,6 +92,8 @@ import {
     type ProjectTreeInvalidation,
     type ThemeMode,
     type WindowContextSnapshot,
+    type GitBranchDiffInput,
+    type GitBranchDiffResult,
     type GitBranchListInput,
     type GitBranchSummary,
     type GitChangesListInput,
@@ -1302,6 +1304,11 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.listGitWorktreeDiff,
             input,
         ) as Promise<GitWorktreeDiffResult | null>,
+    listGitBranchDiff: (input: GitBranchDiffInput) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.listGitBranchDiff,
+            input,
+        ) as Promise<GitBranchDiffResult | null>,
     getGitCommitDetail: (input: GitCommitDetailInput) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.getGitCommitDetail,

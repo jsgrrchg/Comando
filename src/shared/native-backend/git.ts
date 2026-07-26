@@ -262,6 +262,27 @@ export type NativeGitWorktreeDiffResult = {
     readonly updatedAt: string;
 };
 
+export type NativeGitBranchDiffFile = {
+    readonly additions: number | null;
+    readonly deletions: number | null;
+    readonly diff: NativeGitFileDiff | null;
+    readonly error: string | null;
+    readonly isBinary: boolean;
+    readonly kind: string;
+    readonly path: string;
+    readonly previousPath: string | null;
+};
+
+export type NativeGitBranchDiffResult = {
+    readonly projectId: NativeProjectId;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly baseRef: string | null;
+    readonly headRef: string;
+    readonly files: readonly NativeGitBranchDiffFile[];
+    readonly unavailableReason: string | null;
+    readonly updatedAt: string;
+};
+
 export type NativeGitRepositorySnapshot = {
     readonly repositoryId: NativeRepositoryId;
     readonly projectId: NativeProjectId;

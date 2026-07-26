@@ -1,6 +1,7 @@
 import type { GitRemoteSummary } from "@shared/ipc";
 
 import type {
+    GitBranchDiffResult,
     GitBranchSummary,
     GitCommitDetail,
     GitDiffStatRecord,
@@ -38,6 +39,7 @@ export interface GitGateway {
         inputPath: string,
         options?: GitWorktreeDiffOptions,
     ): Promise<GitWorktreeDiffResult>;
+    listBranchDiff(inputPath: string): Promise<GitBranchDiffResult>;
     getFileText(
         inputPath: string,
         relativePath: string,
