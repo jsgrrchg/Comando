@@ -6,6 +6,8 @@ import {
     canRenderGitDiffWithPierre,
     getPierreDiffVirtualMetrics,
     getPierreGitDiffPatch,
+    PIERRE_GIT_DIFF_HEADER_HEIGHT_PX,
+    PIERRE_GIT_DIFF_UNSAFE_CSS,
 } from "./PierreGitDiffFile";
 import { GIT_DIFF_FIXTURES } from "./GitDiffFixtures";
 
@@ -73,12 +75,22 @@ describe("Pierre Git diff adapter", () => {
         expect(
             getPierreDiffVirtualMetrics(null, null).lineHeight,
         ).toBeCloseTo(20.15);
+        expect(
+            getPierreDiffVirtualMetrics(null, null).diffHeaderHeight,
+        ).toBe(PIERRE_GIT_DIFF_HEADER_HEIGHT_PX);
         expect(getPierreDiffVirtualMetrics(15, 1.6)).toMatchObject({
             lineHeight: 24,
         });
         expect(getPierreDiffVirtualMetrics(15, 26)).toMatchObject({
             lineHeight: 26,
         });
+    });
+
+    it("uses the stable Pierre header data attributes for compact sticky styling", () => {
+        expect(PIERRE_GIT_DIFF_UNSAFE_CSS).toContain(
+            '[data-diffs-header="default"]',
+        );
+        expect(PIERRE_GIT_DIFF_UNSAFE_CSS).toContain("[data-sticky]");
     });
 
     it.each([

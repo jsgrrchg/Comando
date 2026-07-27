@@ -188,7 +188,7 @@ export function buildPierreDiffHostStyle(
         "--diffs-fg-number-override": tokens.textSecondary,
         "--diffs-font-family": fontFamily,
         "--diffs-font-size": resolveFontSize(typography.fontSize),
-        "--diffs-header-font-family": fontFamily,
+        "--diffs-header-font-family": "var(--font-sans)",
         "--diffs-line-height": resolveLineHeight(typography.lineHeight),
         "--diffs-modified-color-override": "var(--diff-warn)",
         "--diffs-tab-size": "4",

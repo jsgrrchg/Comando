@@ -76,13 +76,14 @@ describe("pierre Shiki themes", () => {
             lineHeight: 1.7,
         });
 
-    expect(style["--diffs-font-family"]).toBe('"Geist Mono"');
-    expect(style["--diffs-font-size"]).toBe("15px");
-    expect(style["--diffs-line-height"]).toBe("1.7");
-    expect(style["--diffs-bg"]).toBe(tokens.editor);
-    expect(style["--diffs-bg-buffer-override"]).toBe(tokens.editor);
-    expect(style["--diffs-bg-separator-override"]).toBe(tokens.border);
-    expect(style["--diffs-fg"]).toBe(tokens.editorText);
+        expect(style["--diffs-font-family"]).toBe('"Geist Mono"');
+        expect(style["--diffs-header-font-family"]).toBe("var(--font-sans)");
+        expect(style["--diffs-font-size"]).toBe("15px");
+        expect(style["--diffs-line-height"]).toBe("1.7");
+        expect(style["--diffs-bg"]).toBe(tokens.editor);
+        expect(style["--diffs-bg-buffer-override"]).toBe(tokens.editor);
+        expect(style["--diffs-bg-separator-override"]).toBe(tokens.border);
+        expect(style["--diffs-fg"]).toBe(tokens.editorText);
         expect(style["--diffs-fg-conflict-marker-override"]).toBe(
             tokens.code.markup,
         );

@@ -16,7 +16,11 @@ import {
 
 import { GitDiffFileContent } from "./GitDiffFileContent";
 import { GitBadge, GitEmptyState } from "./GitUi";
-import { canRenderGitDiffWithPierre } from "./PierreGitDiffFile";
+import { PierreGitDiffErrorBoundary } from "./PierreGitDiffErrorBoundary";
+import {
+    canRenderGitDiffWithPierre,
+    PierreGitDiffFile,
+} from "./PierreGitDiffFile";
 import { PierreGitDiffVirtualizerProvider } from "./PierreGitDiffVirtualizerProvider";
 import type {
     GitDiffFile,
@@ -554,6 +558,160 @@ const DiffFileSurface = memo(function DiffFileSurface({
             onToggleCollapse(fileId);
         }
     }, [onToggleCollapse, fileId]);
+
+    if (canRenderGitDiffWithPierre(file)) {
+        // A collapsed diff has no mounted Pierre header, so keep a lightweight re-open control.
+        if (collapsed) {
+            return (
+                <CollapsedPierreDiffFileSurface
+                    file={file}
+                    isCollapsible={isCollapsible}
+                    onToggle={handleToggle}
+                />
+            );
+        }
+
+        return (
+            <PierreGitDiffErrorBoundary
+                fallback={
+                    <LegacyDiffFileSurface
+                        allowLineVirtualization={allowLineVirtualization}
+                        codeFontFamily={codeFontFamily}
+                        codeFontSize={codeFontSize}
+                        codeLineHeight={codeLineHeight}
+                        collapsed={false}
+                        file={file}
+                        isCollapsible={isCollapsible}
+                        lineWrapping={lineWrapping}
+                        onToggle={handleToggle}
+                        scrollContainerRef={scrollContainerRef}
+                        surfaceVariant={surfaceVariant}
+                    />
+                }
+                fileId={file.id}
+            >
+                <PierreGitDiffFile
+                    codeFontFamily={codeFontFamily}
+                    codeFontSize={codeFontSize}
+                    codeLineHeight={codeLineHeight}
+                    file={file}
+                    headerFilenameSuffix={
+                        file.reversible ? (
+                            <GitBadge className="shrink-0" tone="neutral">
+                                reversible
+                            </GitBadge>
+                        ) : undefined
+                    }
+                    headerMetadata={<DiffFileActionGroup actions={file.actions} />}
+                    headerPrefix={
+                        isCollapsible ? (
+                            <PierreCollapseButton
+                                collapsed={false}
+                                onToggle={handleToggle}
+                            />
+                        ) : undefined
+                    }
+                    lineWrapping={lineWrapping}
+                />
+            </PierreGitDiffErrorBoundary>
+        );
+    }
+
+    return (
+        <LegacyDiffFileSurface
+            allowLineVirtualization={allowLineVirtualization}
+            codeFontFamily={codeFontFamily}
+            codeFontSize={codeFontSize}
+            codeLineHeight={codeLineHeight}
+            collapsed={collapsed}
+            file={file}
+            isCollapsible={isCollapsible}
+            lineWrapping={lineWrapping}
+            onToggle={handleToggle}
+            scrollContainerRef={scrollContainerRef}
+            surfaceVariant={surfaceVariant}
+        />
+    );
+});
+
+function CollapsedPierreDiffFileSurface({
+    file,
+    isCollapsible,
+    onToggle,
+}: {
+    readonly file: GitDiffFile;
+    readonly isCollapsible: boolean;
+    readonly onToggle: () => void;
+}) {
+    const path = (
+        <span
+            className="min-w-0 flex-1 truncate font-mono text-[12px] font-medium"
+            style={{ color: diffKindColor(file.kind) }}
+            title={file.statusLabel ?? file.kind}
+        >
+            {file.path}
+        </span>
+    );
+
+    return (
+        <section className="border-b border-border bg-bg-primary">
+            <div className="flex min-h-[34px] items-center gap-2 px-2">
+                {isCollapsible ? (
+                    <PierreCollapseButton collapsed onToggle={onToggle} />
+                ) : null}
+                {isCollapsible ? (
+                    <button
+                        aria-expanded={false}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        onClick={onToggle}
+                        type="button"
+                    >
+                        {path}
+                    </button>
+                ) : (
+                    path
+                )}
+                {file.reversible ? (
+                    <GitBadge className="shrink-0" tone="neutral">
+                        reversible
+                    </GitBadge>
+                ) : null}
+                {file.summary ? (
+                    <p className="flex shrink-0 items-center gap-1.5 text-[12px]">
+                        <DiffSummaryColored summary={file.summary} />
+                    </p>
+                ) : null}
+                <DiffFileActionGroup actions={file.actions} />
+            </div>
+        </section>
+    );
+}
+
+function LegacyDiffFileSurface({
+    allowLineVirtualization,
+    codeFontFamily,
+    codeFontSize,
+    codeLineHeight,
+    collapsed,
+    file,
+    isCollapsible,
+    lineWrapping,
+    onToggle,
+    scrollContainerRef,
+    surfaceVariant,
+}: {
+    readonly allowLineVirtualization: boolean;
+    readonly codeFontFamily: string | null;
+    readonly codeFontSize: number | null;
+    readonly codeLineHeight: number | null;
+    readonly collapsed: boolean;
+    readonly file: GitDiffFile;
+    readonly isCollapsible: boolean;
+    readonly lineWrapping: boolean;
+    readonly onToggle: () => void;
+    readonly scrollContainerRef?: RefObject<HTMLElement | null>;
+    readonly surfaceVariant: "flat" | "panel";
+}) {
     const headerContent = (
         <>
             <div className="min-w-0 flex-1">
@@ -601,17 +759,7 @@ const DiffFileSurface = memo(function DiffFileSurface({
             </div>
         </>
     );
-    const actionButtons =
-        file.actions && file.actions.length > 0 ? (
-            <div className="flex shrink-0 items-center gap-1.5">
-                {file.actions.map((action) => (
-                    <DiffFileActionButton action={action} key={action.id} />
-                ))}
-            </div>
-        ) : null;
-    const canRenderWithPierre = canRenderGitDiffWithPierre(file);
     const virtualizeLines =
-        !canRenderWithPierre &&
         scrollContainerRef !== undefined &&
         shouldVirtualizeDiffLines({
             allowLineVirtualization,
@@ -640,12 +788,12 @@ const DiffFileSurface = memo(function DiffFileSurface({
                     <button
                         aria-expanded={!collapsed}
                         className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2 text-left"
-                        onClick={handleToggle}
+                        onClick={onToggle}
                         type="button"
                     >
                         {headerContent}
                     </button>
-                    {actionButtons}
+                    <DiffFileActionGroup actions={file.actions} />
                 </div>
             ) : (
                 <div
@@ -657,7 +805,7 @@ const DiffFileSurface = memo(function DiffFileSurface({
                     ].join(" ")}
                 >
                     {headerContent}
-                    {actionButtons}
+                    <DiffFileActionGroup actions={file.actions} />
                 </div>
             )}
 
@@ -666,7 +814,6 @@ const DiffFileSurface = memo(function DiffFileSurface({
                     codeFontFamily={codeFontFamily}
                     codeFontSize={codeFontSize}
                     codeLineHeight={codeLineHeight}
-                    canRenderWithPierre={canRenderWithPierre}
                     file={file}
                     lineWrapping={lineWrapping}
                     scrollContainerRef={scrollContainerRef}
@@ -675,7 +822,54 @@ const DiffFileSurface = memo(function DiffFileSurface({
             )}
         </section>
     );
-});
+}
+
+function PierreCollapseButton({
+    collapsed,
+    onToggle,
+}: {
+    readonly collapsed: boolean;
+    readonly onToggle: () => void;
+}) {
+    const handleClick = useCallback(
+        (event: ReactMouseEvent<HTMLButtonElement>) => {
+            event.stopPropagation();
+            onToggle();
+        },
+        [onToggle],
+    );
+
+    return (
+        <button
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "Expand file" : "Collapse file"}
+            className="inline-flex size-5 shrink-0 items-center justify-center rounded text-text-secondary hover:bg-bg-tertiary hover:text-text-primary"
+            onClick={handleClick}
+            title={collapsed ? "Expand file" : "Collapse file"}
+            type="button"
+        >
+            <CollapseChevron collapsed={collapsed} />
+        </button>
+    );
+}
+
+function DiffFileActionGroup({
+    actions,
+}: {
+    readonly actions: readonly NonNullable<GitDiffFile["actions"]>[number][] | undefined;
+}) {
+    if (!actions || actions.length === 0) {
+        return null;
+    }
+
+    return (
+        <div className="flex shrink-0 items-center gap-1.5">
+            {actions.map((action) => (
+                <DiffFileActionButton action={action} key={action.id} />
+            ))}
+        </div>
+    );
+}
 
 function DiffFileActionButton({
     action,

@@ -382,9 +382,8 @@ describe("GitDiffsView", () => {
         );
 
         expect(markup).not.toContain('data-measured-virtual-list="true"');
-        expect(markup).toContain("large-file-1.ts");
-        expect(markup).toContain(
-            `large-file-${GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD - 1}.ts`,
+        expect(markup.match(/<diffs-container/g)).toHaveLength(
+            GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD - 1,
         );
     });
 
@@ -406,10 +405,7 @@ describe("GitDiffsView", () => {
         );
 
         expect(markup).toContain('data-measured-virtual-list="true"');
-        expect(markup).toContain("large-file-1.ts");
-        expect(markup).not.toContain(
-            `large-file-${GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD + 1}.ts`,
-        );
+        expect(markup.match(/<diffs-container/g)).toHaveLength(6);
         expect(markup).not.toContain("giant-diff-line-1");
     });
 
@@ -429,7 +425,6 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("giant-diff.ts");
         expect(markup).not.toContain("giant-diff-line-1");
         expect(markup).not.toContain('data-virtualized-diff-lines="true"');
-        expect(markup).toContain("large-file-1.ts");
         expect(markup.match(/<diffs-container/g)).toHaveLength(1);
     });
 

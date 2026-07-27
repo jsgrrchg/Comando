@@ -3,7 +3,7 @@ import {
     type VirtualFileMetrics,
 } from "@pierre/diffs/react";
 import { DEFAULT_VIRTUAL_FILE_METRICS } from "@pierre/diffs";
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
 
 import {
     buildPierreDiffHostStyle,
@@ -19,6 +19,28 @@ import type { GitDiffFile } from "./types";
 
 const DEFAULT_PIERRE_FONT_SIZE_PX = 13;
 const DEFAULT_PIERRE_LINE_HEIGHT = 1.55;
+export const PIERRE_GIT_DIFF_HEADER_HEIGHT_PX = 34;
+
+// This stays within Pierre's shadow root and keeps its native header compact.
+export const PIERRE_GIT_DIFF_UNSAFE_CSS = `
+[data-diffs-header="default"] {
+    min-height: ${PIERRE_GIT_DIFF_HEADER_HEIGHT_PX}px;
+    padding-inline: 8px;
+    border-bottom: 1px solid var(--diffs-bg-separator);
+}
+
+[data-diffs-header="default"][data-sticky] {
+    z-index: 4;
+}
+
+[data-diffs-header="default"] [data-header-content] {
+    flex: 1 1 auto;
+}
+
+[data-diffs-header="default"] [data-metadata] {
+    flex: 0 0 auto;
+}
+`;
 
 function buildUnifiedPatchHeader(file: GitDiffFile): string {
     const oldPath = file.previousPath ?? file.path;
@@ -113,6 +135,7 @@ export function getPierreDiffVirtualMetrics(
 
     return {
         ...DEFAULT_VIRTUAL_FILE_METRICS,
+        diffHeaderHeight: PIERRE_GIT_DIFF_HEADER_HEIGHT_PX,
         lineHeight: lineHeight > 4 ? lineHeight : fontSize * lineHeight,
     };
 }
@@ -122,12 +145,18 @@ export function PierreGitDiffFile({
     codeFontSize,
     codeLineHeight,
     file,
+    headerFilenameSuffix,
+    headerMetadata,
+    headerPrefix,
     lineWrapping,
 }: {
     readonly codeFontFamily: string | null;
     readonly codeFontSize: number | null;
     readonly codeLineHeight: number | null;
     readonly file: GitDiffFile;
+    readonly headerFilenameSuffix?: ReactNode;
+    readonly headerMetadata?: ReactNode;
+    readonly headerPrefix?: ReactNode;
     readonly lineWrapping: boolean;
 }) {
     const appearance = useSettingsStore((state) => state.appearance);
@@ -138,10 +167,12 @@ export function PierreGitDiffFile({
         () => ({
             diffStyle: "unified" as const,
             disableErrorHandling: true,
-            disableFileHeader: true,
+            disableFileHeader: false,
             overflow: lineWrapping ? ("wrap" as const) : ("scroll" as const),
+            stickyHeader: true,
             theme: getComandoPierreThemes(appearance.themePreset),
             themeType: isDark ? ("dark" as const) : ("light" as const),
+            unsafeCSS: PIERRE_GIT_DIFF_UNSAFE_CSS,
         }),
         [appearance.themePreset, isDark, lineWrapping],
     );
@@ -183,6 +214,15 @@ export function PierreGitDiffFile({
             metrics={metrics}
             options={options}
             patch={patch}
+            renderHeaderFilenameSuffix={
+                headerFilenameSuffix
+                    ? () => headerFilenameSuffix
+                    : undefined
+            }
+            renderHeaderMetadata={
+                headerMetadata ? () => headerMetadata : undefined
+            }
+            renderHeaderPrefix={headerPrefix ? () => headerPrefix : undefined}
             style={style}
         />
     );

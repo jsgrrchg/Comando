@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act, createContext } from "react";
+import { act, createContext, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,15 +17,32 @@ const patchDiffCalls = vi.hoisted(() =>
             readonly disableErrorHandling: boolean;
             readonly disableFileHeader: boolean;
             readonly overflow: "scroll" | "wrap";
+            readonly stickyHeader: boolean;
+            readonly unsafeCSS: string;
         };
         readonly patch: string;
+        readonly renderHeaderFilenameSuffix?: (fileDiff: never) => ReactNode;
+        readonly renderHeaderMetadata?: (fileDiff: never) => ReactNode;
+        readonly renderHeaderPrefix?: (fileDiff: never) => ReactNode;
     }>,
 );
 
 vi.mock("@pierre/diffs/react", () => ({
     PatchDiff: (props: (typeof patchDiffCalls)[number]) => {
         patchDiffCalls.push(props);
-        return <div data-pierre-diff-body="true" />;
+        return (
+            <div data-pierre-diff-body="true">
+                <div data-pierre-header-prefix="true">
+                    {props.renderHeaderPrefix?.({} as never)}
+                </div>
+                <div data-pierre-header-suffix="true">
+                    {props.renderHeaderFilenameSuffix?.({} as never)}
+                </div>
+                <div data-pierre-header-metadata="true">
+                    {props.renderHeaderMetadata?.({} as never)}
+                </div>
+            </div>
+        );
     },
     VirtualizerContext: createContext(undefined),
 }));
@@ -51,7 +68,7 @@ describe("GitDiffsView Pierre integration", () => {
         patchDiffCalls.length = 0;
     });
 
-    it("keeps the Comando header and file actions around a Pierre body", () => {
+    it("moves Comando actions into Pierre's native header slots", () => {
         const onOpen = vi.fn();
         const { container, root } = renderDiff({
             ...GIT_DIFF_FIXTURES.update,
@@ -65,9 +82,14 @@ describe("GitDiffsView Pierre integration", () => {
         });
 
         expect(container.querySelectorAll("[data-pierre-diff-body]")).toHaveLength(1);
-        expect(container.querySelectorAll('[title="modified"]')).toHaveLength(1);
+        expect(container.querySelectorAll("section")).toHaveLength(0);
+        expect(container.querySelectorAll('[title="modified"]')).toHaveLength(0);
         expect(patchDiffCalls).toHaveLength(1);
-        expect(patchDiffCalls[0]?.options.disableFileHeader).toBe(true);
+        expect(patchDiffCalls[0]?.options.disableFileHeader).toBe(false);
+        expect(patchDiffCalls[0]?.options.stickyHeader).toBe(true);
+        expect(
+            container.querySelector("[data-pierre-header-metadata]")?.textContent,
+        ).toContain("Open");
 
         const openButton = Array.from(container.querySelectorAll("button")).find(
             (button) => button.textContent === "Open",
@@ -98,15 +120,49 @@ describe("GitDiffsView Pierre integration", () => {
             expect(call?.options).toMatchObject({
                 diffStyle: "unified",
                 disableErrorHandling: true,
-                disableFileHeader: true,
+                disableFileHeader: false,
                 overflow: "wrap",
+                stickyHeader: true,
             });
             expect(call?.metrics.lineHeight).toBeCloseTo(20.15);
             expect(call?.patch).toContain("@@ -");
+            expect(call?.options.unsafeCSS).toContain(
+                '[data-diffs-header="default"]',
+            );
 
             act(() => root.unmount());
         },
     );
+
+    it("keeps the collapse control in Pierre's header", () => {
+        const onToggleFileCollapse = vi.fn();
+        const container = document.createElement("div");
+        const root = createRoot(container);
+        const file = GIT_DIFF_FIXTURES.update;
+
+        act(() => {
+            root.render(
+                <GitDiffsView
+                    displayMode="stack"
+                    files={[file]}
+                    onToggleFileCollapse={onToggleFileCollapse}
+                    showFileSelector={false}
+                />,
+            );
+        });
+
+        const collapseButton = container.querySelector(
+            '[aria-label="Collapse file"]',
+        );
+        act(() => {
+            collapseButton?.dispatchEvent(
+                new MouseEvent("click", { bubbles: true }),
+            );
+        });
+        expect(onToggleFileCollapse).toHaveBeenCalledWith(file.id);
+
+        act(() => root.unmount());
+    });
 
     it.each([
         ["binary", GIT_DIFF_FIXTURES.binary, "This file is binary"],
