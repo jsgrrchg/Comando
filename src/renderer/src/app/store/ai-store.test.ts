@@ -1187,6 +1187,57 @@ describe("ai-store queue", () => {
         expect(payloads?.size).toBe(0);
     });
 
+    it("drops byte-sized payload values from a cold timeline after memory pressure", async () => {
+        const kibibyte = 1024;
+        const mebibyte = 1024 * kibibyte;
+        const payloadsByRef = new Map([
+            ["payload:100kb", new Uint8Array(100 * kibibyte)],
+            ["payload:1mb", new Uint8Array(mebibyte)],
+            ["payload:5mb", new Uint8Array(5 * mebibyte)],
+        ]);
+        Object.defineProperty(globalThis, "window", {
+            configurable: true,
+            value: {
+                comando: {
+                    getAiTranscriptPayload: vi.fn((input: { readonly payloadRef: string }) => {
+                        const value = payloadsByRef.get(input.payloadRef);
+                        if (!value) return Promise.resolve(null);
+                        return Promise.resolve({
+                            byteLength: value.byteLength,
+                            capabilityVersion: 1,
+                            contentHash: input.payloadRef,
+                            payloadRef: input.payloadRef,
+                            sessionId: TAB.sessionId,
+                            transcriptRevision: 1,
+                            value,
+                        });
+                    }),
+                },
+            },
+            writable: true,
+        });
+        useAiStore.getState().registerSessionTab(TAB);
+
+        await Promise.all([
+            useAiStore.getState().loadTranscriptPayload(TAB.sessionId, "payload:100kb"),
+            useAiStore.getState().loadTranscriptPayload(TAB.sessionId, "payload:1mb"),
+            useAiStore.getState().loadTranscriptPayload(TAB.sessionId, "payload:5mb"),
+        ]);
+        expect(
+            useAiStore.getState().sessions[TAB.sessionId]?.transcriptWindow
+                .payloadsByRef.size,
+        ).toBe(3);
+
+        applyAiTranscriptMemoryPressure(0);
+
+        const coldPayloads = useAiStore.getState().sessions[TAB.sessionId]
+            ?.transcriptWindow.payloadsByRef;
+        expect(coldPayloads?.size).toBe(0);
+        expect(coldPayloads?.has("payload:100kb")).toBe(false);
+        expect(coldPayloads?.has("payload:1mb")).toBe(false);
+        expect(coldPayloads?.has("payload:5mb")).toBe(false);
+    });
+
     it("shares the transcript payload budget across sessions", async () => {
         const payloadSize = 9 * 1024 * 1024;
         const secondTab: WorkspaceChatTab = {
