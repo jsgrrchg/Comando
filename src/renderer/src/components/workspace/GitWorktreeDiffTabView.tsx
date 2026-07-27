@@ -127,6 +127,9 @@ export function GitWorktreeDiffTabView({
         (state) => state.toggleBranchDiffFileCollapse,
     );
     const isBranchMode = mode === "branch";
+    const tabTitle = isBranchMode
+        ? "Branch Changes"
+        : "Uncommitted Changes";
     const result = isBranchMode ? branchResult : worktreeResult;
     const error = isBranchMode ? branchError : worktreeError;
     const isLoading = isBranchMode ? isBranchLoading : isWorktreeLoading;
@@ -141,6 +144,9 @@ export function GitWorktreeDiffTabView({
     const unstagePaths = useGitStore((state) => state.unstagePaths);
     const discardPaths = useGitStore((state) => state.discardPaths);
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
+    const updateGitWorktreeDiffTabTitle = useWorkspaceStore(
+        (state) => state.updateGitWorktreeDiffTabTitle,
+    );
 
     const codeFontFamily = buildEditorFontFamily(editorSettings.fontFamily);
     const codeFontSize = editorSettings.fontSize;
@@ -372,6 +378,11 @@ export function GitWorktreeDiffTabView({
         ],
     );
     useEffect(() => {
+        // Keep the persisted tab label aligned with the diff source shown in its view.
+        void updateGitWorktreeDiffTabTitle(tab.id, tabTitle);
+    }, [tab.id, tabTitle, updateGitWorktreeDiffTabTitle]);
+
+    useEffect(() => {
         if (!snapshot) {
             void refreshProject(projectId, worktreeId);
             return;
@@ -405,9 +416,7 @@ export function GitWorktreeDiffTabView({
                     <div className="flex min-w-0 flex-wrap items-center gap-3">
                         {/* Project and worktree are already implied by the tab context. */}
                         <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-secondary">
-                            {isBranchMode
-                                ? "Branch Changes"
-                                : "Uncommitted Changes"}
+                            {tabTitle}
                         </p>
                         <div
                             aria-label="Diff source"

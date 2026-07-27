@@ -50,6 +50,7 @@ const mockProjectsStoreState = vi.hoisted(() => ({
 const mockWorkspaceStoreState = vi.hoisted(() => ({
     current: {
         openFileTab: vi.fn(() => Promise.resolve(null)),
+        updateGitWorktreeDiffTabTitle: vi.fn(() => Promise.resolve()),
     },
 }));
 
@@ -194,6 +195,7 @@ function resetStoreState() {
         [CONTEXT_KEY]: createWorktreeDiffResult(),
     };
     mockWorkspaceStoreState.current.openFileTab.mockClear();
+    mockWorkspaceStoreState.current.updateGitWorktreeDiffTabTitle.mockClear();
 }
 
 function renderWorktreeMarkup(): string {
@@ -235,6 +237,10 @@ describe("GitWorktreeDiffTabView", () => {
             root.render(createElement(GitWorktreeDiffTabView, { tab: TAB }));
         });
 
+        expect(
+            mockWorkspaceStoreState.current.updateGitWorktreeDiffTabTitle,
+        ).toHaveBeenLastCalledWith(TAB.id, "Uncommitted Changes");
+
         const branchTab = Array.from(container.querySelectorAll("button")).find(
             (button) => button.textContent === "Branch Changes",
         );
@@ -259,6 +265,9 @@ describe("GitWorktreeDiffTabView", () => {
         });
 
         expect(container.textContent).toContain("branch-file.ts");
+        expect(
+            mockWorkspaceStoreState.current.updateGitWorktreeDiffTabTitle,
+        ).toHaveBeenLastCalledWith(TAB.id, "Branch Changes");
         expect(container.textContent).not.toContain("stage all");
         expect(container.textContent).not.toContain("unstage all");
         expect(container.textContent).not.toContain("discard all");
@@ -284,6 +293,9 @@ describe("GitWorktreeDiffTabView", () => {
         });
         expect(container.textContent).toContain("worktree-file.ts");
         expect(container.textContent).toContain("stage all");
+        expect(
+            mockWorkspaceStoreState.current.updateGitWorktreeDiffTabTitle,
+        ).toHaveBeenLastCalledWith(TAB.id, "Uncommitted Changes");
 
         act(() => root.unmount());
         container.remove();
