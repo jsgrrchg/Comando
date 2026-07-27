@@ -42,14 +42,16 @@ export function GitCommitTabView({
     const worktreeId = tab.worktreeId ?? null;
     const contextKey = projectId ? getContextKey(projectId, worktreeId) : null;
     const commitSha = tab.commitSha;
-    const { handleScroll: persistCommitScroll, scrollRef: commitScrollRef } =
+    const {
+        handleScrollTop: persistCommitScrollTop,
+        scrollRef: commitScrollRef,
+    } =
         usePersistedWorkspaceScroll<HTMLDivElement>({
             entityId: commitSha,
             projectId,
             surface: tab.kind,
             worktreeId,
         });
-    const commitScrollContainerRef = useRef<HTMLDivElement | null>(null);
 
     const detail = useGitStore((state) =>
         contextKey && projectId
@@ -155,30 +157,22 @@ export function GitCommitTabView({
         persistGitCommitDiffCollapseState(diffCollapseStorageKey, nextIds);
     }, [allCollapsed, diffCollapseStorageKey, diffFiles]);
 
-    const handleDiffScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-        const shouldCollapse = e.currentTarget.scrollTop > 0;
+    const handleDiffScroll = useCallback((scrollTop: number) => {
+        const shouldCollapse = scrollTop > 0;
         if (shouldCollapse !== collapsedRef.current) {
             collapsedRef.current = shouldCollapse;
             setIsBodyCollapsed(shouldCollapse);
         }
     }, []);
 
-    const handleCommitScroll = useCallback(
-        (event: React.UIEvent<HTMLDivElement>) => {
-            persistCommitScroll(event);
-
+    const handleCommitScrollTop = useCallback(
+        (scrollTop: number) => {
+            persistCommitScrollTop(scrollTop);
             if (detail?.body) {
-                handleDiffScroll(event);
+                handleDiffScroll(scrollTop);
             }
         },
-        [detail?.body, handleDiffScroll, persistCommitScroll],
-    );
-    const setCommitScrollContainer = useCallback(
-        (node: HTMLDivElement | null) => {
-            commitScrollContainerRef.current = node;
-            commitScrollRef(node);
-        },
-        [commitScrollRef],
+        [detail?.body, handleDiffScroll, persistCommitScrollTop],
     );
 
     useEffect(() => {
@@ -384,17 +378,14 @@ export function GitCommitTabView({
                 </div>
             </div>
 
-            <section
-                className="shell-scrollbar flex min-h-0 flex-1 overflow-y-auto px-3 py-3"
-                onScroll={handleCommitScroll}
-                ref={setCommitScrollContainer}
-            >
+            <section className="flex min-h-0 flex-1">
                 <GitRevisionDiffView
                     additions={detail.insertions}
                     collapseStorageKey={diffCollapseStorageKey}
                     deletions={detail.deletions}
                     files={detail.files}
-                    scrollContainerRef={commitScrollContainerRef}
+                    onScrollTop={handleCommitScrollTop}
+                    scrollRef={commitScrollRef}
                     totalFileCount={detail.changedFileCount}
                 />
             </section>

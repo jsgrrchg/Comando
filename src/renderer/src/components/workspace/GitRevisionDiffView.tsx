@@ -3,6 +3,7 @@ import {
     useMemo,
     useState,
     type ReactNode,
+    type RefCallback,
     type RefObject,
 } from "react";
 
@@ -25,7 +26,9 @@ export function GitRevisionDiffView({
     deletions,
     files,
     leadingContent,
+    onScrollTop,
     scrollContainerRef,
+    scrollRef,
     totalFileCount,
 }: {
     readonly additions: number;
@@ -33,7 +36,9 @@ export function GitRevisionDiffView({
     readonly deletions: number;
     readonly files: readonly GitRevisionFileDiff[];
     readonly leadingContent?: ReactNode;
+    readonly onScrollTop?: (scrollTop: number) => void;
     readonly scrollContainerRef?: RefObject<HTMLElement | null>;
+    readonly scrollRef?: RefCallback<HTMLDivElement>;
     readonly totalFileCount: number;
 }) {
     const settings = useResolvedEditorSettings();
@@ -114,8 +119,10 @@ export function GitRevisionDiffView({
                     emptyState="This pull request has no file changes."
                     files={diffFiles}
                     lineWrapping={false}
+                    onScrollTop={onScrollTop}
                     onToggleFileCollapse={toggleFile}
                     scrollContainerRef={scrollContainerRef}
+                    scrollRef={scrollRef}
                     showFileSelector={false}
                     surfaceVariant="flat"
                 />

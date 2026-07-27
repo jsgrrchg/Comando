@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import type { GitDiffFile } from "./types";
 import {
     canRenderGitDiffWithPierre,
+    compactPartialHunkOffsets,
+    createPierreGitDiffItem,
     getPierreDiffVirtualMetrics,
     getPierreGitDiffPatch,
     PIERRE_GIT_DIFF_HEADER_HEIGHT_PX,
@@ -50,6 +52,37 @@ describe("Pierre Git diff adapter", () => {
             "--- src/main.ts\n+++ src/main.ts\n@@ -1 +1 @@\n-old\n+new\n",
         );
         expect(parsePatchFiles(patch ?? "", file.id, true)[0]?.files).toHaveLength(1);
+    });
+
+    it("compacts deep partial hunk offsets without losing context separators", () => {
+        const item = createPierreGitDiffItem(
+            {
+                ...GIT_DIFF_FIXTURES.partialGitHub,
+                patch:
+                    "@@ -3400,2 +3400,2 @@\n first\n-old\n+new\n@@ -5100,1 +5100,1 @@\n-oldest\n+latest\n",
+            },
+            false,
+        );
+
+        expect(item).not.toBeNull();
+        const fileDiff = item?.fileDiff;
+        expect(fileDiff?.isPartial).toBe(true);
+        expect(fileDiff?.hunks[0]?.collapsedBefore).toBeGreaterThan(3_000);
+        expect(fileDiff?.hunks[0]?.unifiedLineStart).toBe(0);
+        expect(fileDiff?.hunks[1]?.unifiedLineStart).toBe(
+            fileDiff?.hunks[0]?.unifiedLineCount,
+        );
+    });
+
+    it("leaves complete file layouts untouched when compacting offsets", () => {
+        const partial = createPierreGitDiffItem(
+            GIT_DIFF_FIXTURES.update,
+            false,
+        )?.fileDiff;
+        const complete = partial ? { ...partial, isPartial: false } : null;
+
+        expect(complete).toBeDefined();
+        expect(compactPartialHunkOffsets(complete!)).toBe(complete);
     });
 
     it("builds a partial patch from legacy hunks when a source has no raw patch", () => {

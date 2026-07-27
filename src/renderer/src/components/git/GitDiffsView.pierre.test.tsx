@@ -1,50 +1,66 @@
 /** @vitest-environment jsdom */
-import { act, createContext, type ReactNode } from "react";
+import { act, forwardRef, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-    GIT_DIFF_FIXTURES,
-} from "./GitDiffFixtures";
+import { GIT_DIFF_FIXTURES } from "./GitDiffFixtures";
 
-const patchDiffCalls = vi.hoisted(() =>
-    [] as Array<{
-        readonly metrics: {
-            readonly lineHeight: number;
-        };
-        readonly options: {
-            readonly diffStyle: "unified";
-            readonly disableErrorHandling: boolean;
-            readonly disableFileHeader: boolean;
-            readonly overflow: "scroll" | "wrap";
-            readonly stickyHeader: boolean;
-            readonly unsafeCSS: string;
-        };
-        readonly patch: string;
-        readonly renderHeaderFilenameSuffix?: (fileDiff: never) => ReactNode;
-        readonly renderHeaderMetadata?: (fileDiff: never) => ReactNode;
-        readonly renderHeaderPrefix?: (fileDiff: never) => ReactNode;
-    }>,
+const codeViewCalls = vi.hoisted(
+    () => [] as Array<{ readonly [key: string]: unknown }>,
 );
 
 vi.mock("@pierre/diffs/react", () => ({
-    PatchDiff: (props: (typeof patchDiffCalls)[number]) => {
-        patchDiffCalls.push(props);
+    CodeView: forwardRef(function MockCodeView(
+        props: {
+            readonly containerRef?: (node: HTMLDivElement | null) => void;
+            readonly items: readonly {
+                readonly collapsed?: boolean;
+                readonly fileDiff: { readonly name: string };
+                readonly id: string;
+            }[];
+            readonly options: Record<string, unknown>;
+            readonly renderHeaderFilenameSuffix?: (item: {
+                readonly id: string;
+            }) => ReactNode;
+            readonly renderHeaderMetadata?: (item: {
+                readonly id: string;
+            }) => ReactNode;
+            readonly renderHeaderPrefix?: (item: {
+                readonly collapsed?: boolean;
+                readonly id: string;
+            }) => ReactNode;
+        },
+        ref,
+    ) {
+        codeViewCalls.push(props);
         return (
-            <div data-pierre-diff-body="true">
-                <div data-pierre-header-prefix="true">
-                    {props.renderHeaderPrefix?.({} as never)}
-                </div>
-                <div data-pierre-header-suffix="true">
-                    {props.renderHeaderFilenameSuffix?.({} as never)}
-                </div>
-                <div data-pierre-header-metadata="true">
-                    {props.renderHeaderMetadata?.({} as never)}
-                </div>
+            <div
+                data-pierre-code-view="true"
+                ref={(node) => {
+                    props.containerRef?.(node);
+                    if (typeof ref === "function") {
+                        ref(node);
+                    } else if (ref) {
+                        ref.current = node;
+                    }
+                }}
+            >
+                {props.items.map((item) => (
+                    <div data-pierre-diff-body="true" key={item.id}>
+                        <div data-pierre-header-prefix="true">
+                            {props.renderHeaderPrefix?.(item)}
+                        </div>
+                        <div data-pierre-header-suffix="true">
+                            {props.renderHeaderFilenameSuffix?.(item)}
+                        </div>
+                        <div data-pierre-header-metadata="true">
+                            {props.renderHeaderMetadata?.(item)}
+                        </div>
+                    </div>
+                ))}
             </div>
         );
-    },
-    VirtualizerContext: createContext(undefined),
+    }),
 }));
 
 import { GitDiffsView } from "./GitDiffsView";
@@ -52,7 +68,9 @@ import { GitDiffsView } from "./GitDiffsView";
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
 
-function renderDiff(file: (typeof GIT_DIFF_FIXTURES)[keyof typeof GIT_DIFF_FIXTURES]) {
+function renderDiff(
+    file: (typeof GIT_DIFF_FIXTURES)[keyof typeof GIT_DIFF_FIXTURES],
+) {
     const container = document.createElement("div");
     const root = createRoot(container);
 
@@ -63,30 +81,21 @@ function renderDiff(file: (typeof GIT_DIFF_FIXTURES)[keyof typeof GIT_DIFF_FIXTU
     return { container, root };
 }
 
-describe("GitDiffsView Pierre integration", () => {
+describe("GitDiffsView Pierre CodeView integration", () => {
     beforeEach(() => {
-        patchDiffCalls.length = 0;
+        codeViewCalls.length = 0;
     });
 
-    it("moves Comando actions into Pierre's native header slots", () => {
+    it("moves Comando actions into CodeView's virtual header slots", () => {
         const onOpen = vi.fn();
         const { container, root } = renderDiff({
             ...GIT_DIFF_FIXTURES.update,
-            actions: [
-                {
-                    id: "open",
-                    label: "Open",
-                    onClick: onOpen,
-                },
-            ],
+            actions: [{ id: "open", label: "Open", onClick: onOpen }],
         });
 
         expect(container.querySelectorAll("[data-pierre-diff-body]")).toHaveLength(1);
         expect(container.querySelectorAll("section")).toHaveLength(0);
-        expect(container.querySelectorAll('[title="modified"]')).toHaveLength(0);
-        expect(patchDiffCalls).toHaveLength(1);
-        expect(patchDiffCalls[0]?.options.disableFileHeader).toBe(false);
-        expect(patchDiffCalls[0]?.options.stickyHeader).toBe(true);
+        expect(codeViewCalls).toHaveLength(1);
         expect(
             container.querySelector("[data-pierre-header-metadata]")?.textContent,
         ).toContain("Open");
@@ -111,30 +120,32 @@ describe("GitDiffsView Pierre integration", () => {
         ["long line", GIT_DIFF_FIXTURES.longLine],
         ["partial GitHub patch", GIT_DIFF_FIXTURES.partialGitHub],
     ] as const)(
-        "passes a partial %s patch to Pierre through the public contract",
+        "builds a virtual CodeView item for a partial %s patch",
         (_label, file) => {
             const { root } = renderDiff(file);
-            const call = patchDiffCalls[0];
+            const call = codeViewCalls[0];
+            const items = call?.items as
+                | readonly { readonly fileDiff: { readonly hunks: readonly unknown[] } }[]
+                | undefined;
+            const options = call?.options as Record<string, unknown> | undefined;
 
-            expect(patchDiffCalls).toHaveLength(1);
-            expect(call?.options).toMatchObject({
+            expect(codeViewCalls).toHaveLength(1);
+            expect(items).toHaveLength(1);
+            expect(items?.[0]?.fileDiff.hunks.length).toBeGreaterThan(0);
+            expect(options).toMatchObject({
                 diffStyle: "unified",
                 disableErrorHandling: true,
                 disableFileHeader: false,
                 overflow: "wrap",
-                stickyHeader: true,
+                stickyHeaders: true,
             });
-            expect(call?.metrics.lineHeight).toBeCloseTo(20.15);
-            expect(call?.patch).toContain("@@ -");
-            expect(call?.options.unsafeCSS).toContain(
-                '[data-diffs-header="default"]',
-            );
+            expect(options?.unsafeCSS).toContain('[data-diffs-header="default"]');
 
             act(() => root.unmount());
         },
     );
 
-    it("keeps the collapse control in Pierre's header", () => {
+    it("keeps the collapse control in CodeView's header", () => {
         const onToggleFileCollapse = vi.fn();
         const container = document.createElement("div");
         const root = createRoot(container);
@@ -164,13 +175,11 @@ describe("GitDiffsView Pierre integration", () => {
         act(() => root.unmount());
     });
 
-    it.each([
-        ["binary", GIT_DIFF_FIXTURES.binary, "This file is binary"],
-    ] as const)("keeps the legacy renderer for a %s", (_label, file, text) => {
-        const { container, root } = renderDiff(file);
+    it("keeps a mixed binary stack on the legacy renderer", () => {
+        const { container, root } = renderDiff(GIT_DIFF_FIXTURES.binary);
 
-        expect(patchDiffCalls).toHaveLength(0);
-        expect(container.textContent).toContain(text);
+        expect(codeViewCalls).toHaveLength(0);
+        expect(container.textContent).toContain("This file is binary");
 
         act(() => root.unmount());
     });

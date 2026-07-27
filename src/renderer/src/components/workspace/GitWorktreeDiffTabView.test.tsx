@@ -207,13 +207,10 @@ describe("GitWorktreeDiffTabView", () => {
         resetStoreState();
     });
 
-    it("keeps the persisted worktree scroll container as the diff scroll owner", () => {
+    it("reserves the worktree body for the diff-owned scroller", () => {
         const markup = renderWorktreeMarkup();
 
-        expect(markup).toContain(
-            'class="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-3"',
-        );
-        expect(markup).toContain('class="min-h-0 flex-1 px-2 py-2"');
+        expect(markup).toContain('<main class="flex min-h-0 flex-1 flex-col">');
         expect(markup).toContain("worktree-file.ts");
     });
 

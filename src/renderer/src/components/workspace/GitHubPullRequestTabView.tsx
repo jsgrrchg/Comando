@@ -530,9 +530,10 @@ export function GitHubPullRequestTabView({
                     surface: "github_pull_request_changes",
                     worktreeId: worktreeId ?? null,
                 }}
+                scrollable={false}
             >
-                {({ scrollContainerRef }) => (
-                    <div className="github-document flex min-h-full flex-col">
+                {({ onScrollTop, scrollRef }) => (
+                    <div className="github-document flex min-h-0 flex-1 flex-col">
                         <GitHubAuthNotice authStatus={authStatus} />
                         {isLoadingChanges ? <div className="py-6 text-[12px] text-text-secondary">Loading pull request changes...</div> : null}
                         {changesError ? <div className="space-y-3 py-3"><GitHubErrorState>{changesError}</GitHubErrorState><IdeActionButton onClick={() => void ensurePullRequestDiff(repo, pullRequestNumber, { force: true })}>Retry</IdeActionButton></div> : null}
@@ -553,7 +554,8 @@ export function GitHubPullRequestTabView({
                                     deletions={pullRequestDiff.deletions}
                                     files={pullRequestDiff.files}
                                     key={`${pullRequestDiff.baseSha}:${pullRequestDiff.headSha}`}
-                                    scrollContainerRef={scrollContainerRef}
+                                    onScrollTop={onScrollTop}
+                                    scrollRef={scrollRef}
                                     totalFileCount={pullRequestDiff.totalFileCount}
                                 />
                             </>

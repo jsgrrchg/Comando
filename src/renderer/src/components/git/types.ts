@@ -1,6 +1,7 @@
 import type {
     KeyboardEvent as ReactKeyboardEvent,
     MouseEvent as ReactMouseEvent,
+    RefCallback,
     RefObject,
     UIEventHandler,
     ReactNode,
@@ -114,6 +115,7 @@ export interface GitDiffFile {
     readonly previousPath: string | null;
     readonly statusLabel: string | null;
     readonly summary?: string | null;
+    readonly sectionLabel?: string | null;
     readonly isText: boolean;
     readonly reversible: boolean;
     readonly hunks: readonly GitDiffHunk[];
@@ -229,9 +231,11 @@ export interface GitDiffsViewProps {
     readonly files: readonly GitDiffFile[];
     readonly lineWrapping?: boolean;
     readonly onScroll?: UIEventHandler<HTMLDivElement>;
+    readonly onScrollTop?: (scrollTop: number) => void;
     readonly onSelectFile?: (file: GitDiffFile) => void;
     readonly onToggleFileCollapse?: (fileId: string) => void;
     readonly scrollContainerRef?: RefObject<HTMLElement | null>;
+    readonly scrollRef?: RefCallback<HTMLDivElement>;
     readonly showFileSelector?: boolean;
     readonly surfaceVariant?: "flat" | "panel";
 }

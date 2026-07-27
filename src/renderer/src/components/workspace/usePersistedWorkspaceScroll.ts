@@ -141,6 +141,7 @@ export function usePersistedWorkspaceScroll<TElement extends HTMLElement>(
     scope: WorkspaceScrollScope,
 ): {
     readonly handleScroll: UIEventHandler<TElement>;
+    readonly handleScrollTop: (scrollTop: number) => void;
     readonly scrollRef: RefCallback<TElement>;
     readonly storageKey: string;
 } {
@@ -218,13 +219,13 @@ export function usePersistedWorkspaceScroll<TElement extends HTMLElement>(
         [clearScheduledRestore, flushScheduledScrollPersist],
     );
 
-    const handleScroll = useCallback<UIEventHandler<TElement>>(
-        (event) => {
-            if (isRestoringRef.current) {
+    const handleScrollTop = useCallback(
+        (scrollTop: number) => {
+            if (isRestoringRef.current || !Number.isFinite(scrollTop)) {
                 return;
             }
 
-            pendingScrollTopRef.current = event.currentTarget.scrollTop;
+            pendingScrollTopRef.current = scrollTop;
 
             if (persistTimerRef.current !== null) {
                 return;
@@ -244,6 +245,10 @@ export function usePersistedWorkspaceScroll<TElement extends HTMLElement>(
             }, SCROLL_PERSIST_DELAY_MS);
         },
         [persistScrollTop],
+    );
+    const handleScroll = useCallback<UIEventHandler<TElement>>(
+        (event) => handleScrollTop(event.currentTarget.scrollTop),
+        [handleScrollTop],
     );
 
     useBrowserLayoutEffect(() => {
@@ -367,6 +372,7 @@ export function usePersistedWorkspaceScroll<TElement extends HTMLElement>(
 
     return {
         handleScroll,
+        handleScrollTop,
         scrollRef,
         storageKey,
     };

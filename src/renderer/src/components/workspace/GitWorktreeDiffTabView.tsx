@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import {
@@ -43,13 +43,12 @@ export function GitWorktreeDiffTabView({
     const mode = useGitStore(
         (state) => state.activeDiffModesByContext[contextKey] ?? "worktree",
     );
-    const { handleScroll: handleDiffScroll, scrollRef: diffScrollRef } =
+    const { handleScrollTop: handleDiffScrollTop, scrollRef: diffScrollRef } =
         usePersistedWorkspaceScroll<HTMLDivElement>({
             projectId,
             surface: tab.kind,
             worktreeId,
         });
-    const diffScrollContainerRef = useRef<HTMLDivElement | null>(null);
     const editorSettings = useResolvedEditorSettings();
     const project = useProjectsStore((state) =>
         state.projects.find((candidate) => candidate.id === projectId),
@@ -208,6 +207,17 @@ export function GitWorktreeDiffTabView({
         () => visibleSections.flatMap((section) => section.files),
         [visibleSections],
     );
+    const codeViewFiles = useMemo(
+        () =>
+            visibleSections.flatMap((section) =>
+                section.files.map((file, index) =>
+                    index === 0 && visibleSections.length > 1
+                        ? { ...file, sectionLabel: section.title }
+                        : file,
+                ),
+            ),
+        [visibleSections],
+    );
     const changedFileCount = allFiles.length;
     const totals = useMemo(
         () =>
@@ -355,14 +365,6 @@ export function GitWorktreeDiffTabView({
             worktreeId,
         ],
     );
-    const setDiffScrollContainer = useCallback(
-        (node: HTMLDivElement | null) => {
-            diffScrollContainerRef.current = node;
-            diffScrollRef(node);
-        },
-        [diffScrollRef],
-    );
-
     useEffect(() => {
         if (!snapshot) {
             void refreshProject(projectId, worktreeId);
@@ -542,11 +544,7 @@ export function GitWorktreeDiffTabView({
                 </div>
             </header>
 
-            <main
-                className="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-3 py-3"
-                onScroll={handleDiffScroll}
-                ref={setDiffScrollContainer}
-            >
+            <main className="flex min-h-0 flex-1 flex-col">
                 {!result && !isLoading && error ? (
                     <div className="flex h-full items-center justify-center px-6">
                         <GitEmptyState>{error}</GitEmptyState>
@@ -567,65 +565,23 @@ export function GitWorktreeDiffTabView({
                     </div>
                 ) : (
                     <PierreDiffWorkerPoolProvider>
-                        <div className="space-y-5">
-                            {visibleSections.map((section) => (
-                                <section key={section.id}>
-                                    {/* Scope header only adds value when several
-                                        sections coexist; with a single section the
-                                        totals are already shown in the tab header. */}
-                                    {visibleSections.length > 1 ? (
-                                        <div className="mb-2 flex items-center gap-2 px-2">
-                                            <h3 className="text-[12px] font-semibold text-text-primary">
-                                                {section.title}
-                                            </h3>
-                                            <span className="text-[11px] text-text-secondary">
-                                                {section.files.length}{" "}
-                                                {section.files.length === 1
-                                                    ? "file"
-                                                    : "files"}
-                                            </span>
-                                            <span className="font-mono text-[10px]">
-                                                {section.additions > 0 ? (
-                                                    <span
-                                                        style={{
-                                                            color: "var(--diff-add)",
-                                                        }}
-                                                    >
-                                                        +{section.additions}
-                                                    </span>
-                                                ) : null}{" "}
-                                                {section.deletions > 0 ? (
-                                                    <span
-                                                        style={{
-                                                            color: "var(--diff-remove)",
-                                                        }}
-                                                    >
-                                                        -{section.deletions}
-                                                    </span>
-                                                ) : null}
-                                            </span>
-                                        </div>
-                                    ) : null}
-                                    <GitDiffsView
-                                        activeFileId={activeFileId}
-                                        codeFontFamily={codeFontFamily}
-                                        codeFontSize={codeFontSize}
-                                        codeLineHeight={codeLineHeight}
-                                        collapsedFileIds={collapsedFileIds}
-                                        displayMode="stack"
-                                        files={section.files}
-                                        lineWrapping={false}
-                                        onSelectFile={handleSelectFile}
-                                        onToggleFileCollapse={
-                                            handleToggleFileCollapse
-                                        }
-                                        scrollContainerRef={diffScrollContainerRef}
-                                        showFileSelector={false}
-                                        surfaceVariant="flat"
-                                    />
-                                </section>
-                            ))}
-                        </div>
+                        <GitDiffsView
+                            activeFileId={activeFileId}
+                            className="px-3 py-3"
+                            codeFontFamily={codeFontFamily}
+                            codeFontSize={codeFontSize}
+                            codeLineHeight={codeLineHeight}
+                            collapsedFileIds={collapsedFileIds}
+                            displayMode="stack"
+                            files={codeViewFiles}
+                            lineWrapping={false}
+                            onScrollTop={handleDiffScrollTop}
+                            onSelectFile={handleSelectFile}
+                            onToggleFileCollapse={handleToggleFileCollapse}
+                            scrollRef={diffScrollRef}
+                            showFileSelector={false}
+                            surfaceVariant="flat"
+                        />
                     </PierreDiffWorkerPoolProvider>
                 )}
             </main>

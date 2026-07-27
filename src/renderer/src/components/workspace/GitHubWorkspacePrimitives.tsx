@@ -38,6 +38,7 @@ export type GitHubAuthCapability = "issues" | "pull_requests";
 export type GitHubMergeableState = "computing" | "conflicts" | "mergeable";
 
 export interface GitHubTabShellRenderContext {
+    readonly onScrollTop: (scrollTop: number) => void;
     readonly scrollContainerRef: RefObject<HTMLDivElement | null>;
     readonly scrollRef: RefCallback<HTMLDivElement>;
 }
@@ -49,13 +50,19 @@ type GitHubTabShellChildren =
 export function GitHubTabShell({
     children,
     header,
+    scrollable = true,
     scrollScope,
 }: {
     readonly children: GitHubTabShellChildren;
     readonly header: ReactNode;
+    readonly scrollable?: boolean;
     readonly scrollScope: WorkspaceScrollScope;
 }) {
-    const { handleScroll, scrollRef: setScrollContainerElement } =
+    const {
+        handleScroll,
+        handleScrollTop,
+        scrollRef: setScrollContainerElement,
+    } =
         usePersistedWorkspaceScroll<HTMLDivElement>(scrollScope);
     const scrollContainerRef = useRef<HTMLDivElement | null>(null);
     const setSharedScrollContainerElement = useCallback(
@@ -67,10 +74,11 @@ export function GitHubTabShell({
     );
     const renderContext = useMemo<GitHubTabShellRenderContext>(
         () => ({
+            onScrollTop: handleScrollTop,
             scrollContainerRef,
             scrollRef: setSharedScrollContainerElement,
         }),
-        [setSharedScrollContainerElement],
+        [handleScrollTop, setSharedScrollContainerElement],
     );
     const content =
         typeof children === "function"
@@ -83,9 +91,13 @@ export function GitHubTabShell({
         <div className="flex h-full min-h-0 flex-col bg-editor text-text-primary">
             {header}
             <div
-                className="shell-scrollbar min-h-0 flex-1 overflow-y-auto"
-                onScroll={handleScroll}
-                ref={setSharedScrollContainerElement}
+                className={
+                    scrollable
+                        ? "shell-scrollbar min-h-0 flex-1 overflow-y-auto"
+                        : "min-h-0 flex-1"
+                }
+                onScroll={scrollable ? handleScroll : undefined}
+                ref={scrollable ? setSharedScrollContainerElement : undefined}
             >
                 {content}
             </div>
