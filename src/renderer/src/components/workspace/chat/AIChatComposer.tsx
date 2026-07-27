@@ -1737,11 +1737,18 @@ export function AIChatComposer({
                     {agentControls ? agentControls : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-1">
+                    {/*
+                      Square primary CTA (send / queue / stop). Matches the
+                      6px toolbar radius used across the app; solid fill uses
+                      theme tokens so light/dark accents and danger stay correct.
+                    */}
                     <button
                         aria-label={primaryActionLabel}
                         className={[
-                            "app-no-drag flex shrink-0 items-center justify-center rounded-full",
-                            canRunPrimaryAction ? "active:scale-90" : "",
+                            "app-no-drag flex shrink-0 items-center justify-center",
+                            canRunPrimaryAction
+                                ? "active:translate-y-px active:scale-[0.98]"
+                                : "",
                         ]
                             .filter(Boolean)
                             .join(" ")}
@@ -1757,32 +1764,37 @@ export function AIChatComposer({
                             if (canRunPrimaryAction) {
                                 e.currentTarget.style.filter =
                                     primaryAction === "stop"
-                                        ? "brightness(1.2)"
-                                        : "brightness(1.15)";
+                                        ? "brightness(1.12)"
+                                        : "brightness(1.1)";
                             }
                         }}
                         onMouseLeave={(e) => {
-                            e.currentTarget.style.filter = "brightness(1)";
+                            e.currentTarget.style.filter = "none";
                         }}
                         style={{
                             backgroundColor: canRunPrimaryAction
                                 ? primaryAction === "stop"
-                                    ? "#b91c1c"
+                                    ? "var(--diff-remove)"
                                     : "var(--color-accent)"
-                                : "transparent",
+                                : "color-mix(in srgb, var(--color-text-primary) 4%, transparent)",
                             border: "none",
-                            borderRadius: "50%",
+                            borderRadius: 6,
+                            boxShadow: canRunPrimaryAction
+                                ? primaryAction === "stop"
+                                    ? "inset 0 0 0 1px color-mix(in srgb, var(--diff-remove) 55%, transparent)"
+                                    : "inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 55%, transparent)"
+                                : "inset 0 0 0 1px var(--color-border)",
                             color: canRunPrimaryAction
                                 ? "#fff"
                                 : "var(--color-text-secondary)",
                             cursor: canRunPrimaryAction
                                 ? "pointer"
                                 : "default",
-                            filter: "brightness(1)",
+                            filter: "none",
                             height: 28,
-                            opacity: canRunPrimaryAction ? 1 : 0.4,
+                            opacity: canRunPrimaryAction ? 1 : 0.45,
                             transition:
-                                "background-color 100ms ease, filter 100ms ease, opacity 100ms ease, transform 75ms ease",
+                                "background-color 120ms ease, box-shadow 120ms ease, filter 100ms ease, opacity 100ms ease, transform 75ms ease",
                             width: 28,
                         }}
                         title={primaryActionLabel}
