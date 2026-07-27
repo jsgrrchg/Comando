@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 
 import { getGitContextKey } from "@renderer/app/git/context-key";
 import {
@@ -6,14 +6,9 @@ import {
     buildGitWorktreeDiffSections,
     parseGitDiffFileId,
 } from "@renderer/app/git/presentation";
-import {
-    serializeBranchDiffToPatch,
-    serializeWorktreeDiffToPatch,
-} from "@renderer/app/git/worktree-diff-patch";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { useGitStore } from "@renderer/app/store/git-store";
-import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
 import type { RuntimeWorkspaceGitWorktreeDiffTab } from "@renderer/app/workspace/tree";
 import type {
@@ -29,12 +24,75 @@ import {
 } from "@renderer/components/git";
 import { PierreDiffWorkerPoolProvider } from "@renderer/components/git/PierreDiffWorkerPoolProvider";
 import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
-import { IdeActionButton } from "./ide-bar";
+import { IdeIconButton } from "./ide-bar";
 
 const EMPTY_COLLAPSED_FILE_IDS: readonly string[] = [];
 
 function getContextKey(projectId: string, worktreeId: string | null): string {
     return getGitContextKey(projectId, worktreeId);
+}
+
+function DiffHeaderIcon({
+    children,
+    size = 13,
+}: {
+    readonly children: ReactNode;
+    readonly size?: number;
+}) {
+    return (
+        <svg
+            aria-hidden="true"
+            fill="none"
+            height={size}
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth="1.75"
+            viewBox="0 0 24 24"
+            width={size}
+        >
+            {children}
+        </svg>
+    );
+}
+
+function RefreshDiffIcon() {
+    return (
+        <DiffHeaderIcon>
+            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+            <path d="M21 3v6h-6" />
+        </DiffHeaderIcon>
+    );
+}
+
+function DiscardAllIcon() {
+    return (
+        <DiffHeaderIcon>
+            <path d="M3 6h18" />
+            <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+            <line x1="10" x2="10" y1="11" y2="17" />
+            <line x1="14" x2="14" y1="11" y2="17" />
+        </DiffHeaderIcon>
+    );
+}
+
+function ExpandAllIcon() {
+    return (
+        <DiffHeaderIcon>
+            <path d="M7 15l5 5 5-5" />
+            <path d="M7 9l5-5 5 5" />
+        </DiffHeaderIcon>
+    );
+}
+
+function CollapseAllIcon() {
+    return (
+        <DiffHeaderIcon>
+            <path d="M7 4l5 5 5-5" />
+            <path d="M7 20l5-5 5 5" />
+        </DiffHeaderIcon>
+    );
 }
 
 export function GitWorktreeDiffTabView({
@@ -56,9 +114,6 @@ export function GitWorktreeDiffTabView({
         });
     const editorSettings = useResolvedEditorSettings();
     const [diffStyle, setDiffStyle] = usePersistedGitDiffStyle();
-    const project = useProjectsStore((state) =>
-        state.projects.find((candidate) => candidate.id === projectId),
-    );
     const snapshot = useGitStore(
         (state) => state.snapshots[contextKey] ?? null,
     );
@@ -271,46 +326,7 @@ export function GitWorktreeDiffTabView({
         worktreeId,
     ]);
 
-    const handleDownloadAll = useCallback(() => {
-        const patch = isBranchMode
-            ? serializeBranchDiffToPatch(branchResult)
-            : serializeWorktreeDiffToPatch(worktreeResult);
-        if (!patch) {
-            return;
-        }
-
-        const safeName = (project?.name ?? "repository").replace(
-            /[^\w.-]+/g,
-            "-",
-        );
-        const blob = new Blob([patch], { type: "text/x-patch" });
-        const url = URL.createObjectURL(blob);
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = `${safeName}-${isBranchMode ? "branch-changes" : "uncommitted"}.patch`;
-        document.body.appendChild(anchor);
-        anchor.click();
-        anchor.remove();
-        URL.revokeObjectURL(url);
-    }, [branchResult, isBranchMode, project?.name, worktreeResult]);
-
-    const handleStageAll = useCallback(() => {
-        const paths = collectActionPaths(worktreeResult, [
-            "unstaged",
-            "untracked",
-        ]);
-        if (paths.length > 0) {
-            void stagePaths(projectId, paths, worktreeId);
-        }
-    }, [projectId, stagePaths, worktreeId, worktreeResult]);
-
-    const handleUnstageAll = useCallback(() => {
-        const paths = collectActionPaths(worktreeResult, ["staged"]);
-        if (paths.length > 0) {
-            void unstagePaths(projectId, paths, worktreeId);
-        }
-    }, [projectId, unstagePaths, worktreeId, worktreeResult]);
-
+    // Bulk stage/unstage live in the left Git sidebar; keep only destructive discard here.
     const handleDiscardAll = useCallback(() => {
         const paths = collectActionPaths(worktreeResult, [
             "staged",
@@ -473,59 +489,37 @@ export function GitWorktreeDiffTabView({
                                 </button>
                             ))}
                         </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-end gap-1">
                         <GitDiffStyleControl
                             onChange={setDiffStyle}
                             value={diffStyle}
                         />
-                    </div>
-
-                    <div className="flex flex-wrap items-center justify-end gap-2">
-                        <IdeActionButton onClick={handleRefresh} title="Refresh diff">
-                            {isLoading ? "refreshing" : "refresh"}
-                        </IdeActionButton>
-                        <IdeActionButton
-                            disabled={changedFileCount === 0}
-                            onClick={handleDownloadAll}
-                            title="Download all changes as a .patch file"
+                        <IdeIconButton
+                            aria-label={isLoading ? "Refreshing diff" : "Refresh diff"}
+                            onClick={handleRefresh}
+                            title={isLoading ? "Refreshing…" : "Refresh"}
                         >
-                            download all
-                        </IdeActionButton>
+                            <RefreshDiffIcon />
+                        </IdeIconButton>
                         {!isBranchMode ? (
-                            <>
-                                <IdeActionButton
-                                    disabled={
-                                        collectActionPaths(worktreeResult, [
-                                            "unstaged",
-                                            "untracked",
-                                        ]).length === 0
-                                    }
-                                    onClick={handleStageAll}
-                                    title="Stage all visible changes"
-                                >
-                                    stage all
-                                </IdeActionButton>
-                                <IdeActionButton
-                                    disabled={
-                                        collectActionPaths(worktreeResult, [
-                                            "staged",
-                                        ]).length === 0
-                                    }
-                                    onClick={handleUnstageAll}
-                                    title="Unstage all staged changes"
-                                >
-                                    unstage all
-                                </IdeActionButton>
-                                <IdeActionButton
-                                    disabled={changedFileCount === 0}
-                                    onClick={handleDiscardAll}
-                                    title="Discard all changes (cannot be undone)"
-                                >
-                                    discard all
-                                </IdeActionButton>
-                            </>
+                            <IdeIconButton
+                                aria-label="Discard all changes"
+                                disabled={changedFileCount === 0}
+                                onClick={handleDiscardAll}
+                                title="Discard all changes (cannot be undone)"
+                            >
+                                <DiscardAllIcon />
+                            </IdeIconButton>
                         ) : null}
                         {allFileIds.length > 0 ? (
-                            <IdeActionButton
+                            <IdeIconButton
+                                aria-label={
+                                    allCollapsed
+                                        ? "Expand all files"
+                                        : "Collapse all files"
+                                }
                                 onClick={handleToggleAll}
                                 title={
                                     allCollapsed
@@ -533,8 +527,12 @@ export function GitWorktreeDiffTabView({
                                         : "Collapse all files"
                                 }
                             >
-                                {allCollapsed ? "expand all" : "collapse all"}
-                            </IdeActionButton>
+                                {allCollapsed ? (
+                                    <ExpandAllIcon />
+                                ) : (
+                                    <CollapseAllIcon />
+                                )}
+                            </IdeIconButton>
                         ) : null}
                     </div>
                 </div>

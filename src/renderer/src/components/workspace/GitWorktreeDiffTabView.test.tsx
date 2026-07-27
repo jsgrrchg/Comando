@@ -215,7 +215,11 @@ describe("GitWorktreeDiffTabView", () => {
         expect(markup).toContain('<main class="flex min-h-0 flex-1 flex-col">');
         expect(markup).toContain("worktree-file.ts");
         expect(markup).toContain('aria-label="Diff layout"');
-        expect(markup).toContain("Side by side");
+        expect(markup).toContain('aria-label="Unified layout"');
+        expect(markup).toContain('aria-label="Side by side layout"');
+        // Icon-only control: no text labels inside the layout buttons.
+        expect(markup).not.toContain(">Unified</button>");
+        expect(markup).not.toContain(">Side by side</button>");
     });
 
     it("restores the selected branch mode after the view remounts", () => {
@@ -226,7 +230,22 @@ describe("GitWorktreeDiffTabView", () => {
         const markup = renderWorktreeMarkup();
 
         expect(markup).toContain("branch-file.ts");
+        expect(markup).not.toContain('aria-label="Discard all changes"');
         expect(markup).not.toContain("stage all");
+        expect(markup).not.toContain("download all");
+    });
+
+    it("keeps a minimal icon toolbar without bulk stage or download actions", () => {
+        const markup = renderWorktreeMarkup();
+
+        expect(markup).toContain('aria-label="Refresh diff"');
+        expect(markup).toContain('aria-label="Discard all changes"');
+        expect(markup).toContain('aria-label="Collapse all files"');
+        expect(markup).not.toContain("stage all");
+        expect(markup).not.toContain("unstage all");
+        expect(markup).not.toContain("download all");
+        expect(markup).not.toContain(">refresh<");
+        expect(markup).not.toContain(">discard all<");
     });
 
     it("switches to read-only branch changes and back", () => {
@@ -268,11 +287,15 @@ describe("GitWorktreeDiffTabView", () => {
         expect(
             mockWorkspaceStoreState.current.updateGitWorktreeDiffTabTitle,
         ).toHaveBeenLastCalledWith(TAB.id, "Branch Changes");
+        expect(
+            container.querySelector('[aria-label="Discard all changes"]'),
+        ).toBeNull();
+        expect(
+            container.querySelector('[aria-label="Refresh diff"]'),
+        ).toBeTruthy();
         expect(container.textContent).not.toContain("stage all");
         expect(container.textContent).not.toContain("unstage all");
-        expect(container.textContent).not.toContain("discard all");
-        expect(container.textContent).toContain("refresh");
-        expect(container.textContent).toContain("download all");
+        expect(container.textContent).not.toContain("download all");
 
         const worktreeTab = Array.from(
             container.querySelectorAll("button"),
@@ -292,7 +315,9 @@ describe("GitWorktreeDiffTabView", () => {
             root.render(createElement(GitWorktreeDiffTabView, { tab: TAB }));
         });
         expect(container.textContent).toContain("worktree-file.ts");
-        expect(container.textContent).toContain("stage all");
+        expect(
+            container.querySelector('[aria-label="Discard all changes"]'),
+        ).toBeTruthy();
         expect(
             mockWorkspaceStoreState.current.updateGitWorktreeDiffTabTitle,
         ).toHaveBeenLastCalledWith(TAB.id, "Uncommitted Changes");
