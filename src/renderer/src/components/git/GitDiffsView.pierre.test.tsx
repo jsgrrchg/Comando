@@ -89,10 +89,11 @@ describe("GitDiffsView Pierre CodeView integration", () => {
 
     it("moves Comando actions into CodeView's virtual header slots", () => {
         const onOpen = vi.fn();
-        const { container, root } = renderDiff({
+        const file = {
             ...GIT_DIFF_FIXTURES.update,
             actions: [{ id: "open", label: "Open", onClick: onOpen }],
-        });
+        };
+        const { container, root } = renderDiff(file);
 
         expect(container.querySelectorAll("[data-pierre-diff-body]")).toHaveLength(1);
         expect(container.querySelectorAll("section")).toHaveLength(0);
@@ -100,6 +101,9 @@ describe("GitDiffsView Pierre CodeView integration", () => {
         expect(
             container.querySelector("[data-pierre-header-metadata]")?.textContent,
         ).toContain("Open");
+        expect(
+            container.querySelector("[data-pierre-header-metadata]")?.textContent,
+        ).not.toContain(file.summary);
 
         const openButton = Array.from(container.querySelectorAll("button")).find(
             (button) => button.textContent === "Open",

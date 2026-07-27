@@ -234,11 +234,7 @@ export function PierreGitCodeView({
 
                 return (
                     <div className="flex shrink-0 items-center gap-2">
-                        {file.summary ? (
-                            <p className="flex items-center gap-1.5 text-[12px]">
-                                <DiffSummaryColored summary={file.summary} />
-                            </p>
-                        ) : null}
+                        {/* Pierre already renders additions and deletions in its native header. */}
                         <DiffFileActionGroup actions={file.actions} />
                     </div>
                 );
@@ -341,31 +337,5 @@ function CollapseChevron({ collapsed }: { readonly collapsed: boolean }) {
                 strokeWidth="1.4"
             />
         </svg>
-    );
-}
-
-function DiffSummaryColored({ summary }: { readonly summary: string }) {
-    return (
-        <>
-            {summary.split(/\s+/).map((part, index) => (
-                <span
-                    className={
-                        part.startsWith("+") || part.startsWith("-")
-                            ? undefined
-                            : "text-text-secondary"
-                    }
-                    key={`${part}:${index}`}
-                    style={
-                        part.startsWith("+")
-                            ? { color: "var(--diff-add)" }
-                            : part.startsWith("-")
-                              ? { color: "var(--diff-remove)" }
-                              : undefined
-                    }
-                >
-                    {part}
-                </span>
-            ))}
-        </>
     );
 }
