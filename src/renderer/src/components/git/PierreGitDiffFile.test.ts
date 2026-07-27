@@ -5,95 +5,81 @@ import {
     canRenderGitDiffWithPierre,
     getPierreGitDiffInput,
 } from "./PierreGitDiffFile";
-
-function createDiffFile(overrides: Partial<GitDiffFile> = {}): GitDiffFile {
-    return {
-        hunks: [
-            {
-                header: "@@ -1,1 +1,1 @@",
-                id: "hunk-1",
-                lines: [],
-                newCount: 1,
-                newStart: 1,
-                oldCount: 1,
-                oldStart: 1,
-            },
-        ],
-        id: "src/example.ts",
-        isText: true,
-        kind: "update",
-        newText: "const after = true;\n",
-        oldText: "const before = true;\n",
-        path: "src/example.ts",
-        previousPath: null,
-        reversible: true,
-        statusLabel: "modified",
-        ...overrides,
-    };
-}
+import { GIT_DIFF_FIXTURES } from "./GitDiffFixtures";
 
 describe("Pierre Git diff adapter", () => {
-    it("uses full content for an update", () => {
-        const file = createDiffFile();
+    it("uses the native complete update fixture without changing its content", () => {
+        const file = GIT_DIFF_FIXTURES.update;
         const input = getPierreGitDiffInput(file);
 
         expect(canRenderGitDiffWithPierre(file)).toBe(true);
         expect(input).toEqual({
             newFile: {
-                cacheKey: "src/example.ts:new",
-                contents: "const after = true;\n",
-                name: "src/example.ts",
+                cacheKey: `${file.id}:new`,
+                contents: file.newText,
+                name: file.path,
             },
             oldFile: {
-                cacheKey: "src/example.ts:old",
-                contents: "const before = true;\n",
-                name: "src/example.ts",
+                cacheKey: `${file.id}:old`,
+                contents: file.oldText,
+                name: file.path,
             },
         });
     });
 
+    it.each([
+        ["update", GIT_DIFF_FIXTURES.update],
+        ["create", GIT_DIFF_FIXTURES.create],
+        ["delete", GIT_DIFF_FIXTURES.delete],
+        ["rename", GIT_DIFF_FIXTURES.rename],
+        ["missing final newline", GIT_DIFF_FIXTURES.noFinalNewline],
+        ["long line", GIT_DIFF_FIXTURES.longLine],
+    ] as const)("keeps complete %s content eligible", (_label, file) => {
+            expect(canRenderGitDiffWithPierre(file)).toBe(true);
+            expect(getPierreGitDiffInput(file)).not.toBeNull();
+    });
+
     it("accepts empty creates and deletes", () => {
-        const created = createDiffFile({
-            kind: "create",
+        const created: GitDiffFile = {
+            ...GIT_DIFF_FIXTURES.create,
             newText: "",
-            oldText: null,
-        });
-        const deleted = createDiffFile({
-            kind: "delete",
-            newText: null,
+        };
+        const deleted: GitDiffFile = {
+            ...GIT_DIFF_FIXTURES.delete,
             oldText: "",
-        });
+        };
 
         expect(getPierreGitDiffInput(created)).toMatchObject({
-            newFile: { contents: "", name: "src/example.ts" },
+            newFile: { contents: "", name: created.path },
             oldFile: null,
         });
         expect(getPierreGitDiffInput(deleted)).toMatchObject({
             newFile: null,
-            oldFile: { contents: "", name: "src/example.ts" },
+            oldFile: { contents: "", name: deleted.path },
         });
     });
 
     it("uses the previous path for the old side of a rename", () => {
-        const input = getPierreGitDiffInput(
-            createDiffFile({
-                kind: "move",
-                path: "src/new-name.ts",
-                previousPath: "src/old-name.ts",
-            }),
-        );
+        const input = getPierreGitDiffInput(GIT_DIFF_FIXTURES.rename);
 
         expect(input?.oldFile?.name).toBe("src/old-name.ts");
         expect(input?.newFile?.name).toBe("src/new-name.ts");
     });
 
+    it("preserves a missing final newline and a long line", () => {
+        const noFinalNewline = getPierreGitDiffInput(
+            GIT_DIFF_FIXTURES.noFinalNewline,
+        );
+        const longLine = getPierreGitDiffInput(GIT_DIFF_FIXTURES.longLine);
+
+        expect(noFinalNewline?.oldFile?.contents).not.toMatch(/\n$/);
+        expect(noFinalNewline?.newFile?.contents).not.toMatch(/\n$/);
+        expect(longLine?.newFile?.contents.length).toBeGreaterThan(2_000);
+    });
+
     it.each([
-        ["binary", createDiffFile({ isText: false })],
-        ["partial patch", createDiffFile({ oldText: null })],
-        [
-            "unavailable content",
-            createDiffFile({ newText: null, oldText: null }),
-        ],
+        ["binary", GIT_DIFF_FIXTURES.binary],
+        ["partial GitHub patch", GIT_DIFF_FIXTURES.partialGitHub],
     ])("keeps the legacy renderer for %s files", (_label, file) => {
         expect(canRenderGitDiffWithPierre(file)).toBe(false);
         expect(getPierreGitDiffInput(file)).toBeNull();
