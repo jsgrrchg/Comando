@@ -219,6 +219,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
         projectId: string,
         worktreeId?: string | null,
     ) => Promise<void>;
+    updateGitWorktreeDiffTabTitle: (
+        tabId: string,
+        title: string,
+    ) => Promise<void>;
     openGitHubIssuesTab: (input: {
         readonly projectId: string | null;
         readonly ref: GitHubRepositoryRef;
@@ -1185,6 +1189,35 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ),
         }));
         await persistWorkspaceState(get);
+    },
+
+    updateGitWorktreeDiffTabTitle: async (tabId, title) => {
+        let didChange = false;
+        set((state) => {
+            const tab = state.tabsById[tabId];
+            if (
+                !tab ||
+                tab.kind !== "git_worktree_diff" ||
+                tab.title === title
+            ) {
+                return state;
+            }
+
+            didChange = true;
+            return {
+                ...state,
+                tabsById: {
+                    ...state.tabsById,
+                    [tabId]: {
+                        ...tab,
+                        title,
+                    },
+                },
+            };
+        });
+        if (didChange) {
+            await persistWorkspaceState(get);
+        }
     },
 
     openGitHubIssuesTab: async (input) => {

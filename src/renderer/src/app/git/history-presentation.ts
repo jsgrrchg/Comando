@@ -467,6 +467,7 @@ function convertRevisionFileToDiffFile(file: GitRevisionFileDiff): GitDiffFile {
         kind: file.kind,
         newText: file.newText,
         oldText: file.oldText,
+        patch: file.patch ?? null,
         path: file.path,
         previousPath: file.previousPath,
         reversible: file.reversible,

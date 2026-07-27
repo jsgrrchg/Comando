@@ -114,7 +114,7 @@ function createLargeDiffFile(index: number): GitDiffFile {
     return createDiffFile({
         hunks: [
             {
-                header: "@@ -1,1 +1,1 @@",
+                header: "@@ -0,0 +1,1 @@",
                 id: `hunk-${index}`,
                 lines: [
                     {
@@ -128,7 +128,7 @@ function createLargeDiffFile(index: number): GitDiffFile {
                 newCount: 1,
                 newStart: 1,
                 oldCount: 0,
-                oldStart: 1,
+                oldStart: 0,
             },
         ],
         id: `src/large-file-${index}.ts`,
@@ -169,7 +169,7 @@ function createLargeLineDiffFile(
 }
 
 describe("GitDiffsView", () => {
-    it("renders diff lines with the shared highlighted renderer", () => {
+    it("delegates patch hunks to Pierre", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[createDiffFile()]}
@@ -178,16 +178,10 @@ describe("GitDiffsView", () => {
         );
 
         expect(markup).not.toContain('data-virtualized-diff-lines="true"');
-        expect(markup).toContain('data-diff-line="true"');
-        expect(markup).toContain('data-line-exact="true"');
-        expect(markup).toContain('data-line-type="context"');
-        expect(markup).toContain('data-line-type="remove"');
-        expect(markup).toContain('data-line-type="add"');
-        expect(markup).toContain("cm-static-code");
-        expect(markup).toContain("grid-template-columns:44px minmax(0, 1fr)");
-        expect(markup).not.toContain("grid-template-columns:56px 56px");
-        expect(markup).toContain("const before = true;");
-        expect(markup).toContain("const after = true;");
+        expect(markup).toContain("pierre-git-code-view");
+        expect(markup).not.toContain('data-diff-line="true"');
+        expect(markup).not.toContain("const before = true;");
+        expect(markup).not.toContain("const after = true;");
     });
 
     it("applies configured editor typography to diff code", () => {
@@ -226,7 +220,7 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("font-size:17px");
     });
 
-    it("sizes non-wrapping hunks to their scrollable content", () => {
+    it("delegates non-wrapping patch layout to Pierre", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[createDiffFile()]}
@@ -235,11 +229,11 @@ describe("GitDiffsView", () => {
             />,
         );
 
-        expect(markup).toContain('class="min-w-full w-max"');
-        expect(markup).toContain("grid-template-columns:44px max-content");
+        expect(markup).toContain("pierre-git-code-view");
+        expect(markup).not.toContain('data-diff-line="true"');
     });
 
-    it("virtualizes giant non-wrapping diff files by mounting visual blocks", () => {
+    it("delegates giant patch files to Pierre's virtualizer", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[createLargeLineDiffFile()]}
@@ -248,15 +242,31 @@ describe("GitDiffsView", () => {
             />,
         );
 
-        expect(markup).toContain('data-virtualized-diff-lines="true"');
-        expect(markup).toContain('data-diff-hunk-header="true"');
-        expect(markup).toContain('data-measured-virtual-list="true"');
-        expect(markup).toContain("1–0 → 1–1000");
-        expect(markup).toContain("giant-diff-line-1");
-        expect(markup).not.toContain("giant-diff-line-1000");
+        expect(markup).toContain("pierre-git-code-view");
+        expect(markup).not.toContain('data-virtualized-diff-lines="true"');
+        expect(markup).not.toContain("giant-diff-line-1");
     });
 
-    it("keeps horizontal sizing for virtualized non-wrapping diff lines", () => {
+    it("delegates complete large files to Pierre without legacy line virtualization", () => {
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                files={[
+                    createLargeLineDiffFile({
+                        newText: "const value = 'after';\n",
+                        oldText: "const value = 'before';\n",
+                    }),
+                ]}
+                lineWrapping={false}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).toContain("pierre-git-code-view");
+        expect(markup).not.toContain('data-virtualized-diff-lines="true"');
+        expect(markup).not.toContain("giant-diff-line-1");
+    });
+
+    it("does not render long patch lines through the legacy surface", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[
@@ -295,7 +305,7 @@ describe("GitDiffsView", () => {
             />,
         );
 
-        expect(markup).toContain("min-width:max(100%, 238ch)");
+        expect(markup).toContain("pierre-git-code-view");
         expect(markup).not.toContain("x".repeat(220));
     });
 
@@ -308,7 +318,7 @@ describe("GitDiffsView", () => {
         );
 
         expect(markup).toContain("select-text");
-        expect(markup).toContain("user-select:text");
+        expect(markup).toContain("pierre-git-code-view");
     });
 
     it("owns vertical scroll when no external scroll container is provided", () => {
@@ -320,11 +330,11 @@ describe("GitDiffsView", () => {
         );
 
         expect(markup).toContain(
-            'class="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2"',
+            "pierre-git-code-view shell-scrollbar min-h-0 flex-1 overflow-y-auto select-text",
         );
     });
 
-    it("uses the parent scroll container when an external ref is provided", () => {
+    it("keeps CodeView as the scroll owner even when a legacy ref is supplied", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[createDiffFile()]}
@@ -333,10 +343,8 @@ describe("GitDiffsView", () => {
             />,
         );
 
-        expect(markup).toContain('class="min-h-0 flex-1 px-2 py-2"');
-        expect(markup).not.toContain(
-            'class="shell-scrollbar min-h-0 flex-1 overflow-y-auto px-2 py-2"',
-        );
+        expect(markup).toContain("pierre-git-code-view");
+        expect(markup).toContain("overflow-y-auto");
     });
 
     it("keeps the message for binary files", () => {
@@ -372,13 +380,10 @@ describe("GitDiffsView", () => {
         );
 
         expect(markup).not.toContain('data-measured-virtual-list="true"');
-        expect(markup).toContain("large-file-1.ts");
-        expect(markup).toContain(
-            `large-file-${GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD - 1}.ts`,
-        );
+        expect(markup).toContain("pierre-git-code-view");
     });
 
-    it("virtualizes large stacked diffs by mounting a measured subset", () => {
+    it("uses one CodeView for large stacked diffs", () => {
         const files = [
             ...Array.from(
                 { length: GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD + 1 },
@@ -395,11 +400,8 @@ describe("GitDiffsView", () => {
             />,
         );
 
-        expect(markup).toContain('data-measured-virtual-list="true"');
-        expect(markup).toContain("large-file-1.ts");
-        expect(markup).not.toContain(
-            `large-file-${GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD + 1}.ts`,
-        );
+        expect(markup).toContain("pierre-git-code-view");
+        expect(markup).not.toContain('data-measured-virtual-list="true"');
         expect(markup).not.toContain("giant-diff-line-1");
     });
 
@@ -416,10 +418,9 @@ describe("GitDiffsView", () => {
             />,
         );
 
-        expect(markup).toContain("giant-diff.ts");
+        expect(markup).toContain("pierre-git-code-view");
         expect(markup).not.toContain("giant-diff-line-1");
         expect(markup).not.toContain('data-virtualized-diff-lines="true"');
-        expect(markup).toContain("large-file-1-line");
     });
 
     it("estimates collapsed diff files smaller than expanded text files", () => {

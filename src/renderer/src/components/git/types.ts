@@ -1,8 +1,8 @@
 import type {
     KeyboardEvent as ReactKeyboardEvent,
     MouseEvent as ReactMouseEvent,
+    RefCallback,
     RefObject,
-    UIEventHandler,
     ReactNode,
 } from "react";
 
@@ -87,6 +87,8 @@ export type GitDiffLineKind = "add" | "context" | "remove";
 
 export type GitDiffFileKind = "create" | "delete" | "move" | "update";
 
+export type GitDiffStyle = "split" | "unified";
+
 export interface GitDiffLine {
     readonly id: string;
     readonly kind: GitDiffLineKind;
@@ -114,11 +116,13 @@ export interface GitDiffFile {
     readonly previousPath: string | null;
     readonly statusLabel: string | null;
     readonly summary?: string | null;
+    readonly sectionLabel?: string | null;
     readonly isText: boolean;
     readonly reversible: boolean;
     readonly hunks: readonly GitDiffHunk[];
     readonly oldText?: string | null;
     readonly newText?: string | null;
+    readonly patch?: string | null;
 }
 
 export interface GitRepositorySummary {
@@ -224,13 +228,15 @@ export interface GitDiffsViewProps {
     readonly codeLineHeight?: number | null;
     readonly collapsedFileIds?: readonly string[];
     readonly displayMode?: "single" | "stack";
+    readonly diffStyle?: GitDiffStyle;
     readonly emptyState?: ReactNode;
     readonly files: readonly GitDiffFile[];
     readonly lineWrapping?: boolean;
-    readonly onScroll?: UIEventHandler<HTMLDivElement>;
+    readonly onScrollTop?: (scrollTop: number) => void;
     readonly onSelectFile?: (file: GitDiffFile) => void;
     readonly onToggleFileCollapse?: (fileId: string) => void;
     readonly scrollContainerRef?: RefObject<HTMLElement | null>;
+    readonly scrollRef?: RefCallback<HTMLDivElement>;
     readonly showFileSelector?: boolean;
     readonly surfaceVariant?: "flat" | "panel";
 }

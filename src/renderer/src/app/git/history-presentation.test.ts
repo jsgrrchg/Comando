@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import type { GitHistoryCommitSummary } from "@shared/ipc";
 
-import { buildGitHistoryGraphRows } from "./history-presentation";
+import nativeBranchDiff from "../../../../../fixtures/native-backend/git/branch.diff.json";
+import {
+    buildGitHistoryGraphRows,
+    convertRevisionFilesToDiffFiles,
+} from "./history-presentation";
 
 function createCommit(
     overrides: Partial<GitHistoryCommitSummary> = {},
@@ -118,5 +122,54 @@ describe("buildGitHistoryGraphRows", () => {
             kind: "straight",
             toRow: Number.MAX_SAFE_INTEGER,
         });
+    });
+});
+
+describe("convertRevisionFilesToDiffFiles", () => {
+    it("preserves a partial GitHub patch for the legacy diff fallback", () => {
+        const nativeFile = nativeBranchDiff.files[0];
+        const [file] = convertRevisionFilesToDiffFiles([
+            {
+                additions: nativeFile.additions,
+                contentState: "unavailable",
+                deletions: nativeFile.deletions,
+                hunks: nativeFile.diff.hunks.map((hunk) => ({
+                    id: hunk.id,
+                    lines: hunk.lines.map((line) => ({
+                        id: line.id,
+                        text: line.text,
+                        type:
+                            line.type === "add"
+                                ? "add"
+                                : line.type === "remove"
+                                  ? "remove"
+                                  : "context",
+                    })),
+                    newCount: hunk.newCount,
+                    newStart: hunk.newStart,
+                    oldCount: hunk.oldCount,
+                    oldStart: hunk.oldStart,
+                })),
+                isText: nativeFile.diff.isText,
+                kind: "update",
+                newText: nativeFile.diff.newText,
+                oldText: nativeFile.diff.oldText,
+                path: nativeFile.path,
+                previousPath: nativeFile.previousPath,
+                reversible: false,
+                statusLabel: "modified",
+            },
+        ]);
+
+        expect(file).toMatchObject({
+            emptyState: "Diff content is unavailable from GitHub.",
+            newText: null,
+            oldText: null,
+            path: nativeFile.path,
+        });
+        expect(file?.hunks[0]?.lines.map((line) => line.text)).toEqual([
+            "old",
+            "new",
+        ]);
     });
 });

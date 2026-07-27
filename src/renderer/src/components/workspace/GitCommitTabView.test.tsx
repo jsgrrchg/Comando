@@ -275,21 +275,19 @@ describe("GitCommitTabView", () => {
         resetStoreState();
     });
 
-    it("shows commit diff files expanded by default", () => {
+    it("mounts one virtual CodeView for commit diffs", () => {
         const markup = renderCommitMarkup();
 
-        expect(markup).toContain("expanded-line-a");
-        expect(markup).toContain("expanded-line-b");
+        expect(markup).toContain("pierre-git-code-view");
         expect(markup).toContain("collapse all");
+        expect(markup.match(/>collapse all</g) ?? []).toHaveLength(1);
     });
 
-    it("keeps the persisted commit scroll container as the diff scroll owner", () => {
+    it("moves persisted commit scroll ownership to CodeView", () => {
         const markup = renderCommitMarkup();
 
-        expect(markup).toContain(
-            'class="shell-scrollbar flex min-h-0 flex-1 overflow-y-auto px-3 py-3"',
-        );
-        expect(markup).toContain('class="min-h-0 flex-1 px-2 py-2"');
+        expect(markup).toContain("pierre-git-code-view");
+        expect(markup).toContain("overflow-y-auto");
         expect(markup).not.toContain("!overflow-visible");
     });
 
@@ -305,8 +303,7 @@ describe("GitCommitTabView", () => {
 
         const markup = renderCommitMarkup();
 
-        expect(markup).not.toContain("expanded-line-a");
-        expect(markup).toContain("expanded-line-b");
+        expect(markup).toContain("pierre-git-code-view");
         expect(markup).toContain("collapse all");
     });
 
@@ -325,8 +322,7 @@ describe("GitCommitTabView", () => {
 
         const markup = renderCommitMarkup();
 
-        expect(markup).not.toContain("expanded-line-a");
-        expect(markup).not.toContain("expanded-line-b");
+        expect(markup).toContain("pierre-git-code-view");
         expect(markup).toContain("expand all");
     });
 
@@ -363,11 +359,7 @@ describe("GitCommitTabView", () => {
 
         const markup = renderCommitMarkup();
 
-        expect(markup).toContain("commit-file-1.ts");
-        expect(markup).toContain(
-            `commit-file-${GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD}.ts`,
-        );
-        expect(markup).toContain("giant-commit-diff.ts");
+        expect(markup).toContain("pierre-git-code-view");
         expect(markup).not.toContain("giant-commit-diff-line-1");
         expect(markup).toContain("collapse all");
     });

@@ -1,6 +1,7 @@
 export * from "./GitAuthorAvatar";
 export * from "./GitChangesView";
 export * from "./GitDiffsView";
+export * from "./GitDiffStyleControl";
 export * from "./GitPanel";
 export * from "./GitTreeView";
 export * from "./GitUi";
@@ -10,3 +11,4 @@ export * from "./tree-dnd";
 export * from "./treeSelection";
 export * from "./types";
 export * from "./useStickyFolders";
+export * from "./gitDiffStylePersistence";

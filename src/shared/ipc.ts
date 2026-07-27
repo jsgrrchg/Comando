@@ -989,6 +989,8 @@ export interface GitFileDiff {
     readonly kind: "create" | "delete" | "move" | "update";
     readonly newText: string | null;
     readonly oldText: string | null;
+    /** Raw unified patch when the source can provide one. */
+    readonly patch?: string | null;
     readonly path: string;
     readonly previousPath: string | null;
     readonly reversible: boolean;
