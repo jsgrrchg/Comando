@@ -17,6 +17,7 @@ vi.mock("@pierre/diffs/react", () => ({
                 readonly collapsed?: boolean;
                 readonly fileDiff: { readonly name: string };
                 readonly id: string;
+                readonly version?: number;
             }[];
             readonly options: Record<string, unknown>;
             readonly renderHeaderFilenameSuffix?: (item: {
@@ -171,6 +172,45 @@ describe("GitDiffsView Pierre CodeView integration", () => {
             );
         });
         expect(onToggleFileCollapse).toHaveBeenCalledWith(file.id);
+
+        act(() => root.unmount());
+    });
+
+    it("bumps the CodeView item version when controlled collapse changes", () => {
+        const container = document.createElement("div");
+        const root = createRoot(container);
+        const file = GIT_DIFF_FIXTURES.update;
+
+        act(() => {
+            root.render(
+                <GitDiffsView
+                    collapsedFileIds={[]}
+                    displayMode="stack"
+                    files={[file]}
+                    showFileSelector={false}
+                />,
+            );
+        });
+        const expandedItem = codeViewCalls.at(-1)?.items as
+            | readonly { readonly collapsed?: boolean; readonly version?: number }[]
+            | undefined;
+
+        act(() => {
+            root.render(
+                <GitDiffsView
+                    collapsedFileIds={[file.id]}
+                    displayMode="stack"
+                    files={[file]}
+                    showFileSelector={false}
+                />,
+            );
+        });
+        const collapsedItem = codeViewCalls.at(-1)?.items as
+            | readonly { readonly collapsed?: boolean; readonly version?: number }[]
+            | undefined;
+
+        expect(expandedItem?.[0]).toMatchObject({ collapsed: false, version: 0 });
+        expect(collapsedItem?.[0]).toMatchObject({ collapsed: true, version: 1 });
 
         act(() => root.unmount());
     });

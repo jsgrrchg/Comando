@@ -61,17 +61,56 @@ export function PierreGitCodeView({
     const appearance = useSettingsStore((state) => state.appearance);
     const systemIsDark = useSettingsStore((state) => state.systemTheme.isDark);
     const codeViewRef = useRef<CodeViewHandle<undefined> | null>(null);
+    const itemRevisionRef = useRef(
+        new Map<
+            string,
+            {
+                readonly collapsed: boolean;
+                readonly source: CodeViewDiffItem;
+                readonly version: number;
+            }
+        >(),
+    );
     const isDark = resolveIsDark(appearance.themeMode, systemIsDark);
     const filesById = useMemo(
         () => new Map(files.map((file) => [file.id, file])),
         [files],
     );
     const items = useMemo<readonly CodeViewDiffItem[]>(
-        () =>
-            baseItems.map((item) => ({
-                ...item,
-                collapsed: collapsedFileIds.has(item.id),
-            })),
+        () => {
+            const activeItemIds = new Set<string>();
+
+            const nextItems = baseItems.map((item) => {
+                const collapsed = collapsedFileIds.has(item.id);
+                const previous = itemRevisionRef.current.get(item.id);
+                const version =
+                    previous?.source === item && previous.collapsed === collapsed
+                        ? previous.version
+                        : (previous?.version ?? -1) + 1;
+
+                activeItemIds.add(item.id);
+                itemRevisionRef.current.set(item.id, {
+                    collapsed,
+                    source: item,
+                    version,
+                });
+
+                return {
+                    ...item,
+                    collapsed,
+                    // CodeView only reconciles controlled item updates when their version changes.
+                    version,
+                };
+            });
+
+            for (const itemId of itemRevisionRef.current.keys()) {
+                if (!activeItemIds.has(itemId)) {
+                    itemRevisionRef.current.delete(itemId);
+                }
+            }
+
+            return nextItems;
+        },
         [baseItems, collapsedFileIds],
     );
     const options = useMemo(
