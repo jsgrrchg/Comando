@@ -21,7 +21,12 @@ import type {
     GitWorktreeDiffFile,
     GitWorktreeDiffResult,
 } from "@shared/ipc";
-import { GitDiffsView, GitEmptyState } from "@renderer/components/git";
+import {
+    GitDiffStyleControl,
+    GitDiffsView,
+    GitEmptyState,
+    usePersistedGitDiffStyle,
+} from "@renderer/components/git";
 import { PierreDiffWorkerPoolProvider } from "@renderer/components/git/PierreDiffWorkerPoolProvider";
 import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
 import { IdeActionButton } from "./ide-bar";
@@ -50,6 +55,7 @@ export function GitWorktreeDiffTabView({
             worktreeId,
         });
     const editorSettings = useResolvedEditorSettings();
+    const [diffStyle, setDiffStyle] = usePersistedGitDiffStyle();
     const project = useProjectsStore((state) =>
         state.projects.find((candidate) => candidate.id === projectId),
     );
@@ -458,6 +464,10 @@ export function GitWorktreeDiffTabView({
                                 </button>
                             ))}
                         </div>
+                        <GitDiffStyleControl
+                            onChange={setDiffStyle}
+                            value={diffStyle}
+                        />
                     </div>
 
                     <div className="flex flex-wrap items-center justify-end gap-2">
@@ -573,6 +583,7 @@ export function GitWorktreeDiffTabView({
                             codeLineHeight={codeLineHeight}
                             collapsedFileIds={collapsedFileIds}
                             displayMode="stack"
+                            diffStyle={diffStyle}
                             files={codeViewFiles}
                             lineWrapping={false}
                             onScrollTop={handleDiffScrollTop}

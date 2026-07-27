@@ -11,7 +11,11 @@ import type { GitRevisionFileDiff } from "@shared/ipc";
 import { convertRevisionFilesToDiffFiles } from "@renderer/app/git/history-presentation";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
-import { GitDiffsView } from "@renderer/components/git";
+import {
+    GitDiffStyleControl,
+    GitDiffsView,
+    usePersistedGitDiffStyle,
+} from "@renderer/components/git";
 import { PierreDiffWorkerPoolProvider } from "@renderer/components/git/PierreDiffWorkerPoolProvider";
 
 import { IdeActionButton } from "./ide-bar";
@@ -42,6 +46,7 @@ export function GitRevisionDiffView({
     readonly totalFileCount: number;
 }) {
     const settings = useResolvedEditorSettings();
+    const [diffStyle, setDiffStyle] = usePersistedGitDiffStyle();
     const diffFiles = useMemo(
         () => convertRevisionFilesToDiffFiles(files),
         [files],
@@ -87,6 +92,10 @@ export function GitRevisionDiffView({
                 className="flex flex-wrap items-center gap-3 border-y border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary px-5 py-1.5 font-mono text-[10.5px] text-text-secondary"
             >
                 {leadingContent}
+                <GitDiffStyleControl
+                    onChange={setDiffStyle}
+                    value={diffStyle}
+                />
                 {diffFiles.length > 0 ? (
                     <IdeActionButton
                         onClick={toggleAll}
@@ -116,6 +125,7 @@ export function GitRevisionDiffView({
                     codeLineHeight={settings.lineHeight}
                     collapsedFileIds={collapsedFileIds}
                     displayMode="stack"
+                    diffStyle={diffStyle}
                     emptyState="This pull request has no file changes."
                     files={diffFiles}
                     lineWrapping={false}

@@ -27,7 +27,7 @@ import {
     getPierreDiffVirtualMetrics,
 } from "./PierreGitDiffModel";
 import { PIERRE_GIT_DIFF_UNSAFE_CSS } from "./PierreGitDiffFile";
-import type { GitDiffFile } from "./types";
+import type { GitDiffFile, GitDiffStyle } from "./types";
 
 export interface PierreGitCodeViewProps {
     readonly activeFileId: string | null;
@@ -36,6 +36,7 @@ export interface PierreGitCodeViewProps {
     readonly codeFontSize: number | null;
     readonly codeLineHeight: number | null;
     readonly collapsedFileIds: ReadonlySet<string>;
+    readonly diffStyle: GitDiffStyle;
     readonly files: readonly GitDiffFile[];
     readonly items: readonly CodeViewDiffItem[];
     readonly lineWrapping: boolean;
@@ -51,6 +52,7 @@ export function PierreGitCodeView({
     codeFontSize,
     codeLineHeight,
     collapsedFileIds,
+    diffStyle,
     files,
     items: baseItems,
     lineWrapping,
@@ -115,7 +117,7 @@ export function PierreGitCodeView({
     );
     const options = useMemo(
         () => ({
-            diffStyle: "unified" as const,
+            diffStyle,
             disableErrorHandling: true,
             disableFileHeader: false,
             itemMetrics: getPierreDiffVirtualMetrics(
@@ -141,6 +143,7 @@ export function PierreGitCodeView({
             appearance.themePreset,
             codeFontSize,
             codeLineHeight,
+            diffStyle,
             isDark,
             lineWrapping,
         ],

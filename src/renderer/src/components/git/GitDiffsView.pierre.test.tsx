@@ -215,6 +215,34 @@ describe("GitDiffsView Pierre CodeView integration", () => {
         act(() => root.unmount());
     });
 
+    it("uses Pierre's split layout without replacing the virtual CodeView", () => {
+        const container = document.createElement("div");
+        const root = createRoot(container);
+
+        act(() => {
+            root.render(
+                <GitDiffsView
+                    diffStyle="split"
+                    files={[GIT_DIFF_FIXTURES.partialGitHub]}
+                    lineWrapping={false}
+                    showFileSelector={false}
+                />,
+            );
+        });
+
+        expect(codeViewCalls).toHaveLength(1);
+        expect(codeViewCalls[0]?.options).toMatchObject({
+            diffStyle: "split",
+            overflow: "scroll",
+            stickyHeaders: true,
+        });
+        expect(
+            container.querySelector("[data-pierre-code-view]"),
+        ).not.toBeNull();
+
+        act(() => root.unmount());
+    });
+
     it("keeps a mixed binary stack on the legacy renderer", () => {
         const { container, root } = renderDiff(GIT_DIFF_FIXTURES.binary);
 

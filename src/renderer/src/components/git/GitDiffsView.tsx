@@ -109,6 +109,7 @@ export function GitDiffsView({
     codeLineHeight = null,
     collapsedFileIds: controlledCollapsedFileIds,
     displayMode = "single",
+    diffStyle = "unified",
     emptyState,
     files,
     lineWrapping = true,
@@ -236,6 +237,7 @@ export function GitDiffsView({
                         codeFontSize={codeFontSize}
                         codeLineHeight={codeLineHeight}
                         collapsedFileIds={collapsedFileIdSet}
+                        diffStyle={diffStyle}
                         files={pierreFiles}
                         items={pierreItems}
                         lineWrapping={lineWrapping}

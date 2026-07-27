@@ -88,6 +88,8 @@ export type GitDiffLineKind = "add" | "context" | "remove";
 
 export type GitDiffFileKind = "create" | "delete" | "move" | "update";
 
+export type GitDiffStyle = "split" | "unified";
+
 export interface GitDiffLine {
     readonly id: string;
     readonly kind: GitDiffLineKind;
@@ -227,6 +229,7 @@ export interface GitDiffsViewProps {
     readonly codeLineHeight?: number | null;
     readonly collapsedFileIds?: readonly string[];
     readonly displayMode?: "single" | "stack";
+    readonly diffStyle?: GitDiffStyle;
     readonly emptyState?: ReactNode;
     readonly files: readonly GitDiffFile[];
     readonly lineWrapping?: boolean;

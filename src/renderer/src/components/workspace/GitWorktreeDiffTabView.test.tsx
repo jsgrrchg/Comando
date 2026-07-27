@@ -212,6 +212,8 @@ describe("GitWorktreeDiffTabView", () => {
 
         expect(markup).toContain('<main class="flex min-h-0 flex-1 flex-col">');
         expect(markup).toContain("worktree-file.ts");
+        expect(markup).toContain('aria-label="Diff layout"');
+        expect(markup).toContain("Side by side");
     });
 
     it("restores the selected branch mode after the view remounts", () => {
