@@ -35,6 +35,7 @@ import {
 import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 import { isTurnStartedActivity } from "./toolActivityKinds";
 import {
+    appendCompactActivitySegmentChangeStats,
     deriveActivitySegmentChangeStats,
     type ActivitySegmentChangeStats,
 } from "./activitySegmentChangeStats";
@@ -125,6 +126,15 @@ export interface ChatTimelineModel {
         ChatTimelinePresentationRow
     >;
 }
+
+interface ActivitySegmentIncrementalState {
+    readonly allEntriesUseCompactChangeStats: boolean;
+}
+
+const activitySegmentIncrementalState = new WeakMap<
+    ChatTimelineActivitySegmentRow,
+    ActivitySegmentIncrementalState
+>();
 
 export function areImageAttachmentsEquivalent(
     previous: readonly AiImageAttachment[],
@@ -725,7 +735,8 @@ function reuseToolActivitySegmentRow(
         return previousRow;
     }
 
-    return {
+    incrementChatPerformanceCounter("activity_segments_rebuilt");
+    const row: ChatTimelineActivitySegmentRow = {
         // Diff aggregation is expensive; only rebuild it with a changed segment.
         blockId,
         changeStats: deriveActivitySegmentChangeStats(entries),
@@ -735,6 +746,12 @@ function reuseToolActivitySegmentRow(
         kind: "activity-segment",
         summary,
     };
+    activitySegmentIncrementalState.set(row, {
+        allEntriesUseCompactChangeStats: entries.every(
+            (entry) => entry.reviewEntry.activity.changeStats !== null,
+        ),
+    });
+    return row;
 }
 
 export function buildChatTimelinePresentationRows(
@@ -948,6 +965,11 @@ export function reconcileChatTimelineModel(
         readonly blockIdByEntryId?: ReadonlyMap<string, string>;
     },
 ): ChatTimelineModel {
+    incrementChatPerformanceCounter("timeline_full_rebuilds");
+    incrementChatPerformanceCounter(
+        "timeline_rows_reconciled",
+        snapshot.messages.length + snapshot.toolActivity.length,
+    );
     const reviewIndex = createToolActivityReviewIndex(snapshot.trackedFiles);
     const toolEntries = deriveToolActivityReviewEntriesFromIndex(
         prepareTimelineToolActivity(snapshot),
@@ -1118,7 +1140,6 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
     buildFallbackTranscript: (() => AiSessionTranscriptModel) | null = null,
 ): ChatTimelineModel {
     if (!previous || !previousTranscript) {
-        incrementChatPerformanceCounter("timeline_full_rebuilds");
         return reconcileChatTimelineModelFromTranscript(previous, {
             ...input,
             transcript: buildFallbackTranscript?.() ?? input.transcript,
@@ -1131,7 +1152,6 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
         )
     ) {
         chatTimelineFallbackCount += 1;
-        incrementChatPerformanceCounter("timeline_full_rebuilds");
         return reconcileChatTimelineModelFromTranscript(previous, {
             ...input,
             transcript: buildFallbackTranscript?.() ?? input.transcript,
@@ -1155,11 +1175,12 @@ export function reconcileChatTimelineModelIncrementallyFromTranscript(
               : null;
     if (incrementalModel) {
         chatTimelineIncrementalCount += 1;
+        incrementChatPerformanceCounter("timeline_rows_reconciled");
+        incrementChatPerformanceCounter("timeline_tail_patches");
         return incrementalModel;
     }
 
     chatTimelineFallbackCount += 1;
-    incrementChatPerformanceCounter("timeline_full_rebuilds");
     return reconcileChatTimelineModelFromTranscript(previous, {
         ...input,
         transcript: buildFallbackTranscript?.() ?? input.transcript,
@@ -1270,9 +1291,9 @@ function reconcileLiveTailAppend(
     const nextAtomicRow = getTranscriptAtomicRow(input, entryId);
     if (
         !nextAtomicRow ||
-        nextAtomicRow.kind !== "message" ||
-        nextAtomicRow.message.kind === "thinking" ||
-        nextAtomicRow.message.kind === "user" ||
+        (nextAtomicRow.kind === "message" &&
+            (nextAtomicRow.message.kind === "thinking" ||
+                nextAtomicRow.message.kind === "user")) ||
         !isStreamingStatus(input.status) ||
         (previous.liveTailRow !== null &&
             previous.orderedRows.at(-1) !== previous.liveTailRow)
@@ -1288,24 +1309,146 @@ function reconcileLiveTailAppend(
         return null;
     }
 
+    const nextLiveTailRow =
+        nextAtomicRow.kind === "tool"
+            ? appendLiveTailToolSegment(
+                  previous,
+                  nextAtomicRow,
+                  input.attentionToolCallIds ?? EMPTY_ATTENTION_TOOL_CALL_IDS,
+              )
+            : nextAtomicRow;
+    if (!nextLiveTailRow) {
+        return null;
+    }
+
     const atomicRowById = new Map(previous.atomicRowById);
     atomicRowById.set(nextAtomicRow.id, nextAtomicRow);
     const presentationRowById = new Map(previous.presentationRowById);
-    presentationRowById.set(nextAtomicRow.id, nextAtomicRow);
+    presentationRowById.set(nextLiveTailRow.id, nextLiveTailRow);
     return {
         ...previous,
         atomicLiveTailRow: nextAtomicRow,
         atomicLiveTailRowId: nextAtomicRow.id,
         atomicRowById,
-        liveTailRow: nextAtomicRow,
-        liveTailRowId: nextAtomicRow.id,
+        liveTailRow: nextLiveTailRow,
+        liveTailRowId: nextLiveTailRow.id,
         orderedAtomicRowIds: [...previous.orderedAtomicRowIds, nextAtomicRow.id],
         orderedAtomicRows: [...previous.orderedAtomicRows, nextAtomicRow],
-        orderedRowIds: [...previous.orderedRowIds, nextAtomicRow.id],
-        orderedRows: [...previous.orderedRows, nextAtomicRow],
+        orderedRowIds:
+            nextAtomicRow.kind === "tool"
+                ? previous.orderedRowIds
+                : [...previous.orderedRowIds, nextLiveTailRow.id],
+        orderedRows:
+            nextAtomicRow.kind === "tool"
+                ? replaceLastTimelineRow(previous.orderedRows, nextLiveTailRow)
+                : [...previous.orderedRows, nextLiveTailRow],
         presentationRowById,
         retainedTailRow: null,
         retainedTailRowId: null,
+    };
+}
+
+function appendLiveTailToolSegment(
+    previous: ChatTimelineModel,
+    nextAtomicRow: ChatTimelineToolRow,
+    attentionToolCallIds: ReadonlySet<string>,
+): ChatTimelineActivitySegmentRow | null {
+    const previousSegment = previous.liveTailRow;
+    if (
+        previousSegment?.kind !== "activity-segment" ||
+        previousSegment.blockId !== nextAtomicRow.blockId ||
+        previousSegment.items.at(-1)?.kind !== "tool"
+    ) {
+        return null;
+    }
+
+    const policy = getToolActivityPresentationPolicy(nextAtomicRow.reviewEntry, {
+        attentionToolCallIds,
+    });
+    if (policy === "structural") {
+        return null;
+    }
+
+    const entry: ToolActivitySegmentEntry = {
+        policy,
+        reviewEntry: nextAtomicRow.reviewEntry,
+    };
+    const incrementalState = activitySegmentIncrementalState.get(previousSegment);
+    const changeStats =
+        incrementalState?.allEntriesUseCompactChangeStats === true
+            ? appendCompactActivitySegmentChangeStats(
+                  previousSegment.changeStats,
+                  entry,
+                  previousSegment.entries.length,
+              )
+            : null;
+    if (!changeStats) {
+        return null;
+    }
+
+    const summary = appendToolActivitySegmentSummary(previousSegment.summary, entry);
+    if (!summary) {
+        return null;
+    }
+
+    incrementChatPerformanceCounter("activity_segments_rebuilt");
+    const row: ChatTimelineActivitySegmentRow = {
+        blockId: previousSegment.blockId,
+        changeStats,
+        entries: [...previousSegment.entries, entry],
+        id: previousSegment.id,
+        items: [...previousSegment.items, { entry, kind: "tool" }],
+        kind: "activity-segment",
+        summary,
+    };
+    activitySegmentIncrementalState.set(row, {
+        allEntriesUseCompactChangeStats: true,
+    });
+    return row;
+}
+
+function appendToolActivitySegmentSummary(
+    previous: ToolActivitySegmentSummary,
+    entry: ToolActivitySegmentEntry,
+): ToolActivitySegmentSummary | null {
+    const { activity, trackedFiles } = entry.reviewEntry;
+    const descriptor = getToolActivityDescriptor(activity);
+    if (
+        activity.locations.length > 0 ||
+        activity.diffs.length > 0 ||
+        trackedFiles.length > 0 ||
+        (descriptor.category === "file" && descriptor.target !== null)
+    ) {
+        // File sets need a complete view to preserve deduplicated counts.
+        return null;
+    }
+
+    return {
+        ...previous,
+        actionCount: previous.actionCount + 1,
+        changeCount:
+            previous.changeCount + (entry.policy === "standalone-change" ? 1 : 0),
+        commandCount:
+            previous.commandCount + (descriptor.category === "command" ? 1 : 0),
+        failureCount:
+            previous.failureCount +
+            (activity.status === "failed" ||
+            (activity.exitCode !== null && activity.exitCode !== 0)
+                ? 1
+                : 0),
+        hiddenActivityCount: previous.hiddenActivityCount + 1,
+        isInProgress:
+            previous.isInProgress ||
+            activity.status === "pending" ||
+            activity.status === "in_progress",
+        latestActivityId: activity.id,
+        latestTitle: activity.title,
+        searchCount:
+            previous.searchCount + (descriptor.category === "search" ? 1 : 0),
+        updatedAt:
+            activity.updatedAt > previous.updatedAt
+                ? activity.updatedAt
+                : previous.updatedAt,
     };
 }
 

@@ -70,6 +70,7 @@ import {
     recordChatPerformanceMetric,
     type ChatScrollWriteReason,
 } from "@renderer/app/debug/chatPerformanceProbe";
+import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceFileOpenLocation,
@@ -859,7 +860,14 @@ export const ChatTabView = memo(function ChatTabView({
                 return;
             }
             if (!reviewPayloadRetentionRef.current.retain(payloadRef)) return;
-            void loadTranscriptPayload(tab.sessionId, payloadRef).then(() => {
+            incrementChatPerformanceCounter("tool_payloads_requested");
+            void loadTranscriptPayload(tab.sessionId, payloadRef).then((payload) => {
+                if (payload) {
+                    incrementChatPerformanceCounter(
+                        "tool_payload_bytes_loaded",
+                        payload.byteLength,
+                    );
+                }
                 if (!reviewPayloadRetentionRef.current.has(payloadRef)) {
                     releaseTranscriptPayload(tab.sessionId, payloadRef);
                 }

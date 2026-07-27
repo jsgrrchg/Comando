@@ -10,6 +10,10 @@ import {
     applyAiSessionDomainEventToTranscript,
     buildAiSessionTranscriptModel,
 } from "@renderer/app/ai/transcriptModel";
+import {
+    readChatPerformanceCounters,
+    resetChatPerformanceCounters,
+} from "@renderer/app/debug/chatPerformanceCounters";
 
 import {
     getChatTimelineReconciliationDiagnostics,
@@ -18,6 +22,10 @@ import {
     reconcileChatTimelineModelFromTranscript,
     resetChatTimelineReconciliationDiagnosticsForTests,
 } from "./chatTimelineModel";
+import {
+    getChatTimelineRowMeasurementKey,
+} from "./chatTimelineVirtualization";
+import { flattenTranscriptTimelineItems } from "./transcriptBlockVirtualization";
 
 function createMessage(
     overrides: Partial<AiSessionSnapshot["messages"][number]> = {},
@@ -111,6 +119,28 @@ function createSessionEvent(
 }
 
 describe("chatTimelineModel", () => {
+    it("counts full reconciliation and rebuilt activity segments", () => {
+        resetChatPerformanceCounters();
+
+        reconcileChatTimelineModel(null, {
+            messages: [],
+            status: "idle",
+            toolActivity: [
+                createReadActivity(
+                    "read-1",
+                    "2026-04-14T00:00:01.000Z",
+                ),
+            ],
+            trackedFiles: [],
+        });
+
+        expect(readChatPerformanceCounters()).toMatchObject({
+            activity_segments_rebuilt: 1,
+            timeline_full_rebuilds: 1,
+            timeline_rows_reconciled: 1,
+        });
+    });
+
     it("patches an assistant live tail incrementally while preserving earlier rows", () => {
         const trackedFiles: AiTrackedFile[] = [];
         const initialTranscript = buildAiSessionTranscriptModel({
@@ -147,6 +177,7 @@ describe("chatTimelineModel", () => {
         );
 
         resetChatTimelineReconciliationDiagnosticsForTests();
+        resetChatPerformanceCounters();
         const incrementalModel =
             reconcileChatTimelineModelIncrementallyFromTranscript(
                 initialModel,
@@ -157,6 +188,7 @@ describe("chatTimelineModel", () => {
                     transcript: updatedTranscript,
                 },
             );
+        const incrementalCounters = readChatPerformanceCounters();
         const fullModel = reconcileChatTimelineModelFromTranscript(
             initialModel,
             {
@@ -175,6 +207,11 @@ describe("chatTimelineModel", () => {
         expect(getChatTimelineReconciliationDiagnostics()).toEqual({
             fallbackCount: 0,
             incrementalCount: 1,
+        });
+        expect(incrementalCounters).toMatchObject({
+            timeline_full_rebuilds: 0,
+            timeline_rows_reconciled: 1,
+            timeline_tail_patches: 1,
         });
     });
 
@@ -229,6 +266,137 @@ describe("chatTimelineModel", () => {
         expect(getChatTimelineReconciliationDiagnostics()).toEqual({
             fallbackCount: 0,
             incrementalCount: 1,
+        });
+    });
+
+    it("appends one tool to a 2k active segment without rebuilding prior tools", () => {
+        const initialTools = Array.from({ length: 2_000 }, (_, index) =>
+            createActivity({
+                changeStats: {
+                    additions: 1,
+                    approximate: false,
+                    deletions: 0,
+                    fileCount: 1,
+                },
+                createdAt: `2026-04-14T00:00:${String(index % 60).padStart(2, "0")}.000Z`,
+                id: `tool-${index + 1}`,
+                kind: "read",
+                title: "Read generated output",
+                updatedAt: `2026-04-14T00:00:${String(index % 60).padStart(2, "0")}.000Z`,
+            }),
+        );
+        const initialTranscript = buildAiSessionTranscriptModel({
+            messages: [],
+            toolActivity: initialTools,
+        });
+        const initialModel = reconcileChatTimelineModelFromTranscript(null, {
+            status: "streaming",
+            trackedFiles: [],
+            transcript: initialTranscript,
+        });
+        const initialSegment = initialModel.liveTailRow;
+        if (initialSegment?.kind !== "activity-segment") {
+            throw new Error("Expected the initial tools to form one segment.");
+        }
+        const initialItems = flattenTranscriptTimelineItems(
+            initialModel.orderedRows,
+            {
+                defaultExpanded: true,
+                expansionByGroupId: {
+                    [initialSegment.id]: {
+                        expanded: true,
+                        expandedRangeStarts: [0],
+                    },
+                },
+            },
+        );
+        const firstInitialEntry = initialItems.find(
+            (item) => item.kind === "activity-entry",
+        );
+        if (!firstInitialEntry) {
+            throw new Error("Expected the initial segment to expose tool entries.");
+        }
+        const measurementContext = { width: 960 };
+        const initialMeasurementKey = getChatTimelineRowMeasurementKey(
+            firstInitialEntry,
+            measurementContext,
+        );
+        const appendedTool = createActivity({
+            changeStats: {
+                additions: 7,
+                approximate: false,
+                deletions: 2,
+                fileCount: 1,
+            },
+            createdAt: "2026-04-14T00:01:00.000Z",
+            id: "tool-2001",
+            kind: "edit",
+            title: "Edit compact payload",
+            updatedAt: "2026-04-14T00:01:00.000Z",
+        });
+        const updatedTranscript = applyAiSessionDomainEventToTranscript(
+            initialTranscript,
+            createSessionEvent({
+                activity: appendedTool,
+                kind: "tool-activity",
+            }),
+        );
+
+        resetChatTimelineReconciliationDiagnosticsForTests();
+        resetChatPerformanceCounters();
+        const updatedModel = reconcileChatTimelineModelIncrementallyFromTranscript(
+            initialModel,
+            initialTranscript,
+            {
+                status: "streaming",
+                trackedFiles: [],
+                transcript: updatedTranscript,
+            },
+        );
+        const updatedSegment = updatedModel.liveTailRow;
+        if (updatedSegment?.kind !== "activity-segment") {
+            throw new Error("Expected the appended tool to remain in the active segment.");
+        }
+        const updatedItems = flattenTranscriptTimelineItems(
+            updatedModel.orderedRows,
+            {
+                defaultExpanded: true,
+                expansionByGroupId: {
+                    [updatedSegment.id]: {
+                        expanded: true,
+                        expandedRangeStarts: [0],
+                    },
+                },
+            },
+        );
+        const firstUpdatedEntry = updatedItems.find(
+            (item) => item.kind === "activity-entry",
+        );
+        if (!firstUpdatedEntry) {
+            throw new Error("Expected the updated segment to expose tool entries.");
+        }
+
+        expect(updatedSegment.id).toBe(initialSegment.id);
+        expect(updatedSegment.entries).toHaveLength(2_001);
+        expect(updatedSegment.entries.slice(0, -1)).toEqual(initialSegment.entries);
+        expect(updatedSegment.items.slice(0, -1)).toEqual(initialSegment.items);
+        expect(updatedSegment.changeStats).toEqual({
+            additions: 2_007,
+            approximate: true,
+            deletions: 2,
+        });
+        expect(getChatTimelineRowMeasurementKey(firstUpdatedEntry, measurementContext)).toBe(
+            initialMeasurementKey,
+        );
+        expect(getChatTimelineReconciliationDiagnostics()).toEqual({
+            fallbackCount: 0,
+            incrementalCount: 1,
+        });
+        expect(readChatPerformanceCounters()).toMatchObject({
+            activity_segments_rebuilt: 1,
+            timeline_full_rebuilds: 0,
+            timeline_rows_reconciled: 1,
+            timeline_tail_patches: 1,
         });
     });
 

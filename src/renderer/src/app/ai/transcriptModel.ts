@@ -946,16 +946,24 @@ function applyMessageDeltaToTranscript(
                 : entry.message.content.endsWith(input.delta)
                   ? entry.message.content
                   : `${entry.message.content}${input.delta}`;
+        const nextStatus =
+            entry.message.status === "completed" ? "completed" : "streaming";
+
+        if (
+            nextContent === entry.message.content &&
+            nextStatus === entry.message.status &&
+            input.updatedAt === entry.updatedAt
+        ) {
+            // Replayed domain events must not create a new transcript revision.
+            return entry;
+        }
 
         return {
             ...entry,
             message: {
                 ...entry.message,
                 content: nextContent,
-                status:
-                    entry.message.status === "completed"
-                        ? "completed"
-                        : "streaming",
+                status: nextStatus,
             },
             updatedAt: input.updatedAt,
         };

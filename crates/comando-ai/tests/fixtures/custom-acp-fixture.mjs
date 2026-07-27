@@ -27,6 +27,50 @@ const finishPrompt = (request, stopReason = "end_turn") => {
     respond(request, { stopReason });
 };
 
+const emitStorm = (sessionId, request) => {
+    for (let index = 0; index < 1000; index += 1) {
+        update(sessionId, {
+            content: { text: `delta-${index};`, type: "text" },
+            messageId: "fixture-storm-message",
+            sessionUpdate: "agent_message_chunk",
+        });
+    }
+    for (let index = 0; index < 500; index += 1) {
+        const toolCallId = `fixture-storm-tool-${index}`;
+        update(sessionId, {
+            kind: "execute",
+            rawInput: { command: `echo ${index}` },
+            sessionUpdate: "tool_call",
+            status: "pending",
+            title: `Storm tool ${index}`,
+            toolCallId,
+        });
+        update(sessionId, {
+            rawOutput: { output: `tool-${index}` },
+            sessionUpdate: "tool_call_update",
+            status: "completed",
+            toolCallId,
+        });
+    }
+    const permissionId = `fixture-storm-permission-${request.id}`;
+    pendingPermissionPrompts.set(permissionId, request);
+    send({
+        id: permissionId,
+        jsonrpc: "2.0",
+        method: "session/request_permission",
+        params: {
+            options: [
+                {
+                    kind: "allow_once",
+                    name: "Finish storm",
+                    optionId: "allow",
+                },
+            ],
+            sessionId,
+        },
+    });
+};
+
 const handlePrompt = (request) => {
     const { prompt, sessionId } = request.params;
     const session = sessions.get(sessionId);
@@ -45,6 +89,10 @@ const handlePrompt = (request) => {
         .join(" ");
     if (text.includes("wait for cancellation")) {
         pendingCancelledPrompts.set(sessionId, request);
+        return;
+    }
+    if (text.includes("phase6:storm")) {
+        emitStorm(sessionId, request);
         return;
     }
 

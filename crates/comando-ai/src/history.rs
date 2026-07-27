@@ -24,8 +24,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::durable_operations::{self, DurableOperation, DurableOperationInterceptorRef};
 use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
+use crate::storage_work_metrics::{AiStorageWorkMetricsSnapshot, StorageWorkMetrics};
 pub use crate::transcript_store::{AiTranscriptPayload, AiTranscriptPayloadWrite};
 use crate::transcript_store::{TRANSCRIPT_SCHEMA_VERSION, TranscriptStore};
 
@@ -50,11 +52,13 @@ const CODEX_ITEM_STATUS_PREFIX: &str = "codex-acp:status:item:";
 const CODEX_SUBAGENT_PREFIX: &str = "codex-acp:subagent:";
 const CODEX_IMAGE_PREFIX: &str = "codex-acp:image:";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AiHistoryStore {
     app_data_dir: PathBuf,
     compaction_policy: HistoryCompactionPolicy,
     legacy_transcript_backfill_indexes: Arc<Mutex<HashMap<String, AiTranscriptIndex>>>,
+    work_metrics: Arc<StorageWorkMetrics>,
+    durable_operation_interceptor: Option<DurableOperationInterceptorRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,12 +402,34 @@ impl AiHistoryStore {
             app_data_dir,
             compaction_policy: HistoryCompactionPolicy::default(),
             legacy_transcript_backfill_indexes: Arc::new(Mutex::new(HashMap::new())),
+            work_metrics: Arc::new(StorageWorkMetrics::default()),
+            durable_operation_interceptor: None,
         })
     }
 
     pub fn with_compaction_policy(mut self, policy: HistoryCompactionPolicy) -> Self {
         self.compaction_policy = policy;
         self
+    }
+
+    pub fn with_durable_operation_interceptor(
+        mut self,
+        interceptor: DurableOperationInterceptorRef,
+    ) -> Self {
+        self.durable_operation_interceptor = Some(interceptor);
+        self
+    }
+
+    pub fn set_work_metrics_enabled(&self, enabled: bool) {
+        self.work_metrics.set_enabled(enabled);
+    }
+
+    pub fn reset_work_metrics(&self) {
+        self.work_metrics.reset();
+    }
+
+    pub fn work_metrics(&self) -> AiStorageWorkMetricsSnapshot {
+        self.work_metrics.snapshot()
     }
 
     pub fn storage_key(session_id: &str) -> String {
@@ -448,7 +474,7 @@ impl AiHistoryStore {
 
     pub fn save_metadata(&self, metadata: &AiHistorySessionMetadata) -> AiResult<()> {
         self.ensure_session_dir(&metadata.session_id)?;
-        atomic_write_json(&self.metadata_path(&metadata.session_id), metadata)
+        self.atomic_write_json(&self.metadata_path(&metadata.session_id), metadata)
     }
 
     pub fn load_session_state(&self, session_id: &SessionId) -> AiResult<AiHistorySessionState> {
@@ -470,7 +496,7 @@ impl AiHistoryStore {
         state: &AiHistorySessionState,
     ) -> AiResult<()> {
         self.ensure_session_dir(session_id)?;
-        atomic_write_json(&self.session_state_path(session_id), state)
+        self.atomic_write_json(&self.session_state_path(session_id), state)
     }
 
     pub fn update_session_state(
@@ -517,7 +543,7 @@ impl AiHistoryStore {
                 error,
             )
         })?;
-        atomic_write_json(&path, &AiToolActivityDetail { hash, payload })
+        self.atomic_write_json(&path, &AiToolActivityDetail { hash, payload })
     }
 
     pub fn load_tool_activity_detail(
@@ -597,6 +623,7 @@ impl AiHistoryStore {
         let mut lines_to_append = Vec::with_capacity(records.len().saturating_sub(reuse_len));
         for record in records.iter().skip(reuse_len) {
             let line = serialize_record_line(record)?;
+            self.work_metrics.record_serialized(line.len());
             let length = line.len() as u64 + 1;
             next_index.message_offsets.push(append_offset);
             next_index.message_lengths.push(length);
@@ -629,13 +656,21 @@ impl AiHistoryStore {
             .append(true)
             .open(&transcript_path)
             .map_err(|error| history_io("open AI transcript", &transcript_path, error))?;
+        self.durable_before(DurableOperation::Append)?;
         for line in &lines_to_append {
             file.write_all(line.as_bytes())
                 .and_then(|_| file.write_all(b"\n"))
                 .map_err(|error| history_io("append AI transcript", &transcript_path, error))?;
         }
+        self.durable_before(DurableOperation::Sync)?;
         file.sync_all()
             .map_err(|error| history_io("sync AI transcript", &transcript_path, error))?;
+        self.work_metrics.record_sync();
+        if self.work_metrics.is_enabled() {
+            // Summing serialized lines is diagnostic-only work.
+            self.work_metrics
+                .record_durable_write(lines_to_append.iter().map(|line| line.len() + 1).sum());
+        }
 
         metadata.message_count = next_session_metadata.message_count;
         metadata.preview = next_session_metadata.preview;
@@ -1497,6 +1532,7 @@ impl AiHistoryStore {
                 next_index.message_roles.push(record.role.clone());
                 next_index.indexed_transcript_bytes += length;
             }
+            self.durable_before(DurableOperation::Sync)?;
             file.sync_all().map_err(|error| {
                 history_io("sync compacted AI transcript", &transcript_tmp, error)
             })?;
@@ -1506,6 +1542,7 @@ impl AiHistoryStore {
         if transcript_path.exists() {
             copy_or_replace(&transcript_path, &transcript_backup)?;
         }
+        self.durable_before(DurableOperation::Rename)?;
         fs::rename(&transcript_tmp, &transcript_path).map_err(|error| {
             history_io("install compacted AI transcript", &transcript_path, error)
         })?;
@@ -1532,7 +1569,7 @@ impl AiHistoryStore {
             version: HISTORY_FORMAT_VERSION,
             started_at: now_iso8601(),
         };
-        atomic_write_json(&self.compaction_marker_path(session_id), &state)
+        self.atomic_write_json(&self.compaction_marker_path(session_id), &state)
     }
 
     fn write_transcript_write_marker(
@@ -1540,12 +1577,13 @@ impl AiHistoryStore {
         session_id: &SessionId,
         state: &TranscriptWriteState,
     ) -> AiResult<()> {
-        atomic_write_json(&self.transcript_write_marker_path(session_id), state)
+        self.atomic_write_json(&self.transcript_write_marker_path(session_id), state)
     }
 
     fn clear_transcript_write_marker(&self, session_id: &SessionId) -> AiResult<()> {
         let marker = self.transcript_write_marker_path(session_id);
         if marker.exists() {
+            self.durable_before(DurableOperation::RemoveTemporary)?;
             fs::remove_file(&marker)
                 .map_err(|error| history_io("remove transcript write marker", &marker, error))?;
         }
@@ -1616,6 +1654,7 @@ impl AiHistoryStore {
             self.sidecar_path(session_id, "transcript.bak"),
         ] {
             if path.exists() {
+                self.durable_before(DurableOperation::RemoveTemporary)?;
                 fs::remove_file(&path)
                     .map_err(|error| history_io("remove AI history sidecar", &path, error))?;
             }
@@ -1630,7 +1669,7 @@ impl AiHistoryStore {
 
     fn save_index(&self, session_id: &SessionId, index: &AiTranscriptIndex) -> AiResult<()> {
         self.ensure_session_dir(session_id)?;
-        atomic_write_json(&self.index_path(session_id), index)?;
+        self.atomic_write_json(&self.index_path(session_id), index)?;
         self.clear_legacy_transcript_backfill_index(session_id)
     }
 
@@ -1729,6 +1768,16 @@ impl AiHistoryStore {
 
     fn transcript_store(&self, session_id: &SessionId) -> TranscriptStore {
         TranscriptStore::new(&self.session_dir(session_id))
+            .with_work_metrics(self.work_metrics.clone())
+            .with_durable_operation_interceptor(self.durable_operation_interceptor.clone())
+    }
+
+    fn durable_before(&self, operation: DurableOperation) -> AiResult<()> {
+        durable_operations::before(self.durable_operation_interceptor.as_ref(), operation)
+    }
+
+    fn atomic_write_json<T: Serialize>(&self, path: &Path, value: &T) -> AiResult<()> {
+        atomic_write_json_with_interceptor(path, value, self.durable_operation_interceptor.as_ref())
     }
 
     fn index_path(&self, session_id: &SessionId) -> PathBuf {
@@ -2631,7 +2680,7 @@ impl<'a> AiHistoryMigrator<'a> {
             .history_root()
             .join("migrations")
             .join("sqlite-history-v1.json");
-        atomic_write_json(&path, manifest)
+        self.store.atomic_write_json(&path, manifest)
     }
 }
 
@@ -3070,13 +3119,21 @@ fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> AiResult<T> {
     serde_json::from_str(&text).map_err(|error| history_json("parse AI history JSON", error))
 }
 
-fn atomic_write_json<T: Serialize>(path: &Path, value: &T) -> AiResult<()> {
+fn atomic_write_json_with_interceptor<T: Serialize>(
+    path: &Path,
+    value: &T,
+    interceptor: Option<&DurableOperationInterceptorRef>,
+) -> AiResult<()> {
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|error| history_json("serialize AI history JSON", error))?;
-    atomic_write(path, &bytes)
+    atomic_write_with_interceptor(path, &bytes, interceptor)
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> AiResult<()> {
+fn atomic_write_with_interceptor(
+    path: &Path,
+    bytes: &[u8],
+    interceptor: Option<&DurableOperationInterceptorRef>,
+) -> AiResult<()> {
     let parent = path
         .parent()
         .ok_or_else(|| history_error("AI history path has no parent."))?;
@@ -3090,13 +3147,17 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> AiResult<()> {
         Uuid::new_v4()
     ));
     {
+        durable_operations::before(interceptor, DurableOperation::AtomicWrite)?;
         let mut file = File::create(&tmp_path)
             .map_err(|error| history_io("create AI history temp file", &tmp_path, error))?;
         file.write_all(bytes)
             .and_then(|_| file.write_all(b"\n"))
-            .and_then(|_| file.sync_all())
             .map_err(|error| history_io("write AI history temp file", &tmp_path, error))?;
+        durable_operations::before(interceptor, DurableOperation::Sync)?;
+        file.sync_all()
+            .map_err(|error| history_io("sync AI history temp file", &tmp_path, error))?;
     }
+    durable_operations::before(interceptor, DurableOperation::Rename)?;
     fs::rename(&tmp_path, path)
         .map_err(|error| history_io("install AI history file", path, error))?;
     Ok(())
@@ -3144,6 +3205,83 @@ fn redact_history_error(error: &AiError) -> String {
 mod tests {
     use super::*;
     use comando_types::ai::{NativeAiOpenTranscriptEntryRef, NativeAiTranscriptTerminalStatus};
+    use std::sync::{Condvar, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    #[derive(Default)]
+    struct FaultInjector {
+        fail_at: Mutex<Option<(DurableOperation, usize)>>,
+        seen: Mutex<Vec<DurableOperation>>,
+    }
+
+    impl FaultInjector {
+        fn failing(operation: DurableOperation, occurrence: usize) -> Self {
+            Self {
+                fail_at: Mutex::new(Some((operation, occurrence))),
+                seen: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl crate::durable_operations::DurableOperationInterceptor for FaultInjector {
+        fn before(&self, operation: DurableOperation) -> AiResult<()> {
+            let occurrence = {
+                let mut seen = self.seen.lock().unwrap();
+                seen.push(operation);
+                seen.iter().filter(|current| **current == operation).count()
+            };
+            if self.fail_at.lock().unwrap().as_ref().is_some_and(
+                |(expected, expected_occurrence)| {
+                    *expected == operation && *expected_occurrence == occurrence
+                },
+            ) {
+                return Err(AiError::Internal(format!("injected {operation:?} failure")));
+            }
+            Ok(())
+        }
+    }
+
+    struct TransactionBarrier {
+        state: Mutex<(bool, bool)>,
+        wake: Condvar,
+    }
+
+    impl TransactionBarrier {
+        fn new() -> Self {
+            Self {
+                state: Mutex::new((false, false)),
+                wake: Condvar::new(),
+            }
+        }
+
+        fn wait_until_entered(&self) {
+            let mut state = self.state.lock().unwrap();
+            while !state.0 {
+                state = self.wake.wait(state).unwrap();
+            }
+        }
+
+        fn release(&self) {
+            self.state.lock().unwrap().1 = true;
+            self.wake.notify_all();
+        }
+    }
+
+    impl crate::durable_operations::DurableOperationInterceptor for TransactionBarrier {
+        fn before(&self, operation: DurableOperation) -> AiResult<()> {
+            if operation != DurableOperation::SqliteTransaction {
+                return Ok(());
+            }
+            let mut state = self.state.lock().unwrap();
+            state.0 = true;
+            self.wake.notify_all();
+            while !state.1 {
+                state = self.wake.wait(state).unwrap();
+            }
+            Ok(())
+        }
+    }
 
     #[test]
     fn legacy_codex_tool_aliases_are_normalized_and_reasoning_is_removed() {
@@ -3326,6 +3464,261 @@ mod tests {
             },
             payload_ref: None,
         }
+    }
+
+    fn checkpoint_entry(
+        store: &AiHistoryStore,
+        session_id: &SessionId,
+        payload: Option<AiTranscriptPayloadWrite>,
+    ) -> AiResult<()> {
+        let mut entry = transcript_entry(session_id, "tool:1", "checkpointed tool");
+        entry.kind = comando_types::ai::NativeAiTranscriptEntryKind::Tool;
+        entry.payload_ref = payload.as_ref().map(|payload| payload.payload_ref.clone());
+        store.checkpoint_open_transcript_tail(NativeAiCheckpointOpenTranscriptTailInput {
+            session_id: session_id.clone(),
+            turn_id: "checkpoint-turn".to_string(),
+            terminal_status: None,
+            entries: vec![entry.clone()],
+            payloads: payload.into_iter().collect(),
+            removed_entry_ids: Vec::new(),
+            entry_order: vec![NativeAiOpenTranscriptEntryRef {
+                entry_id: entry.id,
+                entry_revision: 1,
+                ordinal: 0,
+            }],
+        })
+    }
+
+    #[test]
+    fn checkpoint_cleans_external_payload_when_transaction_fails_then_retries_without_duplicates() {
+        let (temp, base_store) = store();
+        let session_id = SessionId("fault-payload-transaction".to_string());
+        base_store.create_session(metadata(&session_id.0)).unwrap();
+        // Opening a fresh SQLite database imports its session row first, so fail
+        // the following transaction after the external payload has been written.
+        let injector = Arc::new(FaultInjector::failing(
+            DurableOperation::SqliteTransaction,
+            2,
+        ));
+        let store = base_store.with_durable_operation_interceptor(injector);
+        let payload = AiTranscriptPayloadWrite {
+            payload_ref: "payload:tool:1".to_string(),
+            value: json!({ "output": "x".repeat(128 * 1024) }),
+        };
+
+        assert!(checkpoint_entry(&store, &session_id, Some(payload.clone())).is_err());
+        assert!(
+            store
+                .load_open_transcript_tail(&session_id)
+                .unwrap()
+                .is_none()
+        );
+        let payload_dir = temp
+            .path()
+            .join("ai")
+            .join("sessions")
+            .join(AiHistoryStore::storage_key(&session_id.0))
+            .join("transcript-payloads");
+        assert!(
+            !payload_dir.exists() || fs::read_dir(&payload_dir).unwrap().next().is_none(),
+            "an uncommitted payload must be removed before retry"
+        );
+
+        checkpoint_entry(&store, &session_id, Some(payload)).unwrap();
+        let tail = store
+            .load_open_transcript_tail(&session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(tail.entries.len(), 1);
+        assert_eq!(tail.entries[0].id, "tool:1");
+        assert_eq!(tail.payloads.len(), 1);
+    }
+
+    #[test]
+    fn a_blocked_checkpoint_does_not_block_another_session() {
+        let (temp, base_store) = store();
+        let first = SessionId("blocked-checkpoint".to_string());
+        let second = SessionId("independent-checkpoint".to_string());
+        base_store.create_session(metadata(&first.0)).unwrap();
+        base_store.create_session(metadata(&second.0)).unwrap();
+        let barrier = Arc::new(TransactionBarrier::new());
+        let blocked_store = base_store
+            .clone()
+            .with_durable_operation_interceptor(barrier.clone());
+        let blocked_session = first.clone();
+        let blocked =
+            thread::spawn(move || checkpoint_entry(&blocked_store, &blocked_session, None));
+        barrier.wait_until_entered();
+
+        let independent = AiHistoryStore::new(temp.path()).unwrap();
+        let started = std::time::Instant::now();
+        checkpoint_entry(&independent, &second, None).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(
+            independent
+                .load_open_transcript_tail(&second)
+                .unwrap()
+                .is_some()
+        );
+
+        barrier.release();
+        blocked.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn jsonl_write_recovers_when_sqlite_invalidation_fails() {
+        let (temp, base_store) = store();
+        let session_id = SessionId("jsonl-invalidation-fault".to_string());
+        base_store.create_session(metadata(&session_id.0)).unwrap();
+        base_store
+            .save_transcript_window(&session_id, vec![message("message-1", "first")])
+            .unwrap();
+        base_store.transcript_storage_state(&session_id).unwrap();
+
+        let store = base_store.with_durable_operation_interceptor(Arc::new(
+            FaultInjector::failing(DurableOperation::SqliteTransaction, 1),
+        ));
+        assert!(
+            store
+                .save_transcript_window(&session_id, vec![message("message-1", "recovered")])
+                .is_err()
+        );
+
+        let reopened = AiHistoryStore::new(temp.path()).unwrap();
+        let page = reopened
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id: session_id.clone(),
+                offset: 0,
+                limit: 10,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(page.messages[0]["content"], "recovered");
+    }
+
+    #[test]
+    fn jsonl_write_recovers_when_metadata_write_fails() {
+        let (temp, base_store) = store();
+        let session_id = SessionId("metadata-write-fault".to_string());
+        base_store.create_session(metadata(&session_id.0)).unwrap();
+        // The transcript marker and index are atomic writes one and two; fail
+        // metadata after the durable transcript and index have been installed.
+        let store = base_store.with_durable_operation_interceptor(Arc::new(
+            FaultInjector::failing(DurableOperation::AtomicWrite, 3),
+        ));
+        assert!(
+            store
+                .save_transcript_window(&session_id, vec![message("message-1", "recovered")])
+                .is_err()
+        );
+
+        let reopened = AiHistoryStore::new(temp.path()).unwrap();
+        assert_eq!(
+            reopened.load_metadata(&session_id).unwrap().message_count,
+            1
+        );
+        let page = reopened
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id,
+                offset: 0,
+                limit: 10,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(page.messages[0]["content"], "recovered");
+    }
+
+    #[test]
+    fn compaction_rename_failure_keeps_the_current_index_recoverable() {
+        let (temp, base_store) = store();
+        let session_id = SessionId("compaction-rename-fault".to_string());
+        base_store.create_session(metadata(&session_id.0)).unwrap();
+        base_store
+            .save_transcript_window(&session_id, vec![message("message-1", "first")])
+            .unwrap();
+        // The second save installs the marker, index and metadata before
+        // compaction renames its replacement JSONL into place.
+        let store = base_store
+            .with_compaction_policy(HistoryCompactionPolicy {
+                min_obsolete_bytes: 1,
+                max_physical_to_indexed_ratio: 1,
+                force_physical_bytes: u64::MAX,
+            })
+            .with_durable_operation_interceptor(Arc::new(FaultInjector::failing(
+                DurableOperation::Rename,
+                5,
+            )));
+        assert!(
+            store
+                .save_transcript_window(&session_id, vec![message("message-1", "recovered")])
+                .is_err()
+        );
+
+        let reopened = AiHistoryStore::new(temp.path()).unwrap();
+        let page = reopened
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id,
+                offset: 0,
+                limit: 10,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.messages.len(), 1);
+        assert_eq!(page.messages[0]["content"], "recovered");
+    }
+
+    #[test]
+    fn storage_work_metrics_are_opt_in_numeric_and_resettable() {
+        let (_temp, store) = store();
+        let session_id = SessionId("storage-work-metrics".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+
+        store
+            .save_transcript_window(&session_id, vec![message("message-1", "disabled metrics")])
+            .unwrap();
+        assert_eq!(
+            store.work_metrics(),
+            AiStorageWorkMetricsSnapshot::default()
+        );
+
+        store.set_work_metrics_enabled(true);
+        store
+            .save_transcript_window(&session_id, vec![message("message-1", "enabled metrics")])
+            .unwrap();
+        let mut entry = transcript_entry(&session_id, "message:tail-1", "tail");
+        entry.payload_ref = Some("tail:message-1".to_string());
+        store
+            .checkpoint_open_transcript_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: "turn-1".to_string(),
+                terminal_status: None,
+                entries: vec![entry.clone()],
+                payloads: vec![AiTranscriptPayloadWrite {
+                    payload_ref: "tail:message-1".to_string(),
+                    value: json!({ "kind": "message", "content": "tail" }),
+                }],
+                removed_entry_ids: Vec::new(),
+                entry_order: vec![NativeAiOpenTranscriptEntryRef {
+                    entry_id: entry.id,
+                    entry_revision: 1,
+                    ordinal: 0,
+                }],
+            })
+            .unwrap();
+
+        let metrics = store.work_metrics();
+        assert_eq!(metrics.checkpoint_count, 1);
+        assert!(metrics.durable_write_bytes > 0);
+        assert!(metrics.serialized_bytes > 0);
+        assert!(metrics.sync_count > 0);
+
+        store.reset_work_metrics();
+        assert_eq!(
+            store.work_metrics(),
+            AiStorageWorkMetricsSnapshot::default()
+        );
     }
 
     fn legacy_connection() -> Connection {

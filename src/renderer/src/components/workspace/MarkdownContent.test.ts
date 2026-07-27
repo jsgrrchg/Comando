@@ -10,11 +10,20 @@ import {
     serializeComposerDisplayFolderMention,
     serializeComposerDisplaySelectionMention,
 } from "@shared/composer-display-markers";
+import {
+    readChatPerformanceCounters,
+    resetChatPerformanceCounters,
+} from "@renderer/app/debug/chatPerformanceCounters";
 
 import {
     MarkdownContent,
     parseMarkdownBlocksProgressively,
 } from "./MarkdownContent";
+import {
+    getStreamingMarkdownParseCacheDiagnostics,
+    resetStreamingMarkdownParseCacheForTests,
+    STREAMING_MARKDOWN_PARSE_CACHE_MAX_BYTES,
+} from "./streamingMarkdownProjection";
 import { resolveProjectFileReference } from "./projectFileReferences";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
@@ -24,6 +33,8 @@ const mountedRoots: Root[] = [];
 const mountedContainers: HTMLDivElement[] = [];
 
 afterEach(() => {
+    resetChatPerformanceCounters();
+    resetStreamingMarkdownParseCacheForTests();
     for (const root of mountedRoots.splice(0)) {
         act(() => {
             root.unmount();
@@ -53,6 +64,23 @@ function renderInteractiveMarkdownContent(
 }
 
 describe("MarkdownContent", () => {
+    it("distinguishes full Markdown parses from mutable suffix parses", () => {
+        resetChatPerformanceCounters();
+        const first = parseMarkdownBlocksProgressively(
+            null,
+            "Stable paragraph.\n\nMutable",
+        );
+        parseMarkdownBlocksProgressively(
+            first,
+            "Stable paragraph.\n\nMutable suffix",
+        );
+
+        expect(readChatPerformanceCounters()).toMatchObject({
+            markdown_full_parses: 1,
+            markdown_suffix_parses: 1,
+        });
+    });
+
     it("reuses a stable plain-text prefix without changing the parsed blocks", () => {
         const initial = "First paragraph.\n\nSecond paragraph";
         const next = `${initial} grows safely`;
@@ -225,6 +253,62 @@ describe("MarkdownContent", () => {
         expect(projection.stableBlocks[0]).toBe(sealedBlocks[0]);
         expect(projection.stableBlocks[1]).toBe(sealedBlocks[1]);
         expect(projection.blocks.at(-1)?.isMutable).toBe(true);
+    });
+
+    it("bounds a long live Markdown cache while retaining the sealed prefix", () => {
+        const stablePrefix = [
+            "Introduction paragraph.",
+            "",
+            "- first item",
+            "- second item",
+            "",
+            "name | value",
+            "--- | ---",
+            "first | 1",
+            "",
+            "```json",
+            '{ "stable": true }',
+            "```",
+            "",
+        ].join("\n");
+        let content = `${stablePrefix}\n\`\`\`ts\n`;
+        let projection = parseMarkdownBlocksProgressively(null, content);
+        const sealedBlocks = projection.stableBlocks;
+
+        resetChatPerformanceCounters();
+        for (let index = 0; index < 300; index += 1) {
+            content += `const streamed${index} = "${"x".repeat(2_048)}";\n`;
+            projection = parseMarkdownBlocksProgressively(projection, content);
+        }
+
+        const diagnostics = getStreamingMarkdownParseCacheDiagnostics();
+        expect(projection.stableBlocks).toEqual(sealedBlocks);
+        expect(projection.stableBlocks[0]).toBe(sealedBlocks[0]);
+        expect(projection.blocks.at(-1)).toMatchObject({
+            isMutable: true,
+            type: "code",
+        });
+        expect(readChatPerformanceCounters()).toMatchObject({
+            markdown_full_parses: 0,
+            markdown_suffix_parses: 300,
+        });
+        expect(readChatPerformanceCounters().markdown_chars_reparsed).toBeLessThan(
+            1_000_000,
+        );
+        expect(diagnostics.residentBytes).toBeLessThanOrEqual(
+            STREAMING_MARKDOWN_PARSE_CACHE_MAX_BYTES,
+        );
+        expect(diagnostics.entries).toBeLessThan(16);
+
+        const completedContent = `${content}\`\`\`\n\nCompleted paragraph.`;
+        const completed = parseMarkdownBlocksProgressively(
+            projection,
+            completedContent,
+            { sealAll: true },
+        );
+        expect(completed.content).toBe(completedContent);
+        expect(completed.stableContentLength).toBe(completed.content.length);
+        expect(completed.blocks.every((block) => !block.isMutable)).toBe(true);
     });
 
     it("renders the published live revision without scheduling another frame", () => {

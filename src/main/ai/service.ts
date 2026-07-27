@@ -500,6 +500,10 @@ export class AiService {
     >();
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
+    readonly #terminalOutputBytesBySessionId = new Map<
+        string,
+        Map<string, number>
+    >();
     readonly #liveTranscriptTails = new AiLiveTranscriptTailStore();
     readonly #loadedTranscriptBlockMetadataSessionIds = new Set<string>();
     readonly #legacyTranscriptSessionIds = new Set<string>();
@@ -826,7 +830,10 @@ export class AiService {
         }
 
         this.#liveTranscriptTails.applyEvent(event);
-        this.#scheduleTranscriptCheckpointAfterRecovery(event.sessionId);
+        this.#scheduleTranscriptCheckpointAfterRecovery(
+            event.sessionId,
+            this.#getTranscriptCheckpointChangedBytes(event),
+        );
         if (event.kind === "turn-status") {
             this.#transcriptPersistence?.requestSeal(
                 event.sessionId,
@@ -2856,10 +2863,16 @@ export class AiService {
         );
     }
 
-    #scheduleTranscriptCheckpointAfterRecovery(sessionId: string): void {
+    #scheduleTranscriptCheckpointAfterRecovery(
+        sessionId: string,
+        changedBytes = 0,
+    ): void {
         void this.#recoverTranscriptTail(sessionId)
             .then(() => {
-                this.#transcriptPersistence?.scheduleCheckpoint(sessionId);
+                this.#transcriptPersistence?.scheduleCheckpoint(
+                    sessionId,
+                    changedBytes,
+                );
             })
             .catch((error: unknown) => {
                 debugBenignError(
@@ -2867,6 +2880,32 @@ export class AiService {
                     error,
                 );
             });
+    }
+
+    #getTranscriptCheckpointChangedBytes(
+        event: AiSessionDomainEvent,
+    ): number {
+        if (event.kind === "message-delta" || event.kind === "thinking-delta") {
+            return Buffer.byteLength(event.delta, "utf8");
+        }
+        if (event.kind !== "tool-activity") {
+            return 0;
+        }
+
+        const outputBytes = Buffer.byteLength(
+            event.activity.terminalOutput ?? "",
+            "utf8",
+        );
+        const outputs = this.#terminalOutputBytesBySessionId.get(
+            event.sessionId,
+        ) ?? new Map<string, number>();
+        this.#terminalOutputBytesBySessionId.set(event.sessionId, outputs);
+        const previousBytes = outputs.get(event.activity.id) ?? 0;
+        outputs.set(event.activity.id, outputBytes);
+        // A replacement may shrink after a retry; count its new payload too.
+        return outputBytes >= previousBytes
+            ? outputBytes - previousBytes
+            : outputBytes;
     }
 
     async #recoverTranscriptTail(
@@ -3082,6 +3121,7 @@ export class AiService {
     #detachLiveSession(sessionId: string): void {
         this.#activeCustomRuntimeLaunches.delete(sessionId);
         this.#liveSnapshots.delete(sessionId);
+        this.#terminalOutputBytesBySessionId.delete(sessionId);
         this.#liveSessionContexts.delete(sessionId);
         this.#liveSessionTouches.delete(sessionId);
         this.#freezingSessionIds.delete(sessionId);
