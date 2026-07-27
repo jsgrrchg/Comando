@@ -107,3 +107,44 @@ test("fast scrolling keeps every sampled viewport covered", async ({
         diagnostic.samples.length,
     );
 });
+
+test("parameterized scenarios retain replayable renderer artifacts", async ({
+    page,
+}, testInfo) => {
+    await page.evaluate(async () => {
+        await window.comandoTranscriptHarness.loadScenario({
+            activeTools: 80,
+            aggregateDiffBytes: 512 * 1024,
+            deltaBytes: 512,
+            diffCount: 20,
+            historyMessages: 1_000,
+            seed: 7_026,
+            sessionCount: 2,
+            streamingDeltas: 8,
+            terminalOutputBytes: 128 * 1024,
+        });
+        await window.comandoTranscriptHarness.runScrollPattern({
+            positions: [0, 0.2, 0.7, 0.35, 1],
+        });
+        await window.comandoTranscriptHarness.startStreaming({
+            deltaLimit: 8,
+            finalText: "\n\n```ts\nexport const e2eScenario = true;\n```\n",
+        });
+        await window.comandoTranscriptHarness.applyMemoryPressure();
+    });
+    const metrics = await page.evaluate(() =>
+        window.comandoTranscriptHarness.collectMetrics(),
+    );
+    await testInfo.attach("transcript-parameterized-scenario", {
+        body: JSON.stringify(metrics, null, 2),
+        contentType: "application/json",
+    });
+
+    expect(metrics.loadScenario.scenario.seed).toBe(7_026);
+    expect(metrics.loadScenario.generated.sessions).toBe(2);
+    expect(metrics.loadScenario.generated.tools).toBe(80);
+    expect(metrics.samples.length).toBeGreaterThanOrEqual(5);
+    expect(metrics.virtualRanges.length).toBeGreaterThan(0);
+    expect(metrics.snapshot.mountedHistoryRowIds.length).toBeGreaterThan(0);
+    expect(metrics.workCounters.timeline_full_rebuilds).toBe(0);
+});
