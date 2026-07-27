@@ -134,6 +134,7 @@ interface TranscriptFastScrollDiagnostic {
 }
 
 export interface TranscriptHarnessScenarioConfig extends ChatLoadScenario {
+    readonly expandTools?: boolean;
     readonly sessionIndex?: number;
 }
 
@@ -156,6 +157,44 @@ interface TranscriptHarnessMetrics {
     readonly workCounters: ChatPerformanceCounterSnapshot;
 }
 
+interface TranscriptResourceMetrics {
+    readonly activeResizeObservers: number | null;
+    readonly domNodes: number;
+    readonly heapUsedBytes: number | null;
+    readonly residentBlocks: number;
+    readonly residentPayloadBytes: number;
+    readonly retainedArtifacts: number;
+}
+
+interface TranscriptSessionCycleSample extends TranscriptResourceMetrics {
+    readonly cycle: number;
+}
+
+interface TranscriptSessionCyclesDiagnostic {
+    readonly samples: readonly TranscriptSessionCycleSample[];
+    readonly steadyState: {
+        readonly firstHeapUsedBytes: number | null;
+        readonly heapGrowthRatio: number | null;
+        readonly lastHeapUsedBytes: number | null;
+        readonly maxActiveResizeObservers: number | null;
+        readonly maxDomNodes: number;
+        readonly maxResidentBlocks: number;
+        readonly maxResidentPayloadBytes: number;
+        readonly maxRetainedArtifacts: number;
+    };
+}
+
+interface TranscriptSoakConfig {
+    readonly durationMs?: number;
+    readonly sampleIntervalMs?: number;
+}
+
+interface TranscriptSoakDiagnostic {
+    readonly cycles: number;
+    readonly durationMs: number;
+    readonly samples: readonly TranscriptSessionCycleSample[];
+}
+
 interface MutableTranscriptStreamingDiagnostic {
     longTasks: TranscriptDiagnosticEvent[];
     mutations: TranscriptDiagnosticEvent[];
@@ -170,6 +209,8 @@ interface ComandoTranscriptHarness {
     appendDelta(delta: string): Promise<void>;
     collectMetrics(): TranscriptHarnessMetrics;
     loadScenario(config: TranscriptHarnessScenarioConfig): Promise<void>;
+    runSessionCycles(cycles?: number): Promise<TranscriptSessionCyclesDiagnostic>;
+    runSoakDiagnostic(config?: TranscriptSoakConfig): Promise<TranscriptSoakDiagnostic>;
     runFastScrollDiagnostic(): Promise<TranscriptFastScrollDiagnostic>;
     runScrollPattern(pattern: TranscriptScrollPattern): Promise<void>;
     runStreamingDiagnostic(): Promise<TranscriptStreamingDiagnostic>;
@@ -191,6 +232,45 @@ declare global {
 
 setChatPerformanceProbeEnabledForTests(true);
 
+let activeResizeObserverCount = 0;
+const NativeResizeObserver = globalThis.ResizeObserver;
+
+if (NativeResizeObserver) {
+    // Browser APIs do not expose observer liveness. Wrapping it in the isolated
+    // harness lets the soak test catch observers retained after a tab switch.
+    class TrackedResizeObserver implements ResizeObserver {
+        private readonly observed = new Set<Element>();
+        private readonly nativeObserver: ResizeObserver;
+
+        constructor(callback: ResizeObserverCallback) {
+            this.nativeObserver = new NativeResizeObserver(callback);
+        }
+
+        disconnect() {
+            activeResizeObserverCount -= this.observed.size;
+            this.observed.clear();
+            this.nativeObserver.disconnect();
+        }
+
+        observe(target: Element, options?: ResizeObserverOptions) {
+            if (!this.observed.has(target)) {
+                this.observed.add(target);
+                activeResizeObserverCount += 1;
+            }
+            this.nativeObserver.observe(target, options);
+        }
+
+        unobserve(target: Element) {
+            if (this.observed.delete(target)) {
+                activeResizeObserverCount -= 1;
+            }
+            this.nativeObserver.unobserve(target);
+        }
+    }
+
+    globalThis.ResizeObserver = TrackedResizeObserver;
+}
+
 function waitForAnimationFrames(count: number): Promise<void> {
     return new Promise((resolve) => {
         const wait = (remaining: number) => {
@@ -202,6 +282,72 @@ function waitForAnimationFrames(count: number): Promise<void> {
         };
         wait(count);
     });
+}
+
+function waitForMilliseconds(milliseconds: number): Promise<void> {
+    return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function readHeapUsedBytes(): number | null {
+    const memory = (performance as Performance & {
+        memory?: { readonly usedJSHeapSize?: number };
+    }).memory;
+    return typeof memory?.usedJSHeapSize === "number"
+        ? memory.usedJSHeapSize
+        : null;
+}
+
+function countFixturePayloadBytes(items: readonly TranscriptTimelineItem[]): number {
+    let bytes = 0;
+    for (const item of items) {
+        if (item.kind !== "activity-entry" || item.item.kind !== "tool") continue;
+        const activity = item.item.entry.reviewEntry.activity;
+        bytes += new TextEncoder().encode(activity.terminalOutput ?? "").byteLength;
+        bytes += activity.diffs.reduce(
+            (total, diff) =>
+                total + (diff.newText?.length ?? 0) + (diff.oldText?.length ?? 0),
+            0,
+        );
+    }
+    return bytes;
+}
+
+function describeSteadyState(
+    samples: readonly TranscriptSessionCycleSample[],
+): TranscriptSessionCyclesDiagnostic["steadyState"] {
+    const steadySamples = samples.slice(10);
+    const firstHeapUsedBytes = steadySamples[0]?.heapUsedBytes ?? null;
+    const lastHeapUsedBytes = steadySamples.at(-1)?.heapUsedBytes ?? null;
+    return {
+        firstHeapUsedBytes,
+        heapGrowthRatio:
+            firstHeapUsedBytes && lastHeapUsedBytes
+                ? (lastHeapUsedBytes - firstHeapUsedBytes) / firstHeapUsedBytes
+                : null,
+        lastHeapUsedBytes,
+        maxActiveResizeObservers: steadySamples.every(
+            (sample) => sample.activeResizeObservers === null,
+        )
+            ? null
+            : Math.max(
+                  ...steadySamples.map(
+                      (sample) => sample.activeResizeObservers ?? 0,
+                  ),
+              ),
+        maxDomNodes: Math.max(0, ...steadySamples.map((sample) => sample.domNodes)),
+        maxResidentBlocks: Math.max(
+            0,
+            ...steadySamples.map((sample) => sample.residentBlocks),
+        ),
+        maxResidentPayloadBytes: Math.max(
+            0,
+            ...steadySamples.map((sample) => sample.residentPayloadBytes),
+        ),
+        maxRetainedArtifacts: Math.max(
+            0,
+            ...steadySamples.map((sample) => sample.retainedArtifacts),
+        ),
+    };
 }
 
 function createEmptyDiagnostic(): MutableTranscriptStreamingDiagnostic {
@@ -290,7 +436,7 @@ function createMessageRow(
         kind,
         status,
     };
-    return { id: `message:${id}`, kind: "message", message };
+    return { blockId: null, id: `message:${id}`, kind: "message", message };
 }
 
 function createInitialHistory(): readonly ChatTimelineRow[] {
@@ -332,7 +478,7 @@ function createScenarioTimeline(
         // The harness begins collapsed, matching a cold chat view. Scenarios
         // can still exercise virtual scroll without materializing every tool.
         items: flattenTranscriptTimelineItems(model.orderedRows, {
-            defaultExpanded: false,
+            defaultExpanded: config.expandTools ?? false,
             expansionByGroupId: {},
         }),
         summary: createChatLoadDiagnosticSummary(config),
@@ -397,6 +543,7 @@ function TranscriptHarness() {
         createChatLoadDiagnosticSummary(INITIAL_HISTORY_SCENARIO),
     );
     const scenarioDeltasRef = useRef<readonly string[]>([]);
+    const scenarioItemsRef = useRef<readonly TranscriptTimelineItem[]>([]);
     const [scrollCoordinator] = useState<ChatScrollCoordinator>(
         createChatScrollCoordinator,
     );
@@ -436,6 +583,35 @@ function TranscriptHarness() {
             scrollHeight,
             scrollTop,
         };
+    }, []);
+
+    const collectResourceMetrics = useCallback((): TranscriptResourceMetrics => {
+        const mountedRows = document.querySelectorAll("[data-list-key]").length;
+        return {
+            activeResizeObservers: NativeResizeObserver
+                ? activeResizeObserverCount
+                : null,
+            domNodes: document.querySelectorAll("*").length,
+            heapUsedBytes: readHeapUsedBytes(),
+            // Mounted virtual rows are the renderer's resident transcript blocks.
+            // The complete fixture remains in a ref only for deterministic reloads.
+            residentBlocks: mountedRows,
+            residentPayloadBytes: countFixturePayloadBytes(
+                scenarioItemsRef.current,
+            ),
+            retainedArtifacts:
+                scenarioItemsRef.current.length + scenarioDeltasRef.current.length,
+        };
+    }, []);
+
+    const forceGarbageCollection = useCallback(async () => {
+        const gc = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+        // Chromium exposes gc only when the diagnostic runner asks for it.
+        // Repeating it avoids sampling an object that was promoted one cycle ago.
+        gc?.();
+        await waitForAnimationFrames(1);
+        gc?.();
+        await waitForAnimationFrames(1);
     }, []);
 
     const recordSample = useCallback(
@@ -506,7 +682,11 @@ function TranscriptHarness() {
 
     const requestScroll = useCallback(
         (request: {
-            readonly reason: "follow-end" | "measure-anchor" | "scroll-to-index";
+            readonly reason:
+                | "follow-end"
+                | "measure-anchor"
+                | "restore"
+                | "scroll-to-index";
             readonly target: "end" | number;
         }) => {
             scrollCoordinator.request(request, {
@@ -678,6 +858,7 @@ function TranscriptHarness() {
                 const next = createScenarioTimeline(config);
                 scenarioSummaryRef.current = next.summary;
                 scenarioDeltasRef.current = next.deltas;
+                scenarioItemsRef.current = next.items;
                 diagnostic.current = createEmptyDiagnostic();
                 diagnosticFrame.current = 0;
                 previousFrameAt.current = 0;
@@ -687,6 +868,65 @@ function TranscriptHarness() {
                     setStreamingText(null);
                 });
                 await waitForAnimationFrames(4);
+            },
+            runSessionCycles: async (cycles = 50) => {
+                const samples: TranscriptSessionCycleSample[] = [];
+                const cycleCount = Math.max(1, Math.floor(cycles));
+                const scenario = {
+                    activeTools: 24,
+                    aggregateDiffBytes: 384 * 1024,
+                    deltaBytes: 768,
+                    diffCount: 12,
+                    expandTools: true,
+                    historyMessages: 512,
+                    seed: 7_027,
+                    sessionCount: 2,
+                    streamingDeltas: 4,
+                    terminalOutputBytes: 128 * 1024,
+                } satisfies TranscriptHarnessScenarioConfig;
+
+                for (let cycle = 0; cycle < cycleCount; cycle += 1) {
+                    await window.comandoTranscriptHarness.loadScenario({
+                        ...scenario,
+                        sessionIndex: cycle % scenario.sessionCount,
+                    });
+                    await window.comandoTranscriptHarness.runScrollPattern({
+                        positions: [1, 0.25, 0.75, 1],
+                    });
+                    await window.comandoTranscriptHarness.startStreaming({
+                        deltaLimit: 2,
+                        finalText: "\n\n```ts\nexport const cycle = true;\n```\n",
+                    });
+                    await window.comandoTranscriptHarness.applyMemoryPressure();
+                    await forceGarbageCollection();
+                    samples.push({ cycle: cycle + 1, ...collectResourceMetrics() });
+                }
+
+                return { samples, steadyState: describeSteadyState(samples) };
+            },
+            runSoakDiagnostic: async (config = {}) => {
+                const durationMs = config.durationMs ?? 30 * 60 * 1_000;
+                const sampleIntervalMs = config.sampleIntervalMs ?? 30_000;
+                const startedAt = performance.now();
+                const samples: TranscriptSessionCycleSample[] = [];
+                let cycle = 0;
+                let nextSampleAt = startedAt;
+
+                while (performance.now() - startedAt < durationMs) {
+                    await window.comandoTranscriptHarness.runSessionCycles(1);
+                    cycle += 1;
+                    const now = performance.now();
+                    if (now >= nextSampleAt) {
+                        await forceGarbageCollection();
+                        samples.push({ cycle, ...collectResourceMetrics() });
+                        nextSampleAt = now + sampleIntervalMs;
+                    }
+                    // This keeps the soak representative of a live renderer instead
+                    // of turning it into an unrealistic tight-loop CPU benchmark.
+                    await waitForMilliseconds(250);
+                }
+
+                return { cycles: cycle, durationMs, samples };
             },
             runFastScrollDiagnostic: async () => {
                 const scrollElement = scrollRef.current;

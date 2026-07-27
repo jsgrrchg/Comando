@@ -65,6 +65,7 @@
         "test": "vitest run",
         "test:watch": "vitest",
         "test:e2e": "playwright test --config e2e/playwright.config.ts",
+        "test:e2e:soak": "RUN_CHAT_SOAK=1 playwright test --config e2e/playwright.config.ts --grep '30 minute renderer soak'",
         "test:e2e:ui": "playwright test --config e2e/playwright.config.ts --ui",
         "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
         "verify:ai-runtimes": "node scripts/ai/verify-ai-runtimes.mjs",

@@ -148,3 +148,69 @@ test("parameterized scenarios retain replayable renderer artifacts", async ({
     expect(metrics.snapshot.mountedHistoryRowIds.length).toBeGreaterThan(0);
     expect(metrics.workCounters.timeline_full_rebuilds).toBe(0);
 });
+
+test("session cycles return renderer resources to a steady state after GC", async ({
+    page,
+}, testInfo) => {
+    const diagnostic = await page.evaluate(async () => {
+        return window.comandoTranscriptHarness.runSessionCycles(50);
+    });
+    await testInfo.attach("transcript-session-cycles", {
+        body: JSON.stringify(diagnostic, null, 2),
+        contentType: "application/json",
+    });
+
+    expect(diagnostic.samples).toHaveLength(50);
+    const steadySamples = diagnostic.samples.slice(10);
+    for (const sessionParity of [0, 1]) {
+        const samplesForSession = steadySamples.filter(
+            (sample) => sample.cycle % 2 === sessionParity,
+        );
+        // The two fixture sessions have intentionally different payload sizes.
+        // Each must nevertheless settle to one bounded footprint on revisit.
+        expect(
+            new Set(samplesForSession.map((sample) => sample.residentPayloadBytes))
+                .size,
+        ).toBe(1);
+        expect(
+            new Set(samplesForSession.map((sample) => sample.retainedArtifacts))
+                .size,
+        ).toBe(1);
+        expect(
+            new Set(samplesForSession.map((sample) => sample.residentBlocks)).size,
+        ).toBe(1);
+        expect(
+            new Set(samplesForSession.map((sample) => sample.domNodes)).size,
+        ).toBe(1);
+        const observerCounts = samplesForSession
+            .map((sample) => sample.activeResizeObservers)
+            .filter((count): count is number => count !== null);
+        if (observerCounts.length > 0) {
+            expect(new Set(observerCounts).size).toBe(1);
+        }
+    }
+    expect(diagnostic.steadyState.maxResidentBlocks).toBeLessThanOrEqual(80);
+    if (diagnostic.steadyState.heapGrowthRatio !== null) {
+        // This is a trend gate after warm-up, not a one-sample leak assertion.
+        expect(diagnostic.steadyState.heapGrowthRatio).toBeLessThanOrEqual(0.1);
+    }
+});
+
+test("30 minute renderer soak retains bounded diagnostics", async ({ page }, testInfo) => {
+    test.skip(
+        process.env.RUN_CHAT_SOAK !== "1",
+        "Run manually or weekly with RUN_CHAT_SOAK=1.",
+    );
+    test.setTimeout(31 * 60 * 1_000);
+
+    const diagnostic = await page.evaluate(async () => {
+        return window.comandoTranscriptHarness.runSoakDiagnostic();
+    });
+    await testInfo.attach("transcript-30-minute-soak", {
+        body: JSON.stringify(diagnostic, null, 2),
+        contentType: "application/json",
+    });
+
+    expect(diagnostic.durationMs).toBe(30 * 60 * 1_000);
+    expect(diagnostic.samples.length).toBeGreaterThanOrEqual(60);
+});

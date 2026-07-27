@@ -10,6 +10,10 @@ export default defineConfig({
     reporter: process.env.CI ? "github" : "list",
     use: {
         baseURL: "http://localhost:5181",
+        launchOptions: {
+            // The cycle gate measures only post-GC heap, not allocator noise.
+            args: ["--js-flags=--expose-gc"],
+        },
         screenshot: "only-on-failure",
         trace: "retain-on-failure",
     },
