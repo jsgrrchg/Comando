@@ -16,6 +16,7 @@ import {
 
 import { GitDiffFileContent } from "./GitDiffFileContent";
 import { GitBadge, GitEmptyState } from "./GitUi";
+import { canRenderGitDiffWithPierre } from "./PierreGitDiffFile";
 import type {
     GitDiffFile,
     GitDiffsViewProps,
@@ -527,7 +528,9 @@ const DiffFileSurface = memo(function DiffFileSurface({
                 ))}
             </div>
         ) : null;
+    const canRenderWithPierre = canRenderGitDiffWithPierre(file);
     const virtualizeLines =
+        !canRenderWithPierre &&
         scrollContainerRef !== undefined &&
         shouldVirtualizeDiffLines({
             allowLineVirtualization,
@@ -582,6 +585,7 @@ const DiffFileSurface = memo(function DiffFileSurface({
                     codeFontFamily={codeFontFamily}
                     codeFontSize={codeFontSize}
                     codeLineHeight={codeLineHeight}
+                    canRenderWithPierre={canRenderWithPierre}
                     file={file}
                     lineWrapping={lineWrapping}
                     scrollContainerRef={scrollContainerRef}

@@ -3,13 +3,11 @@ import type { RefObject } from "react";
 import { GitEmptyState } from "./GitUi";
 import { LegacyGitDiffHunks } from "./LegacyGitDiffHunks";
 import { PierreGitDiffErrorBoundary } from "./PierreGitDiffErrorBoundary";
-import {
-    canRenderGitDiffWithPierre,
-    PierreGitDiffFile,
-} from "./PierreGitDiffFile";
+import { PierreGitDiffFile } from "./PierreGitDiffFile";
 import type { GitDiffFile } from "./types";
 
 export function GitDiffFileContent({
+    canRenderWithPierre,
     codeFontFamily,
     codeFontSize,
     codeLineHeight,
@@ -18,6 +16,7 @@ export function GitDiffFileContent({
     scrollContainerRef,
     virtualizeLines,
 }: {
+    readonly canRenderWithPierre: boolean;
     readonly codeFontFamily: string | null;
     readonly codeFontSize: number | null;
     readonly codeLineHeight: number | null;
@@ -50,7 +49,7 @@ export function GitDiffFileContent({
             />
         ) : null;
 
-    if (canRenderGitDiffWithPierre(file)) {
+    if (canRenderWithPierre) {
         return (
             <PierreGitDiffErrorBoundary
                 fallback={legacyHunks ?? <EmptyGitDiffState file={file} />}

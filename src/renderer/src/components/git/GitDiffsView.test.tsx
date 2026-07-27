@@ -256,6 +256,25 @@ describe("GitDiffsView", () => {
         expect(markup).not.toContain("giant-diff-line-1000");
     });
 
+    it("delegates complete large files to Pierre without legacy line virtualization", () => {
+        const markup = renderToStaticMarkup(
+            <GitDiffsView
+                files={[
+                    createLargeLineDiffFile({
+                        newText: "const value = 'after';\n",
+                        oldText: "const value = 'before';\n",
+                    }),
+                ]}
+                lineWrapping={false}
+                showFileSelector={false}
+            />,
+        );
+
+        expect(markup).toContain("<diffs");
+        expect(markup).not.toContain('data-virtualized-diff-lines="true"');
+        expect(markup).not.toContain("giant-diff-line-1");
+    });
+
     it("keeps horizontal sizing for virtualized non-wrapping diff lines", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
