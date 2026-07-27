@@ -13,6 +13,7 @@ export interface MarkdownBlock {
 export interface ParsedMarkdownBlocks {
     readonly blocks: readonly MarkdownBlock[];
     readonly content: string;
+    readonly openFence: OpenMarkdownFence | null;
     readonly stableBlocks: readonly MarkdownBlock[];
     readonly stableContentLength: number;
 }
@@ -21,6 +22,11 @@ interface MarkdownFenceOpening {
     readonly char: "`" | "~";
     readonly info: string;
     readonly length: number;
+}
+
+interface OpenMarkdownFence extends MarkdownFenceOpening {
+    readonly contentStart: number;
+    readonly rawContent: string;
 }
 
 interface TextRange {
@@ -35,25 +41,73 @@ interface ParsedSegmentBlock {
     readonly type: "code" | "text";
 }
 
-const PARSED_BLOCK_CACHE_LIMIT = 250;
-const parsedBlockCache = new Map<string, readonly ParsedSegmentBlock[]>();
+export const STREAMING_MARKDOWN_PARSE_CACHE_MAX_BYTES = 2 * 1024 * 1024;
+
+interface CachedParsedBlocks {
+    readonly blocks: readonly ParsedSegmentBlock[];
+    readonly estimatedBytes: number;
+}
+
+const parsedBlockCache = new Map<string, CachedParsedBlocks>();
+let parsedBlockCacheBytes = 0;
 const listItemPattern = /^\s*(?:[-+*]|\d+[.)])\s+/m;
 
 function rememberParsedBlocks(
     text: string,
     blocks: readonly ParsedSegmentBlock[],
 ): readonly ParsedSegmentBlock[] {
-    if (parsedBlockCache.has(text)) {
+    const previous = parsedBlockCache.get(text);
+    if (previous) {
         parsedBlockCache.delete(text);
+        parsedBlockCacheBytes -= previous.estimatedBytes;
     }
-    parsedBlockCache.set(text, blocks);
-    if (parsedBlockCache.size > PARSED_BLOCK_CACHE_LIMIT) {
+    const estimatedBytes = estimateParsedBlocksBytes(text, blocks);
+    if (estimatedBytes > STREAMING_MARKDOWN_PARSE_CACHE_MAX_BYTES) {
+        return blocks;
+    }
+
+    parsedBlockCache.set(text, { blocks, estimatedBytes });
+    parsedBlockCacheBytes += estimatedBytes;
+    while (
+        parsedBlockCacheBytes > STREAMING_MARKDOWN_PARSE_CACHE_MAX_BYTES
+    ) {
         const oldestKey = parsedBlockCache.keys().next().value;
-        if (oldestKey !== undefined) {
-            parsedBlockCache.delete(oldestKey);
-        }
+        if (oldestKey === undefined) break;
+        const oldest = parsedBlockCache.get(oldestKey);
+        parsedBlockCache.delete(oldestKey);
+        parsedBlockCacheBytes -= oldest?.estimatedBytes ?? 0;
     }
     return blocks;
+}
+
+function estimateParsedBlocksBytes(
+    text: string,
+    blocks: readonly ParsedSegmentBlock[],
+): number {
+    // Parsed blocks retain text slices in addition to the lookup key.
+    return (
+        text.length +
+        blocks.reduce(
+            (total, block) => total + block.content.length + block.info.length,
+            0,
+        )
+    ) * 2;
+}
+
+export function getStreamingMarkdownParseCacheDiagnostics(): {
+    readonly entries: number;
+    readonly residentBytes: number;
+} {
+    return {
+        entries: parsedBlockCache.size,
+        residentBytes: parsedBlockCacheBytes,
+    };
+}
+
+export function resetStreamingMarkdownParseCacheForTests(): void {
+    // Tests need isolation because this module-level LRU intentionally survives renders.
+    parsedBlockCache.clear();
+    parsedBlockCacheBytes = 0;
 }
 
 function parseMarkdownFenceOpening(lineText: string): MarkdownFenceOpening | null {
@@ -117,11 +171,41 @@ function findMarkdownFenceClosing(
     return null;
 }
 
+function findOpenMarkdownFence(
+    text: string,
+    startOffset: number,
+): OpenMarkdownFence | null {
+    let cursor = startOffset;
+    while (cursor < text.length) {
+        const lineEnd = text.indexOf("\n", cursor);
+        const lineTo = lineEnd === -1 ? text.length : lineEnd;
+        const opening = parseMarkdownFenceOpening(text.slice(cursor, lineTo));
+        if (!opening) {
+            cursor = lineEnd === -1 ? text.length : lineEnd + 1;
+            continue;
+        }
+        const contentStart = lineEnd === -1 ? lineTo : lineEnd + 1;
+        const closing = findMarkdownFenceClosing(text, contentStart, opening);
+        if (!closing) {
+            return {
+                ...opening,
+                contentStart,
+                rawContent: text.slice(contentStart),
+            };
+        }
+        cursor = closing.to;
+    }
+    return null;
+}
+
 function parseBlocksUnmeasured(text: string): readonly ParsedSegmentBlock[] {
     const cached = parsedBlockCache.get(text);
     if (cached) {
         incrementChatPerformanceCounter("markdown_cache_hits");
-        return cached;
+        // Refresh the LRU position without changing the cached byte total.
+        parsedBlockCache.delete(text);
+        parsedBlockCache.set(text, cached);
+        return cached.blocks;
     }
 
     incrementChatPerformanceCounter("markdown_chars_reparsed", text.length);
@@ -303,8 +387,55 @@ function projectInitialContent(
     return {
         blocks: [...stableBlocks, ...mutableBlocks],
         content,
+        openFence: sealAll
+            ? null
+            : findOpenMarkdownFence(content, stableContentLength),
         stableBlocks,
         stableContentLength,
+    };
+}
+
+function patchOpenFence(
+    previous: ParsedMarkdownBlocks,
+    content: string,
+): ParsedMarkdownBlocks | null {
+    const openFence = previous.openFence;
+    const previousMutableBlock = previous.blocks.at(-1);
+    if (
+        !openFence ||
+        !previousMutableBlock ||
+        previousMutableBlock.type !== "code" ||
+        !previousMutableBlock.isMutable
+    ) {
+        return null;
+    }
+
+    const delta = content.slice(previous.content.length);
+    const boundaryStart = openFence.rawContent.lastIndexOf("\n") + 1;
+    if (
+        findMarkdownFenceClosing(
+            `${openFence.rawContent.slice(boundaryStart)}${delta}`,
+            0,
+            openFence,
+        )
+    ) {
+        return null;
+    }
+
+    // The fence body itself stays mutable, but only the new suffix is inspected
+    // for a closing delimiter. Its already-known structure is retained.
+    incrementChatPerformanceCounter("markdown_chars_reparsed", delta.length);
+    const rawContent = `${openFence.rawContent}${delta}`;
+    const mutableBlock: MarkdownBlock = {
+        ...previousMutableBlock,
+        content: rawContent.replace(/\n$/, ""),
+    };
+    return {
+        blocks: [...previous.stableBlocks, mutableBlock],
+        content,
+        openFence: { ...openFence, rawContent },
+        stableBlocks: previous.stableBlocks,
+        stableContentLength: previous.stableContentLength,
     };
 }
 
@@ -319,6 +450,12 @@ export function parseMarkdownBlocksProgressively(
     }
 
     incrementChatPerformanceCounter("markdown_suffix_parses");
+    if (!sealAll) {
+        const patched = patchOpenFence(previous, content);
+        if (patched) {
+            return patched;
+        }
+    }
     const mutableContent = content.slice(previous.stableContentLength);
     const newlyStableLength = sealAll
         ? mutableContent.length
@@ -340,6 +477,9 @@ export function parseMarkdownBlocksProgressively(
     return {
         blocks: [...stableBlocks, ...mutableBlocks],
         content,
+        openFence: sealAll
+            ? null
+            : findOpenMarkdownFence(content, stableContentLength),
         stableBlocks,
         stableContentLength,
     };
