@@ -113,7 +113,6 @@ export function GitDiffsView({
     emptyState,
     files,
     lineWrapping = true,
-    onScroll,
     onScrollTop,
     onSelectFile,
     onToggleFileCollapse,
@@ -216,7 +215,6 @@ export function GitDiffsView({
                             displayMode={displayMode}
                             files={files}
                             lineWrapping={lineWrapping}
-                            onScroll={onScroll}
                             onScrollTop={onScrollTop}
                             onSelectFile={onSelectFile}
                             onToggleFileCollapse={toggleFileCollapse}
@@ -262,7 +260,6 @@ export function GitDiffsView({
             displayMode={displayMode}
             files={files}
             lineWrapping={lineWrapping}
-            onScroll={onScroll}
             onScrollTop={onScrollTop}
             onSelectFile={onSelectFile}
             onToggleFileCollapse={toggleFileCollapse}
@@ -287,7 +284,6 @@ function LegacyGitDiffsViewContent({
     displayMode,
     files,
     lineWrapping,
-    onScroll,
     onScrollTop,
     onSelectFile,
     onToggleFileCollapse,
@@ -308,7 +304,6 @@ function LegacyGitDiffsViewContent({
     readonly displayMode: "single" | "stack";
     readonly files: readonly GitDiffFile[];
     readonly lineWrapping: boolean;
-    readonly onScroll: GitDiffsViewProps["onScroll"];
     readonly onScrollTop: GitDiffsViewProps["onScrollTop"];
     readonly onSelectFile: GitDiffsViewProps["onSelectFile"];
     readonly onToggleFileCollapse: (fileId: string) => void;
@@ -332,7 +327,6 @@ function LegacyGitDiffsViewContent({
             onScroll={
                 ownsScrollContainer
                     ? (event) => {
-                          onScroll?.(event);
                           onScrollTop?.(event.currentTarget.scrollTop);
                       }
                     : undefined

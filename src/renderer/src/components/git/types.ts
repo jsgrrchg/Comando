@@ -3,7 +3,6 @@ import type {
     MouseEvent as ReactMouseEvent,
     RefCallback,
     RefObject,
-    UIEventHandler,
     ReactNode,
 } from "react";
 
@@ -233,7 +232,6 @@ export interface GitDiffsViewProps {
     readonly emptyState?: ReactNode;
     readonly files: readonly GitDiffFile[];
     readonly lineWrapping?: boolean;
-    readonly onScroll?: UIEventHandler<HTMLDivElement>;
     readonly onScrollTop?: (scrollTop: number) => void;
     readonly onSelectFile?: (file: GitDiffFile) => void;
     readonly onToggleFileCollapse?: (fileId: string) => void;
