@@ -169,7 +169,7 @@ function createLargeLineDiffFile(
 }
 
 describe("GitDiffsView", () => {
-    it("renders diff lines with the shared highlighted renderer", () => {
+    it("delegates patch hunks to Pierre", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[createDiffFile()]}
@@ -178,16 +178,10 @@ describe("GitDiffsView", () => {
         );
 
         expect(markup).not.toContain('data-virtualized-diff-lines="true"');
-        expect(markup).toContain('data-diff-line="true"');
-        expect(markup).toContain('data-line-exact="true"');
-        expect(markup).toContain('data-line-type="context"');
-        expect(markup).toContain('data-line-type="remove"');
-        expect(markup).toContain('data-line-type="add"');
-        expect(markup).toContain("cm-static-code");
-        expect(markup).toContain("grid-template-columns:44px minmax(0, 1fr)");
-        expect(markup).not.toContain("grid-template-columns:56px 56px");
-        expect(markup).toContain("const before = true;");
-        expect(markup).toContain("const after = true;");
+        expect(markup).toContain("<diffs-container");
+        expect(markup).not.toContain('data-diff-line="true"');
+        expect(markup).not.toContain("const before = true;");
+        expect(markup).not.toContain("const after = true;");
     });
 
     it("applies configured editor typography to diff code", () => {
@@ -226,7 +220,7 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("font-size:17px");
     });
 
-    it("sizes non-wrapping hunks to their scrollable content", () => {
+    it("delegates non-wrapping patch layout to Pierre", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[createDiffFile()]}
@@ -235,11 +229,11 @@ describe("GitDiffsView", () => {
             />,
         );
 
-        expect(markup).toContain('class="min-w-full w-max"');
-        expect(markup).toContain("grid-template-columns:44px max-content");
+        expect(markup).toContain("<diffs-container");
+        expect(markup).not.toContain('data-diff-line="true"');
     });
 
-    it("virtualizes giant non-wrapping diff files by mounting visual blocks", () => {
+    it("delegates giant patch files to Pierre's virtualizer", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[createLargeLineDiffFile()]}
@@ -248,12 +242,9 @@ describe("GitDiffsView", () => {
             />,
         );
 
-        expect(markup).toContain('data-virtualized-diff-lines="true"');
-        expect(markup).toContain('data-diff-hunk-header="true"');
-        expect(markup).toContain('data-measured-virtual-list="true"');
-        expect(markup).toContain("1–0 → 1–1000");
-        expect(markup).toContain("giant-diff-line-1");
-        expect(markup).not.toContain("giant-diff-line-1000");
+        expect(markup).toContain("<diffs-container");
+        expect(markup).not.toContain('data-virtualized-diff-lines="true"');
+        expect(markup).not.toContain("giant-diff-line-1");
     });
 
     it("delegates complete large files to Pierre without legacy line virtualization", () => {
@@ -275,7 +266,7 @@ describe("GitDiffsView", () => {
         expect(markup).not.toContain("giant-diff-line-1");
     });
 
-    it("keeps horizontal sizing for virtualized non-wrapping diff lines", () => {
+    it("does not render long patch lines through the legacy surface", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[
@@ -314,7 +305,7 @@ describe("GitDiffsView", () => {
             />,
         );
 
-        expect(markup).toContain("min-width:max(100%, 238ch)");
+        expect(markup).toContain("<diffs-container");
         expect(markup).not.toContain("x".repeat(220));
     });
 
@@ -327,7 +318,7 @@ describe("GitDiffsView", () => {
         );
 
         expect(markup).toContain("select-text");
-        expect(markup).toContain("user-select:text");
+        expect(markup).toContain("<diffs-container");
     });
 
     it("owns vertical scroll when no external scroll container is provided", () => {
@@ -438,7 +429,8 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("giant-diff.ts");
         expect(markup).not.toContain("giant-diff-line-1");
         expect(markup).not.toContain('data-virtualized-diff-lines="true"');
-        expect(markup).toContain("large-file-1-line");
+        expect(markup).toContain("large-file-1.ts");
+        expect(markup.match(/<diffs-container/g)).toHaveLength(1);
     });
 
     it("estimates collapsed diff files smaller than expanded text files", () => {

@@ -119,6 +119,7 @@ export interface GitDiffFile {
     readonly hunks: readonly GitDiffHunk[];
     readonly oldText?: string | null;
     readonly newText?: string | null;
+    readonly patch?: string | null;
 }
 
 export interface GitRepositorySummary {

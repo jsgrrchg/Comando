@@ -7,16 +7,8 @@ import {
     GIT_DIFF_FIXTURES,
 } from "./GitDiffFixtures";
 
-const multiFileDiffCalls = vi.hoisted(() =>
+const patchDiffCalls = vi.hoisted(() =>
     [] as Array<{
-        readonly newFile: {
-            readonly contents: string;
-            readonly name: string;
-        } | null;
-        readonly oldFile: {
-            readonly contents: string;
-            readonly name: string;
-        } | null;
         readonly metrics: {
             readonly lineHeight: number;
         };
@@ -26,12 +18,13 @@ const multiFileDiffCalls = vi.hoisted(() =>
             readonly disableFileHeader: boolean;
             readonly overflow: "scroll" | "wrap";
         };
+        readonly patch: string;
     }>,
 );
 
 vi.mock("@pierre/diffs/react", () => ({
-    MultiFileDiff: (props: (typeof multiFileDiffCalls)[number]) => {
-        multiFileDiffCalls.push(props);
+    PatchDiff: (props: (typeof patchDiffCalls)[number]) => {
+        patchDiffCalls.push(props);
         return <div data-pierre-diff-body="true" />;
     },
     VirtualizerContext: createContext(undefined),
@@ -55,7 +48,7 @@ function renderDiff(file: (typeof GIT_DIFF_FIXTURES)[keyof typeof GIT_DIFF_FIXTU
 
 describe("GitDiffsView Pierre integration", () => {
     beforeEach(() => {
-        multiFileDiffCalls.length = 0;
+        patchDiffCalls.length = 0;
     });
 
     it("keeps the Comando header and file actions around a Pierre body", () => {
@@ -73,8 +66,8 @@ describe("GitDiffsView Pierre integration", () => {
 
         expect(container.querySelectorAll("[data-pierre-diff-body]")).toHaveLength(1);
         expect(container.querySelectorAll('[title="modified"]')).toHaveLength(1);
-        expect(multiFileDiffCalls).toHaveLength(1);
-        expect(multiFileDiffCalls[0]?.options.disableFileHeader).toBe(true);
+        expect(patchDiffCalls).toHaveLength(1);
+        expect(patchDiffCalls[0]?.options.disableFileHeader).toBe(true);
 
         const openButton = Array.from(container.querySelectorAll("button")).find(
             (button) => button.textContent === "Open",
@@ -94,13 +87,14 @@ describe("GitDiffsView Pierre integration", () => {
         ["rename", GIT_DIFF_FIXTURES.rename],
         ["missing final newline", GIT_DIFF_FIXTURES.noFinalNewline],
         ["long line", GIT_DIFF_FIXTURES.longLine],
+        ["partial GitHub patch", GIT_DIFF_FIXTURES.partialGitHub],
     ] as const)(
-        "passes complete %s content to Pierre through the public contract",
+        "passes a partial %s patch to Pierre through the public contract",
         (_label, file) => {
             const { root } = renderDiff(file);
-            const call = multiFileDiffCalls[0];
+            const call = patchDiffCalls[0];
 
-            expect(multiFileDiffCalls).toHaveLength(1);
+            expect(patchDiffCalls).toHaveLength(1);
             expect(call?.options).toMatchObject({
                 diffStyle: "unified",
                 disableErrorHandling: true,
@@ -108,24 +102,7 @@ describe("GitDiffsView Pierre integration", () => {
                 overflow: "wrap",
             });
             expect(call?.metrics.lineHeight).toBeCloseTo(20.15);
-            expect(call?.newFile).toEqual(
-                file.newText === null
-                    ? null
-                    : {
-                          cacheKey: `${file.id}:new`,
-                          contents: file.newText,
-                          name: file.path,
-                      },
-            );
-            expect(call?.oldFile).toEqual(
-                file.oldText === null
-                    ? null
-                    : {
-                          cacheKey: `${file.id}:old`,
-                          contents: file.oldText,
-                          name: file.previousPath ?? file.path,
-                      },
-            );
+            expect(call?.patch).toContain("@@ -");
 
             act(() => root.unmount());
         },
@@ -133,11 +110,10 @@ describe("GitDiffsView Pierre integration", () => {
 
     it.each([
         ["binary", GIT_DIFF_FIXTURES.binary, "This file is binary"],
-        ["partial GitHub patch", GIT_DIFF_FIXTURES.partialGitHub, "old"],
     ] as const)("keeps the legacy renderer for a %s", (_label, file, text) => {
         const { container, root } = renderDiff(file);
 
-        expect(multiFileDiffCalls).toHaveLength(0);
+        expect(patchDiffCalls).toHaveLength(0);
         expect(container.textContent).toContain(text);
 
         act(() => root.unmount());

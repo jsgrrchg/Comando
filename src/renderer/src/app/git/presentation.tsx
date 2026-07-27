@@ -507,6 +507,7 @@ function convertSharedGitDiff(
         kind: diff.kind,
         newText: diff.newText,
         oldText: diff.oldText,
+        patch: diff.patch ?? null,
         path: diff.path,
         previousPath: diff.previousPath,
         reversible: diff.reversible,

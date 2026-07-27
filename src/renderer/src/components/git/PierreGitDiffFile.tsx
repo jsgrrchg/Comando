@@ -1,6 +1,5 @@
 import {
-    MultiFileDiff,
-    type FileContents,
+    PatchDiff,
     type VirtualFileMetrics,
 } from "@pierre/diffs/react";
 import { DEFAULT_VIRTUAL_FILE_METRICS } from "@pierre/diffs";
@@ -18,80 +17,81 @@ import { useSettingsStore } from "@renderer/app/store/settings-store";
 
 import type { GitDiffFile } from "./types";
 
-export type PierreGitDiffInput =
-    | {
-          readonly newFile: FileContents;
-          readonly oldFile: FileContents;
-      }
-    | {
-          readonly newFile: FileContents;
-          readonly oldFile: null;
-      }
-    | {
-          readonly newFile: null;
-          readonly oldFile: FileContents;
-      };
-
 const DEFAULT_PIERRE_FONT_SIZE_PX = 13;
 const DEFAULT_PIERRE_LINE_HEIGHT = 1.55;
 
-function createPierreFile(
-    cacheKey: string,
-    contents: string,
-    name: string,
-): FileContents {
-    return { cacheKey, contents, name };
+function buildUnifiedPatchHeader(file: GitDiffFile): string {
+    const oldPath = file.previousPath ?? file.path;
+
+    if (file.kind === "create") {
+        return `--- /dev/null\n+++ ${file.path}\n`;
+    }
+
+    if (file.kind === "delete") {
+        return `--- ${oldPath}\n+++ /dev/null\n`;
+    }
+
+    return `--- ${oldPath}\n+++ ${file.path}\n`;
 }
 
-export function getPierreGitDiffInput(
-    file: GitDiffFile,
-): PierreGitDiffInput | null {
+function buildPatchFromHunks(file: GitDiffFile): string | null {
+    if (file.hunks.length === 0) {
+        return null;
+    }
+
+    const hunks = file.hunks
+        .map((hunk) => {
+            const header =
+                hunk.header ||
+                `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`;
+            const lines = hunk.lines
+                .map((line) => {
+                    const prefix =
+                        line.kind === "add"
+                            ? "+"
+                            : line.kind === "remove"
+                              ? "-"
+                              : " ";
+                    return `${prefix}${line.text}\n`;
+                })
+                .join("");
+
+            return `${header}\n${lines}`;
+        })
+        .join("");
+
+    return `${buildUnifiedPatchHeader(file)}${hunks}`;
+}
+
+function getPatchWithFileHeader(file: GitDiffFile, patch: string): string {
+    const contentStart = patch.search(/\S/);
+    const trimmedPatch = contentStart >= 0 ? patch.slice(contentStart) : "";
+
+    if (
+        trimmedPatch.startsWith("diff --git") ||
+        trimmedPatch.startsWith("--- ")
+    ) {
+        return trimmedPatch;
+    }
+
+    // GitHub sends hunk bodies without the single-file boundary PatchDiff requires.
+    return `${buildUnifiedPatchHeader(file)}${trimmedPatch}`;
+}
+
+export function getPierreGitDiffPatch(file: GitDiffFile): string | null {
     if (!file.isText) {
         return null;
     }
 
-    if (file.kind === "create") {
-        return typeof file.newText === "string"
-            ? {
-                  newFile: createPierreFile(
-                      `${file.id}:new`,
-                      file.newText,
-                      file.path,
-                  ),
-                  oldFile: null,
-              }
-            : null;
+    if (typeof file.patch === "string" && file.patch.trim().length > 0) {
+        return getPatchWithFileHeader(file, file.patch);
     }
 
-    if (file.kind === "delete") {
-        return typeof file.oldText === "string"
-            ? {
-                  newFile: null,
-                  oldFile: createPierreFile(
-                      `${file.id}:old`,
-                      file.oldText,
-                      file.previousPath ?? file.path,
-                  ),
-              }
-            : null;
-    }
-
-    if (typeof file.oldText !== "string" || typeof file.newText !== "string") {
-        return null;
-    }
-
-    return {
-        newFile: createPierreFile(`${file.id}:new`, file.newText, file.path),
-        oldFile: createPierreFile(
-            `${file.id}:old`,
-            file.oldText,
-            file.previousPath ?? file.path,
-        ),
-    };
+    return buildPatchFromHunks(file);
 }
 
 export function canRenderGitDiffWithPierre(file: GitDiffFile): boolean {
-    return getPierreGitDiffInput(file) !== null;
+    return getPierreGitDiffPatch(file) !== null;
 }
 
 export function getPierreDiffVirtualMetrics(
@@ -132,7 +132,7 @@ export function PierreGitDiffFile({
 }) {
     const appearance = useSettingsStore((state) => state.appearance);
     const systemIsDark = useSettingsStore((state) => state.systemTheme.isDark);
-    const input = useMemo(() => getPierreGitDiffInput(file), [file]);
+    const patch = useMemo(() => getPierreGitDiffPatch(file), [file]);
     const isDark = resolveIsDark(appearance.themeMode, systemIsDark);
     const options = useMemo(
         () => ({
@@ -173,16 +173,16 @@ export function PierreGitDiffFile({
         [codeFontSize, codeLineHeight],
     );
 
-    if (!input) {
+    if (!patch) {
         return null;
     }
 
     return (
-        <MultiFileDiff
-            {...input}
+        <PatchDiff
             className="block min-w-0 select-text"
             metrics={metrics}
             options={options}
+            patch={patch}
             style={style}
         />
     );

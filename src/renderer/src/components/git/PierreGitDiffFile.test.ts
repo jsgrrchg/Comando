@@ -1,31 +1,26 @@
+import { parsePatchFiles } from "@pierre/diffs";
 import { describe, expect, it } from "vitest";
 
 import type { GitDiffFile } from "./types";
 import {
     canRenderGitDiffWithPierre,
     getPierreDiffVirtualMetrics,
-    getPierreGitDiffInput,
+    getPierreGitDiffPatch,
 } from "./PierreGitDiffFile";
 import { GIT_DIFF_FIXTURES } from "./GitDiffFixtures";
 
 describe("Pierre Git diff adapter", () => {
-    it("uses the native complete update fixture without changing its content", () => {
+    it("uses the raw Git patch without requiring complete file contents", () => {
         const file = GIT_DIFF_FIXTURES.update;
-        const input = getPierreGitDiffInput(file);
+        const patch = getPierreGitDiffPatch({
+            ...file,
+            newText: null,
+            oldText: null,
+        });
 
         expect(canRenderGitDiffWithPierre(file)).toBe(true);
-        expect(input).toEqual({
-            newFile: {
-                cacheKey: `${file.id}:new`,
-                contents: file.newText,
-                name: file.path,
-            },
-            oldFile: {
-                cacheKey: `${file.id}:old`,
-                contents: file.oldText,
-                name: file.path,
-            },
-        });
+        expect(patch).toBe(file.patch);
+        expect(parsePatchFiles(patch ?? "", file.id, true)[0]?.files).toHaveLength(1);
     });
 
     it.each([
@@ -35,47 +30,43 @@ describe("Pierre Git diff adapter", () => {
         ["rename", GIT_DIFF_FIXTURES.rename],
         ["missing final newline", GIT_DIFF_FIXTURES.noFinalNewline],
         ["long line", GIT_DIFF_FIXTURES.longLine],
-    ] as const)("keeps complete %s content eligible", (_label, file) => {
+        ["partial GitHub patch", GIT_DIFF_FIXTURES.partialGitHub],
+    ] as const)("keeps %s patches eligible", (_label, file) => {
             expect(canRenderGitDiffWithPierre(file)).toBe(true);
-            expect(getPierreGitDiffInput(file)).not.toBeNull();
+            expect(getPierreGitDiffPatch(file)).not.toBeNull();
     });
 
-    it("accepts empty creates and deletes", () => {
-        const created: GitDiffFile = {
-            ...GIT_DIFF_FIXTURES.create,
-            newText: "",
-        };
-        const deleted: GitDiffFile = {
-            ...GIT_DIFF_FIXTURES.delete,
-            oldText: "",
+    it("wraps hunk-only patches in the file headers PatchDiff requires", () => {
+        const file: GitDiffFile = {
+            ...GIT_DIFF_FIXTURES.partialGitHub,
+            patch: "@@ -1 +1 @@\n-old\n+new\n",
         };
 
-        expect(getPierreGitDiffInput(created)).toMatchObject({
-            newFile: { contents: "", name: created.path },
-            oldFile: null,
-        });
-        expect(getPierreGitDiffInput(deleted)).toMatchObject({
-            newFile: null,
-            oldFile: { contents: "", name: deleted.path },
-        });
-    });
+        const patch = getPierreGitDiffPatch(file);
 
-    it("uses the previous path for the old side of a rename", () => {
-        const input = getPierreGitDiffInput(GIT_DIFF_FIXTURES.rename);
-
-        expect(input?.oldFile?.name).toBe("src/old-name.ts");
-        expect(input?.newFile?.name).toBe("src/new-name.ts");
-    });
-
-    it("preserves a missing final newline and a long line", () => {
-        const noFinalNewline = getPierreGitDiffInput(
-            GIT_DIFF_FIXTURES.noFinalNewline,
+        expect(patch).toBe(
+            "--- src/main.ts\n+++ src/main.ts\n@@ -1 +1 @@\n-old\n+new\n",
         );
-        const longLine = getPierreGitDiffInput(GIT_DIFF_FIXTURES.longLine);
+        expect(parsePatchFiles(patch ?? "", file.id, true)[0]?.files).toHaveLength(1);
+    });
 
-        expect(noFinalNewline?.oldFile?.contents).not.toMatch(/\n$/);
-        expect(noFinalNewline?.newFile?.contents).not.toMatch(/\n$/);
-        expect(longLine?.newFile?.contents.length).toBeGreaterThan(2_000);
+    it("builds a partial patch from legacy hunks when a source has no raw patch", () => {
+        const file: GitDiffFile = {
+            ...GIT_DIFF_FIXTURES.rename,
+            newText: null,
+            oldText: null,
+            patch: null,
+        };
+
+        const patch = getPierreGitDiffPatch(file);
+
+        expect(patch).toContain(
+            "--- src/old-name.ts\n+++ src/new-name.ts\n",
+        );
+        expect(patch).toContain(
+            "-export const previous = true;\n+export const renamed = true;\n",
+        );
+        expect(parsePatchFiles(patch ?? "", file.id, true)[0]?.files).toHaveLength(1);
     });
 
     it("aligns Pierre's virtual line estimates with the resolved typography", () => {
@@ -92,9 +83,8 @@ describe("Pierre Git diff adapter", () => {
 
     it.each([
         ["binary", GIT_DIFF_FIXTURES.binary],
-        ["partial GitHub patch", GIT_DIFF_FIXTURES.partialGitHub],
     ])("keeps the legacy renderer for %s files", (_label, file) => {
         expect(canRenderGitDiffWithPierre(file)).toBe(false);
-        expect(getPierreGitDiffInput(file)).toBeNull();
+        expect(getPierreGitDiffPatch(file)).toBeNull();
     });
 });
