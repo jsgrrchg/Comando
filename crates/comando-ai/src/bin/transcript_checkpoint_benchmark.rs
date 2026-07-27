@@ -44,7 +44,7 @@ impl CheckpointPolicy {
         match self {
             Self::EveryDelta => true,
             // A fixed group makes this baseline comparable across message sizes.
-            Self::Grouped => (delta_index + 1) % 50 == 0,
+            Self::Grouped => (delta_index + 1).is_multiple_of(50),
             Self::PeriodicBytes => pending_bytes >= BYTE_CHECKPOINT_INTERVAL,
             Self::PeriodicTime => simulated >= TIME_CHECKPOINT_INTERVAL,
         }
