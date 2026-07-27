@@ -1,6 +1,7 @@
 pub mod acp;
 pub mod adapter;
 pub mod commands;
+pub mod durable_operations;
 pub mod engine;
 pub mod error;
 pub mod events;

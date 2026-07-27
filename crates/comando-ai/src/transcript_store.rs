@@ -19,6 +19,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::durable_operations::{self, DurableOperation, DurableOperationInterceptorRef};
 use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
 use crate::storage_work_metrics::StorageWorkMetrics;
@@ -47,12 +48,13 @@ pub(crate) struct TranscriptStoreHealth {
     pub schema_version: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct TranscriptStore {
     database_path: PathBuf,
     legacy_entries_path: PathBuf,
     payloads_dir: PathBuf,
     work_metrics: Arc<StorageWorkMetrics>,
+    durable_operation_interceptor: Option<DurableOperationInterceptorRef>,
 }
 
 impl TranscriptStore {
@@ -62,12 +64,25 @@ impl TranscriptStore {
             legacy_entries_path: session_dir.join(LEGACY_TRANSCRIPT_ENTRIES_FILE),
             payloads_dir: session_dir.join(TRANSCRIPT_PAYLOADS_DIR),
             work_metrics: Arc::new(StorageWorkMetrics::default()),
+            durable_operation_interceptor: None,
         }
     }
 
     pub(crate) fn with_work_metrics(mut self, work_metrics: Arc<StorageWorkMetrics>) -> Self {
         self.work_metrics = work_metrics;
         self
+    }
+
+    pub(crate) fn with_durable_operation_interceptor(
+        mut self,
+        interceptor: Option<DurableOperationInterceptorRef>,
+    ) -> Self {
+        self.durable_operation_interceptor = interceptor;
+        self
+    }
+
+    fn durable_before(&self, operation: DurableOperation) -> AiResult<()> {
+        durable_operations::before(self.durable_operation_interceptor.as_ref(), operation)
     }
 
     pub(crate) fn has_data_source(&self) -> bool {
@@ -243,6 +258,7 @@ impl TranscriptStore {
         // The JSONL writer can revise streaming messages in place, so retain
         // the earliest affected cursor instead of trusting a completed flag.
         let obsolete_payload_files = (|| {
+            self.durable_before(DurableOperation::SqliteTransaction)?;
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| {
@@ -302,6 +318,7 @@ impl TranscriptStore {
     ) -> AiResult<()> {
         validate_entry_ownership(session_id, &entries)?;
         let mut connection = self.open(session_id, true)?;
+        self.durable_before(DurableOperation::SqliteTransaction)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| transcript_sql("start transcript append transaction", error))?;
@@ -337,6 +354,7 @@ impl TranscriptStore {
         let mut connection = self.open(session_id, true)?;
         let prepared_payloads = self.prepare_payloads(payloads)?;
         let result = (|| {
+            self.durable_before(DurableOperation::SqliteTransaction)?;
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| transcript_sql("start transcript seal transaction", error))?;
@@ -421,6 +439,7 @@ impl TranscriptStore {
         let mut connection = self.open(&session_id, true)?;
         let prepared_payloads = self.prepare_payloads(payloads)?;
         let result = (|| {
+            self.durable_before(DurableOperation::SqliteTransaction)?;
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| {
@@ -477,6 +496,7 @@ impl TranscriptStore {
         }
         let mut connection = self.open(session_id, true)?;
         (|| {
+            self.durable_before(DurableOperation::SqliteTransaction)?;
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(|error| {
@@ -842,7 +862,12 @@ impl TranscriptStore {
                 })?;
                 validate_payload_bytes(&payload.content_hash, payload.bytes.len(), &existing)
             } else {
-                let created = atomic_write_payload(&path, &payload.bytes, &self.work_metrics)?;
+                let created = atomic_write_payload(
+                    &path,
+                    &payload.bytes,
+                    &self.work_metrics,
+                    self.durable_operation_interceptor.as_ref(),
+                )?;
                 payload.created_file = created;
                 if created {
                     created_paths.push(path);
@@ -885,6 +910,7 @@ impl TranscriptStore {
                 .flatten()
                 .is_some();
             if !referenced && let Some(file_name) = payload.file_name.as_ref() {
+                let _ = self.durable_before(DurableOperation::RemoveTemporary);
                 let _ = fs::remove_file(self.payloads_dir.join(file_name));
             }
         }
@@ -911,6 +937,7 @@ impl TranscriptStore {
                 .flatten()
                 .is_some();
             if !referenced {
+                let _ = self.durable_before(DurableOperation::RemoveTemporary);
                 let _ = fs::remove_file(self.payloads_dir.join(file_name));
             }
         }
@@ -1029,6 +1056,7 @@ impl TranscriptStore {
             validate_entry_ownership(session_id, entries)?;
         }
 
+        self.durable_before(DurableOperation::SqliteTransaction)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| transcript_sql("start provisional transcript import", error))?;
@@ -2513,6 +2541,7 @@ fn atomic_write_payload(
     path: &Path,
     bytes: &[u8],
     work_metrics: &StorageWorkMetrics,
+    interceptor: Option<&DurableOperationInterceptorRef>,
 ) -> AiResult<bool> {
     let parent = path
         .parent()
@@ -2521,27 +2550,34 @@ fn atomic_write_payload(
         .map_err(|error| payload_io("create transcript payload directory", parent, error))?;
     let temp_path = parent.join(format!(".payload-{}.tmp", Uuid::new_v4()));
     let write_result = (|| {
+        durable_operations::before(interceptor, DurableOperation::AtomicWrite)?;
         let mut file = File::create(&temp_path).map_err(|error| {
             payload_io("create transcript payload temp file", &temp_path, error)
         })?;
         file.write_all(bytes)
-            .and_then(|_| file.sync_all())
             .map_err(|error| payload_io("write transcript payload temp file", &temp_path, error))?;
+        durable_operations::before(interceptor, DurableOperation::Sync)?;
+        file.sync_all()
+            .map_err(|error| payload_io("sync transcript payload temp file", &temp_path, error))?;
         work_metrics.record_durable_write(bytes.len());
         work_metrics.record_sync();
         Ok::<(), AiError>(())
     })();
     if let Err(error) = write_result {
+        let _ = durable_operations::before(interceptor, DurableOperation::RemoveTemporary);
         let _ = fs::remove_file(&temp_path);
         return Err(error);
     }
+    durable_operations::before(interceptor, DurableOperation::Rename)?;
     match fs::rename(&temp_path, path) {
         Ok(()) => Ok(true),
         Err(_) if path.exists() => {
+            let _ = durable_operations::before(interceptor, DurableOperation::RemoveTemporary);
             let _ = fs::remove_file(&temp_path);
             Ok(false)
         }
         Err(error) => {
+            let _ = durable_operations::before(interceptor, DurableOperation::RemoveTemporary);
             let _ = fs::remove_file(&temp_path);
             Err(payload_io("install transcript payload file", path, error))
         }
