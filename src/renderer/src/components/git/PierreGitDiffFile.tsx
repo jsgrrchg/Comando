@@ -170,11 +170,19 @@ export function PierreGitDiffFile({
             disableFileHeader: false,
             overflow: lineWrapping ? ("wrap" as const) : ("scroll" as const),
             stickyHeader: true,
-            theme: getComandoPierreThemes(appearance.themePreset),
+            theme: getComandoPierreThemes(
+                appearance.themePreset,
+                appearance.boostCodeContrast,
+            ),
             themeType: isDark ? ("dark" as const) : ("light" as const),
             unsafeCSS: PIERRE_GIT_DIFF_UNSAFE_CSS,
         }),
-        [appearance.themePreset, isDark, lineWrapping],
+        [
+            appearance.boostCodeContrast,
+            appearance.themePreset,
+            isDark,
+            lineWrapping,
+        ],
     );
     const style = useMemo(
         () =>

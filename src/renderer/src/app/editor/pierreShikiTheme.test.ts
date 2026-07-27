@@ -23,29 +23,45 @@ describe("pierre Shiki themes", () => {
     it("creates stable themes for every preset and color mode", () => {
         for (const { id: preset } of THEME_PRESET_OPTIONS) {
             for (const isDark of [false, true]) {
-                const theme = createComandoPierreTheme(preset, isDark);
-                const tokens = resolveComandoThemeTokens(preset, isDark, true);
-
-                expect(theme.name).toBe(
-                    getComandoPierreThemeName(preset, isDark),
-                );
-                expect(theme.type).toBe(isDark ? "dark" : "light");
-                expect(theme.colors?.["editor.background"]).toMatch(
-                    /^#[\da-f]{6}$/i,
-                );
-                expect(theme.colors?.["editor.foreground"]).toMatch(
-                    /^#[\da-f]{6}$/i,
-                );
-
-                for (const anchor of CODE_ANCHORS) {
-                    const scope = COMANDO_PIERRE_SYNTAX_SCOPES[anchor][0];
-                    const rule = theme.tokenColors?.find((candidate) =>
-                        Array.isArray(candidate.scope)
-                            ? candidate.scope.includes(scope)
-                            : candidate.scope === scope,
+                for (const boostCodeContrast of [false, true]) {
+                    const theme = createComandoPierreTheme(
+                        preset,
+                        isDark,
+                        boostCodeContrast,
+                    );
+                    const tokens = resolveComandoThemeTokens(
+                        preset,
+                        isDark,
+                        boostCodeContrast,
                     );
 
-                    expect(rule?.settings.foreground).toBe(tokens.code[anchor]);
+                    expect(theme.name).toBe(
+                        getComandoPierreThemeName(
+                            preset,
+                            isDark,
+                            boostCodeContrast,
+                        ),
+                    );
+                    expect(theme.type).toBe(isDark ? "dark" : "light");
+                    expect(theme.colors?.["editor.background"]).toMatch(
+                        /^#[\da-f]{6}$/i,
+                    );
+                    expect(theme.colors?.["editor.foreground"]).toMatch(
+                        /^#[\da-f]{6}$/i,
+                    );
+
+                    for (const anchor of CODE_ANCHORS) {
+                        const scope = COMANDO_PIERRE_SYNTAX_SCOPES[anchor][0];
+                        const rule = theme.tokenColors?.find((candidate) =>
+                            Array.isArray(candidate.scope)
+                                ? candidate.scope.includes(scope)
+                                : candidate.scope === scope,
+                        );
+
+                        expect(rule?.settings.foreground).toBe(
+                            tokens.code[anchor],
+                        );
+                    }
                 }
             }
         }
@@ -58,7 +74,7 @@ describe("pierre Shiki themes", () => {
         registerComandoPierreThemes();
 
         expect(firstRegistration).toHaveLength(
-            THEME_PRESET_OPTIONS.length * 2,
+            THEME_PRESET_OPTIONS.length * 2 * 2,
         );
         expect(getRegisteredComandoPierreThemeNames()).toEqual(
             firstRegistration,

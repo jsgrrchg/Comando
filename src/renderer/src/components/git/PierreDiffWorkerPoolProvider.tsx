@@ -1,12 +1,17 @@
 import {
     WorkerPoolContextProvider,
+    useWorkerPool,
     type WorkerInitializationRenderOptions,
     type WorkerPoolOptions,
 } from "@pierre/diffs/react";
 import pierreDiffWorkerUrl from "@pierre/diffs/worker/worker.js?worker&url";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
 
-import { registerComandoPierreThemes } from "@renderer/app/editor/pierreShikiTheme";
+import {
+    getComandoPierreThemes,
+    registerComandoPierreThemes,
+} from "@renderer/app/editor/pierreShikiTheme";
+import { useSettingsStore } from "@renderer/app/store/settings-store";
 
 const DEFAULT_AVAILABLE_CORES = 2;
 const MAX_PIERRE_DIFF_WORKERS = 4;
@@ -29,25 +34,56 @@ const pierreDiffWorkerPoolOptions: WorkerPoolOptions = {
     workerFactory: () => new Worker(pierreDiffWorkerUrl, { type: "module" }),
 };
 
-const pierreDiffHighlighterOptions: WorkerInitializationRenderOptions = {
-    langs: [],
-};
+function PierreDiffWorkerThemeSync({
+    children,
+    theme,
+}: {
+    readonly children: ReactNode;
+    readonly theme: ReturnType<typeof getComandoPierreThemes>;
+}) {
+    const workerPool = useWorkerPool();
+
+    useEffect(() => {
+        // Pierre's pool owns a shared Shiki highlighter, so per-diff options alone cannot change token colors.
+        void workerPool?.setRenderOptions({ theme });
+    }, [theme, workerPool]);
+
+    return children;
+}
 
 export function PierreDiffWorkerPoolProvider({
     children,
 }: {
     readonly children: ReactNode;
 }) {
+    const themePreset = useSettingsStore((state) => state.appearance.themePreset);
+    const boostCodeContrast = useSettingsStore(
+        (state) => state.appearance.boostCodeContrast,
+    );
+    const theme = useMemo(
+        () => getComandoPierreThemes(themePreset, boostCodeContrast),
+        [boostCodeContrast, themePreset],
+    );
+    const highlighterOptions = useMemo<WorkerInitializationRenderOptions>(
+        () => ({
+            langs: [],
+            theme,
+        }),
+        [theme],
+    );
+
     if (typeof window === "undefined" || typeof Worker === "undefined") {
         return children;
     }
 
     return (
         <WorkerPoolContextProvider
-            highlighterOptions={pierreDiffHighlighterOptions}
+            highlighterOptions={highlighterOptions}
             poolOptions={pierreDiffWorkerPoolOptions}
         >
-            {children}
+            <PierreDiffWorkerThemeSync theme={theme}>
+                {children}
+            </PierreDiffWorkerThemeSync>
         </WorkerPoolContextProvider>
     );
 }

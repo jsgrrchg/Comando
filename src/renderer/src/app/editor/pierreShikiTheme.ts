@@ -12,7 +12,7 @@ import {
 } from "@renderer/app/settings/theme";
 import type { ComandoCodeColorAnchors } from "./monacoTextmateTheme";
 
-export type ComandoPierreThemeName = `comando-${string}-${"dark" | "light"}`;
+export type ComandoPierreThemeName = `comando-${string}-${"dark" | "light"}-${"boosted" | "standard"}`;
 
 export interface PierreDiffTypography {
     readonly fontFamily?: string | null;
@@ -100,14 +100,18 @@ function resolveLineHeight(lineHeight: number | null | undefined): string {
 export function getComandoPierreThemeName(
     preset: ThemePreset,
     isDark: boolean,
+    boostCodeContrast: boolean,
 ): ComandoPierreThemeName {
-    return `comando-${preset}-${isDark ? "dark" : "light"}`;
+    return `comando-${preset}-${isDark ? "dark" : "light"}-${boostCodeContrast ? "boosted" : "standard"}`;
 }
 
-export function getComandoPierreThemes(preset: ThemePreset): ThemesType {
+export function getComandoPierreThemes(
+    preset: ThemePreset,
+    boostCodeContrast: boolean,
+): ThemesType {
     return {
-        dark: getComandoPierreThemeName(preset, true),
-        light: getComandoPierreThemeName(preset, false),
+        dark: getComandoPierreThemeName(preset, true, boostCodeContrast),
+        light: getComandoPierreThemeName(preset, false, boostCodeContrast),
     };
 }
 
@@ -127,8 +131,9 @@ function createTokenColors(anchors: ComandoCodeColorAnchors) {
 export function createComandoPierreTheme(
     preset: ThemePreset,
     isDark: boolean,
+    boostCodeContrast: boolean,
 ): ThemeRegistration {
-    const tokens = resolveComandoThemeTokens(preset, isDark, true);
+    const tokens = resolveComandoThemeTokens(preset, isDark, boostCodeContrast);
 
     return {
         colors: {
@@ -138,7 +143,7 @@ export function createComandoPierreTheme(
             "editorLineNumber.foreground": tokens.textSecondary,
             foreground: tokens.editorText,
         },
-        name: getComandoPierreThemeName(preset, isDark),
+        name: getComandoPierreThemeName(preset, isDark, boostCodeContrast),
         tokenColors: createTokenColors(tokens.code),
         type: isDark ? "dark" : "light",
     };
@@ -147,12 +152,22 @@ export function createComandoPierreTheme(
 export function registerComandoPierreThemes(): void {
     for (const { id: preset } of THEME_PRESET_OPTIONS) {
         for (const isDark of [false, true]) {
-            const name = getComandoPierreThemeName(preset, isDark);
-            if (registeredThemeNames.has(name)) continue;
+            for (const boostCodeContrast of [false, true]) {
+                const name = getComandoPierreThemeName(
+                    preset,
+                    isDark,
+                    boostCodeContrast,
+                );
+                if (registeredThemeNames.has(name)) continue;
 
-            const theme = createComandoPierreTheme(preset, isDark);
-            registerCustomTheme(name, () => Promise.resolve(theme));
-            registeredThemeNames.add(name);
+                const theme = createComandoPierreTheme(
+                    preset,
+                    isDark,
+                    boostCodeContrast,
+                );
+                registerCustomTheme(name, () => Promise.resolve(theme));
+                registeredThemeNames.add(name);
+            }
         }
     }
 }
