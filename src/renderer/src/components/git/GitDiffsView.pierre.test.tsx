@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act } from "react";
+import { act, createContext } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -17,6 +17,9 @@ const multiFileDiffCalls = vi.hoisted(() =>
             readonly contents: string;
             readonly name: string;
         } | null;
+        readonly metrics: {
+            readonly lineHeight: number;
+        };
         readonly options: {
             readonly diffStyle: "unified";
             readonly disableErrorHandling: boolean;
@@ -31,6 +34,7 @@ vi.mock("@pierre/diffs/react", () => ({
         multiFileDiffCalls.push(props);
         return <div data-pierre-diff-body="true" />;
     },
+    VirtualizerContext: createContext(undefined),
 }));
 
 import { GitDiffsView } from "./GitDiffsView";
@@ -103,6 +107,7 @@ describe("GitDiffsView Pierre integration", () => {
                 disableFileHeader: true,
                 overflow: "wrap",
             });
+            expect(call?.metrics.lineHeight).toBeCloseTo(20.15);
             expect(call?.newFile).toEqual(
                 file.newText === null
                     ? null

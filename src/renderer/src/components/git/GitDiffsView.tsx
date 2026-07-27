@@ -17,6 +17,7 @@ import {
 import { GitDiffFileContent } from "./GitDiffFileContent";
 import { GitBadge, GitEmptyState } from "./GitUi";
 import { canRenderGitDiffWithPierre } from "./PierreGitDiffFile";
+import { PierreGitDiffVirtualizerProvider } from "./PierreGitDiffVirtualizerProvider";
 import type {
     GitDiffFile,
     GitDiffsViewProps,
@@ -156,6 +157,10 @@ export function GitDiffsView({
     );
     const activeFile =
         files.find((file) => file.id === activeFileId) ?? files[0] ?? null;
+    const hasPierreDiffFiles = useMemo(
+        () => files.some((file) => canRenderGitDiffWithPierre(file)),
+        [files],
+    );
 
     if (files.length === 0) {
         return (
@@ -186,6 +191,82 @@ export function GitDiffsView({
             onScroll={ownsScrollContainer ? onScroll : undefined}
             ref={ownsScrollContainer ? setOwnScrollContainer : undefined}
         >
+            {hasPierreDiffFiles ? (
+                <PierreGitDiffVirtualizerProvider
+                    scrollContainerRef={resolvedScrollContainerRef}
+                >
+                    <GitDiffsViewContent
+                        activeFile={activeFile}
+                        activeFileId={activeFileId}
+                        codeFontFamily={codeFontFamily}
+                        codeFontSize={codeFontSize}
+                        codeLineHeight={codeLineHeight}
+                        collapsedFileIdSet={collapsedFileIdSet}
+                        displayMode={displayMode}
+                        files={files}
+                        lineWrapping={lineWrapping}
+                        onSelectFile={onSelectFile}
+                        onToggleFileCollapse={toggleFileCollapse}
+                        scrollContainerRef={resolvedScrollContainerRef}
+                        showFileSelector={showFileSelector}
+                        surfaceVariant={surfaceVariant}
+                    />
+                </PierreGitDiffVirtualizerProvider>
+            ) : (
+                <GitDiffsViewContent
+                    activeFile={activeFile}
+                    activeFileId={activeFileId}
+                    codeFontFamily={codeFontFamily}
+                    codeFontSize={codeFontSize}
+                    codeLineHeight={codeLineHeight}
+                    collapsedFileIdSet={collapsedFileIdSet}
+                    displayMode={displayMode}
+                    files={files}
+                    lineWrapping={lineWrapping}
+                    onSelectFile={onSelectFile}
+                    onToggleFileCollapse={toggleFileCollapse}
+                    scrollContainerRef={resolvedScrollContainerRef}
+                    showFileSelector={showFileSelector}
+                    surfaceVariant={surfaceVariant}
+                />
+            )}
+        </div>
+    );
+}
+
+function GitDiffsViewContent({
+    activeFile,
+    activeFileId,
+    codeFontFamily,
+    codeFontSize,
+    codeLineHeight,
+    collapsedFileIdSet,
+    displayMode,
+    files,
+    lineWrapping,
+    onSelectFile,
+    onToggleFileCollapse,
+    scrollContainerRef,
+    showFileSelector,
+    surfaceVariant,
+}: {
+    readonly activeFile: GitDiffFile;
+    readonly activeFileId: string | null;
+    readonly codeFontFamily: string | null;
+    readonly codeFontSize: number | null;
+    readonly codeLineHeight: number | null;
+    readonly collapsedFileIdSet: ReadonlySet<string>;
+    readonly displayMode: "single" | "stack";
+    readonly files: readonly GitDiffFile[];
+    readonly lineWrapping: boolean;
+    readonly onSelectFile: ((file: GitDiffFile) => void) | undefined;
+    readonly onToggleFileCollapse: (fileId: string) => void;
+    readonly scrollContainerRef: RefObject<HTMLElement | null>;
+    readonly showFileSelector: boolean;
+    readonly surfaceVariant: "flat" | "panel";
+}) {
+    return (
+        <>
             {showFileSelector ? (
                 <div className="mb-3 flex flex-wrap items-center gap-2">
                     {files.map((file) => (
@@ -208,8 +289,8 @@ export function GitDiffsView({
                     collapsedFileIdSet={collapsedFileIdSet}
                     files={files}
                     lineWrapping={lineWrapping}
-                    onToggleFileCollapse={toggleFileCollapse}
-                    scrollContainerRef={resolvedScrollContainerRef}
+                    onToggleFileCollapse={onToggleFileCollapse}
+                    scrollContainerRef={scrollContainerRef}
                     surfaceVariant={surfaceVariant}
                 />
             ) : (
@@ -220,11 +301,11 @@ export function GitDiffsView({
                     codeLineHeight={codeLineHeight}
                     file={activeFile}
                     lineWrapping={lineWrapping}
-                    scrollContainerRef={resolvedScrollContainerRef}
+                    scrollContainerRef={scrollContainerRef}
                     surfaceVariant={surfaceVariant}
                 />
             )}
-        </div>
+        </>
     );
 }
 

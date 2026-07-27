@@ -1,4 +1,9 @@
-import { MultiFileDiff, type FileContents } from "@pierre/diffs/react";
+import {
+    MultiFileDiff,
+    type FileContents,
+    type VirtualFileMetrics,
+} from "@pierre/diffs/react";
+import { DEFAULT_VIRTUAL_FILE_METRICS } from "@pierre/diffs";
 import { useMemo } from "react";
 
 import {
@@ -26,6 +31,9 @@ export type PierreGitDiffInput =
           readonly newFile: null;
           readonly oldFile: FileContents;
       };
+
+const DEFAULT_PIERRE_FONT_SIZE_PX = 13;
+const DEFAULT_PIERRE_LINE_HEIGHT = 1.55;
 
 function createPierreFile(
     cacheKey: string,
@@ -86,6 +94,29 @@ export function canRenderGitDiffWithPierre(file: GitDiffFile): boolean {
     return getPierreGitDiffInput(file) !== null;
 }
 
+export function getPierreDiffVirtualMetrics(
+    codeFontSize: number | null,
+    codeLineHeight: number | null,
+): VirtualFileMetrics {
+    const fontSize =
+        typeof codeFontSize === "number" &&
+        Number.isFinite(codeFontSize) &&
+        codeFontSize > 0
+            ? codeFontSize
+            : DEFAULT_PIERRE_FONT_SIZE_PX;
+    const lineHeight =
+        typeof codeLineHeight === "number" &&
+        Number.isFinite(codeLineHeight) &&
+        codeLineHeight > 0
+            ? codeLineHeight
+            : DEFAULT_PIERRE_LINE_HEIGHT;
+
+    return {
+        ...DEFAULT_VIRTUAL_FILE_METRICS,
+        lineHeight: lineHeight > 4 ? lineHeight : fontSize * lineHeight,
+    };
+}
+
 export function PierreGitDiffFile({
     codeFontFamily,
     codeFontSize,
@@ -137,6 +168,10 @@ export function PierreGitDiffFile({
             isDark,
         ],
     );
+    const metrics = useMemo(
+        () => getPierreDiffVirtualMetrics(codeFontSize, codeLineHeight),
+        [codeFontSize, codeLineHeight],
+    );
 
     if (!input) {
         return null;
@@ -146,6 +181,7 @@ export function PierreGitDiffFile({
         <MultiFileDiff
             {...input}
             className="block min-w-0 select-text"
+            metrics={metrics}
             options={options}
             style={style}
         />

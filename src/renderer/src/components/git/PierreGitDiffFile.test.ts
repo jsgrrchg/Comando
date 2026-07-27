@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { GitDiffFile } from "./types";
 import {
     canRenderGitDiffWithPierre,
+    getPierreDiffVirtualMetrics,
     getPierreGitDiffInput,
 } from "./PierreGitDiffFile";
 import { GIT_DIFF_FIXTURES } from "./GitDiffFixtures";
@@ -75,6 +76,18 @@ describe("Pierre Git diff adapter", () => {
         expect(noFinalNewline?.oldFile?.contents).not.toMatch(/\n$/);
         expect(noFinalNewline?.newFile?.contents).not.toMatch(/\n$/);
         expect(longLine?.newFile?.contents.length).toBeGreaterThan(2_000);
+    });
+
+    it("aligns Pierre's virtual line estimates with the resolved typography", () => {
+        expect(
+            getPierreDiffVirtualMetrics(null, null).lineHeight,
+        ).toBeCloseTo(20.15);
+        expect(getPierreDiffVirtualMetrics(15, 1.6)).toMatchObject({
+            lineHeight: 24,
+        });
+        expect(getPierreDiffVirtualMetrics(15, 26)).toMatchObject({
+            lineHeight: 26,
+        });
     });
 
     it.each([
