@@ -15,8 +15,12 @@ import {
 
 const RETRY_BASE_DELAY_MS = 250;
 const RETRY_MAX_DELAY_MS = 4_000;
+const STREAM_CHECKPOINT_BYTE_BUDGET = 10 * 1024;
+const STREAM_CHECKPOINT_MAX_DELAY_MS = 1_000;
 
 export interface AiTranscriptPersistenceOptions {
+    readonly checkpointByteBudget?: number;
+    readonly checkpointMaxDelayMs?: number;
     readonly onSealed?: (
         sessionId: string,
         metadata: readonly AiTranscriptBlockMetadata[],
@@ -56,11 +60,14 @@ export interface AiTranscriptPersistenceStatus {
 interface SessionPersistenceQueue {
     attempt: number;
     checkpointedRevision: number;
+    checkpointDue: boolean;
+    checkpointTimer: ReturnType<typeof setTimeout> | null;
     inFlight: Promise<void> | null;
     isRecovering: boolean;
     recoveredInterruptedTail: AiOpenTranscriptTail | null;
     recoveredTerminalTail: AiOpenTranscriptTail | null;
     retryTimer: ReturnType<typeof setTimeout> | null;
+    pendingCheckpointBytes: number;
     sealStatus: AiTranscriptTerminalStatus | null;
     sealTurnId: string | null;
     readonly waiters: Set<() => void>;
@@ -94,11 +101,15 @@ export class AiTranscriptPersistenceCoordinator {
         );
     }
 
-    scheduleCheckpoint(sessionId: string): void {
-        this.#queueFor(sessionId);
-        queueMicrotask(() => {
-            this.#pump(sessionId);
-        });
+    scheduleCheckpoint(sessionId: string, changedBytes = 0): void {
+        const queue = this.#queueFor(sessionId);
+        queue.pendingCheckpointBytes += Math.max(0, changedBytes);
+        if (queue.checkpointedRevision === 0 ||
+            queue.pendingCheckpointBytes >= this.#checkpointByteBudget()) {
+            this.#makeCheckpointDue(sessionId, queue);
+            return;
+        }
+        this.#scheduleCheckpointDeadline(sessionId, queue);
     }
 
     requestSeal(
@@ -108,6 +119,7 @@ export class AiTranscriptPersistenceCoordinator {
         const queue = this.#queueFor(sessionId);
         queue.sealStatus = status;
         queue.sealTurnId = this.store.getSnapshot(sessionId)?.turnId ?? null;
+        this.#makeCheckpointDue(sessionId, queue);
         this.#pump(sessionId);
     }
 
@@ -175,6 +187,7 @@ export class AiTranscriptPersistenceCoordinator {
 
     async flushSession(sessionId: string, timeoutMs: number): Promise<boolean> {
         const queue = this.#queueFor(sessionId);
+        this.#makeCheckpointDue(sessionId, queue);
         this.#pump(sessionId);
         if (this.#isIdle(sessionId, queue)) {
             return true;
@@ -203,6 +216,7 @@ export class AiTranscriptPersistenceCoordinator {
 
     async waitForIdle(sessionId: string): Promise<void> {
         const queue = this.#queueFor(sessionId);
+        this.#makeCheckpointDue(sessionId, queue);
         this.#pump(sessionId);
         if (this.#isIdle(sessionId, queue)) {
             return;
@@ -224,6 +238,10 @@ export class AiTranscriptPersistenceCoordinator {
                 clearTimeout(queue.retryTimer);
                 queue.retryTimer = null;
             }
+            if (queue.checkpointTimer) {
+                clearTimeout(queue.checkpointTimer);
+                queue.checkpointTimer = null;
+            }
         }
         return results.every(Boolean);
     }
@@ -232,6 +250,9 @@ export class AiTranscriptPersistenceCoordinator {
         const queue = this.#queues.get(sessionId);
         if (queue?.retryTimer) {
             clearTimeout(queue.retryTimer);
+        }
+        if (queue?.checkpointTimer) {
+            clearTimeout(queue.checkpointTimer);
         }
         if (queue) {
             // Explicit deletion supersedes any background flush waiting for idle.
@@ -357,6 +378,11 @@ export class AiTranscriptPersistenceCoordinator {
                 removedEntryIds.length > 0 ||
                 tail.revision > queue.checkpointedRevision
             ) {
+                // New deltas can arrive while the native write is in flight.
+                // Reset only the budget consumed by this checkpoint so those
+                // later deltas keep their own coalescing deadline.
+                queue.pendingCheckpointBytes = 0;
+                queue.checkpointDue = false;
                 this.#setStatus(sessionId, queue, "checkpointing", null);
                 await this.adapter.checkpoint(
                     checkpointFromTail(
@@ -423,6 +449,7 @@ export class AiTranscriptPersistenceCoordinator {
             queue.attempt = 0;
         } catch (error) {
             queue.attempt += 1;
+            queue.checkpointDue = true;
             const message =
                 error instanceof Error ? error.message : String(error);
             this.#setStatus(sessionId, queue, "retrying", message);
@@ -433,6 +460,7 @@ export class AiTranscriptPersistenceCoordinator {
             );
             queue.retryTimer = setTimeout(() => {
                 queue.retryTimer = null;
+                queue.checkpointDue = true;
                 this.#pump(sessionId);
             }, delayMs);
             queue.retryTimer.unref();
@@ -448,10 +476,11 @@ export class AiTranscriptPersistenceCoordinator {
             queue.recoveredInterruptedTail !== null ||
             queue.recoveredTerminalTail !== null ||
             this.store.getPendingTerminalTurn(sessionId) !== null ||
-            this.store.takePendingEntries(sessionId).length > 0 ||
-            this.store.takePendingRemovedEntryIds(sessionId).length > 0 ||
-            (this.store.getSnapshot(sessionId)?.revision ?? 0) >
-                queue.checkpointedRevision ||
+            (queue.checkpointDue &&
+                (this.store.takePendingEntries(sessionId).length > 0 ||
+                    this.store.takePendingRemovedEntryIds(sessionId).length > 0 ||
+                    (this.store.getSnapshot(sessionId)?.revision ?? 0) >
+                        queue.checkpointedRevision)) ||
             queue.sealStatus !== null
         );
     }
@@ -474,11 +503,14 @@ export class AiTranscriptPersistenceCoordinator {
             queue = {
                 attempt: 0,
                 checkpointedRevision: 0,
+                checkpointDue: false,
+                checkpointTimer: null,
                 inFlight: null,
                 isRecovering: false,
                 recoveredInterruptedTail: null,
                 recoveredTerminalTail: null,
                 retryTimer: null,
+                pendingCheckpointBytes: 0,
                 sealStatus: null,
                 sealTurnId: null,
                 waiters: new Set(),
@@ -486,6 +518,45 @@ export class AiTranscriptPersistenceCoordinator {
             this.#queues.set(sessionId, queue);
         }
         return queue;
+    }
+
+    #checkpointByteBudget(): number {
+        return Math.max(
+            1,
+            this.options.checkpointByteBudget ?? STREAM_CHECKPOINT_BYTE_BUDGET,
+        );
+    }
+
+    #checkpointMaxDelayMs(): number {
+        return Math.max(
+            1,
+            this.options.checkpointMaxDelayMs ?? STREAM_CHECKPOINT_MAX_DELAY_MS,
+        );
+    }
+
+    #makeCheckpointDue(sessionId: string, queue: SessionPersistenceQueue): void {
+        if (queue.checkpointTimer) {
+            clearTimeout(queue.checkpointTimer);
+            queue.checkpointTimer = null;
+        }
+        queue.checkpointDue = true;
+        queueMicrotask(() => {
+            this.#pump(sessionId);
+        });
+    }
+
+    #scheduleCheckpointDeadline(
+        sessionId: string,
+        queue: SessionPersistenceQueue,
+    ): void {
+        if (queue.checkpointTimer || queue.checkpointDue) {
+            return;
+        }
+        queue.checkpointTimer = setTimeout(() => {
+            queue.checkpointTimer = null;
+            this.#makeCheckpointDue(sessionId, queue);
+        }, this.#checkpointMaxDelayMs());
+        queue.checkpointTimer.unref();
     }
 
     async #reconcileRecoveredTerminalTail(

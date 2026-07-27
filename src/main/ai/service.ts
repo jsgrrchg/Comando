@@ -826,7 +826,10 @@ export class AiService {
         }
 
         this.#liveTranscriptTails.applyEvent(event);
-        this.#scheduleTranscriptCheckpointAfterRecovery(event.sessionId);
+        this.#scheduleTranscriptCheckpointAfterRecovery(
+            event.sessionId,
+            getTranscriptCheckpointChangedBytes(event),
+        );
         if (event.kind === "turn-status") {
             this.#transcriptPersistence?.requestSeal(
                 event.sessionId,
@@ -2856,10 +2859,16 @@ export class AiService {
         );
     }
 
-    #scheduleTranscriptCheckpointAfterRecovery(sessionId: string): void {
+    #scheduleTranscriptCheckpointAfterRecovery(
+        sessionId: string,
+        changedBytes = 0,
+    ): void {
         void this.#recoverTranscriptTail(sessionId)
             .then(() => {
-                this.#transcriptPersistence?.scheduleCheckpoint(sessionId);
+                this.#transcriptPersistence?.scheduleCheckpoint(
+                    sessionId,
+                    changedBytes,
+                );
             })
             .catch((error: unknown) => {
                 debugBenignError(
@@ -7456,6 +7465,18 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
     if (typeof timer.unref === "function") {
         timer.unref();
     }
+}
+
+function getTranscriptCheckpointChangedBytes(
+    event: AiSessionDomainEvent,
+): number {
+    if (event.kind !== "message-delta" && event.kind !== "thinking-delta") {
+        return 0;
+    }
+
+    // The coordinator needs the incremental payload size, not the growing
+    // message length, so its byte budget remains O(number of deltas).
+    return Buffer.byteLength(event.delta, "utf8");
 }
 
 function nativeSecretPatchesFromValuePatch(

@@ -31,6 +31,40 @@ const eventBase: Omit<AiSessionDomainEventBase, "kind"> = {
 };
 
 describe("AiTranscriptPersistenceCoordinator", () => {
+    it("coalesces streaming deltas until the durable byte budget is reached", async () => {
+        const store = liveStore();
+        const checkpoint = vi.fn((input: CheckpointInput) => {
+            void input;
+            return Promise.resolve();
+        });
+        const coordinator = new AiTranscriptPersistenceCoordinator(
+            store,
+            adapterStub({ checkpoint }),
+            () => undefined,
+            { checkpointByteBudget: 10, checkpointMaxDelayMs: 60_000 },
+        );
+
+        store.applyEvent(messageStarted(""));
+        coordinator.scheduleCheckpoint(SESSION_ID);
+        await expect(coordinator.waitForIdle(SESSION_ID)).resolves.toBeUndefined();
+        expect(checkpoint).toHaveBeenCalledTimes(1);
+
+        store.applyEvent(messageDelta("four", "four"));
+        coordinator.scheduleCheckpoint(SESSION_ID, 4);
+        store.applyEvent(messageDelta("eight", "eight"));
+        coordinator.scheduleCheckpoint(SESSION_ID, 4);
+        await Promise.resolve();
+        expect(checkpoint).toHaveBeenCalledTimes(1);
+
+        store.applyEvent(messageDelta("twelve", "twelve"));
+        coordinator.scheduleCheckpoint(SESSION_ID, 4);
+        await expect(coordinator.waitForIdle(SESSION_ID)).resolves.toBeUndefined();
+        expect(checkpoint).toHaveBeenCalledTimes(2);
+        expect(checkpoint.mock.calls[1]?.[0]?.payloads[0]?.value).toMatchObject({
+            message: { content: "twelve" },
+        });
+    });
+
     it("keeps streaming visible while an ordered checkpoint is in flight", async () => {
         const store = liveStore();
         const firstWrite = deferred<void>();
