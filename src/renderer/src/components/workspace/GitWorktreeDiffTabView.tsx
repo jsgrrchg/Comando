@@ -22,6 +22,7 @@ import type {
     GitWorktreeDiffResult,
 } from "@shared/ipc";
 import { GitDiffsView, GitEmptyState } from "@renderer/components/git";
+import { PierreDiffWorkerPoolProvider } from "@renderer/components/git/PierreDiffWorkerPoolProvider";
 import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
 import { IdeActionButton } from "./ide-bar";
 
@@ -565,65 +566,67 @@ export function GitWorktreeDiffTabView({
                             : "No uncommitted changes in this worktree."}
                     </div>
                 ) : (
-                    <div className="space-y-5">
-                        {visibleSections.map((section) => (
-                            <section key={section.id}>
-                                {/* Scope header only adds value when several
-                                    sections coexist; with a single section the
-                                    totals are already shown in the tab header. */}
-                                {visibleSections.length > 1 ? (
-                                    <div className="mb-2 flex items-center gap-2 px-2">
-                                        <h3 className="text-[12px] font-semibold text-text-primary">
-                                            {section.title}
-                                        </h3>
-                                        <span className="text-[11px] text-text-secondary">
-                                            {section.files.length}{" "}
-                                            {section.files.length === 1
-                                                ? "file"
-                                                : "files"}
-                                        </span>
-                                        <span className="font-mono text-[10px]">
-                                            {section.additions > 0 ? (
-                                                <span
-                                                    style={{
-                                                        color: "var(--diff-add)",
-                                                    }}
-                                                >
-                                                    +{section.additions}
-                                                </span>
-                                            ) : null}{" "}
-                                            {section.deletions > 0 ? (
-                                                <span
-                                                    style={{
-                                                        color: "var(--diff-remove)",
-                                                    }}
-                                                >
-                                                    -{section.deletions}
-                                                </span>
-                                            ) : null}
-                                        </span>
-                                    </div>
-                                ) : null}
-                                <GitDiffsView
-                                    activeFileId={activeFileId}
-                                    codeFontFamily={codeFontFamily}
-                                    codeFontSize={codeFontSize}
-                                    codeLineHeight={codeLineHeight}
-                                    collapsedFileIds={collapsedFileIds}
-                                    displayMode="stack"
-                                    files={section.files}
-                                    lineWrapping={false}
-                                    onSelectFile={handleSelectFile}
-                                    onToggleFileCollapse={
-                                        handleToggleFileCollapse
-                                    }
-                                    scrollContainerRef={diffScrollContainerRef}
-                                    showFileSelector={false}
-                                    surfaceVariant="flat"
-                                />
-                            </section>
-                        ))}
-                    </div>
+                    <PierreDiffWorkerPoolProvider>
+                        <div className="space-y-5">
+                            {visibleSections.map((section) => (
+                                <section key={section.id}>
+                                    {/* Scope header only adds value when several
+                                        sections coexist; with a single section the
+                                        totals are already shown in the tab header. */}
+                                    {visibleSections.length > 1 ? (
+                                        <div className="mb-2 flex items-center gap-2 px-2">
+                                            <h3 className="text-[12px] font-semibold text-text-primary">
+                                                {section.title}
+                                            </h3>
+                                            <span className="text-[11px] text-text-secondary">
+                                                {section.files.length}{" "}
+                                                {section.files.length === 1
+                                                    ? "file"
+                                                    : "files"}
+                                            </span>
+                                            <span className="font-mono text-[10px]">
+                                                {section.additions > 0 ? (
+                                                    <span
+                                                        style={{
+                                                            color: "var(--diff-add)",
+                                                        }}
+                                                    >
+                                                        +{section.additions}
+                                                    </span>
+                                                ) : null}{" "}
+                                                {section.deletions > 0 ? (
+                                                    <span
+                                                        style={{
+                                                            color: "var(--diff-remove)",
+                                                        }}
+                                                    >
+                                                        -{section.deletions}
+                                                    </span>
+                                                ) : null}
+                                            </span>
+                                        </div>
+                                    ) : null}
+                                    <GitDiffsView
+                                        activeFileId={activeFileId}
+                                        codeFontFamily={codeFontFamily}
+                                        codeFontSize={codeFontSize}
+                                        codeLineHeight={codeLineHeight}
+                                        collapsedFileIds={collapsedFileIds}
+                                        displayMode="stack"
+                                        files={section.files}
+                                        lineWrapping={false}
+                                        onSelectFile={handleSelectFile}
+                                        onToggleFileCollapse={
+                                            handleToggleFileCollapse
+                                        }
+                                        scrollContainerRef={diffScrollContainerRef}
+                                        showFileSelector={false}
+                                        surfaceVariant="flat"
+                                    />
+                                </section>
+                            ))}
+                        </div>
+                    </PierreDiffWorkerPoolProvider>
                 )}
             </main>
         </div>

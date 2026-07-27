@@ -11,6 +11,7 @@ import { convertRevisionFilesToDiffFiles } from "@renderer/app/git/history-prese
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
 import { GitDiffsView } from "@renderer/components/git";
+import { PierreDiffWorkerPoolProvider } from "@renderer/components/git/PierreDiffWorkerPoolProvider";
 
 import { IdeActionButton } from "./ide-bar";
 import {
@@ -103,20 +104,22 @@ export function GitRevisionDiffView({
                     </span>
                 ) : null}
             </div>
-            <GitDiffsView
-                codeFontFamily={buildEditorFontFamily(settings.fontFamily)}
-                codeFontSize={settings.fontSize}
-                codeLineHeight={settings.lineHeight}
-                collapsedFileIds={collapsedFileIds}
-                displayMode="stack"
-                emptyState="This pull request has no file changes."
-                files={diffFiles}
-                lineWrapping={false}
-                onToggleFileCollapse={toggleFile}
-                scrollContainerRef={scrollContainerRef}
-                showFileSelector={false}
-                surfaceVariant="flat"
-            />
+            <PierreDiffWorkerPoolProvider>
+                <GitDiffsView
+                    codeFontFamily={buildEditorFontFamily(settings.fontFamily)}
+                    codeFontSize={settings.fontSize}
+                    codeLineHeight={settings.lineHeight}
+                    collapsedFileIds={collapsedFileIds}
+                    displayMode="stack"
+                    emptyState="This pull request has no file changes."
+                    files={diffFiles}
+                    lineWrapping={false}
+                    onToggleFileCollapse={toggleFile}
+                    scrollContainerRef={scrollContainerRef}
+                    showFileSelector={false}
+                    surfaceVariant="flat"
+                />
+            </PierreDiffWorkerPoolProvider>
         </div>
     );
 }
