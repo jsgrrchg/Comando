@@ -6,8 +6,12 @@ import {
 import pierreDiffWorkerUrl from "@pierre/diffs/worker/worker.js?worker&url";
 import type { ReactNode } from "react";
 
+import { registerComandoPierreThemes } from "@renderer/app/editor/pierreShikiTheme";
+
 const DEFAULT_AVAILABLE_CORES = 2;
 const MAX_PIERRE_DIFF_WORKERS = 4;
+
+registerComandoPierreThemes();
 
 function resolvePierreDiffWorkerCount(): number {
     const availableCores =

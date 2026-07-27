@@ -76,7 +76,7 @@ interface ThemePalette {
     readonly light: ThemeColors;
 }
 
-interface ThemeTokens {
+export interface ComandoThemeTokens {
     readonly accent: string;
     readonly accentSoft: string;
     readonly accentStrong: string;
@@ -1713,7 +1713,7 @@ function createThemeTokens(
     colors: ThemeColors,
     code: ComandoCodeColorAnchors,
     isDark: boolean,
-): ThemeTokens {
+): ComandoThemeTokens {
     return {
         accent: colors.accent,
         accentSoft: hexToRgba(colors.accent, isDark ? 0.16 : 0.12),
@@ -1738,11 +1738,11 @@ function createThemeTokens(
     };
 }
 
-function getThemeTokens(
+export function resolveComandoThemeTokens(
     preset: ThemePreset,
     isDark: boolean,
     boostCodeContrast: boolean,
-): ThemeTokens {
+): ComandoThemeTokens {
     const palette = THEME_PALETTES[preset];
     const colors = isDark ? palette.dark : palette.light;
     const codePalette = CODE_PALETTES[preset];
@@ -1943,7 +1943,7 @@ export function applyAppearance(
     systemIsDark: boolean,
 ): void {
     const isDark = resolveIsDark(appearance.themeMode, systemIsDark);
-    const palette = getThemeTokens(
+    const palette = resolveComandoThemeTokens(
         appearance.themePreset,
         isDark,
         appearance.boostCodeContrast,
