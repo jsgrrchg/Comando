@@ -280,6 +280,7 @@ describe("GitCommitTabView", () => {
 
         expect(markup).toContain("pierre-git-code-view");
         expect(markup).toContain("collapse all");
+        expect(markup.match(/>collapse all</g) ?? []).toHaveLength(1);
     });
 
     it("moves persisted commit scroll ownership to CodeView", () => {

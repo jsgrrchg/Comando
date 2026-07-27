@@ -5,7 +5,6 @@ import { getGitContextKey } from "@renderer/app/git/context-key";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import { openExternalUrl } from "@renderer/app/utils/external-url";
 import {
-    convertCommitFilesToDiffFiles,
     formatGitCommitDateTime,
     getRefPillStyle,
 } from "@renderer/app/git/history-presentation";
@@ -19,8 +18,6 @@ import {
 import { usePersistedWorkspaceScroll } from "@renderer/components/workspace/usePersistedWorkspaceScroll";
 import {
     getGitCommitDiffCollapseStorageKey,
-    persistGitCommitDiffCollapseState,
-    readPersistedGitCommitDiffCollapseState,
 } from "./gitCommitDiffCollapsePersistence";
 import { MarkdownContent } from "./MarkdownContent";
 import { GitRevisionDiffView } from "./GitRevisionDiffView";
@@ -74,10 +71,6 @@ export function GitCommitTabView({
     const ensureCommitDetail = useGitStore((state) => state.ensureCommitDetail);
     const openGitTab = useWorkspaceStore((state) => state.openGitTab);
     const selectCommit = useGitStore((state) => state.selectCommit);
-    const diffFiles = useMemo(
-        () => (detail ? convertCommitFilesToDiffFiles(detail.files) : []),
-        [detail],
-    );
     const remoteLink = buildGitRemoteCommitLink(
         snapshot?.remotes ?? [],
         tab.commitSha,
@@ -91,10 +84,6 @@ export function GitCommitTabView({
     const [isBodyCollapsed, setIsBodyCollapsed] = useState(false);
     const collapsedRef = useRef(false);
 
-    const diffFileIdsKey = useMemo(
-        () => diffFiles.map((file) => file.id).join("|"),
-        [diffFiles],
-    );
     const diffCollapseStorageKey = useMemo(
         () =>
             getGitCommitDiffCollapseStorageKey({
@@ -105,57 +94,6 @@ export function GitCommitTabView({
             }),
         [commitSha, projectId, tab.kind, worktreeId],
     );
-    const [collapsedFileIds, setCollapsedFileIds] = useState<readonly string[]>(
-        () => {
-            const visibleFileIds = new Set(diffFiles.map((file) => file.id));
-            const persistedCollapsedFileIds =
-                readPersistedGitCommitDiffCollapseState(diffCollapseStorageKey)
-                    ?.collapsedFileIds ?? [];
-
-            return persistedCollapsedFileIds.filter((fileId) =>
-                visibleFileIds.has(fileId),
-            );
-        },
-    );
-    const [lastDiffFileIdsKey, setLastDiffFileIdsKey] =
-        useState(diffFileIdsKey);
-    const [lastDiffCollapseStorageKey, setLastDiffCollapseStorageKey] =
-        useState(diffCollapseStorageKey);
-
-    // Restore persisted collapse state when the commit or file identity set
-    // changes. Missing persisted state intentionally means "all expanded".
-    if (
-        lastDiffFileIdsKey !== diffFileIdsKey ||
-        lastDiffCollapseStorageKey !== diffCollapseStorageKey
-    ) {
-        const visibleFileIds = new Set(diffFiles.map((file) => file.id));
-        const persistedCollapsedFileIds =
-            readPersistedGitCommitDiffCollapseState(diffCollapseStorageKey)
-                ?.collapsedFileIds ?? [];
-
-        setLastDiffFileIdsKey(diffFileIdsKey);
-        setLastDiffCollapseStorageKey(diffCollapseStorageKey);
-        setCollapsedFileIds(
-            persistedCollapsedFileIds.filter((fileId) =>
-                visibleFileIds.has(fileId),
-            ),
-        );
-    }
-
-    const collapsedFileIdSet = useMemo(
-        () => new Set(collapsedFileIds),
-        [collapsedFileIds],
-    );
-    const allCollapsed =
-        diffFiles.length > 0 &&
-        diffFiles.every((file) => collapsedFileIdSet.has(file.id));
-
-    const handleToggleAllFiles = useCallback(() => {
-        const nextIds = allCollapsed ? [] : diffFiles.map((file) => file.id);
-
-        setCollapsedFileIds(nextIds);
-        persistGitCommitDiffCollapseState(diffCollapseStorageKey, nextIds);
-    }, [allCollapsed, diffCollapseStorageKey, diffFiles]);
 
     const handleDiffScroll = useCallback((scrollTop: number) => {
         const shouldCollapse = scrollTop > 0;
@@ -308,82 +246,42 @@ export function GitCommitTabView({
 
             </header>
 
-            <div
-                className="px-5 py-1.5"
-                style={{
-                    backgroundColor: "var(--color-bg-secondary)",
-                    borderBottom:
-                        "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                    borderTop:
-                        "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
-                    fontFamily: "var(--font-mono)",
-                }}
-            >
-                <div className="flex w-full flex-wrap items-center gap-3 text-[10.5px] text-text-secondary">
-                    <CopyableHash
-                        className="rounded px-1 py-0.5 transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                        display={detail.sha.slice(0, 8)}
-                        sha={detail.sha}
-                    />
-                    <button
-                        className="rounded px-1 py-0.5 transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                        onClick={() => void copyToClipboard(detail.authorEmail)}
-                        type="button"
-                    >
-                        {detail.authorEmail}
-                    </button>
-                    {remoteLink ? (
-                        <button
-                            className="rounded px-1 py-0.5 transition-colors hover:bg-bg-tertiary hover:text-text-primary"
-                            onClick={() => openExternalUrl(remoteLink.url)}
-                            type="button"
-                        >
-                            {remoteLink.label}
-                        </button>
-                    ) : null}
-                    <div className="ml-auto flex items-center gap-3">
-                        {diffFiles.length > 0 ? (
-                            <IdeActionButton
-                                onClick={handleToggleAllFiles}
-                                title={
-                                    allCollapsed
-                                        ? "Expand all files"
-                                        : "Collapse all files"
-                                }
-                            >
-                                {allCollapsed ? "expand all" : "collapse all"}
-                            </IdeActionButton>
-                        ) : null}
-                        <span className="shrink-0">
-                            {detail.changedFileCount}{" "}
-                            {detail.changedFileCount === 1 ? "file" : "files"}
-                        </span>
-                        {detail.insertions > 0 ? (
-                            <span
-                                className="shrink-0"
-                                style={{ color: "var(--diff-add)" }}
-                            >
-                                +{detail.insertions}
-                            </span>
-                        ) : null}
-                        {detail.deletions > 0 ? (
-                            <span
-                                className="shrink-0"
-                                style={{ color: "var(--diff-remove)" }}
-                            >
-                                -{detail.deletions}
-                            </span>
-                        ) : null}
-                    </div>
-                </div>
-            </div>
-
             <section className="flex min-h-0 flex-1">
                 <GitRevisionDiffView
                     additions={detail.insertions}
                     collapseStorageKey={diffCollapseStorageKey}
                     deletions={detail.deletions}
                     files={detail.files}
+                    key={diffCollapseStorageKey}
+                    leadingContent={
+                        <>
+                            <CopyableHash
+                                className="rounded px-1 py-0.5 transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                                display={detail.sha.slice(0, 8)}
+                                sha={detail.sha}
+                            />
+                            <button
+                                className="rounded px-1 py-0.5 transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                                onClick={() =>
+                                    void copyToClipboard(detail.authorEmail)
+                                }
+                                type="button"
+                            >
+                                {detail.authorEmail}
+                            </button>
+                            {remoteLink ? (
+                                <button
+                                    className="rounded px-1 py-0.5 transition-colors hover:bg-bg-tertiary hover:text-text-primary"
+                                    onClick={() =>
+                                        openExternalUrl(remoteLink.url)
+                                    }
+                                    type="button"
+                                >
+                                    {remoteLink.label}
+                                </button>
+                            ) : null}
+                        </>
+                    }
                     onScrollTop={handleCommitScrollTop}
                     scrollRef={commitScrollRef}
                     totalFileCount={detail.changedFileCount}
