@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { act, createElement } from "react";
+import { act, createElement, forwardRef } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -89,6 +89,39 @@ vi.mock("@renderer/components/workspace/usePersistedWorkspaceScroll", () => ({
     usePersistedWorkspaceScroll: () => ({
         handleScroll: vi.fn(),
         scrollRef: vi.fn(),
+    }),
+}));
+
+vi.mock("@pierre/diffs/react", () => ({
+    CodeView: forwardRef(function MockCodeView(
+        props: {
+            readonly className?: string;
+            readonly containerRef?: (node: HTMLDivElement | null) => void;
+            readonly items: readonly (
+                | {
+                      readonly file: { readonly name: string };
+                      readonly id: string;
+                      readonly type: "file";
+                  }
+                | {
+                      readonly fileDiff: { readonly name: string };
+                      readonly id: string;
+                      readonly type: "diff";
+                  }
+            )[];
+        },
+    ) {
+        return (
+            <div className={props.className} ref={props.containerRef}>
+                {props.items.map((item) => (
+                    <div key={item.id}>
+                        {item.type === "file"
+                            ? item.file.name
+                            : item.fileDiff.name}
+                    </div>
+                ))}
+            </div>
+        );
     }),
 }));
 

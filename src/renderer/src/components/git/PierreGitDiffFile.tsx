@@ -2,8 +2,11 @@ export {
     canRenderGitDiffWithPierre,
     compactPartialHunkOffsets,
     createPierreGitDiffItem,
+    createPierreGitCodeViewItems,
+    createPierreGitPlaceholderItem,
     getPierreDiffVirtualMetrics,
     getPierreGitDiffPatch,
+    getPierreGitPlaceholderLabel,
     PIERRE_GIT_DIFF_HEADER_HEIGHT_PX,
 } from "./PierreGitDiffModel";
 

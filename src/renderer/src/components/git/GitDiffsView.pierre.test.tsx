@@ -15,8 +15,10 @@ vi.mock("@pierre/diffs/react", () => ({
             readonly containerRef?: (node: HTMLDivElement | null) => void;
             readonly items: readonly {
                 readonly collapsed?: boolean;
-                readonly fileDiff: { readonly name: string };
+                readonly file?: { readonly name: string };
+                readonly fileDiff?: { readonly name: string };
                 readonly id: string;
+                readonly type: "diff" | "file";
                 readonly version?: number;
             }[];
             readonly options: Record<string, unknown>;
@@ -247,11 +249,57 @@ describe("GitDiffsView Pierre CodeView integration", () => {
         act(() => root.unmount());
     });
 
-    it("keeps a mixed binary stack on the legacy renderer", () => {
+    it("keeps binary files in CodeView as labeled placeholders", () => {
         const { container, root } = renderDiff(GIT_DIFF_FIXTURES.binary);
+        const items = codeViewCalls[0]?.items as
+            | readonly {
+                  readonly file?: {
+                      readonly contents: string;
+                      readonly name: string;
+                  };
+                  readonly type: "diff" | "file";
+              }[]
+            | undefined;
 
-        expect(codeViewCalls).toHaveLength(0);
-        expect(container.textContent).toContain("This file is binary");
+        expect(codeViewCalls).toHaveLength(1);
+        expect(items?.[0]).toMatchObject({
+            file: {
+                contents: "",
+                name: GIT_DIFF_FIXTURES.binary.path,
+            },
+            type: "file",
+        });
+        expect(container.textContent).toContain("Binary file changed");
+
+        act(() => root.unmount());
+    });
+
+    it("keeps text and binary files ordered in the same CodeView", () => {
+        const container = document.createElement("div");
+        const root = createRoot(container);
+
+        act(() => {
+            root.render(
+                <GitDiffsView
+                    displayMode="stack"
+                    files={[
+                        GIT_DIFF_FIXTURES.update,
+                        GIT_DIFF_FIXTURES.binary,
+                    ]}
+                    showFileSelector={false}
+                />,
+            );
+        });
+
+        const items = codeViewCalls[0]?.items as
+            | readonly { readonly id: string; readonly type: "diff" | "file" }[]
+            | undefined;
+
+        expect(codeViewCalls).toHaveLength(1);
+        expect(items).toMatchObject([
+            { id: GIT_DIFF_FIXTURES.update.id, type: "diff" },
+            { id: GIT_DIFF_FIXTURES.binary.id, type: "file" },
+        ]);
 
         act(() => root.unmount());
     });

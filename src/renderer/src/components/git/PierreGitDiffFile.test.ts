@@ -6,8 +6,10 @@ import {
     canRenderGitDiffWithPierre,
     compactPartialHunkOffsets,
     createPierreGitDiffItem,
+    createPierreGitCodeViewItems,
     getPierreDiffVirtualMetrics,
     getPierreGitDiffPatch,
+    getPierreGitPlaceholderLabel,
     PIERRE_GIT_DIFF_HEADER_HEIGHT_PX,
     PIERRE_GIT_DIFF_UNSAFE_CSS,
 } from "./PierreGitDiffFile";
@@ -128,8 +130,58 @@ describe("Pierre Git diff adapter", () => {
 
     it.each([
         ["binary", GIT_DIFF_FIXTURES.binary],
-    ])("keeps the legacy renderer for %s files", (_label, file) => {
+    ])("marks %s files as unavailable textual diffs", (_label, file) => {
         expect(canRenderGitDiffWithPierre(file)).toBe(false);
         expect(getPierreGitDiffPatch(file)).toBeNull();
+    });
+
+    it("creates an ordered placeholder instead of rejecting a mixed stack", () => {
+        const items = createPierreGitCodeViewItems([
+            GIT_DIFF_FIXTURES.update,
+            GIT_DIFF_FIXTURES.binary,
+        ]);
+
+        expect(items).toMatchObject([
+            {
+                id: GIT_DIFF_FIXTURES.update.id,
+                type: "diff",
+            },
+            {
+                file: {
+                    contents: "",
+                    name: GIT_DIFF_FIXTURES.binary.path,
+                },
+                id: GIT_DIFF_FIXTURES.binary.id,
+                type: "file",
+            },
+        ]);
+        expect(getPierreGitPlaceholderLabel(GIT_DIFF_FIXTURES.binary)).toBe(
+            "Binary file changed",
+        );
+    });
+
+    it("labels empty and invalid text diffs without leaving CodeView", () => {
+        const emptyFile: GitDiffFile = {
+            ...GIT_DIFF_FIXTURES.update,
+            hunks: [],
+            patch: null,
+        };
+        const invalidFile: GitDiffFile = {
+            ...GIT_DIFF_FIXTURES.update,
+            id: "invalid-patch",
+            patch: "not a patch",
+        };
+        const items = createPierreGitCodeViewItems([emptyFile, invalidFile]);
+
+        expect(items).toMatchObject([
+            { id: emptyFile.id, type: "file" },
+            { id: invalidFile.id, type: "file" },
+        ]);
+        expect(getPierreGitPlaceholderLabel(emptyFile)).toBe(
+            "No textual changes",
+        );
+        expect(getPierreGitPlaceholderLabel(invalidFile)).toBe(
+            "Diff unavailable",
+        );
     });
 });

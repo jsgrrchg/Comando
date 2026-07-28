@@ -1,63 +1,11 @@
-import { createRef, type ReactNode } from "react";
+import { createRef } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
-
-const mockScrollToIndex = vi.hoisted(() => vi.fn());
-
-vi.mock("@renderer/components/virtual/MeasuredVirtualList", () => ({
-    MeasuredVirtualList: <T,>({
-        enabled = true,
-        estimateSize,
-        getItemKey,
-        items,
-        onReady,
-        renderItem,
-        scrollMarginTop = 0,
-    }: {
-        readonly enabled?: boolean;
-        readonly estimateSize: (item: T, index: number) => number;
-        readonly getItemKey: (item: T, index: number) => string;
-        readonly items: readonly T[];
-        readonly onReady?: (
-            handle: { readonly scrollToIndex: typeof mockScrollToIndex } | null,
-        ) => void;
-        readonly renderItem: (params: {
-            readonly index: number;
-            readonly isVisible: boolean;
-            readonly item: T;
-        }) => ReactNode;
-        readonly scrollMarginTop?: number;
-    }) => {
-        onReady?.({ scrollToIndex: mockScrollToIndex });
-        const renderedItems = enabled ? items.slice(0, 6) : items;
-
-        return (
-            <div
-                data-measured-virtual-list="true"
-                data-scroll-margin-top={scrollMarginTop}
-            >
-                {renderedItems.map((item, index) => (
-                    <div
-                        data-estimated-size={estimateSize(item, index)}
-                        key={getItemKey(item, index)}
-                    >
-                        {renderItem({
-                            index,
-                            isVisible: true,
-                            item,
-                        })}
-                    </div>
-                ))}
-            </div>
-        );
-    },
-}));
+import { describe, expect, it } from "vitest";
 
 import {
     GIT_DIFF_FILE_VIRTUALIZATION_THRESHOLD,
     GIT_DIFF_LINE_VIRTUALIZATION_THRESHOLD,
     GitDiffsView,
-    estimateDiffFileSurfaceHeight,
 } from "./GitDiffsView";
 import type { GitDiffFile } from "./types";
 
@@ -334,7 +282,7 @@ describe("GitDiffsView", () => {
         );
     });
 
-    it("keeps CodeView as the scroll owner even when a legacy ref is supplied", () => {
+    it("keeps CodeView as the scroll owner when an external ref is supplied", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[createDiffFile()]}
@@ -347,7 +295,7 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("overflow-y-auto");
     });
 
-    it("keeps the message for binary files", () => {
+    it("keeps binary files inside Pierre during server rendering", () => {
         const markup = renderToStaticMarkup(
             <GitDiffsView
                 files={[
@@ -362,7 +310,8 @@ describe("GitDiffsView", () => {
             />,
         );
 
-        expect(markup).toContain("This file is binary");
+        expect(markup).toContain("pierre-git-code-view");
+        expect(markup).not.toContain("This file is binary");
     });
 
     it("renders every stacked diff file below the virtualization threshold", () => {
@@ -421,19 +370,5 @@ describe("GitDiffsView", () => {
         expect(markup).toContain("pierre-git-code-view");
         expect(markup).not.toContain("giant-diff-line-1");
         expect(markup).not.toContain('data-virtualized-diff-lines="true"');
-    });
-
-    it("estimates collapsed diff files smaller than expanded text files", () => {
-        const file = createLargeLineDiffFile();
-
-        expect(estimateDiffFileSurfaceHeight(file, true, 20)).toBeLessThan(
-            estimateDiffFileSurfaceHeight(file, false, 20),
-        );
-    });
-
-    it("caps extremely large initial diff file estimates", () => {
-        expect(
-            estimateDiffFileSurfaceHeight(createLargeLineDiffFile(), false, 20),
-        ).toBe(1600);
     });
 });

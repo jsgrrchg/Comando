@@ -1,4 +1,4 @@
-import { type CodeViewDiffItem } from "@pierre/diffs";
+import { type CodeViewItem } from "@pierre/diffs";
 import {
     CodeView,
     type CodeViewHandle,
@@ -25,6 +25,7 @@ import { useSettingsStore } from "@renderer/app/store/settings-store";
 import { GitBadge } from "./GitUi";
 import {
     getPierreDiffVirtualMetrics,
+    getPierreGitPlaceholderLabel,
 } from "./PierreGitDiffModel";
 import { PIERRE_GIT_DIFF_UNSAFE_CSS } from "./PierreGitDiffFile";
 import type { GitDiffFile, GitDiffStyle } from "./types";
@@ -38,7 +39,7 @@ export interface PierreGitCodeViewProps {
     readonly collapsedFileIds: ReadonlySet<string>;
     readonly diffStyle: GitDiffStyle;
     readonly files: readonly GitDiffFile[];
-    readonly items: readonly CodeViewDiffItem[];
+    readonly items: readonly CodeViewItem[];
     readonly lineWrapping: boolean;
     readonly onScrollTop?: (scrollTop: number) => void;
     readonly onToggleFileCollapse: (fileId: string) => void;
@@ -68,7 +69,7 @@ export function PierreGitCodeView({
             string,
             {
                 readonly collapsed: boolean;
-                readonly source: CodeViewDiffItem;
+                readonly source: CodeViewItem;
                 readonly version: number;
             }
         >(),
@@ -78,7 +79,7 @@ export function PierreGitCodeView({
         () => new Map(files.map((file) => [file.id, file])),
         [files],
     );
-    const items = useMemo<readonly CodeViewDiffItem[]>(
+    const items = useMemo<readonly CodeViewItem[]>(
         () => {
             const activeItemIds = new Set<string>();
 
@@ -217,6 +218,11 @@ export function PierreGitCodeView({
                             <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.12em] text-text-secondary">
                                 {file.sectionLabel}
                             </span>
+                        ) : null}
+                        {item.type === "file" ? (
+                            <GitBadge className="shrink-0" tone="neutral">
+                                {getPierreGitPlaceholderLabel(file)}
+                            </GitBadge>
                         ) : null}
                         {file.reversible ? (
                             <GitBadge className="shrink-0" tone="neutral">
