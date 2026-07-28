@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 describe("PierreGitDiffErrorBoundary", () => {
-    it("keeps the legacy fallback visible when Pierre fails", () => {
+    it("keeps a safe fallback visible when Pierre fails", () => {
         vi.spyOn(console, "error").mockImplementation(() => undefined);
         const container = document.createElement("div");
         const root = createRoot(container);
@@ -25,7 +25,7 @@ describe("PierreGitDiffErrorBoundary", () => {
         act(() => {
             root.render(
                 <PierreGitDiffErrorBoundary
-                    fallback={<div data-legacy-diff="true">Legacy hunk</div>}
+                    fallback={<div data-diff-error="true">Diff unavailable</div>}
                     fileId="src/example.ts"
                 >
                     <BrokenPierreDiff />
@@ -33,8 +33,8 @@ describe("PierreGitDiffErrorBoundary", () => {
             );
         });
 
-        expect(container.textContent).toContain("Legacy hunk");
-        expect(container.querySelector("[data-legacy-diff]")).not.toBeNull();
+        expect(container.textContent).toContain("Diff unavailable");
+        expect(container.querySelector("[data-diff-error]")).not.toBeNull();
         act(() => root.unmount());
     });
 });

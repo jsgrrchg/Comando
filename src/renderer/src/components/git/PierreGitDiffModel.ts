@@ -1,6 +1,8 @@
 import {
     processFile,
     type CodeViewDiffItem,
+    type CodeViewFileItem,
+    type CodeViewItem,
     type FileDiffMetadata,
     type VirtualFileMetrics,
     DEFAULT_VIRTUAL_FILE_METRICS,
@@ -142,20 +144,43 @@ export function createPierreGitDiffItem(
     }
 }
 
-export function createPierreGitDiffItems(
+export function createPierreGitCodeViewItems(
     files: readonly GitDiffFile[],
-): readonly CodeViewDiffItem[] | null {
-    const items: CodeViewDiffItem[] = [];
+): readonly CodeViewItem[] {
+    return files.map(
+        (file) =>
+            createPierreGitDiffItem(file, false) ??
+            createPierreGitPlaceholderItem(file, false),
+    );
+}
 
-    for (const file of files) {
-        const item = createPierreGitDiffItem(file, false);
-        if (!item) {
-            return null;
-        }
-        items.push(item);
+export function createPierreGitPlaceholderItem(
+    file: GitDiffFile,
+    collapsed: boolean,
+): CodeViewFileItem {
+    return {
+        collapsed,
+        file: {
+            // An empty file item preserves ordering and virtualization without
+            // pretending binary or unavailable content is a textual diff.
+            contents: "",
+            name: file.path,
+        },
+        id: file.id,
+        type: "file",
+    };
+}
+
+export function getPierreGitPlaceholderLabel(file: GitDiffFile): string {
+    if (!file.isText) {
+        return "Binary file changed";
     }
 
-    return items;
+    if (file.hunks.length === 0) {
+        return "No textual changes";
+    }
+
+    return "Diff unavailable";
 }
 
 export function canRenderGitDiffWithPierre(file: GitDiffFile): boolean {
