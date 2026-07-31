@@ -1,6 +1,6 @@
 {
   "backendName": "comando-native-backend",
-  "backendVersion": "0.2.0",
+  "backendVersion": "0.2.1",
   "rustVersion": "1.96",
   "protocolVersion": 1,
   "minimumClientProtocolVersion": 1,
