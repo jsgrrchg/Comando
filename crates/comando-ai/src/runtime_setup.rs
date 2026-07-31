@@ -966,9 +966,7 @@ fn resolve_grok_auth_method(
     auth_invalidated: bool,
     login_ready: bool,
 ) -> Option<String> {
-    if env_ready && !auth_invalidated {
-        Some("xai-api-key".to_string())
-    } else if selected == Some("xai-api-key") && stored_ready && !auth_invalidated {
+    if !auth_invalidated && (env_ready || (selected == Some("xai-api-key") && stored_ready)) {
         Some("xai-api-key".to_string())
     } else if selected == Some("grok-login") && (!auth_invalidated || login_ready) {
         Some("grok-login".to_string())
