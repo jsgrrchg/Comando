@@ -118,9 +118,13 @@ describe("AiService Grok branch", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-grok-pending-login-"),
         );
+        const originalHome = process.env.HOME;
+        const originalUserProfile = process.env.USERPROFILE;
 
         try {
             const binaryPath = writeExecutable(tempDir, "grok");
+            process.env.HOME = tempDir;
+            delete process.env.USERPROFILE;
             let savedSettings: GrokRuntimeSettings | null = null;
             const service = createService({
                 settingsService: createSettingsService({
@@ -160,6 +164,8 @@ describe("AiService Grok branch", () => {
                 runtimeId: "grok",
             });
         } finally {
+            restoreEnv("HOME", originalHome);
+            restoreEnv("USERPROFILE", originalUserProfile);
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
     });
@@ -168,9 +174,13 @@ describe("AiService Grok branch", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-grok-env-login-"),
         );
+        const originalHome = process.env.HOME;
+        const originalUserProfile = process.env.USERPROFILE;
 
         try {
             const binaryPath = writeExecutable(tempDir, "grok");
+            process.env.HOME = tempDir;
+            delete process.env.USERPROFILE;
             process.env.XAI_API_KEY = "env-xai-key";
             let savedSettings: GrokRuntimeSettings | null = null;
             const service = createService({
@@ -205,6 +215,8 @@ describe("AiService Grok branch", () => {
                 runtimeId: "grok",
             });
         } finally {
+            restoreEnv("HOME", originalHome);
+            restoreEnv("USERPROFILE", originalUserProfile);
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
     });
@@ -463,10 +475,15 @@ describe("AiService Grok branch", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-grok-prepare-native-status-"),
         );
+        const originalHome = process.env.HOME;
+        const originalUserProfile = process.env.USERPROFILE;
 
         try {
             const binaryPath = writeExecutable(tempDir, "grok");
-            const invalidatedAtMs = Date.now();
+            const invalidatedAtMs = Date.now() - 60_000;
+            writeCurrentGrokAuthFile(tempDir);
+            process.env.HOME = tempDir;
+            delete process.env.USERPROFILE;
             const grokSettings = createGrokSettings({
                 authInvalidatedAtMs: invalidatedAtMs,
                 authMethod: "grok-login",
@@ -503,11 +520,13 @@ describe("AiService Grok branch", () => {
                 prepareSession,
                 saveRuntimeSettings,
             });
+            const saveGrokRuntimeSettings = vi.fn();
 
             const service = createService({
                 nativeAi,
                 settingsService: createSettingsService({
                     loadGrokRuntimeSettings: vi.fn(() => grokSettings),
+                    saveGrokRuntimeSettings,
                 }),
             });
 
@@ -526,10 +545,14 @@ describe("AiService Grok branch", () => {
                 runtimeId: "grok",
                 secretPatches: [],
                 settings: {
-                    authInvalidatedAtMs: invalidatedAtMs,
+                    authInvalidatedAtMs: null,
                     authMethod: "grok-login",
                     binaryPath,
                 },
+            });
+            expect(saveGrokRuntimeSettings).toHaveBeenCalledWith({
+                ...grokSettings,
+                authInvalidatedAtMs: null,
             });
             expect(getRuntimeStatus).toHaveBeenCalledWith("grok");
             expect(
@@ -541,6 +564,8 @@ describe("AiService Grok branch", () => {
                     .onboardingRequired,
             ).toBe(false);
         } finally {
+            restoreEnv("HOME", originalHome);
+            restoreEnv("USERPROFILE", originalUserProfile);
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
     });
@@ -865,6 +890,16 @@ function writeGrokAuthStore(homeDir: string): void {
     const authDir = path.join(homeDir, ".grok", "auth");
     fs.mkdirSync(authDir, { recursive: true });
     fs.writeFileSync(path.join(authDir, "token"), "cached-token", "utf8");
+}
+
+function writeCurrentGrokAuthFile(homeDir: string): void {
+    const grokDir = path.join(homeDir, ".grok");
+    fs.mkdirSync(grokDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(grokDir, "auth.json"),
+        '{"token":"cached-token"}',
+        "utf8",
+    );
 }
 
 function restoreEnv(name: string, value: string | undefined): void {

@@ -158,7 +158,8 @@ export function detectGrokAuthMethod(
 
     if (
         selectedAuthMethod === GROK_LOGIN_METHOD_ID &&
-        settings.authInvalidatedAtMs === null
+        (settings.authInvalidatedAtMs === null ||
+            grokLoginAvailable(settings))
     ) {
         return GROK_LOGIN_METHOD_ID;
     }
@@ -433,25 +434,76 @@ function grokLoginAvailable(settings: GrokRuntimeSettings): boolean {
 }
 
 function getGrokAuthStoreStatus(): GrokAuthStoreStatus | null {
-    const authDir = getGrokAuthStorePath();
-    if (!authDir || !isDirectory(authDir)) {
+    const paths = getGrokAuthStorePaths();
+    if (!paths) {
         return null;
     }
 
-    return readGrokAuthStoreStatus(authDir);
+    const statuses = [
+        readGrokAuthFileStatus(paths.authFile),
+        readGrokAuthDirectoryStatus(paths.authDir),
+    ].filter((status): status is GrokAuthStoreStatus => status !== null);
+    if (statuses.length === 0) {
+        return null;
+    }
+
+    return {
+        hasActiveAuth: statuses.some((status) => status.hasActiveAuth),
+        modifiedAtMs: statuses.reduce<number | null>(
+            (newest, status) =>
+                status.modifiedAtMs === null
+                    ? newest
+                    : Math.max(newest ?? 0, status.modifiedAtMs),
+            null,
+        ),
+    };
 }
 
-function getGrokAuthStorePath(): string | null {
+function getGrokAuthStorePaths(): {
+    readonly authDir: string;
+    readonly authFile: string;
+} | null {
     const homeDir =
         process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || "";
     if (!homeDir) {
         return null;
     }
 
-    return path.join(homeDir, ".grok", "auth");
+    const grokDir = path.join(homeDir, ".grok");
+    return {
+        authDir: path.join(grokDir, "auth"),
+        authFile: path.join(grokDir, "auth.json"),
+    };
 }
 
-function readGrokAuthStoreStatus(authDir: string): GrokAuthStoreStatus {
+function readGrokAuthFileStatus(
+    authFile: string,
+): GrokAuthStoreStatus | null {
+    try {
+        const stat = fs.statSync(authFile);
+        if (!stat.isFile()) {
+            return null;
+        }
+
+        return {
+            hasActiveAuth: stat.size > 0,
+            modifiedAtMs: stat.mtimeMs,
+        };
+    } catch (error) {
+        if (!isMissingFileError(error)) {
+            debugBenignError("ai.grok.readAuthFileStatus", error);
+        }
+        return null;
+    }
+}
+
+function readGrokAuthDirectoryStatus(
+    authDir: string,
+): GrokAuthStoreStatus | null {
+    if (!isDirectory(authDir)) {
+        return null;
+    }
+
     try {
         const entries = fs.readdirSync(authDir, { withFileTypes: true });
         let hasActiveAuth = false;
@@ -481,6 +533,14 @@ function readGrokAuthStoreStatus(authDir: string): GrokAuthStoreStatus {
             modifiedAtMs: getFileModifiedAtMs(authDir),
         };
     }
+}
+
+function isMissingFileError(error: unknown): boolean {
+    return (
+        error instanceof Error &&
+        "code" in error &&
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+    );
 }
 
 function envSecretPresent(env: NodeJS.ProcessEnv, key: typeof XAI_API_KEY_ENV) {

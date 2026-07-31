@@ -2670,7 +2670,19 @@ export class AiService {
                 };
             }
             case "grok": {
-                const settings = this.#settingsService.loadGrokRuntimeSettings();
+                let settings = this.#settingsService.loadGrokRuntimeSettings();
+                if (
+                    settings.authInvalidatedAtMs !== null &&
+                    settings.authMethod !== "xai-api-key" &&
+                    isGrokExternalCredentialReady(settings)
+                ) {
+                    // Keep legacy and native stores aligned after the CLI renews its login.
+                    settings = {
+                        ...settings,
+                        authInvalidatedAtMs: null,
+                    };
+                    this.#settingsService.saveGrokRuntimeSettings(settings);
+                }
                 return {
                     runtimeId,
                     settings: {

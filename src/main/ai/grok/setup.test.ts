@@ -336,28 +336,54 @@ describe("Grok setup", () => {
         }
     });
 
-    it("detects Grok login from ~/.grok/auth and respects invalidation", () => {
+    it("detects Grok login from ~/.grok/auth.json and respects invalidation", () => {
         const tempDir = fs.mkdtempSync(
             path.join(os.tmpdir(), "comando-grok-auth-store-"),
         );
 
         try {
-            writeGrokAuthStore(tempDir);
+            writeGrokAuthFile(tempDir);
             process.env.HOME = tempDir;
             delete process.env.USERPROFILE;
 
             const readySettings = createEmptyGrokSettings();
+            const renewedSelectedSettings = createEmptyGrokSettings({
+                authInvalidatedAtMs: Date.now() - 60_000,
+                authMethod: "grok-login",
+            });
             const invalidatedSettings = createEmptyGrokSettings({
                 authInvalidatedAtMs: Date.now() + 60_000,
+                authMethod: "grok-login",
             });
 
             expect(detectGrokAuthMethod(readySettings)).toBe("grok-login");
+            expect(detectGrokAuthMethod(renewedSelectedSettings)).toBe(
+                "grok-login",
+            );
             expect(detectGrokAuthMethod(invalidatedSettings)).toBeNull();
             expect(markGrokAuthInvalidated(readySettings)).toMatchObject({
                 authMethod: null,
                 binaryPath: null,
                 hasXaiApiKey: false,
             });
+        } finally {
+            fs.rmSync(tempDir, { force: true, recursive: true });
+        }
+    });
+
+    it("keeps compatibility with the legacy ~/.grok/auth directory", () => {
+        const tempDir = fs.mkdtempSync(
+            path.join(os.tmpdir(), "comando-grok-legacy-auth-store-"),
+        );
+
+        try {
+            writeLegacyGrokAuthStore(tempDir);
+            process.env.HOME = tempDir;
+            delete process.env.USERPROFILE;
+
+            expect(detectGrokAuthMethod(createEmptyGrokSettings())).toBe(
+                "grok-login",
+            );
         } finally {
             fs.rmSync(tempDir, { force: true, recursive: true });
         }
@@ -427,7 +453,17 @@ function platformExecutableName(command: string): string {
     return process.platform === "win32" ? `${command}.CMD` : command;
 }
 
-function writeGrokAuthStore(homeDir: string): void {
+function writeGrokAuthFile(homeDir: string): void {
+    const grokDir = path.join(homeDir, ".grok");
+    fs.mkdirSync(grokDir, { recursive: true });
+    fs.writeFileSync(
+        path.join(grokDir, "auth.json"),
+        '{"token":"cached-token"}',
+        "utf8",
+    );
+}
+
+function writeLegacyGrokAuthStore(homeDir: string): void {
     const authDir = path.join(homeDir, ".grok", "auth");
     fs.mkdirSync(authDir, { recursive: true });
     fs.writeFileSync(path.join(authDir, "token"), "cached-token", "utf8");
