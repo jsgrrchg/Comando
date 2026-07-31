@@ -13,7 +13,7 @@ use comando_ai::history::{
     AiHistoryMigrationMode, AiHistoryMigrationOptions, AiHistoryMigrator, AiHistoryStore,
     LegacyAiHistoryReader,
 };
-use comando_ai::runtime_setup::invalidate_runtime_auth_on_error;
+use comando_ai::runtime_setup::{invalidate_runtime_auth_on_error, reconcile_grok_auth};
 use comando_fs::{FsError, ProjectFsService, ProjectRoot};
 use comando_git::{
     GitBranchListScope, GitError, GitFileDiffRequest, GitRunOptions, GitRunner, checkout_branch,
@@ -461,6 +461,12 @@ impl NativeBackend {
                 let runtime_setup_store = RuntimeSetupStore::new(
                     store.app_data_dir().join("ai").join("runtime-setup.json"),
                 );
+                if let Err(error) = reconcile_grok_auth(&runtime_setup_store) {
+                    // Runtime auth recovery is best-effort and must not block application storage.
+                    crate::logging::diagnostic(format!(
+                        "Native Grok auth reconciliation failed: {error}"
+                    ));
+                }
                 if let Err(error) = self
                     .ai_engine
                     .set_runtime_setup_store(Some(runtime_setup_store.clone()))

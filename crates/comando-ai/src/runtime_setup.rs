@@ -68,6 +68,10 @@ pub fn runtime_status(
     Ok(status_from_parts(definition, &setup, &command, &auth))
 }
 
+pub fn reconcile_grok_auth(store: &RuntimeSetupStore) -> AiResult<bool> {
+    reconcile_grok_auth_at(store, grok_auth_file_path(), grok_auth_dir_path())
+}
+
 pub fn prepare_runtime_launch(
     store: &RuntimeSetupStore,
     definition: &RuntimeDefinition,
@@ -923,21 +927,13 @@ fn grok_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Runt
         normalize_auth_method(setup.auth_method.as_deref(), &["grok-login", "xai-api-key"]);
     let auth_invalidated = setup.auth_invalidated_at_ms.is_some();
     let login_ready = grok_login_auth_available(setup.auth_invalidated_at_ms);
-    let method = if env_ready && !auth_invalidated {
-        Some("xai-api-key".to_string())
-    } else if selected.as_deref() == Some("xai-api-key") && stored_ready && !auth_invalidated {
-        selected
-    } else if selected.as_deref() == Some("grok-login") && !auth_invalidated {
-        Some("grok-login".to_string())
-    } else if selected.is_some() {
-        None
-    } else if stored_ready && !auth_invalidated {
-        Some("xai-api-key".to_string())
-    } else if login_ready {
-        Some("grok-login".to_string())
-    } else {
-        None
-    };
+    let method = resolve_grok_auth_method(
+        env_ready,
+        stored_ready,
+        selected.as_deref(),
+        auth_invalidated,
+        login_ready,
+    );
     let can_logout = method.as_deref() == Some("grok-login");
     RuntimeAuthState {
         ready: method.is_some(),
@@ -960,6 +956,28 @@ fn grok_auth_state(store: &RuntimeSetupStore, setup: &RuntimeSetupState) -> Runt
             || setup.auth_invalidated_at_ms.is_some()
             || login_ready,
         can_logout,
+    }
+}
+
+fn resolve_grok_auth_method(
+    env_ready: bool,
+    stored_ready: bool,
+    selected: Option<&str>,
+    auth_invalidated: bool,
+    login_ready: bool,
+) -> Option<String> {
+    if !auth_invalidated && (env_ready || (selected == Some("xai-api-key") && stored_ready)) {
+        Some("xai-api-key".to_string())
+    } else if selected == Some("grok-login") && (!auth_invalidated || login_ready) {
+        Some("grok-login".to_string())
+    } else if selected.is_some() {
+        None
+    } else if stored_ready && !auth_invalidated {
+        Some("xai-api-key".to_string())
+    } else if login_ready {
+        Some("grok-login".to_string())
+    } else {
+        None
     }
 }
 
@@ -2074,6 +2092,34 @@ fn grok_login_auth_available_at(
         || external_auth_dir_available(auth_dir_path, invalidated_at_ms)
 }
 
+fn reconcile_grok_auth_at(
+    store: &RuntimeSetupStore,
+    auth_file_path: Option<PathBuf>,
+    auth_dir_path: Option<PathBuf>,
+) -> AiResult<bool> {
+    let setup = load_runtime_setup(store, "grok")?;
+    let Some(invalidated_at_ms) = setup.auth_invalidated_at_ms else {
+        return Ok(false);
+    };
+    if setup.auth_method.as_deref() == Some("xai-api-key")
+        || !grok_login_auth_available_at(auth_file_path, auth_dir_path, Some(invalidated_at_ms))
+    {
+        return Ok(false);
+    }
+
+    // A newer CLI credential supersedes the persisted failure marker.
+    store
+        .update_runtime("grok", |state| {
+            if state.auth_invalidated_at_ms == Some(invalidated_at_ms) {
+                state.auth_invalidated_at_ms = None;
+            }
+        })
+        .map_err(|error| {
+            AiError::Internal(format!("Native Grok auth reconciliation failed: {error}"))
+        })?;
+    Ok(true)
+}
+
 fn kilo_auth_file_path() -> Option<PathBuf> {
     xdg_data_dir().map(|base| base.join("kilo").join("auth.json"))
 }
@@ -2542,6 +2588,69 @@ mod tests {
             Some(temp.path().join(".grok").join("auth")),
             Some(u64::MAX),
         ));
+    }
+
+    #[test]
+    fn selected_grok_login_accepts_credentials_renewed_after_invalidation() {
+        assert_eq!(
+            resolve_grok_auth_method(false, false, Some("grok-login"), true, true).as_deref(),
+            Some("grok-login")
+        );
+        assert_eq!(
+            resolve_grok_auth_method(false, false, Some("grok-login"), true, false),
+            None
+        );
+    }
+
+    #[test]
+    fn grok_auth_reconciliation_clears_only_obsolete_invalidation() {
+        let temp = tempdir().expect("temp");
+        let store = RuntimeSetupStore::in_memory_for_tests(temp.path().join("runtime-setup.json"));
+        store
+            .update_runtime("grok", |state| {
+                state.auth_method = Some("grok-login".to_string());
+                state.auth_invalidated_at_ms = Some(1);
+            })
+            .expect("setup");
+        let auth_file = temp.path().join(".grok").join("auth.json");
+        write_file(&auth_file, r#"{"token":"test"}"#);
+
+        assert!(
+            reconcile_grok_auth_at(
+                &store,
+                Some(auth_file.clone()),
+                Some(temp.path().join(".grok").join("auth")),
+            )
+            .expect("reconcile")
+        );
+        assert_eq!(
+            store
+                .load_runtime("grok")
+                .expect("setup")
+                .auth_invalidated_at_ms,
+            None
+        );
+
+        store
+            .update_runtime("grok", |state| {
+                state.auth_invalidated_at_ms = Some(u64::MAX);
+            })
+            .expect("setup");
+        assert!(
+            !reconcile_grok_auth_at(
+                &store,
+                Some(auth_file),
+                Some(temp.path().join(".grok").join("auth")),
+            )
+            .expect("reconcile")
+        );
+        assert_eq!(
+            store
+                .load_runtime("grok")
+                .expect("setup")
+                .auth_invalidated_at_ms,
+            Some(u64::MAX)
+        );
     }
 
     #[test]
