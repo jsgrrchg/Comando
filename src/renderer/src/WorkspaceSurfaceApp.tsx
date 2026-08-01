@@ -10,6 +10,8 @@ import type {
 import { useSystemTheme } from "./app/hooks/use-system-theme";
 import { parseWorkspaceSurfaceRendererDescriptor } from "./app/renderer-mode";
 import { setCachedAppEditorSettings } from "./app/settings/client";
+import { createGitProjectRefreshScheduler } from "./app/git/refresh-scheduler";
+import { revalidateVisibleGitDiffs } from "./app/git/visible-diff-revalidation";
 import { useAiStore } from "./app/store/ai-store";
 import { useAppStore } from "./app/store/app-store";
 import { useGitStore } from "./app/store/git-store";
@@ -19,7 +21,10 @@ import {
     flushWorkspacePersistenceNow,
     useWorkspaceStore,
 } from "./app/store/workspace-store";
-import { resolveCommittedProjectWorktreeId } from "./app/git/context-key";
+import {
+    getGitContextKey,
+    resolveCommittedProjectWorktreeId,
+} from "./app/git/context-key";
 import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
 import { isWorkspaceSurfaceLifecycleCurrent } from "./app/workspace/surface-presentation-lifecycle";
 import {
@@ -149,6 +154,7 @@ export function WorkspaceSurfaceApp() {
     const addProjects = useProjectsStore((state) => state.addProjects);
     const gitHydrate = useGitStore((state) => state.hydrate);
     const ingestGitSnapshot = useGitStore((state) => state.ingestSnapshot);
+    const refreshGitProject = useGitStore((state) => state.refreshProject);
     const hydrateSurfaceLayout = useWorkspaceStore(
         (state) => state.hydrateSurfaceLayout,
     );
@@ -467,6 +473,38 @@ export function WorkspaceSurfaceApp() {
             return;
         }
         const api = window.comando;
+        const revalidateVisibleGitDiff = (
+            projectId: string,
+            worktreeId: string | null,
+        ) =>
+            revalidateVisibleGitDiffs({
+                ensureBranchDiff: (targetProjectId, targetWorktreeId) =>
+                    useGitStore
+                        .getState()
+                        .ensureBranchDiff(targetProjectId, targetWorktreeId),
+                ensureWorktreeDiff: (targetProjectId, targetWorktreeId) =>
+                    useGitStore
+                        .getState()
+                        .ensureWorktreeDiff(targetProjectId, targetWorktreeId),
+                getDiffMode: (targetProjectId, targetWorktreeId) =>
+                    useGitStore.getState().activeDiffModesByContext[
+                        getGitContextKey(targetProjectId, targetWorktreeId)
+                    ] ?? "worktree",
+                projectId,
+                worktreeId,
+                workspace: useWorkspaceStore.getState(),
+            });
+        const projectRefreshScheduler = createGitProjectRefreshScheduler({
+            refreshProject: async (projectId, worktreeId) => {
+                const snapshot = await refreshGitProject(projectId, worktreeId);
+                if (snapshot) {
+                    await revalidateVisibleGitDiff(
+                        snapshot.projectId,
+                        snapshot.currentWorktreeId,
+                    );
+                }
+            },
+        });
         const unsubscribeProjects = api.onProjectsUpdated(() => {
             void hydrateProjects(activeProjectId);
         });
@@ -479,19 +517,50 @@ export function WorkspaceSurfaceApp() {
                 );
             }
         });
-        const unsubscribeGit = api.onGitRepositorySnapshotUpdated(
-            ingestGitSnapshot,
+        const unsubscribeInvalidation = api.onGitRepositoryInvalidated(
+            (payload) => {
+                if (payload.projectId !== activeProjectId) {
+                    return;
+                }
+                projectRefreshScheduler.schedule(
+                    payload.projectId,
+                    payload.worktreeId ?? activeWorktreeId,
+                );
+            },
         );
+        const unsubscribeGit = api.onGitRepositorySnapshotUpdated((snapshot) => {
+            if (snapshot.projectId !== activeProjectId) {
+                return;
+            }
+            projectRefreshScheduler.cancel(
+                snapshot.projectId,
+                snapshot.currentWorktreeId,
+            );
+            projectRefreshScheduler.cancel(snapshot.projectId, null);
+            ingestGitSnapshot(snapshot);
+            void revalidateVisibleGitDiff(
+                snapshot.projectId,
+                snapshot.currentWorktreeId,
+            );
+        });
+        // A surface can remain warm while hidden and miss invalidation events.
+        // Revalidate its own scope when it becomes visible again.
+        if (activeProjectId) {
+            projectRefreshScheduler.schedule(activeProjectId, activeWorktreeId);
+        }
         return () => {
             unsubscribeProjects();
             unsubscribeTree();
+            unsubscribeInvalidation();
             unsubscribeGit();
+            projectRefreshScheduler.clear();
         };
     }, [
         activeProjectId,
         activeWorktreeId,
         hydrateProjects,
         ingestGitSnapshot,
+        refreshGitProject,
         refreshProjectTabs,
         surfaceLifecycle,
     ]);
