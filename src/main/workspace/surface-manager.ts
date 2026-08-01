@@ -27,6 +27,8 @@ import type {
     WorkspaceSurfaceActionStatus,
     WorkspaceSurfaceFileRevealRequest,
     WorkspaceSurfaceDragEvent,
+    WorkspaceSurfaceLifecycleState,
+    WorkspaceSurfaceRuntimeBinding,
 } from "@shared/ipc";
 
 import {
@@ -45,9 +47,13 @@ interface WorkspaceSurfaceRecord {
     readonly contextKey: string;
     hostWindowId: string;
     readonly id: string;
+    isRuntimeAttached: boolean;
+    isRuntimeDetached: boolean;
     isVisible: boolean;
     isReady: boolean;
+    lifecycle: WorkspaceSurfaceLifecycleState;
     readonly pendingActions: WorkspaceSurfaceActionEnvelope[];
+    runtimeOwnerId: string | null;
     snapshot: WorkspaceNavigationSnapshot;
     readonly view: WebContentsView;
     readonly webContents: WebContents;
@@ -82,12 +88,37 @@ interface DispatchedWorkspaceSurfaceAction {
     readonly surfaceId: string;
 }
 
+export interface WorkspaceSurfaceRuntimeResolution {
+    readonly revision: number;
+    readonly runtimeOwnerId: string;
+}
+
+export interface WorkspaceSurfaceRuntimeResolutionInput {
+    readonly layoutSnapshot: Readonly<Record<string, unknown>>;
+    readonly projectId: string;
+    readonly scopeKey: string;
+    readonly worktreeId: string | null;
+}
+
+export interface WorkspaceSurfaceRuntimeSubscriber
+    extends WorkspaceSurfaceRuntimeBinding {
+    readonly webContents: WebContents;
+}
+
 interface WorkspaceSurfaceLifecycleHandlers {
     readonly onSurfaceCreated?: (
-        webContents: WebContents,
-        ownerId: string,
+        subscriber: WorkspaceSurfaceRuntimeSubscriber,
     ) => void;
-    readonly onSurfaceDestroyed?: (ownerId: string) => void;
+    readonly onSurfaceDestroyed?: (
+        subscriber: WorkspaceSurfaceRuntimeSubscriber,
+    ) => void;
+    readonly onSurfaceLifecycleChanged?: (
+        subscriber: WorkspaceSurfaceRuntimeSubscriber,
+        lifecycle: WorkspaceSurfaceLifecycleState,
+    ) => void;
+    readonly resolveRuntimeOwner?: (
+        input: WorkspaceSurfaceRuntimeResolutionInput,
+    ) => WorkspaceSurfaceRuntimeResolution | Promise<WorkspaceSurfaceRuntimeResolution>;
 }
 
 export interface OpenWorkspaceSurfaceLocation extends WorkspaceLocation {
@@ -304,9 +335,16 @@ export class WorkspaceSurfaceManager {
         return { actionId: envelope.actionId, delivered: true, state: "sent" };
     }
 
-    notifySurfaceReady(webContents: WebContents): void {
+    notifySurfaceReady(
+        webContents: WebContents,
+        binding: WorkspaceSurfaceRuntimeBinding,
+    ): void {
         const surface = this.#getSurfaceByWebContents(webContents);
-        if (!surface || surface.webContents.isDestroyed()) {
+        if (
+            !surface ||
+            surface.webContents.isDestroyed() ||
+            !this.#doesRuntimeBindingMatch(surface, binding)
+        ) {
             return;
         }
 
@@ -483,6 +521,27 @@ export class WorkspaceSurfaceManager {
         return this.#getSurfaceByWebContents(webContents)?.context ?? null;
     }
 
+    getSurfaceRuntimeSubscriber(
+        webContents: WebContents,
+    ): WorkspaceSurfaceRuntimeSubscriber | null {
+        const surface = this.#getSurfaceByWebContents(webContents);
+        return surface?.runtimeOwnerId
+            ? this.#toRuntimeSubscriber(surface)
+            : null;
+    }
+
+    getRuntimeOwnerId(webContents: WebContents): string | null {
+        return this.#getSurfaceByWebContents(webContents)?.runtimeOwnerId ?? null;
+    }
+
+    matchesSurfaceRuntimeBinding(
+        webContents: WebContents,
+        binding: WorkspaceSurfaceRuntimeBinding,
+    ): boolean {
+        const surface = this.#getSurfaceByWebContents(webContents);
+        return Boolean(surface && this.#doesRuntimeBindingMatch(surface, binding));
+    }
+
     getHostSnapshot(webContents: WebContents): WorkspaceNavigationSnapshot | null {
         const surface = this.#getSurfaceByWebContents(webContents);
         if (!surface) {
@@ -584,13 +643,6 @@ export class WorkspaceSurfaceManager {
         const host = this.#hostsByWindowId.get(hostWindowId);
         return host && !host.hostWindow.webContents.isDestroyed()
             ? host.hostWindow.webContents
-            : null;
-    }
-
-    getHostWebContentsForOwner(ownerId: string): WebContents | null {
-        const surface = this.#surfacesById.get(ownerId);
-        return surface
-            ? this.getHostWebContents(surface.hostWindowId)
             : null;
     }
 
@@ -734,6 +786,7 @@ export class WorkspaceSurfaceManager {
         surface.view.setVisible(false);
         surface.isVisible = false;
         surface.bounds = null;
+        this.#publishLifecycle(surface, "suspended");
         try {
             sourceHost.hostWindow.contentView.removeChildView(surface.view);
             targetHost.hostWindow.contentView.addChildView(surface.view);
@@ -1020,9 +1073,13 @@ export class WorkspaceSurfaceManager {
             contextKey,
             hostWindowId: host.hostWindowId,
             id,
+            isRuntimeAttached: false,
+            isRuntimeDetached: false,
             isVisible: false,
             isReady: false,
+            lifecycle: "suspended",
             pendingActions: [],
+            runtimeOwnerId: null,
             snapshot: toSurfaceSnapshot(hostSnapshot, contextKey),
             view,
             webContents,
@@ -1064,8 +1121,12 @@ export class WorkspaceSurfaceManager {
             );
         });
         webContents.once("did-finish-load", () => {
-            if (!webContents.isDestroyed()) {
-                this.#lifecycleHandlers.onSurfaceCreated?.(webContents, id);
+            if (!webContents.isDestroyed() && surface.runtimeOwnerId) {
+                surface.isRuntimeAttached = true;
+                this.#lifecycleHandlers.onSurfaceCreated?.(
+                    this.#toRuntimeSubscriber(surface),
+                );
+                this.#publishLifecycle(surface, surface.lifecycle, true);
                 const currentHost = this.#hostsByWindowId.get(
                     surface.hostWindowId,
                 );
@@ -1075,21 +1136,81 @@ export class WorkspaceSurfaceManager {
             }
         });
         webContents.once("destroyed", () => {
+            this.#detachSurfaceRuntime(surface);
             windowRegistry.unregisterEmbeddedRenderer(webContents);
             this.#surfaceIdsByWebContentsId.delete(webContentsId);
         });
+        const resolution = this.#lifecycleHandlers.resolveRuntimeOwner?.({
+            layoutSnapshot: workspaceContext.workspace as unknown as Readonly<
+                Record<string, unknown>
+            >,
+            projectId: workspaceContext.projectId,
+            scopeKey: contextKey,
+            worktreeId: workspaceContext.worktreeId ?? null,
+        }) ?? {
+            revision: 0,
+            runtimeOwnerId: `workspace-runtime:${contextKey}`,
+        };
+        if (isPromiseLike(resolution)) {
+            void resolution
+                .then((resolved) => {
+                    this.#loadResolvedSurface(surface, workspaceContext, resolved);
+                })
+                .catch((error: unknown) => {
+                    this.#handleRuntimeResolutionFailure(surface, error);
+                });
+        } else {
+            try {
+                this.#loadResolvedSurface(surface, workspaceContext, resolution);
+            } catch (error) {
+                this.#handleRuntimeResolutionFailure(surface, error);
+            }
+        }
+    }
+
+    #handleRuntimeResolutionFailure(
+        surface: WorkspaceSurfaceRecord,
+        error: unknown,
+    ): void {
+        console.error(
+            "[workspace] Failed to resolve the durable runtime owner",
+            error,
+        );
+        const currentHost = this.#hostsByWindowId.get(surface.hostWindowId);
+        if (currentHost) {
+            this.#destroySurface(currentHost, surface.id);
+        }
+    }
+
+    #loadResolvedSurface(
+        surface: WorkspaceSurfaceRecord,
+        workspaceContext: WorkspaceNavigationSnapshot["contexts"][number],
+        resolution: WorkspaceSurfaceRuntimeResolution,
+    ): void {
+        if (
+            this.#surfacesById.get(surface.id) !== surface ||
+            surface.webContents.isDestroyed()
+        ) {
+            return;
+        }
+        if (!resolution.runtimeOwnerId || resolution.revision < 0) {
+            throw new Error("The workspace runtime owner resolution is invalid.");
+        }
+
+        surface.runtimeOwnerId = resolution.runtimeOwnerId;
         const rendererSearch = new URLSearchParams({
             project: workspaceContext.projectId,
-            revision: "0",
-            scope: contextKey,
-            surface: id,
+            revision: `${resolution.revision}`,
+            "runtime-owner": resolution.runtimeOwnerId,
+            scope: surface.contextKey,
+            surface: surface.id,
             window: "workspace-surface",
         });
         if (workspaceContext.worktreeId) {
             rendererSearch.set("worktree", workspaceContext.worktreeId);
         }
-        // Scope is fixed before renderer bootstrap; a surface is never rebound.
-        loadRendererContents(webContents, rendererSearch.toString());
+        // Runtime owner and scope are immutable before renderer bootstrap.
+        loadRendererContents(surface.webContents, rendererSearch.toString());
     }
 
     #getActiveSurface(hostWindowId: string): WorkspaceSurfaceRecord | null {
@@ -1129,7 +1250,7 @@ export class WorkspaceSurfaceManager {
         this.#surfacesById.delete(surface.id);
         this.#surfaceIdsByWebContentsId.delete(surface.webContentsId);
         windowRegistry.unregisterEmbeddedRenderer(surface.webContents);
-        this.#lifecycleHandlers.onSurfaceDestroyed?.(surface.id);
+        this.#detachSurfaceRuntime(surface);
         if (!host.hostWindow.isDestroyed()) {
             host.hostWindow.contentView.removeChildView(surface.view);
         }
@@ -1270,6 +1391,7 @@ export class WorkspaceSurfaceManager {
                 surface.view.setVisible(false);
                 surface.isVisible = false;
             }
+            this.#publishLifecycle(surface, "suspended");
         }
 
         const activeSurface = activeSurfaceId
@@ -1288,9 +1410,80 @@ export class WorkspaceSurfaceManager {
             activeSurface.view.setVisible(true);
             activeSurface.isVisible = true;
         }
+        this.#publishLifecycle(activeSurface, "visible");
         if (options.focusActive) {
             activeSurface.webContents.focus();
         }
+    }
+
+    #publishLifecycle(
+        surface: WorkspaceSurfaceRecord,
+        lifecycle: WorkspaceSurfaceLifecycleState,
+        force = false,
+    ): void {
+        if (!force && surface.lifecycle === lifecycle) {
+            return;
+        }
+        surface.lifecycle = lifecycle;
+        if (
+            !surface.isRuntimeAttached ||
+            !surface.runtimeOwnerId ||
+            surface.webContents.isDestroyed()
+        ) {
+            return;
+        }
+
+        const subscriber = this.#toRuntimeSubscriber(surface);
+        this.#lifecycleHandlers.onSurfaceLifecycleChanged?.(
+            subscriber,
+            lifecycle,
+        );
+        surface.webContents.send(IPC_EVENTS.workspaceSurfaceLifecycleChanged, {
+            generation: subscriber.generation,
+            runtimeOwnerId: subscriber.runtimeOwnerId,
+            scopeKey: subscriber.scopeKey,
+            state: lifecycle,
+        });
+    }
+
+    #detachSurfaceRuntime(surface: WorkspaceSurfaceRecord): void {
+        if (
+            surface.isRuntimeDetached ||
+            !surface.isRuntimeAttached ||
+            !surface.runtimeOwnerId
+        ) {
+            return;
+        }
+        this.#publishLifecycle(surface, "disposing", true);
+        surface.isRuntimeDetached = true;
+        this.#lifecycleHandlers.onSurfaceDestroyed?.(
+            this.#toRuntimeSubscriber(surface),
+        );
+    }
+
+    #toRuntimeSubscriber(
+        surface: WorkspaceSurfaceRecord,
+    ): WorkspaceSurfaceRuntimeSubscriber {
+        if (!surface.runtimeOwnerId) {
+            throw new Error("The workspace surface has no runtime owner.");
+        }
+        return {
+            generation: surface.id,
+            runtimeOwnerId: surface.runtimeOwnerId,
+            scopeKey: surface.contextKey,
+            webContents: surface.webContents,
+        };
+    }
+
+    #doesRuntimeBindingMatch(
+        surface: WorkspaceSurfaceRecord,
+        binding: WorkspaceSurfaceRuntimeBinding,
+    ): boolean {
+        return (
+            surface.id === binding.generation &&
+            surface.contextKey === binding.scopeKey &&
+            surface.runtimeOwnerId === binding.runtimeOwnerId
+        );
     }
 
     #getActiveSurfaceBounds(
@@ -1430,6 +1623,15 @@ function toSurfaceSnapshot(
         openContextKeys: [context.key],
         version: snapshot.version,
     };
+}
+
+function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+    return (
+        typeof value === "object" &&
+        value !== null &&
+        "then" in value &&
+        typeof value.then === "function"
+    );
 }
 
 export const workspaceSurfaceManager = new WorkspaceSurfaceManager();

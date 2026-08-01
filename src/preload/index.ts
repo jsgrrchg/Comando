@@ -208,6 +208,9 @@ import {
     type WorkspaceSurfaceActionStatus,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceContextRequest,
+    type WorkspaceSurfaceLifecycleEvent,
+    type WorkspaceSurfaceRuntimeBinding,
+    type WorkspaceSurfaceRuntimeResync,
 } from "@shared/ipc";
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -324,6 +327,32 @@ const aiPromptQueueListeners = new Set<
     (snapshot: AiPromptQueueSnapshot) => void
 >();
 let aiSessionSnapshotPort: MessagePort | null = null;
+const workspaceSurfaceLifecycleListeners = new Set<
+    (event: WorkspaceSurfaceLifecycleEvent) => void
+>();
+const preloadSurfaceGeneration = new URLSearchParams(window.location.search).get(
+    "surface",
+);
+let latestWorkspaceSurfaceLifecycle: WorkspaceSurfaceLifecycleEvent | null = null;
+
+ipcRenderer.on(
+    IPC_EVENTS.workspaceSurfaceLifecycleChanged,
+    (_event, payload: WorkspaceSurfaceLifecycleEvent) => {
+        if (
+            !payload ||
+            payload.generation !== preloadSurfaceGeneration ||
+            (payload.state !== "visible" &&
+                payload.state !== "suspended" &&
+                payload.state !== "disposing")
+        ) {
+            return;
+        }
+        latestWorkspaceSurfaceLifecycle = payload;
+        for (const listener of workspaceSurfaceLifecycleListeners) {
+            listener(payload);
+        }
+    },
+);
 
 // Narrow runtime guard for the IPC envelope. Does not validate the full
 // `AiSessionSnapshot` shape (deliberately: avoids duplicating the whole schema
@@ -1106,6 +1135,15 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfaceLifecycleChanged: (listener) => {
+        workspaceSurfaceLifecycleListeners.add(listener);
+        if (latestWorkspaceSurfaceLifecycle) {
+            listener(latestWorkspaceSurfaceLifecycle);
+        }
+        return () => {
+            workspaceSurfaceLifecycleListeners.delete(listener);
+        };
+    },
     onTerminalData: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -1221,8 +1259,18 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.completeWorkspaceSurfaceAction,
             completion,
         ),
-    notifyWorkspaceSurfaceReady: () =>
-        ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceReady),
+    notifyWorkspaceSurfaceReady: (binding: WorkspaceSurfaceRuntimeBinding) =>
+        ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceReady, binding),
+    resyncWorkspaceSurfaceRuntime: async (
+        binding: WorkspaceSurfaceRuntimeBinding,
+    ) =>
+        assertIpcObject<WorkspaceSurfaceRuntimeResync>(
+            IPC_CHANNELS.resyncWorkspaceSurfaceRuntime,
+            await ipcRenderer.invoke(
+                IPC_CHANNELS.resyncWorkspaceSurfaceRuntime,
+                binding,
+            ),
+        ),
     revealWorkspaceSurfaceFileInHostTree: (request) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree,

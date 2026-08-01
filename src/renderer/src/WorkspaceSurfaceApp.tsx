@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type {
     GitWorktreeSummary,
     WorkspaceSurfaceActionEnvelope,
+    WorkspaceSurfaceLifecycleState,
+    WorkspaceSurfaceRuntimeBinding,
 } from "@shared/ipc";
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
@@ -19,6 +21,7 @@ import {
 } from "./app/store/workspace-store";
 import { resolveProjectContextWorktreeId } from "./app/git/context-key";
 import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
+import { isWorkspaceSurfaceLifecycleCurrent } from "./app/workspace/surface-presentation-lifecycle";
 import { activateWorkspaceSurfaceLayoutRuntime } from "./app/workspace/workspace-surface-layout-runtime";
 import { SIDEBAR_AGENT_DRAG_EVENT } from "./components/sidebar/sidebarAgentDragEvents";
 import { SIDEBAR_GITHUB_DRAG_EVENT } from "./components/sidebar/sidebarGitHubDragEvents";
@@ -30,6 +33,7 @@ import {
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { findPaneById } from "./app/workspace/tree";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
+import { useTerminalRuntimeStore } from "./features/terminal/terminalRuntimeStore";
 
 const descriptor = parseWorkspaceSurfaceRendererDescriptor(
     window.location.search,
@@ -89,6 +93,8 @@ export function WorkspaceSurfaceApp() {
     const [surfaceStatus, setSurfaceStatus] = useState<
         "error" | "loading" | "ready"
     >("loading");
+    const [surfaceLifecycle, setSurfaceLifecycle] =
+        useState<WorkspaceSurfaceLifecycleState>("suspended");
     const [projectMenuRequest, setProjectMenuRequest] =
         useState<{ readonly id: number } | null>(null);
     const [gitScopeMenuRequest, setGitScopeMenuRequest] = useState<{
@@ -106,6 +112,52 @@ export function WorkspaceSurfaceApp() {
               activeWorktreeIds[activeProjectId] ?? null,
           )
         : null;
+    const runtimeBinding = useMemo<WorkspaceSurfaceRuntimeBinding | null>(
+        () =>
+            descriptor
+                ? {
+                      generation: descriptor.generation,
+                      runtimeOwnerId: descriptor.runtimeOwnerId,
+                      scopeKey: descriptor.scopeKey,
+                  }
+                : null,
+        [],
+    );
+    const resyncSurfaceRuntime = useCallback(async () => {
+        if (!runtimeBinding) {
+            return;
+        }
+        const snapshot = await window.comando.resyncWorkspaceSurfaceRuntime(
+            runtimeBinding,
+        );
+        if (
+            snapshot.generation !== runtimeBinding.generation ||
+            snapshot.runtimeOwnerId !== runtimeBinding.runtimeOwnerId ||
+            snapshot.scopeKey !== runtimeBinding.scopeKey
+        ) {
+            return;
+        }
+        for (const session of snapshot.aiSessions) {
+            applyAiSessionUpdate({ kind: "snapshot", snapshot: session });
+        }
+        useTerminalRuntimeStore.getState().resyncSessions(snapshot.terminals);
+    }, [applyAiSessionUpdate, runtimeBinding]);
+
+    useEffect(() => {
+        if (!runtimeBinding) {
+            return;
+        }
+        return window.comando.onWorkspaceSurfaceLifecycleChanged((event) => {
+            if (!isWorkspaceSurfaceLifecycleCurrent(runtimeBinding, event)) {
+                return;
+            }
+            setSurfaceLifecycle(event.state);
+            if (event.state === "visible") {
+                void resyncSurfaceRuntime().catch(() => undefined);
+            }
+        });
+    }, [resyncSurfaceRuntime, runtimeBinding]);
+
     useEffect(() => {
         if (!descriptor || !window.comando) {
             return;
@@ -137,7 +189,12 @@ export function WorkspaceSurfaceApp() {
                     projects: useProjectsStore.getState().projects,
                 });
                 if (!cancelled) {
-                    await window.comando.notifyWorkspaceSurfaceReady();
+                    await resyncSurfaceRuntime();
+                    if (runtimeBinding) {
+                        await window.comando.notifyWorkspaceSurfaceReady(
+                            runtimeBinding,
+                        );
+                    }
                     setSurfaceStatus("ready");
                 }
             } catch (error) {
@@ -150,7 +207,11 @@ export function WorkspaceSurfaceApp() {
                         hydrated: true,
                     });
                     setSurfaceStatus("error");
-                    void window.comando.notifyWorkspaceSurfaceReady();
+                    if (runtimeBinding) {
+                        void window.comando.notifyWorkspaceSurfaceReady(
+                            runtimeBinding,
+                        );
+                    }
                 }
             }
         })();
@@ -166,6 +227,8 @@ export function WorkspaceSurfaceApp() {
         hydrateProjects,
         hydrateSettings,
         hydrateSurfaceLayout,
+        resyncSurfaceRuntime,
+        runtimeBinding,
     ]);
 
     useEffect(() => {
@@ -176,6 +239,9 @@ export function WorkspaceSurfaceApp() {
     }, []);
 
     useEffect(() => {
+        if (surfaceLifecycle !== "visible") {
+            return;
+        }
         const api = window.comando;
         const unsubscribe = api.onWorkspaceSurfaceActionRequested(
             (envelope: WorkspaceSurfaceActionEnvelope) => {
@@ -207,9 +273,12 @@ export function WorkspaceSurfaceApp() {
             },
         );
         return unsubscribe;
-    }, []);
+    }, [surfaceLifecycle]);
 
     useEffect(() => {
+        if (surfaceLifecycle !== "visible") {
+            return;
+        }
         const api = window.comando;
         const unsubscribeRuntime = api.onAiRuntimeStatus(applyAiRuntimeStatus);
         const unsubscribeEvent =
@@ -231,9 +300,13 @@ export function WorkspaceSurfaceApp() {
         applyAiRuntimeStatus,
         applyAiSessionEvent,
         applyAiSessionUpdate,
+        surfaceLifecycle,
     ]);
 
     useEffect(() => {
+        if (surfaceLifecycle !== "visible") {
+            return;
+        }
         const api = window.comando;
         const unsubscribeDrag = api.onWorkspaceSurfaceDrag((event) => {
             window.dispatchEvent(
@@ -263,9 +336,12 @@ export function WorkspaceSurfaceApp() {
             unsubscribeProjectMenu();
             unsubscribeGitMenu();
         };
-    }, []);
+    }, [surfaceLifecycle]);
 
     useEffect(() => {
+        if (surfaceLifecycle !== "visible") {
+            return;
+        }
         const api = window.comando;
         const unsubscribeProjects = api.onProjectsUpdated(() => {
             void hydrateProjects(activeProjectId);
@@ -293,6 +369,7 @@ export function WorkspaceSurfaceApp() {
         hydrateProjects,
         ingestGitSnapshot,
         refreshProjectTabs,
+        surfaceLifecycle,
     ]);
 
     useEffect(() => {
@@ -493,13 +570,16 @@ export function WorkspaceSurfaceApp() {
                 }}
                 tabIndex={0}
             >
-                <WorkspaceTerminalHost />
+                <WorkspaceTerminalHost
+                    presentationActive={surfaceLifecycle === "visible"}
+                />
                 <WorkspaceView
                     defaultProjectId={activeProjectId}
                     defaultWorktreeId={activeWorktreeId}
                     onOpenProject={(projectId) => openContext(projectId)}
                     onOpenProjects={openProjects}
                     onRequestCreateFile={() => undefined}
+                    presentationActive={surfaceLifecycle === "visible"}
                     recentProjects={recentProjects}
                     runtimeCatalog={runtimeCatalog}
                 />

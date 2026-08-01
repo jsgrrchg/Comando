@@ -500,6 +500,7 @@ export class AiService {
     >();
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
+    readonly #runtimeSubscribers = new Map<string, string>();
     readonly #terminalOutputBytesBySessionId = new Map<
         string,
         Map<string, number>
@@ -635,6 +636,7 @@ export class AiService {
         this.#activeCustomRuntimeLaunches.clear();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
+        this.#runtimeSubscribers.clear();
         this.#liveTranscriptTails.clear();
         this.#loadedTranscriptBlockMetadataSessionIds.clear();
         this.#loadingTranscriptBlockMetadataSessionIds.clear();
@@ -712,6 +714,41 @@ export class AiService {
         }
 
         return snapshots;
+    }
+
+    attachRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): readonly AiSessionSnapshot[] {
+        this.#runtimeSubscribers.set(runtimeOwnerId, subscriberId);
+        return this.getLiveSessionSnapshotsForWindow(runtimeOwnerId);
+    }
+
+    detachRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): boolean {
+        if (this.#runtimeSubscribers.get(runtimeOwnerId) !== subscriberId) {
+            return false;
+        }
+        this.#runtimeSubscribers.delete(runtimeOwnerId);
+        return true;
+    }
+
+    resyncRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): readonly AiSessionSnapshot[] {
+        return this.#runtimeSubscribers.get(runtimeOwnerId) === subscriberId
+            ? this.getLiveSessionSnapshotsForWindow(runtimeOwnerId)
+            : [];
+    }
+
+    isRuntimeSubscriberCurrent(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): boolean {
+        return this.#runtimeSubscribers.get(runtimeOwnerId) === subscriberId;
     }
 
     getLiveSessionSnapshotForWindow(

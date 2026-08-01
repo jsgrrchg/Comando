@@ -148,6 +148,7 @@ export const IPC_CHANNELS = {
     claimWorkspaceSurfaceAction: "workspace:claim-surface-action",
     completeWorkspaceSurfaceAction: "workspace:complete-surface-action",
     notifyWorkspaceSurfaceReady: "workspace:notify-surface-ready",
+    resyncWorkspaceSurfaceRuntime: "workspace:resync-surface-runtime",
     revealWorkspaceSurfaceFileInHostTree:
         "workspace:reveal-surface-file-in-host-tree",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
@@ -240,6 +241,7 @@ export const IPC_EVENTS = {
     workspaceSurfaceGitScopeMenuRequested:
         "workspace:surface-git-scope-menu-requested",
     workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
+    workspaceSurfaceLifecycleChanged: "workspace:surface-lifecycle-changed",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
@@ -2115,7 +2117,31 @@ export interface TerminalSession {
     readonly errorMessage?: string | null;
     readonly rows?: number;
     readonly status?: "running" | "exited" | "error";
+    readonly terminalId?: string | null;
     readonly worktreeId?: string | null;
+}
+
+export type WorkspaceSurfaceLifecycleState =
+    | "visible"
+    | "suspended"
+    | "disposing";
+
+export interface WorkspaceSurfaceRuntimeBinding {
+    readonly generation: string;
+    readonly runtimeOwnerId: string;
+    readonly scopeKey: string;
+}
+
+export interface WorkspaceSurfaceLifecycleEvent
+    extends WorkspaceSurfaceRuntimeBinding {
+    readonly state: WorkspaceSurfaceLifecycleState;
+}
+
+export interface WorkspaceSurfaceRuntimeResync
+    extends WorkspaceSurfaceRuntimeBinding {
+    /** Authoritative current snapshots; incremental events are never replayed. */
+    readonly aiSessions: readonly AiSessionSnapshot[];
+    readonly terminals: readonly TerminalSession[];
 }
 
 export interface TerminalDataEvent {
@@ -3901,7 +3927,12 @@ export interface ComandoApi {
     completeWorkspaceSurfaceAction: (
         completion: WorkspaceSurfaceActionCompletion,
     ) => Promise<void>;
-    notifyWorkspaceSurfaceReady: () => Promise<void>;
+    notifyWorkspaceSurfaceReady: (
+        binding: WorkspaceSurfaceRuntimeBinding,
+    ) => Promise<void>;
+    resyncWorkspaceSurfaceRuntime: (
+        binding: WorkspaceSurfaceRuntimeBinding,
+    ) => Promise<WorkspaceSurfaceRuntimeResync>;
     revealWorkspaceSurfaceFileInHostTree: (
         request: WorkspaceSurfaceFileRevealRequest,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
@@ -4082,6 +4113,9 @@ export interface ComandoApi {
         listener: (anchor: { readonly width: number; readonly x: number }) => void,
     ) => () => void;
     onWorkspaceSurfaceProjectMenuRequested: (listener: () => void) => () => void;
+    onWorkspaceSurfaceLifecycleChanged: (
+        listener: (event: WorkspaceSurfaceLifecycleEvent) => void,
+    ) => () => void;
     onTerminalData: (
         listener: (event: TerminalDataEvent) => void,
     ) => () => void;

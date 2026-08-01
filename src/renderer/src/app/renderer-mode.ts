@@ -8,6 +8,7 @@ export interface WorkspaceSurfaceRendererDescriptor {
     readonly generation: string;
     readonly projectId: string;
     readonly revision: number;
+    readonly runtimeOwnerId: string;
     readonly scopeKey: string;
     readonly worktreeId: string | null;
 }
@@ -41,11 +42,13 @@ export function parseWorkspaceSurfaceRendererDescriptor(
 
     const generation = params.get("surface")?.trim() ?? "";
     const projectId = params.get("project")?.trim() ?? "";
+    const runtimeOwnerId = params.get("runtime-owner")?.trim() ?? "";
     const scopeKey = params.get("scope")?.trim() ?? "";
     const revisionValue = Number(params.get("revision") ?? "0");
     if (
         !generation ||
         !projectId ||
+        !runtimeOwnerId ||
         !scopeKey ||
         !Number.isSafeInteger(revisionValue) ||
         revisionValue < 0
@@ -57,6 +60,7 @@ export function parseWorkspaceSurfaceRendererDescriptor(
         generation,
         projectId,
         revision: revisionValue,
+        runtimeOwnerId,
         scopeKey,
         worktreeId: params.get("worktree") || null,
     };

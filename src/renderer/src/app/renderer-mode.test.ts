@@ -41,12 +41,13 @@ describe("renderer mode composition", () => {
     it("parses an immutable surface scope and generation", () => {
         expect(
             parseWorkspaceSurfaceRendererDescriptor(
-                "?window=workspace-surface&surface=g-2&scope=project-1%3A%3Awt-1&project=project-1&worktree=wt-1&revision=7",
+                "?window=workspace-surface&surface=g-2&runtime-owner=runtime-1&scope=project-1%3A%3Awt-1&project=project-1&worktree=wt-1&revision=7",
             ),
         ).toEqual({
             generation: "g-2",
             projectId: "project-1",
             revision: 7,
+            runtimeOwnerId: "runtime-1",
             scopeKey: "project-1::wt-1",
             worktreeId: "wt-1",
         });

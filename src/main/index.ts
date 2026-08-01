@@ -107,6 +107,10 @@ import {
 } from "./window";
 import { windowRegistry } from "./windows/registry";
 import { workspaceSurfaceManager } from "./workspace/surface-manager";
+import type {
+    WorkspaceSurfaceRuntimeResolutionInput,
+} from "./workspace/surface-manager";
+import { workspaceRuntimeOwnership } from "./workspace/runtime-ownership-coordinator";
 import { moveWorkspaceBetweenWindows } from "./workspace/move-coordinator";
 import type { WorkspaceGateway } from "./workspace/service";
 
@@ -130,6 +134,7 @@ let settingsService: SettingsGateway | null = null;
 let terminalService: TerminalGateway | null = null;
 let nativeBackendClient: NativeBackendClient | null = null;
 let nativeBackendCapabilities: NativeCapabilitySet | null = null;
+let nativePersistenceGateway: NativePersistenceGateway | null = null;
 let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
 let isWorkspaceQuitReady = false;
@@ -199,6 +204,8 @@ type AiSessionStreamPortState = {
     readonly pendingAckSentAtBySeq: Map<number, number>;
     readonly pendingPreservedPayloads: AiSessionStreamPreservationQueue;
     staleTimer: ReturnType<typeof setTimeout> | null;
+    readonly runtimeOwnerId: string;
+    readonly webContents: WebContents;
 };
 
 const aiSessionStreamPorts = new Map<string, AiSessionStreamPortState>();
@@ -340,14 +347,52 @@ if (!hasSingleInstanceLock) {
             });
             workspaceService = nativeAppDataClient.workspace;
             workspaceSurfaceManager.setLifecycleHandlers({
-                onSurfaceCreated: (webContents, ownerId) => {
-                    attachAiSessionStream(webContents, ownerId);
+                onSurfaceCreated: (subscriber) => {
+                    const previous = workspaceRuntimeOwnership.attach(subscriber);
+                    if (previous) {
+                        detachAiSessionStream(previous.generation);
+                    }
+                    aiService?.attachRuntimeSubscriber(
+                        subscriber.runtimeOwnerId,
+                        subscriber.generation,
+                    );
+                    void terminalService?.attachRuntimeSubscriber(
+                        subscriber.runtimeOwnerId,
+                        subscriber.generation,
+                    );
                 },
-                onSurfaceDestroyed: (ownerId) => {
-                    detachAiSessionStream(ownerId);
-                    terminalService?.closeOwnedByWindow(ownerId);
-                    aiService?.closeOwnedByWindow(ownerId);
+                onSurfaceDestroyed: (subscriber) => {
+                    detachAiSessionStream(subscriber.generation);
+                    terminalService?.detachRuntimeSubscriber(
+                        subscriber.runtimeOwnerId,
+                        subscriber.generation,
+                    );
+                    aiService?.detachRuntimeSubscriber(
+                        subscriber.runtimeOwnerId,
+                        subscriber.generation,
+                    );
+                    workspaceRuntimeOwnership.detach(subscriber);
                 },
+                onSurfaceLifecycleChanged: (subscriber, lifecycle) => {
+                    if (
+                        !workspaceRuntimeOwnership.setLifecycle(
+                            subscriber,
+                            lifecycle,
+                        )
+                    ) {
+                        return;
+                    }
+                    if (lifecycle === "visible") {
+                        attachAiSessionStream(
+                            subscriber.webContents,
+                            subscriber.generation,
+                            subscriber.runtimeOwnerId,
+                        );
+                    } else {
+                        detachAiSessionStream(subscriber.generation);
+                    }
+                },
+                resolveRuntimeOwner: resolveWorkspaceSurfaceRuntimeOwner,
             });
 
             bootstrapSnapshot = {
@@ -540,6 +585,7 @@ async function shutdownApplication(): Promise<void> {
     githubService = null;
     nativeBackendClient = null;
     nativeBackendCapabilities = null;
+    nativePersistenceGateway = null;
     persistenceService = null;
     projectService = null;
     projectInvalidationCoordinator = null;
@@ -547,6 +593,7 @@ async function shutdownApplication(): Promise<void> {
     settingsService = null;
     terminalService = null;
     workspaceService = null;
+    workspaceRuntimeOwnership.clear();
 
     const shutdownResults = await Promise.allSettled([
         gitServiceToClose?.close(),
@@ -685,12 +732,49 @@ async function openNativePersistenceRequired(databaseFile: string): Promise<void
                 "Native persistence did not report a compatible open store.",
             );
         }
+        nativePersistenceGateway = gateway;
     } catch (error) {
         throw new Error(
             `[native-backend] Native persistence startup failed: ${formatError(error)}`,
             { cause: error },
         );
     }
+}
+
+async function resolveWorkspaceSurfaceRuntimeOwner(
+    input: WorkspaceSurfaceRuntimeResolutionInput,
+): Promise<{ readonly revision: number; readonly runtimeOwnerId: string }> {
+    const repository = nativePersistenceGateway;
+    if (!repository) {
+        throw new Error("Durable workspace persistence is not available.");
+    }
+
+    let workspace = await repository.loadDurableWorkspace(input.scopeKey);
+    if (!workspace) {
+        try {
+            workspace = await repository.createDurableWorkspace({
+                layoutSnapshot: input.layoutSnapshot,
+                lifecycle: "active",
+                projectId: input.projectId,
+                scopeKey: input.scopeKey,
+                worktreeId: normalizeWorkspaceWorktreeId(
+                    input.projectId,
+                    input.worktreeId,
+                ),
+            });
+        } catch (error) {
+            // Another surface may have won the lazy-create race for this scope.
+            workspace = await repository.loadDurableWorkspace(input.scopeKey);
+            if (!workspace) {
+                throw error;
+            }
+        }
+    }
+
+    return {
+        revision: workspace.revision,
+        runtimeOwnerId: workspace.runtimeOwnerId,
+    };
 }
 
 function summarizeNativeBackendCapabilities(capabilities: unknown): string {
@@ -1502,15 +1586,17 @@ function broadcastAiPromptQueueSnapshot(
     ownerWindowId: string,
     payload: AiPromptQueueSnapshot,
 ): void {
+    const subscriber = workspaceRuntimeOwnership.getVisibleSubscriber(
+        ownerWindowId,
+    );
+    if (subscriber) {
+        subscriber.webContents.send(IPC_EVENTS.aiPromptQueue, payload);
+        return;
+    }
+    workspaceRuntimeOwnership.markRuntimeChanged(ownerWindowId);
     const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
     if (targetContents) {
         targetContents.send(IPC_EVENTS.aiPromptQueue, payload);
-    }
-    const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
-        ownerWindowId,
-    );
-    if (hostContents && hostContents !== targetContents) {
-        hostContents.send(IPC_EVENTS.aiPromptQueue, payload);
     }
 }
 
@@ -1525,15 +1611,22 @@ function broadcastAiSessionSnapshot(
         return;
     }
 
+    const subscriber = workspaceRuntimeOwnership.getVisibleSubscriber(
+        ownerWindowId,
+    );
+    if (subscriber) {
+        dispatchAiSessionSnapshot(
+            subscriber.webContents,
+            payload,
+            subscriber.generation,
+        );
+        return;
+    }
+    workspaceRuntimeOwnership.markRuntimeChanged(ownerWindowId);
+
     const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
     if (targetContents) {
         dispatchAiSessionSnapshot(targetContents, payload, ownerWindowId);
-    }
-    const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
-        ownerWindowId,
-    );
-    if (hostContents && hostContents !== targetContents) {
-        dispatchAiSessionSnapshot(hostContents, payload, ownerWindowId, false);
     }
 }
 
@@ -1548,25 +1641,36 @@ function broadcastAiSessionEvent(
         return;
     }
 
+    const subscriber = workspaceRuntimeOwnership.getVisibleSubscriber(
+        ownerWindowId,
+    );
+    if (subscriber) {
+        dispatchAiSessionEvent(
+            subscriber.webContents,
+            payload,
+            subscriber.generation,
+        );
+        return;
+    }
+    workspaceRuntimeOwnership.markRuntimeChanged(ownerWindowId);
+
     const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
     if (targetContents) {
         dispatchAiSessionEvent(targetContents, payload, ownerWindowId);
     }
-    const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
-        ownerWindowId,
-    );
-    if (hostContents && hostContents !== targetContents) {
-        dispatchAiSessionEvent(hostContents, payload, ownerWindowId, false);
-    }
 }
 
-function attachAiSessionStream(webContents: WebContents, windowId: string): void {
+function attachAiSessionStream(
+    webContents: WebContents,
+    subscriberId: string,
+    runtimeOwnerId = subscriberId,
+): void {
     if (webContents.isDestroyed()) {
-        detachAiSessionStream(windowId);
+        detachAiSessionStream(subscriberId);
         return;
     }
 
-    detachAiSessionStream(windowId);
+    detachAiSessionStream(subscriberId);
 
     const channel = new MessageChannelMain();
 
@@ -1593,18 +1697,20 @@ function attachAiSessionStream(webContents: WebContents, windowId: string): void
             pendingAckSentAtBySeq: new Map(),
             pendingPreservedPayloads: new Map(),
             port: channel.port1,
+            runtimeOwnerId,
             staleTimer: null,
+            webContents,
         };
         channel.port1.on("message", (event: { data: unknown }) => {
-            handleAiSessionStreamPortMessage(windowId, event.data);
+            handleAiSessionStreamPortMessage(subscriberId, event.data);
         });
         channel.port1.start();
         state.heartbeatTimer = setInterval(() => {
-            sendAiSessionStreamHeartbeat(windowId);
+            sendAiSessionStreamHeartbeat(subscriberId);
         }, AI_SESSION_STREAM_HEARTBEAT_MS);
         state.heartbeatTimer.unref?.();
-        aiSessionStreamPorts.set(windowId, state);
-        sendAiSessionStreamHeartbeat(windowId);
+        aiSessionStreamPorts.set(subscriberId, state);
+        sendAiSessionStreamHeartbeat(subscriberId);
     } catch (error) {
         debugBenignError("attachAiSessionStream", error);
         channel.port1.close();
@@ -1780,14 +1886,17 @@ function recoverAiSessionStreamPort(
     reason: AiSessionStreamRecoveryReason,
 ): void {
     const state = aiSessionStreamPorts.get(windowId);
-    const targetContents = windowRegistry.getWebContentsByOwnerId(windowId);
+    const targetContents = state?.webContents ?? null;
     const pendingPreservedPayloadCount =
         state?.pendingPreservedPayloads.size ?? 0;
     const canSendFallback = Boolean(
         targetContents && !targetContents.isDestroyed(),
     );
+    const runtimeOwnerId = state?.runtimeOwnerId ?? windowId;
     const resyncSnapshots = canSendFallback
-        ? (aiService?.getLiveSessionSnapshotsForWindow(windowId) ?? [])
+        ? (workspaceRuntimeOwnership.getCurrentSubscriber(runtimeOwnerId)
+              ? aiService?.resyncRuntimeSubscriber(runtimeOwnerId, windowId)
+              : aiService?.getLiveSessionSnapshotsForWindow(runtimeOwnerId)) ?? []
         : [];
 
     if (targetContents && canSendFallback) {
@@ -1817,7 +1926,11 @@ function recoverAiSessionStreamPort(
     debugBenignError("aiSessionStreamPort.recover", new Error(message));
     detachAiSessionStream(windowId);
     if (targetContents && !targetContents.isDestroyed()) {
-        attachAiSessionStream(targetContents, windowId);
+        attachAiSessionStream(
+            targetContents,
+            windowId,
+            state?.runtimeOwnerId ?? windowId,
+        );
     }
 }
 
@@ -1910,6 +2023,14 @@ function broadcastTerminalData(
     ownerWindowId: string,
     payload: TerminalDataEvent,
 ): void {
+    const subscriber = workspaceRuntimeOwnership.getVisibleSubscriber(
+        ownerWindowId,
+    );
+    if (subscriber) {
+        subscriber.webContents.send(IPC_EVENTS.terminalData, payload);
+        return;
+    }
+    workspaceRuntimeOwnership.markRuntimeChanged(ownerWindowId);
     windowRegistry
         .getWebContentsByOwnerId(ownerWindowId)
         ?.send(IPC_EVENTS.terminalData, payload);
@@ -1919,6 +2040,14 @@ function broadcastTerminalExit(
     ownerWindowId: string,
     payload: TerminalExitEvent,
 ): void {
+    const subscriber = workspaceRuntimeOwnership.getVisibleSubscriber(
+        ownerWindowId,
+    );
+    if (subscriber) {
+        subscriber.webContents.send(IPC_EVENTS.terminalExit, payload);
+        return;
+    }
+    workspaceRuntimeOwnership.markRuntimeChanged(ownerWindowId);
     windowRegistry
         .getWebContentsByOwnerId(ownerWindowId)
         ?.send(IPC_EVENTS.terminalExit, payload);

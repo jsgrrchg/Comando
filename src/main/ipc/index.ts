@@ -183,6 +183,8 @@ import {
     type WorkspaceSurfaceActionCompletion,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceDragEvent,
+    type WorkspaceSurfaceRuntimeBinding,
+    type WorkspaceSurfaceRuntimeResync,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
 import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
@@ -249,6 +251,7 @@ import {
 import type { WorkspaceGateway } from "@main/workspace/service";
 import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
+import { workspaceRuntimeOwnership } from "@main/workspace/runtime-ownership-coordinator";
 import { buildWorkspaceMoveDestinations } from "@main/workspace/move-destinations";
 import { activateOpenWorkspaceLocation } from "@main/workspace/location-navigation";
 import {
@@ -410,6 +413,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceAction);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceReady);
+    ipcMain.removeHandler(IPC_CHANNELS.resyncWorkspaceSurfaceRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
     ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
@@ -2121,9 +2125,49 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             );
         },
     );
-    ipcMain.handle(IPC_CHANNELS.notifyWorkspaceSurfaceReady, (event) => {
-        workspaceSurfaceManager.notifySurfaceReady(event.sender);
-    });
+    ipcMain.handle(
+        IPC_CHANNELS.notifyWorkspaceSurfaceReady,
+        (event, binding: WorkspaceSurfaceRuntimeBinding) => {
+            workspaceSurfaceManager.notifySurfaceReady(event.sender, binding);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.resyncWorkspaceSurfaceRuntime,
+        async (
+            event,
+            binding: WorkspaceSurfaceRuntimeBinding,
+        ): Promise<WorkspaceSurfaceRuntimeResync> => {
+            const subscriber =
+                workspaceSurfaceManager.getSurfaceRuntimeSubscriber(
+                    event.sender,
+                );
+            if (
+                !subscriber ||
+                !workspaceSurfaceManager.matchesSurfaceRuntimeBinding(
+                    event.sender,
+                    binding,
+                )
+            ) {
+                throw new Error("The workspace surface binding is stale.");
+            }
+            const [aiSessions, terminals] = await Promise.all([
+                Promise.resolve(
+                    options.aiService.resyncRuntimeSubscriber(
+                        binding.runtimeOwnerId,
+                        binding.generation,
+                    ),
+                ),
+                Promise.resolve(
+                    options.terminalService.resyncRuntimeSubscriber(
+                        binding.runtimeOwnerId,
+                        binding.generation,
+                    ),
+                ),
+            ]);
+            workspaceRuntimeOwnership.consumeResyncRequirement(subscriber);
+            return { ...binding, aiSessions, terminals };
+        },
+    );
     ipcMain.handle(
         IPC_CHANNELS.claimWorkspaceSurfaceAction,
         (event, actionId: string) =>
@@ -2499,19 +2543,17 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.createTerminalSession,
         (event, input: CreateTerminalSessionInput) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.terminalService.createSession(
                 input,
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
             );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.writeTerminalInput,
         (event, input: WriteTerminalInput) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.terminalService.writeInput(
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
                 input.sessionId,
                 input.data,
             );
@@ -2520,9 +2562,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.resizeTerminalSession,
         (event, input: ResizeTerminalSessionInput) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.terminalService.resizeSession(
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
                 input.sessionId,
                 input.cols,
                 input.rows,
@@ -2532,9 +2573,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.closeTerminalSession,
         (event, sessionId: string) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.terminalService.closeSessionOrOwnedTerminal(
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
                 sessionId,
             );
         },
@@ -2551,8 +2591,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.prepareAiSession,
         (event, input: PrepareAiSessionInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            return options.aiService.prepareSession(input, context.windowId);
+            return options.aiService.prepareSession(
+                input,
+                requireRuntimeOwnerId(event.sender),
+            );
         },
     );
     ipcMain.handle(
@@ -2588,9 +2630,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             options.aiService.loadToolActivityDetail(input),
     );
     ipcMain.handle(IPC_CHANNELS.resyncAiSession, (event, sessionId: string) => {
-        const context = requireWindowContext(event.sender, "main");
         return options.aiService.getLiveSessionSnapshotForWindow(
-            context.windowId,
+            requireRuntimeOwnerId(event.sender),
             sessionId,
         );
     });
@@ -2619,59 +2660,69 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         options.aiService.getTranscriptPayloads(input),
     );
     ipcMain.handle(IPC_CHANNELS.getAiPromptQueue, (event, sessionId: string) => {
-        const context = requireWindowContext(event.sender, "main");
-        return options.aiService.getPromptQueue(sessionId, context.windowId);
+        return options.aiService.getPromptQueue(
+            sessionId,
+            requireRuntimeOwnerId(event.sender),
+        );
     });
     ipcMain.handle(
         IPC_CHANNELS.enqueueAiPrompt,
         (event, input: EnqueueAiPromptInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            return options.aiService.enqueuePrompt(input, context.windowId);
+            return options.aiService.enqueuePrompt(
+                input,
+                requireRuntimeOwnerId(event.sender),
+            );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.removeAiQueuedPrompt,
         (event, input: AiQueuedPromptMutationInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            return options.aiService.removeQueuedPrompt(input, context.windowId);
+            return options.aiService.removeQueuedPrompt(
+                input,
+                requireRuntimeOwnerId(event.sender),
+            );
         },
     );
     ipcMain.handle(IPC_CHANNELS.clearAiPromptQueue, (event, sessionId: string) => {
-        const context = requireWindowContext(event.sender, "main");
-        return options.aiService.clearPromptQueue(sessionId, context.windowId);
+        return options.aiService.clearPromptQueue(
+            sessionId,
+            requireRuntimeOwnerId(event.sender),
+        );
     });
     ipcMain.handle(
         IPC_CHANNELS.beginEditAiQueuedPrompt,
         (event, input: AiQueuedPromptMutationInput) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.aiService.beginEditQueuedPrompt(
                 input,
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
             );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.cancelEditAiQueuedPrompt,
         (event, sessionId: string) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.aiService.cancelEditQueuedPrompt(
                 sessionId,
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
             );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.updateAiQueuedPrompt,
         (event, input: UpdateAiQueuedPromptInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            return options.aiService.updateQueuedPrompt(input, context.windowId);
+            return options.aiService.updateQueuedPrompt(
+                input,
+                requireRuntimeOwnerId(event.sender),
+            );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.steerAiQueuedPrompt,
         (event, input: AiQueuedPromptMutationInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            return options.aiService.steerQueuedPrompt(input, context.windowId);
+            return options.aiService.steerQueuedPrompt(
+                input,
+                requireRuntimeOwnerId(event.sender),
+            );
         },
     );
     ipcMain.handle(
@@ -2716,24 +2767,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.launchAiRuntimeAuth,
         (event, input: AiRuntimeAuthLaunchInput) => {
-            const context = windowRegistry.getContextByWebContents(
-                event.sender,
-            );
             return options.aiService.launchRuntimeAuth({
                 ...input,
-                ownerWindowId: context?.windowId ?? null,
+                ownerWindowId: resolveRuntimeOwnerId(event.sender),
             });
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.logoutAiRuntimeAuth,
         (event, input: AiRuntimeAuthLogoutInput) => {
-            const context = windowRegistry.getContextByWebContents(
-                event.sender,
-            );
             return options.aiService.logoutRuntimeAuth({
                 ...input,
-                ownerWindowId: context?.windowId ?? null,
+                ownerWindowId: resolveRuntimeOwnerId(event.sender),
             });
         },
     );
@@ -2939,6 +2984,22 @@ function requireWindowContext(
     }
 
     return context;
+}
+
+function resolveRuntimeOwnerId(sender: Electron.WebContents): string | null {
+    return (
+        workspaceSurfaceManager.getRuntimeOwnerId(sender) ??
+        windowRegistry.getContextByWebContents(sender)?.windowId ??
+        null
+    );
+}
+
+function requireRuntimeOwnerId(sender: Electron.WebContents): string {
+    const runtimeOwnerId = resolveRuntimeOwnerId(sender);
+    if (!runtimeOwnerId) {
+        throw new Error("The current renderer has no runtime owner.");
+    }
+    return runtimeOwnerId;
 }
 
 function getPersistenceOwnerId(context: WindowContextSnapshot): string {

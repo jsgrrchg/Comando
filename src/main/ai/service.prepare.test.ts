@@ -2450,6 +2450,60 @@ describe("AiService prepareSession", () => {
         expect(onSessionSnapshot).toHaveBeenCalledTimes(callsBeforeRead);
     });
 
+    it("reattaches a new subscriber and resyncs only the current snapshot", async () => {
+        const service = createPrepareService({
+            nativeAi: createNativeAi({
+                prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(
+                    ({ input }) =>
+                        Promise.resolve(
+                            createSnapshot({
+                                runtimeSessionId: `runtime-${input.sessionId}`,
+                                sessionId: input.sessionId,
+                                status: "streaming",
+                                title: input.title,
+                            }),
+                        ),
+                ),
+            }),
+        });
+        await service.prepareSession(
+            {
+                projectId: null,
+                runtimeId: "codex",
+                sessionId: "session-1",
+                title: "Streaming",
+                worktreeId: null,
+            },
+            "runtime-owner",
+        );
+
+        expect(
+            service.attachRuntimeSubscriber("runtime-owner", "generation-1"),
+        ).toHaveLength(1);
+        service.attachRuntimeSubscriber("runtime-owner", "generation-2");
+
+        expect(
+            service.resyncRuntimeSubscriber(
+                "runtime-owner",
+                "generation-1",
+            ),
+        ).toEqual([]);
+        expect(
+            service.detachRuntimeSubscriber(
+                "runtime-owner",
+                "generation-1",
+            ),
+        ).toBe(false);
+        expect(
+            service
+                .resyncRuntimeSubscriber(
+                    "runtime-owner",
+                    "generation-2",
+                )
+                .map((snapshot) => snapshot.sessionId),
+        ).toEqual(["session-1"]);
+    });
+
     it("does not return live snapshots after the owning window is closed", async () => {
         const nativeAi = createNativeAi({
             prepareSession: vi.fn<NativeAiGateway["prepareSession"]>(({ input }) =>

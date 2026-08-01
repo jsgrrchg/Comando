@@ -239,6 +239,7 @@ interface WorkspaceViewProps {
     readonly onOpenProject: (projectId: string) => void;
     readonly onOpenProjects: () => void;
     readonly onRequestCreateFile: () => void;
+    readonly presentationActive?: boolean;
     readonly runtimeCatalog: readonly AiRuntimeDescriptor[];
 }
 
@@ -678,6 +679,7 @@ export function WorkspaceView({
     onOpenProject,
     onOpenProjects,
     onRequestCreateFile,
+    presentationActive = true,
     runtimeCatalog,
 }: WorkspaceViewProps) {
     const closeTab = useWorkspaceStore((state) => state.closeTab);
@@ -718,16 +720,19 @@ export function WorkspaceView({
             id: pane.id,
             tabIds: pane.tabIds.filter((tabId) => tabsById[tabId] !== undefined),
             visible:
-                pane.id === chatViewBudgetWorkspaceState.activePaneId ||
-                !chatViewBudgetWorkspaceState.deferredPaneIds.has(pane.id),
+                presentationActive &&
+                (pane.id === chatViewBudgetWorkspaceState.activePaneId ||
+                    !chatViewBudgetWorkspaceState.deferredPaneIds.has(pane.id)),
         }));
 
         return resolveWorkspaceViewLifecycles({
-            focusedPaneId: chatViewBudgetWorkspaceState.activePaneId,
+            focusedPaneId: presentationActive
+                ? chatViewBudgetWorkspaceState.activePaneId
+                : "__suspended__",
             panes,
             recentTabIds: chatViewBudgetWorkspaceState.recentActiveTabIds,
         });
-    }, [chatViewBudgetWorkspaceState]);
+    }, [chatViewBudgetWorkspaceState, presentationActive]);
     const hotChatTabIds = useMemo(() => {
         const tabsById = useWorkspaceStore.getState().tabsById;
         const workspacePanes = collectPaneNodes(

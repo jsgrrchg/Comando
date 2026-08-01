@@ -176,6 +176,15 @@ const rendererWindowMode = new URLSearchParams(window.location.search).get(
 const isWorkspaceHostRenderer = rendererWindowMode === "workspace-host";
 const isWorkspaceSurfaceRenderer =
     rendererWindowMode === "workspace-surface";
+const legacySurfaceRuntimeBinding = (() => {
+    const params = new URLSearchParams(window.location.search);
+    const generation = params.get("surface");
+    const runtimeOwnerId = params.get("runtime-owner");
+    const scopeKey = params.get("scope");
+    return generation && runtimeOwnerId && scopeKey
+        ? { generation, runtimeOwnerId, scopeKey }
+        : null;
+})();
 
 function getWorktreeDisplayLabel(worktree: GitWorktreeSummary): string {
     if (worktree.branchName) {
@@ -906,7 +915,9 @@ export function WorkspaceHostApp() {
                 })();
             },
         );
-        void api.notifyWorkspaceSurfaceReady();
+        if (legacySurfaceRuntimeBinding) {
+            void api.notifyWorkspaceSurfaceReady(legacySurfaceRuntimeBinding);
+        }
         return unsubscribe;
     }, []);
 

@@ -55,7 +55,11 @@ export function getOpenContextTerminalIds(
     });
 }
 
-export function WorkspaceTerminalHost() {
+export function WorkspaceTerminalHost({
+    presentationActive = true,
+}: {
+    readonly presentationActive?: boolean;
+}) {
     const {
         activeContextKey,
         activePaneId,
@@ -112,6 +116,9 @@ export function WorkspaceTerminalHost() {
     );
 
     useEffect(() => {
+        if (!presentationActive) {
+            return;
+        }
         const comandoApi = getComandoApiOrNull();
         if (!comandoApi) {
             return;
@@ -199,9 +206,12 @@ export function WorkspaceTerminalHost() {
             unsubscribeData();
             unsubscribeExit();
         };
-    }, []);
+    }, [presentationActive]);
 
     useEffect(() => {
+        if (!presentationActive) {
+            return;
+        }
         for (const tab of activeTerminalTabs) {
             ensureTerminal(tab);
         }
@@ -211,14 +221,8 @@ export function WorkspaceTerminalHost() {
         closeMissingTerminals,
         ensureTerminal,
         liveTerminalIds,
+        presentationActive,
     ]);
-
-    useEffect(
-        () => () => {
-            useTerminalRuntimeStore.getState().closeMissingTerminals([]);
-        },
-        [],
-    );
 
     return null;
 }

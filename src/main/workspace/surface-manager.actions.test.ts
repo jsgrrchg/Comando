@@ -19,22 +19,38 @@ const electronMocks = vi.hoisted(() => {
         readonly focus = vi.fn();
         readonly send = vi.fn();
         readonly setZoomFactor = vi.fn();
+        readonly listeners = new Map<string, Set<(...args: unknown[]) => void>>();
         destroyed = false;
 
         readonly close = vi.fn(() => {
             this.destroyed = true;
+            this.emit("destroyed");
         });
 
         isDestroyed(): boolean {
             return this.destroyed;
         }
 
-        on(): this {
+        on(event: string, listener: (...args: unknown[]) => void): this {
+            const listeners = this.listeners.get(event) ?? new Set();
+            listeners.add(listener);
+            this.listeners.set(event, listeners);
             return this;
         }
 
-        once(): this {
+        once(event: string, listener: (...args: unknown[]) => void): this {
+            const onceListener = (...args: unknown[]) => {
+                this.listeners.get(event)?.delete(onceListener);
+                listener(...args);
+            };
+            this.on(event, onceListener);
             return this;
+        }
+
+        emit(event: string, ...args: unknown[]): void {
+            for (const listener of [...(this.listeners.get(event) ?? [])]) {
+                listener(...args);
+            }
         }
     }
 
@@ -103,9 +119,74 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
         expect(searches[0]?.get("project")).toBe("project-a");
         expect(searches[0]?.get("surface")).toBeTruthy();
+        expect(searches[0]?.get("runtime-owner")).toBe(
+            "workspace-runtime:project-a::__primary__",
+        );
         expect(searches[1]?.get("scope")).toBe(
             "project-b::__primary__",
         );
+    });
+
+    it("recreates a surface with the same runtime owner and a new subscriber", () => {
+        const manager = new WorkspaceSurfaceManager();
+        const onSurfaceCreated = vi.fn();
+        const onSurfaceDestroyed = vi.fn();
+        manager.setLifecycleHandlers({
+            onSurfaceCreated,
+            onSurfaceDestroyed,
+            resolveRuntimeOwner: () => ({
+                revision: 7,
+                runtimeOwnerId: "durable-runtime-owner",
+            }),
+        });
+        const host = createHostWindow();
+        const activeSnapshot = singleContextSnapshot(
+            "project-a::__primary__",
+            "project-a",
+        );
+        manager.syncHost(host.window, createHostContext(), activeSnapshot);
+        const firstSurface = electronMocks.views[0];
+        if (!firstSurface) {
+            throw new Error("Expected the first surface.");
+        }
+        firstSurface.webContents.emit("did-finish-load");
+        const firstBinding = manager.getSurfaceRuntimeSubscriber(
+            asWebContents(firstSurface.webContents),
+        );
+
+        manager.syncHost(host.window, createHostContext(), {
+            ...activeSnapshot,
+            activeContextKey: null,
+            openContextKeys: [],
+        });
+        manager.syncHost(host.window, createHostContext(), activeSnapshot);
+        const secondSurface = electronMocks.views[1];
+        if (!secondSurface) {
+            throw new Error("Expected the recreated surface.");
+        }
+        secondSurface.webContents.emit("did-finish-load");
+        const secondBinding = manager.getSurfaceRuntimeSubscriber(
+            asWebContents(secondSurface.webContents),
+        );
+
+        expect(firstBinding?.runtimeOwnerId).toBe("durable-runtime-owner");
+        expect(secondBinding?.runtimeOwnerId).toBe("durable-runtime-owner");
+        expect(secondBinding?.generation).not.toBe(firstBinding?.generation);
+        expect(onSurfaceDestroyed).toHaveBeenCalledWith(
+            expect.objectContaining({
+                generation: firstBinding?.generation,
+                runtimeOwnerId: "durable-runtime-owner",
+            }),
+        );
+        expect(onSurfaceCreated).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                generation: secondBinding?.generation,
+                runtimeOwnerId: "durable-runtime-owner",
+            }),
+        );
+        expect(
+            vi.mocked(loadRendererContents).mock.calls.at(-1)?.[1],
+        ).toContain("revision=7");
     });
 
     it("waits until a new host renderer registers its surface container", async () => {
@@ -146,7 +227,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
         }
         expect(surfaceA.webContents.send).not.toHaveBeenCalled();
 
-        manager.notifySurfaceReady(asWebContents(surfaceA.webContents));
+        notifySurfaceReady(manager, surfaceA.webContents);
         expect(surfaceA.webContents.send).toHaveBeenCalledWith(
             IPC_EVENTS.workspaceSurfaceActionRequested,
             {
@@ -179,7 +260,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
         expect(surfaceB.webContents.send).not.toHaveBeenCalled();
 
         const actionB = createFileAction("project-b::__primary__", "project-b");
-        manager.notifySurfaceReady(asWebContents(surfaceB.webContents));
+        notifySurfaceReady(manager, surfaceB.webContents);
         const sentActionB = manager.dispatchActiveSurfaceAction("host-1", actionB);
         expect(sentActionB).toMatchObject({
             delivered: true,
@@ -246,7 +327,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
         }
 
         manager.activate("host-1", "project-b::__primary__");
-        manager.notifySurfaceReady(asWebContents(surfaceA.webContents));
+        notifySurfaceReady(manager, surfaceA.webContents);
 
         expect(surfaceA.webContents.send).not.toHaveBeenCalled();
         expect(
@@ -1069,4 +1150,16 @@ function createFileRevealRequest(
 
 function asWebContents(value: unknown): WebContents {
     return value as WebContents;
+}
+
+function notifySurfaceReady(
+    manager: WorkspaceSurfaceManager,
+    value: unknown,
+): void {
+    const webContents = asWebContents(value);
+    const binding = manager.getSurfaceRuntimeSubscriber(webContents);
+    if (!binding) {
+        throw new Error("Expected a bound workspace surface.");
+    }
+    manager.notifySurfaceReady(webContents, binding);
 }
