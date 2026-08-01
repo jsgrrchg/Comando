@@ -1201,7 +1201,21 @@ mod tests {
                 ],
             )
             .expect("watch topology");
-        thread::sleep(Duration::from_millis(120));
+        let commondir_path = linked_git_dir.join("commondir");
+        let commondir = fs::read(&commondir_path).expect("linked worktree commondir");
+        // RecommendedWatcher becomes live asynchronously on some backends. Rewriting the
+        // marker with identical bytes proves the callback is ready without changing Git state.
+        fs::write(&commondir_path, commondir).expect("refresh linked worktree commondir");
+        let readiness_invalidations = wait_for_git_invalidations(&mut watchers, |invalidation| {
+            invalidation.reason == "worktree"
+        });
+        assert!(
+            readiness_invalidations
+                .iter()
+                .any(|invalidation| invalidation.reason == "worktree"),
+            "the Git metadata watcher did not become ready: {readiness_invalidations:?}"
+        );
+        let _ = watchers.drain(true);
 
         fs::write(linked_path.join("tracked.txt"), "changed\n").expect("linked change");
         thread::sleep(Duration::from_millis(250));
