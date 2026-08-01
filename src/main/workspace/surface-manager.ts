@@ -93,6 +93,7 @@ interface WorkspaceSurfaceHostRecord {
     readonly hostWindowId: string;
     context: WindowContextSnapshot;
     isClosing: boolean;
+    hostOverlayVisible: boolean;
     pendingLayoutTimer: NodeJS.Timeout | null;
     pendingPreheatTimer: NodeJS.Timeout | null;
     readonly recentOperations: WorkspaceSurfaceOperationDiagnostic[];
@@ -496,6 +497,15 @@ export class WorkspaceSurfaceManager {
             ...host.surfacePool.diagnostics(),
             recentOperations: [...host.recentOperations],
         };
+    }
+
+    setHostOverlayVisible(hostWindowId: string, visible: boolean): void {
+        const host = this.#hostsByWindowId.get(hostWindowId);
+        if (!host || host.hostOverlayVisible === visible) {
+            return;
+        }
+        host.hostOverlayVisible = visible;
+        this.#applyVisibility(host, { focusActive: !visible });
     }
 
     claimSurfaceAction(webContents: WebContents, actionId: string): boolean {
@@ -1333,6 +1343,7 @@ export class WorkspaceSurfaceManager {
             disposalScheduled: false,
             hostWindow,
             hostWindowId: hostContext.windowId,
+            hostOverlayVisible: false,
             context: hostContext,
             isClosing: false,
             pendingLayoutTimer: null,
@@ -1886,6 +1897,20 @@ export class WorkspaceSurfaceManager {
         options: { readonly focusActive?: boolean } = {},
     ): void {
         if (host.hostWindow.isDestroyed()) {
+            return;
+        }
+        if (host.hostOverlayVisible) {
+            for (const surfaceId of host.surfaceIdsByContextKey.values()) {
+                const surface = this.#surfacesById.get(surfaceId);
+                if (
+                    surface &&
+                    !surface.webContents.isDestroyed() &&
+                    surface.isVisible
+                ) {
+                    surface.view.setVisible(false);
+                    surface.isVisible = false;
+                }
+            }
             return;
         }
         const activeSurfaceId =

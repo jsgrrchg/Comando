@@ -8,11 +8,14 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import type { GitRepositorySnapshot, GitWorktreeSummary } from "@shared/ipc";
-
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
 import { useWorkspaceStore } from "@renderer/app/store/workspace-store";
+import {
+    buildSuggestedWorktreePath,
+    findProjectGitSnapshot,
+    resolveWorktreeBaseBranch,
+} from "@renderer/app/workspace-navigator/project-actions";
 
 export interface ProjectContextMenuProject {
     readonly id: string;
@@ -253,7 +256,7 @@ export function ProjectContextMenu({
           ) ?? null)
         : null;
     const worktreeSnapshot = worktreeProject
-        ? findProjectSnapshot(gitSnapshots, worktreeProject.id)
+        ? findProjectGitSnapshot(gitSnapshots, worktreeProject.id)
         : null;
     const worktreeInventory = worktreeProject
         ? worktreesByProject[worktreeProject.id]
@@ -633,54 +636,6 @@ function ProjectContextModal({
     }
 
     return createPortal(modal, document.body);
-}
-
-function findProjectSnapshot(
-    snapshots: Record<string, GitRepositorySnapshot | null>,
-    projectId: string,
-): GitRepositorySnapshot | null {
-    return (
-        Object.values(snapshots).find(
-            (snapshot) => snapshot?.projectId === projectId,
-        ) ?? null
-    );
-}
-
-function resolveWorktreeBaseBranch(
-    snapshot: GitRepositorySnapshot | null,
-): string | null {
-    const primaryWorktree = snapshot?.worktrees.find(
-        (worktree) => worktree.isPrimary,
-    );
-    return primaryWorktree?.branchName ?? snapshot?.branch?.name ?? null;
-}
-
-function buildSuggestedWorktreePath(
-    rootPath: string,
-    branchName: string,
-    worktrees: readonly GitWorktreeSummary[],
-): string {
-    const normalizedRoot = rootPath.replace(/[\\/]+$/, "");
-    const suffix = branchName
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9._/-]+/g, "-")
-        .replace(/[\\/]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "worktree";
-    const existingPaths = new Set(
-        worktrees.map((worktree) =>
-            worktree.rootPath.replace(/[\\/]+$/, ""),
-        ),
-    );
-    let candidate = `${normalizedRoot}-${suffix}`;
-    let index = 2;
-
-    while (existingPaths.has(candidate)) {
-        candidate = `${normalizedRoot}-${suffix}-${index}`;
-        index += 1;
-    }
-
-    return candidate;
 }
 
 function ContextStateIndicator({

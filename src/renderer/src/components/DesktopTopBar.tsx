@@ -16,7 +16,10 @@ import {
 import { writeClipboardText } from "../app/utils/clipboard";
 import { SidebarGitScopePicker } from "./sidebar/SidebarGitScopePicker";
 import { useProjectContextTabDrag } from "./useProjectContextTabDrag";
-import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
+import {
+    WorkspaceSwitcher,
+    type WorkspaceSwitcherEntry,
+} from "./WorkspaceSwitcher";
 
 export type { ProjectContextMenuProject } from "./ProjectContextMenu";
 
@@ -40,6 +43,7 @@ interface DesktopTopBarProps {
     }) => void;
     readonly onOpenProjectMenu?: () => void;
     readonly onActivateContext: (contextKey: string) => void;
+    readonly onActivateWorkspace: (scopeKey: string) => Promise<void>;
     readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
     readonly onCloseContext: (contextKey: string) => void;
     readonly onMoveContext: (
@@ -57,6 +61,7 @@ interface DesktopTopBarProps {
     readonly onToggleLeftSidebar: () => void;
     readonly platform: string | null;
     readonly settingsLabel: string | null;
+    readonly workspaceSwitcherEntries: readonly WorkspaceSwitcherEntry[];
 }
 
 export function DesktopTopBar({
@@ -67,6 +72,7 @@ export function DesktopTopBar({
     onOpenGitScopeMenu,
     onOpenProjectMenu,
     onActivateContext,
+    onActivateWorkspace,
     onCloneRepository,
     onCloseContext,
     onMoveContext,
@@ -78,6 +84,7 @@ export function DesktopTopBar({
     onToggleLeftSidebar,
     platform,
     settingsLabel,
+    workspaceSwitcherEntries,
 }: DesktopTopBarProps) {
     const [menuOpen, setMenuOpen] = useState(false);
     const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
@@ -416,9 +423,10 @@ export function DesktopTopBar({
             </div>
         </header>
         <WorkspaceSwitcher
+            entries={workspaceSwitcherEntries}
+            onActivate={onActivateWorkspace}
             onClose={() => setWorkspaceSwitcherOpen(false)}
             open={workspaceSwitcherOpen}
-            projects={menuProjects}
         />
         </>
     );

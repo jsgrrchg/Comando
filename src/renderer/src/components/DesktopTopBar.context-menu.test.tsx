@@ -64,6 +64,7 @@ function renderTopBar() {
                     },
                 ],
                 onActivateContext: vi.fn(),
+                onActivateWorkspace: vi.fn(() => Promise.resolve()),
                 onCloneRepository: vi.fn(() => Promise.resolve(true)),
                 onCloseContext,
                 onMoveContext,
@@ -75,6 +76,7 @@ function renderTopBar() {
                 onToggleLeftSidebar: vi.fn(),
                 platform: "darwin",
                 settingsLabel: null,
+                workspaceSwitcherEntries: [],
             }),
         );
     });

@@ -404,6 +404,27 @@ describe("workspace file opening", () => {
         expect(useWorkspaceStore.getState().tabsById[secondTab.id]).toBeTruthy();
     });
 
+    it("registers a catalog context without changing the committed host selection", async () => {
+        const before = useWorkspaceStore.getState();
+        const contextKey = await before.ensureContext(
+            "project-2",
+            "worktree-feature",
+        );
+        const after = useWorkspaceStore.getState();
+
+        expect(contextKey).toBe("project-2::worktree-feature");
+        expect(after.activeContextKey).toBe("project-1::__primary__");
+        expect(after.openContextKeys).toEqual([
+            "project-1::__primary__",
+            "project-2::worktree-feature",
+        ]);
+        expect(after.contextsByKey[contextKey]).toMatchObject({
+            projectId: "project-2",
+            worktreeId: "worktree-feature",
+        });
+        expect(after.tabsById).toEqual(before.tabsById);
+    });
+
     it("exports one context as a self-contained navigation snapshot", () => {
         const tab = createWorkspaceFileTab("file-project-1", "README.md");
         useWorkspaceStore.setState((state) => ({

@@ -323,6 +323,10 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly title: string;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
+    ensureContext: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<string>;
     openContext: (
         projectId: string,
         worktreeId?: string | null,
@@ -1380,6 +1384,45 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             },
             input.target,
         ),
+
+    ensureContext: async (projectId, worktreeId = null) => {
+        const normalizedWorktreeId = normalizeWorkspaceWorktreeId(
+            projectId,
+            worktreeId,
+        );
+        const contextKey = getProjectContextKey(
+            projectId,
+            normalizedWorktreeId,
+        );
+        const currentState = get();
+        const contextsByKey = captureVisibleWorkspaceContext(currentState);
+        const existingContext = contextsByKey[contextKey];
+        if (
+            existingContext &&
+            currentState.openContextKeys.includes(contextKey)
+        ) {
+            return contextKey;
+        }
+
+        const context: RuntimeWorkspaceContext =
+            existingContext ?? {
+                key: contextKey,
+                lastActivatedAt: new Date().toISOString(),
+                projectId,
+                workspace: createDefaultWorkspaceState(),
+                worktreeId: normalizedWorktreeId,
+            };
+        set({
+            contextsByKey: { ...contextsByKey, [contextKey]: context },
+            openContextKeys: currentState.openContextKeys.includes(contextKey)
+                ? currentState.openContextKeys
+                : [...currentState.openContextKeys, contextKey],
+        });
+        // Registration persists compatibility state without changing the
+        // committed workspace shown by the host.
+        await persistWorkspaceState(get);
+        return contextKey;
+    },
 
     openContext: async (projectId, worktreeId = null, options = {}) => {
         if (isWorkspaceSurfaceRenderer) {

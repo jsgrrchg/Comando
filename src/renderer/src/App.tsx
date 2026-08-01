@@ -96,7 +96,11 @@ import {
     createPersistedShellState,
     useShellStore,
 } from "./app/store/shell-store";
-import { workspaceCatalogStore } from "./app/store/workspace-catalog-store";
+import {
+    refreshDurableWorkspaceCatalog,
+    workspaceCatalogStore,
+} from "./app/store/workspace-catalog-store";
+import { useWorkspaceNavigatorModel } from "./app/workspace-navigator/use-workspace-navigator-model";
 import {
     flushWorkspacePersistenceNow,
     getBestMatchingChatTabId,
@@ -166,6 +170,7 @@ import {
 } from "./components/DesktopTopBar";
 import { SidebarGitScopePicker } from "./components/sidebar/SidebarGitScopePicker";
 import { WorkspaceSurfaceProjectContextMenu } from "./components/ProjectContextMenu";
+import { WorkspaceNavigatorPanel } from "./components/workspace-navigator/WorkspaceNavigatorPanel";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 
@@ -412,21 +417,61 @@ export function WorkspaceHostApp() {
         if (!isWorkspaceHostRenderer || !workspaceNavigationHydrated) {
             return;
         }
-        const snapshot = useWorkspaceStore
-            .getState()
-            .getNavigationSnapshot();
-        workspaceCatalogStore.getState().replaceLegacy(snapshot);
         workspaceCatalogStore
             .getState()
             .mergeRegistry(projects, gitWorktreesByProject);
-        appNavigationStore.getState().replaceLegacy(snapshot);
-    }, [
-        gitWorktreesByProject,
-        projects,
-        workspaceActiveContextKey,
-        workspaceContextsByKey,
-        workspaceNavigationHydrated,
-    ]);
+    }, [gitWorktreesByProject, projects, workspaceNavigationHydrated]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer || !workspaceNavigationHydrated) {
+            return;
+        }
+        const api = getComandoApi();
+        if (!api) {
+            return;
+        }
+        let cancelled = false;
+        void refreshDurableWorkspaceCatalog(api)
+            .then(() => {
+                if (!cancelled) {
+                    workspaceCatalogStore
+                        .getState()
+                        .mergeRegistry(
+                            useProjectsStore.getState().projects,
+                            useGitStore.getState().worktreesByProject,
+                        );
+                }
+            })
+            .catch(() => {
+                if (cancelled) {
+                    return;
+                }
+                // Compatibility keeps navigation usable if v4 catalog loading
+                // fails, without making legacy open state the row source.
+                const snapshot = useWorkspaceStore
+                    .getState()
+                    .getNavigationSnapshot();
+                workspaceCatalogStore.getState().replaceLegacy(snapshot);
+                workspaceCatalogStore
+                    .getState()
+                    .mergeRegistry(
+                        useProjectsStore.getState().projects,
+                        useGitStore.getState().worktreesByProject,
+                    );
+                appNavigationStore.getState().replaceLegacy(snapshot);
+            });
+        const unsubscribe = api.onWorkspaceSurfacePoolChanged(
+            (diagnostics) => {
+                workspaceCatalogStore
+                    .getState()
+                    .setSurfaceDiagnostics(diagnostics);
+            },
+        );
+        return () => {
+            cancelled = true;
+            unsubscribe();
+        };
+    }, [workspaceNavigationHydrated]);
 
     void loadingNodeKeys;
     void removeProject;
@@ -577,6 +622,9 @@ export function WorkspaceHostApp() {
 
     const activeSurface = useShellStore((state) => state.activeSurface);
     const focusSurface = useShellStore((state) => state.focusSurface);
+    const expandedProjectIds = useShellStore(
+        (state) => state.expandedProjectIds,
+    );
     const hydrateShell = useShellStore((state) => state.hydrate);
     const leftCollapsed = useShellStore(
         (state) => state.responsive.left.collapsed,
@@ -628,6 +676,7 @@ export function WorkspaceHostApp() {
     const stickyFoldersEnabled = useSettingsStore(
         (state) => state.appearance.stickyFoldersEnabled,
     );
+    const workspaceNavigatorModel = useWorkspaceNavigatorModel();
     const appZoomFactor = useSettingsStore(
         (state) => state.appearance.zoomFactor,
     );
@@ -1404,6 +1453,7 @@ export function WorkspaceHostApp() {
             void comandoApi.saveShellState(
                 createPersistedShellState({
                     activeSurface,
+                    expandedProjectIds,
                     leftCollapsed: leftCollapsedPreference,
                     leftWidth,
                     preferredDrawer,
@@ -1419,6 +1469,7 @@ export function WorkspaceHostApp() {
         };
     }, [
         activeSurface,
+        expandedProjectIds,
         leftCollapsedPreference,
         leftWidth,
         persistenceReady,
@@ -4964,6 +5015,15 @@ export function WorkspaceHostApp() {
         </>
     );
 
+    const leftSidebarContent = isWorkspaceHostRenderer ? (
+        <WorkspaceNavigatorPanel
+            model={workspaceNavigatorModel}
+            settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
+        />
+    ) : (
+        sidebarContent
+    );
+
     const handleOpenProject = (projectId: string) => {
         void useWorkspaceStore.getState().openContext(projectId);
     };
@@ -4984,6 +5044,55 @@ export function WorkspaceHostApp() {
         }
         void useWorkspaceStore.getState().activateContext(contextKey);
     };
+    const activateWorkspaceFromCatalog = useCallback(
+        async (scopeKey: string) => {
+            const workspace = workspaceNavigatorModel.projects
+                .flatMap((project) => project.workspaces)
+                .find((candidate) => candidate.scopeKey === scopeKey);
+            const comandoApi = getComandoApi();
+            if (!workspace || !comandoApi) {
+                throw new Error("This workspace is no longer available.");
+            }
+            const contextKey = await useWorkspaceStore
+                .getState()
+                .ensureContext(workspace.projectId, workspace.worktreeId);
+            await comandoApi.initializeWorkspaceSurfaces(
+                useWorkspaceStore.getState().getNavigationSnapshot(),
+            );
+            const result = await comandoApi.activateWorkspaceSurface(contextKey);
+            if (result.status === "failed") {
+                throw new Error(result.message);
+            }
+            if (result.status === "stale") {
+                throw new Error(
+                    "A newer workspace selection replaced this request.",
+                );
+            }
+        },
+        [workspaceNavigatorModel.projects],
+    );
+    const workspaceSwitcherEntries = useMemo(
+        () =>
+            workspaceNavigatorModel.projects.flatMap((project) =>
+                project.workspaces.map((workspace) => ({
+                    isMissing: workspace.isMissing,
+                    projectId: project.id,
+                    projectName: project.name,
+                    scopeKey: workspace.scopeKey,
+                    statusLabel:
+                        workspace.scopeKey ===
+                        workspaceNavigatorModel.activeScopeKey
+                            ? "Active"
+                            : workspace.status === "activity"
+                              ? "Activity"
+                              : workspace.status === "error"
+                                ? "Needs attention"
+                                : null,
+                    worktreeLabel: workspace.label,
+                })),
+            ),
+        [workspaceNavigatorModel],
+    );
     const workspaceSurfaceContentLeftInset =
         getShellSurfaceSideInsets(shellResponsive).left;
     const openWorkspaceSurfaceGitScopeMenu = useCallback(
@@ -5015,6 +5124,7 @@ export function WorkspaceHostApp() {
                     : undefined
             }
             onActivateContext={activateWorkspaceContext}
+            onActivateWorkspace={activateWorkspaceFromCatalog}
             onCloneRepository={async (repositoryUrl) => {
                 const projectIds = await cloneRepository(repositoryUrl);
                 for (const projectId of projectIds) {
@@ -5044,6 +5154,7 @@ export function WorkspaceHostApp() {
             onToggleLeftSidebar={toggleLeftCollapsed}
             platform={bootstrap?.platform ?? null}
             settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
+            workspaceSwitcherEntries={workspaceSwitcherEntries}
         />
     );
 
@@ -5072,7 +5183,7 @@ export function WorkspaceHostApp() {
                         onFocus={() => focusSurface("navigator")}
                         tabIndex={leftPanelPersistent ? 0 : -1}
                     >
-                        {leftPanelPersistent && sidebarContent}
+                        {leftPanelPersistent && leftSidebarContent}
                     </aside>
 
                     <div
@@ -5120,7 +5231,20 @@ export function WorkspaceHostApp() {
                             value={leftEffectiveWidth}
                         />
                     </div>
-                    <div className="min-h-0" />
+                    <main className="flex min-h-0 items-center justify-center bg-bg-primary">
+                        {!workspaceNavigatorModel.activeScopeKey ? (
+                            <div className="max-w-sm px-8 text-center">
+                                <h1 className="text-sm font-semibold text-text-primary">
+                                    Choose a workspace
+                                </h1>
+                                <p className="mt-2 text-xs leading-5 text-text-secondary">
+                                    Select a primary checkout or worktree from the
+                                    navigator. Its layout and renderer will be
+                                    restored here.
+                                </p>
+                            </div>
+                        ) : null}
+                    </main>
                     <div
                         style={
                             !rightPanelPersistent
@@ -5192,7 +5316,7 @@ export function WorkspaceHostApp() {
                             style={{ width: shellResponsive.left.width }}
                             tabIndex={0}
                         >
-                            {sidebarContent}
+                            {leftSidebarContent}
                         </aside>
                     ) : null}
                     {shellResponsive.right.overlay &&
@@ -5319,7 +5443,7 @@ export function WorkspaceHostApp() {
                             onFocus={() => focusSurface("navigator")}
                             tabIndex={leftPanelPersistent ? 0 : -1}
                         >
-                            {leftPanelPersistent && sidebarContent}
+                            {leftPanelPersistent && leftSidebarContent}
                         </aside>
 
                         <div
@@ -5471,7 +5595,7 @@ export function WorkspaceHostApp() {
                                 style={{ width: shellResponsive.left.width }}
                                 tabIndex={0}
                             >
-                                {sidebarContent}
+                                {leftSidebarContent}
                             </aside>
                         ) : null}
                         {shellResponsive.right.overlay &&

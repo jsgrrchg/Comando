@@ -430,10 +430,17 @@ if (!hasSingleInstanceLock) {
                 },
             };
 
+            if (!nativePersistenceGateway) {
+                throw new Error(
+                    "Durable workspace persistence is unavailable during IPC registration.",
+                );
+            }
+
             registerIpcHandlers({
                 aiService,
                 captureWorkspaceSurfaceContext:
                     requestWorkspaceSurfaceContextCapture,
+                durableWorkspaceRepository: nativePersistenceGateway,
                 getSnapshot: () => {
                     if (!bootstrapSnapshot) {
                         throw new Error(

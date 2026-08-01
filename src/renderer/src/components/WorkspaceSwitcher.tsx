@@ -7,140 +7,119 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
-import type { OpenWorkspaceLocationSummary } from "@shared/ipc";
-
-export interface WorkspaceSwitcherProject {
-    readonly id: string;
-    readonly name: string;
-    readonly worktrees: readonly {
-        readonly id: string;
-        readonly label: string;
-    }[];
-}
-
-interface WorkspaceSwitcherProps {
-    readonly onClose: () => void;
-    readonly open: boolean;
-    readonly projects: readonly WorkspaceSwitcherProject[];
-}
-
-interface DisplayWorkspaceLocation {
-    readonly location: OpenWorkspaceLocationSummary;
+export interface WorkspaceSwitcherEntry {
+    readonly isMissing: boolean;
+    readonly projectId: string;
     readonly projectName: string;
-    readonly searchText: string;
+    readonly scopeKey: string;
+    readonly statusLabel: string | null;
     readonly worktreeLabel: string;
 }
 
+interface WorkspaceSwitcherProps {
+    readonly entries: readonly WorkspaceSwitcherEntry[];
+    readonly onActivate: (scopeKey: string) => Promise<void>;
+    readonly onClose: () => void;
+    readonly open: boolean;
+}
+
 export function WorkspaceSwitcher({
+    entries,
+    onActivate,
     onClose,
     open,
-    projects,
 }: WorkspaceSwitcherProps) {
-    const [locations, setLocations] = useState<
-        readonly OpenWorkspaceLocationSummary[]
-    >([]);
     const [query, setQuery] = useState("");
     const [selectedIndex, setSelectedIndex] = useState(0);
     const [error, setError] = useState<string | null>(null);
+    const [activatingScopeKey, setActivatingScopeKey] = useState<string | null>(
+        null,
+    );
     const inputRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
         if (!open) {
             return;
         }
-        let cancelled = false;
         setQuery("");
         setSelectedIndex(0);
         setError(null);
-        void window.comando
-            ?.listOpenWorkspaceLocations()
-            .then((nextLocations) => {
-                if (!cancelled) {
-                    setLocations(nextLocations);
-                    requestAnimationFrame(() => inputRef.current?.focus());
-                }
-            })
-            .catch((cause: unknown) => {
-                if (!cancelled) {
-                    setError(
-                        cause instanceof Error
-                            ? cause.message
-                            : "Could not load open workspaces.",
-                    );
-                }
-            });
+        setActivatingScopeKey(null);
+        void window.comando?.setWorkspaceHostOverlayVisible(true);
+        requestAnimationFrame(() => inputRef.current?.focus());
         return () => {
-            cancelled = true;
+            void window.comando?.setWorkspaceHostOverlayVisible(false);
         };
     }, [open]);
 
-    const displayLocations = useMemo(
-        () =>
-            locations.map((location): DisplayWorkspaceLocation => {
-                const project = projects.find(
-                    (candidate) => candidate.id === location.projectId,
-                );
-                const projectName = project?.name ?? location.projectId;
-                const worktreeLabel = location.worktreeId
-                    ? (project?.worktrees.find(
-                          (worktree) => worktree.id === location.worktreeId,
-                      )?.label ?? location.worktreeId)
-                    : "Primary worktree";
-                return {
-                    location,
-                    projectName,
-                    searchText: [
-                        projectName,
-                        worktreeLabel,
-                        location.windowTitle,
-                    ]
-                        .join(" ")
-                        .toLowerCase(),
-                    worktreeLabel,
-                };
-            }),
-        [locations, projects],
-    );
     const normalizedQuery = query.trim().toLowerCase();
-    const filteredLocations = useMemo(
+    const filteredEntries = useMemo(
         () =>
-            displayLocations.filter(
+            entries.filter(
                 (entry) =>
                     !normalizedQuery ||
-                    entry.searchText.includes(normalizedQuery),
+                    [
+                        entry.projectName,
+                        entry.worktreeLabel,
+                        entry.scopeKey,
+                    ]
+                        .join(" ")
+                        .toLowerCase()
+                        .includes(normalizedQuery),
             ),
-        [displayLocations, normalizedQuery],
+        [entries, normalizedQuery],
     );
+    const groupedEntries = useMemo(() => {
+        const groups: Array<{
+            readonly projectId: string;
+            readonly projectName: string;
+            readonly workspaces: WorkspaceSwitcherEntry[];
+        }> = [];
+        for (const entry of filteredEntries) {
+            const existing = groups.find(
+                (group) => group.projectId === entry.projectId,
+            );
+            if (existing) {
+                existing.workspaces.push(entry);
+            } else {
+                groups.push({
+                    projectId: entry.projectId,
+                    projectName: entry.projectName,
+                    workspaces: [entry],
+                });
+            }
+        }
+        return groups;
+    }, [filteredEntries]);
 
     useEffect(() => {
         setSelectedIndex((current) =>
-            filteredLocations.length === 0
+            filteredEntries.length === 0
                 ? 0
-                : Math.min(current, filteredLocations.length - 1),
+                : Math.min(current, filteredEntries.length - 1),
         );
-    }, [filteredLocations.length]);
+    }, [filteredEntries.length]);
 
     if (!open || typeof document === "undefined") {
         return null;
     }
 
-    const activate = async (entry: DisplayWorkspaceLocation) => {
+    const activate = async (entry: WorkspaceSwitcherEntry) => {
+        if (activatingScopeKey) {
+            return;
+        }
         setError(null);
+        setActivatingScopeKey(entry.scopeKey);
         try {
-            const activated = await window.comando?.activateWorkspaceLocation(
-                entry.location,
-            );
-            if (!activated) {
-                setError("This workspace is no longer open.");
-                return;
-            }
+            await onActivate(entry.scopeKey);
             onClose();
         } catch (cause) {
             setError(
-                cause instanceof Error
+                cause instanceof Error && cause.message
                     ? cause.message
                     : "Could not switch workspaces.",
             );
+            setActivatingScopeKey(null);
         }
     };
 
@@ -152,19 +131,19 @@ export function WorkspaceSwitcher({
         }
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
-            if (filteredLocations.length === 0) {
+            if (filteredEntries.length === 0) {
                 return;
             }
             const direction = event.key === "ArrowDown" ? 1 : -1;
             setSelectedIndex(
                 (current) =>
-                    (current + direction + filteredLocations.length) %
-                    filteredLocations.length,
+                    (current + direction + filteredEntries.length) %
+                    filteredEntries.length,
             );
             return;
         }
         if (event.key === "Enter") {
-            const selected = filteredLocations[selectedIndex];
+            const selected = filteredEntries[selectedIndex];
             if (selected) {
                 event.preventDefault();
                 void activate(selected);
@@ -172,14 +151,7 @@ export function WorkspaceSwitcher({
         }
     };
 
-    const currentWindow = filteredLocations.filter(
-        (entry) => entry.location.isCurrentWindow,
-    );
-    const otherWindows = filteredLocations.filter(
-        (entry) => !entry.location.isCurrentWindow,
-    );
     let displayIndex = 0;
-
     return createPortal(
         <div
             className="project-context-menu-backdrop"
@@ -198,70 +170,71 @@ export function WorkspaceSwitcher({
                 <label className="project-context-search-shell">
                     <span aria-hidden="true">⌕</span>
                     <input
-                        aria-label="Search open workspaces"
+                        aria-label="Search all workspaces"
                         onChange={(event) => setQuery(event.target.value)}
                         onKeyDown={handleKeyDown}
-                        placeholder="Search projects, worktrees, or windows"
+                        placeholder="Search projects and worktrees"
                         ref={inputRef}
                         value={query}
                     />
-                    <span>{filteredLocations.length}</span>
+                    <span>{filteredEntries.length}</span>
                 </label>
                 <div className="workspace-switcher-list" role="listbox">
-                    {renderGroup("Current Window", currentWindow)}
-                    {renderGroup("Other Windows", otherWindows)}
-                    {filteredLocations.length === 0 && !error && (
+                    {groupedEntries.map((group) => (
+                        <section
+                            aria-label={group.projectName}
+                            className="workspace-switcher-group"
+                            key={group.projectId}
+                        >
+                            <h2>{group.projectName}</h2>
+                            {group.workspaces.map((entry) => {
+                                const itemIndex = displayIndex++;
+                                const selected = itemIndex === selectedIndex;
+                                return (
+                                    <button
+                                        aria-label={`${entry.projectName}, ${entry.worktreeLabel}${entry.isMissing ? ", path missing" : ""}`}
+                                        aria-selected={selected}
+                                        className="workspace-switcher-item"
+                                        data-selected={selected || undefined}
+                                        key={entry.scopeKey}
+                                        onClick={() => void activate(entry)}
+                                        onMouseEnter={() =>
+                                            setSelectedIndex(itemIndex)
+                                        }
+                                        role="option"
+                                        type="button"
+                                    >
+                                        <span className="workspace-switcher-item-copy">
+                                            <strong>{entry.worktreeLabel}</strong>
+                                            <span>
+                                                {entry.isMissing
+                                                    ? "Saved workspace · Path missing"
+                                                    : "Workspace"}
+                                            </span>
+                                        </span>
+                                        <span className="workspace-switcher-window">
+                                            {activatingScopeKey === entry.scopeKey
+                                                ? "Opening…"
+                                                : entry.statusLabel}
+                                        </span>
+                                    </button>
+                                );
+                            })}
+                        </section>
+                    ))}
+                    {filteredEntries.length === 0 && !error ? (
                         <div className="workspace-switcher-empty">
-                            No open workspaces match your search.
+                            No workspaces match your search.
                         </div>
-                    )}
-                    {error && (
+                    ) : null}
+                    {error ? (
                         <div className="workspace-switcher-error" role="alert">
                             {error}
                         </div>
-                    )}
+                    ) : null}
                 </div>
             </div>
         </div>,
         document.body,
     );
-
-    function renderGroup(
-        label: string,
-        entries: readonly DisplayWorkspaceLocation[],
-    ) {
-        if (entries.length === 0) {
-            return null;
-        }
-        return (
-            <section aria-label={label} className="workspace-switcher-group">
-                <h2>{label}</h2>
-                {entries.map((entry) => {
-                    const itemIndex = displayIndex++;
-                    const selected = itemIndex === selectedIndex;
-                    return (
-                        <button
-                            aria-selected={selected}
-                            className="workspace-switcher-item"
-                            data-selected={selected || undefined}
-                            key={`${entry.location.hostWindowId}:${entry.location.contextKey}`}
-                            onClick={() => void activate(entry)}
-                            onMouseEnter={() => setSelectedIndex(itemIndex)}
-                            role="option"
-                            type="button"
-                        >
-                            <span className="workspace-switcher-item-copy">
-                                <strong>{entry.projectName}</strong>
-                                <span>{entry.worktreeLabel}</span>
-                            </span>
-                            <span className="workspace-switcher-window">
-                                {entry.location.isActive ? "Active · " : ""}
-                                {entry.location.windowTitle}
-                            </span>
-                        </button>
-                    );
-                })}
-            </section>
-        );
-    }
 }

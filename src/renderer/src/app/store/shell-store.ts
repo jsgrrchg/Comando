@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 import type {
     PersistedShellState,
-    PersistedShellStateV2,
+    PersistedShellStateV3,
     WorkspaceInspectorView,
 } from "@shared/ipc";
 
@@ -24,6 +24,7 @@ const INITIAL_VIEWPORT_WIDTH = 1_440;
 export interface ShellStore extends ShellLayoutDimensions {
     readonly activeSurface: ShellSurface;
     readonly drawerChangedLocally: boolean;
+    readonly expandedProjectIds: readonly string[];
     readonly isResizingPanel: boolean;
     readonly leftCollapsed: boolean;
     readonly leftCollapsedChangedLocally: boolean;
@@ -38,6 +39,7 @@ export interface ShellStore extends ShellLayoutDimensions {
     nudgePanel: (side: ShellPanelSide, delta: number) => void;
     resizePanel: (side: ShellPanelSide, nextWidth: number) => void;
     setLeftCollapsed: (collapsed: boolean) => void;
+    setProjectExpanded: (projectId: string, expanded: boolean) => void;
     setPanelCollapsed: (side: ShellPanelSide, collapsed: boolean) => void;
     setPreferredDrawer: (side: ShellPanelSide | null) => void;
     setResizingPanel: (resizing: boolean) => void;
@@ -52,10 +54,14 @@ export interface ShellStore extends ShellLayoutDimensions {
 
 export function migratePersistedShellState(
     snapshot: PersistedShellState | null,
-): PersistedShellStateV2 {
-    if (snapshot?.version === 2) {
+): PersistedShellStateV3 {
+    if (snapshot?.version === 2 || snapshot?.version === 3) {
         return {
             activeSurface: normalizeActiveSurface(snapshot.activeSurface),
+            expandedProjectIds:
+                snapshot.version === 3
+                    ? normalizeExpandedProjectIds(snapshot.expandedProjectIds)
+                    : [],
             leftCollapsed: snapshot.leftCollapsed === true,
             leftWidth: finiteOrDefault(
                 snapshot.leftWidth,
@@ -72,12 +78,13 @@ export function migratePersistedShellState(
                 snapshot.rightWidth,
                 initialLayout.rightWidth,
             ),
-            version: 2,
+            version: 3,
         };
     }
 
     return {
         activeSurface: normalizeActiveSurface(snapshot?.activeSurface),
+        expandedProjectIds: [],
         leftCollapsed: false,
         leftWidth: initialLayout.leftWidth,
         preferredDrawer: null,
@@ -89,7 +96,7 @@ export function migratePersistedShellState(
             snapshot?.leftWidth,
             initialLayout.rightWidth,
         ),
-        version: 2,
+        version: 3,
     };
 }
 
@@ -97,6 +104,7 @@ export function createPersistedShellState(
     state: Pick<
         ShellStore,
         | "activeSurface"
+        | "expandedProjectIds"
         | "leftCollapsed"
         | "leftWidth"
         | "preferredDrawer"
@@ -104,16 +112,17 @@ export function createPersistedShellState(
         | "rightInspectorView"
         | "rightWidth"
     >,
-): PersistedShellStateV2 {
+): PersistedShellStateV3 {
     return {
         activeSurface: state.activeSurface,
+        expandedProjectIds: state.expandedProjectIds,
         leftCollapsed: state.leftCollapsed,
         leftWidth: state.leftWidth,
         preferredDrawer: state.preferredDrawer,
         rightCollapsed: state.rightCollapsed,
         rightInspectorView: state.rightInspectorView,
         rightWidth: state.rightWidth,
-        version: 2,
+        version: 3,
     };
 }
 
@@ -126,6 +135,7 @@ const initialPreferences = {
 export const useShellStore = create<ShellStore>((set) => ({
     activeSurface: "workspace",
     drawerChangedLocally: false,
+    expandedProjectIds: [],
     isResizingPanel: false,
     leftCollapsed: initialPreferences.leftCollapsed,
     leftCollapsedChangedLocally: false,
@@ -152,6 +162,7 @@ export const useShellStore = create<ShellStore>((set) => ({
             withResponsiveState({
                 ...state,
                 activeSurface: migrated.activeSurface,
+                expandedProjectIds: migrated.expandedProjectIds,
                 leftCollapsed: state.leftCollapsedChangedLocally
                     ? state.leftCollapsed
                     : migrated.leftCollapsed,
@@ -199,6 +210,16 @@ export const useShellStore = create<ShellStore>((set) => ({
     setLeftCollapsed: (collapsed) => {
         setPanelEffectiveCollapsed(set, "left", collapsed);
     },
+    setProjectExpanded: (projectId, expanded) =>
+        set((state) => ({
+            expandedProjectIds: expanded
+                ? state.expandedProjectIds.includes(projectId)
+                    ? state.expandedProjectIds
+                    : [...state.expandedProjectIds, projectId]
+                : state.expandedProjectIds.filter(
+                      (candidate) => candidate !== projectId,
+                  ),
+        })),
     setPanelCollapsed: (side, collapsed) => {
         setPanelEffectiveCollapsed(set, side, collapsed);
     },
@@ -338,6 +359,20 @@ function normalizeActiveSurface(surface: unknown): ShellSurface {
         return "navigator";
     }
     return "workspace";
+}
+
+function normalizeExpandedProjectIds(value: unknown): readonly string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return [
+        ...new Set(
+            value.filter(
+                (projectId): projectId is string =>
+                    typeof projectId === "string" && projectId.length > 0,
+            ),
+        ),
+    ];
 }
 
 function normalizeInspectorView(view: unknown): WorkspaceInspectorView {

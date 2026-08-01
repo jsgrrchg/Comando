@@ -1245,6 +1245,10 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.saveActiveWorktreeId, worktreeId),
     saveShellState: (snapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.saveShellState, snapshot),
+    getWorkspaceCatalog: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceCatalog),
+    resetWorkspaceLayout: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.resetWorkspaceLayout, input),
     initializeWorkspaceSurfaces: (snapshot: WorkspaceNavigationSnapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
     activateWorkspaceSurface: (contextKey: string) =>
@@ -1253,6 +1257,11 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.closeWorkspaceSurface, contextKey),
     getWorkspaceSurfaceDiagnostics: () =>
         ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceSurfaceDiagnostics),
+    setWorkspaceHostOverlayVisible: (visible: boolean) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.setWorkspaceHostOverlayVisible,
+            visible,
+        ),
     listOpenWorkspaceLocations: async () =>
         assertIpcArray<OpenWorkspaceLocationSummary>(
             IPC_CHANNELS.listOpenWorkspaceLocations,

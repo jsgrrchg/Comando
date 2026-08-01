@@ -17,6 +17,7 @@ function resetShellStore(): void {
     useShellStore.setState({
         activeSurface: "workspace",
         drawerChangedLocally: false,
+        expandedProjectIds: [],
         isResizingPanel: false,
         leftCollapsed: false,
         leftCollapsedChangedLocally: false,
@@ -54,13 +55,14 @@ describe("shell-store", () => {
 
         expect(migrated).toEqual({
             activeSurface: "navigator",
+            expandedProjectIds: [],
             leftCollapsed: false,
             leftWidth: shellLayoutConstraints.defaultLeftWidth,
             preferredDrawer: null,
             rightCollapsed: true,
             rightInspectorView: "git",
             rightWidth: 412,
-            version: 2,
+            version: 3,
         });
     });
 
@@ -85,6 +87,23 @@ describe("shell-store", () => {
             rightInspectorView: "agents",
             rightWidth: 430,
         });
+    });
+
+    it("persists expanded navigator projects in v3 without duplicates", () => {
+        useShellStore.getState().setProjectExpanded("project-a", true);
+        useShellStore.getState().setProjectExpanded("project-a", true);
+        useShellStore.getState().setProjectExpanded("project-b", true);
+
+        const persisted = createPersistedShellState(useShellStore.getState());
+        expect(persisted).toMatchObject({
+            expandedProjectIds: ["project-a", "project-b"],
+            version: 3,
+        });
+
+        useShellStore.getState().setProjectExpanded("project-a", false);
+        expect(useShellStore.getState().expandedProjectIds).toEqual([
+            "project-b",
+        ]);
     });
 
     it("preserves local panel and drawer changes during late hydration", () => {
@@ -163,7 +182,7 @@ describe("shell-store", () => {
             preferredDrawer: null,
             rightCollapsed: false,
             rightInspectorView: "files",
-            version: 2,
+            version: 3,
         });
         expect(createPersistedShellState(state)).not.toHaveProperty(
             "responsive",

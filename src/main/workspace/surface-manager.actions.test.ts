@@ -124,6 +124,25 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
     });
 
+    it("temporarily hides the active surface while the host palette is visible", () => {
+        const manager = new WorkspaceSurfaceManager();
+        manager.syncHost(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        const surface = electronMocks.views[0];
+        if (!surface) {
+            throw new Error("Expected an active surface.");
+        }
+
+        manager.setHostOverlayVisible("host-1", true);
+        expect(surface.setVisible).toHaveBeenLastCalledWith(false);
+
+        manager.setHostOverlayVisible("host-1", false);
+        expect(surface.setVisible).toHaveBeenLastCalledWith(true);
+    });
+
     it("recreates a surface with the same runtime owner and a new subscriber", async () => {
         const manager = new WorkspaceSurfaceManager();
         const onSurfaceCreated = vi.fn();

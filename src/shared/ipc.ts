@@ -3,6 +3,12 @@ import type { AiReviewActionLogState } from "./ai-review-action-log";
 import type { AppTerminalSettings } from "./terminal-settings";
 import type { ChatFontFamily, EditorFontFamily } from "./typography";
 import type { WorkspaceLocation } from "./workspace-context";
+import type {
+    NativeAppWorkspaceNavigation,
+    NativeDurableWorkspace,
+    NativeDurableWorkspaceSummary,
+    NativeWorkspaceMigrationRecoverySource,
+} from "./native-backend/workspace";
 
 export type { AppTerminalSettings } from "./terminal-settings";
 export type { ChatFontFamily, EditorFontFamily } from "./typography";
@@ -138,10 +144,13 @@ export const IPC_CHANNELS = {
     searchProjectEntries: "projects:search-entries",
     getWorkspaceSnapshot: "workspace:get-snapshot",
     saveWorkspaceSnapshot: "workspace:save-snapshot",
+    getWorkspaceCatalog: "workspace:get-catalog",
+    resetWorkspaceLayout: "workspace:reset-layout",
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
     closeWorkspaceSurface: "workspace:close-surface",
     getWorkspaceSurfaceDiagnostics: "workspace:get-surface-diagnostics",
+    setWorkspaceHostOverlayVisible: "workspace:set-host-overlay-visible",
     listOpenWorkspaceLocations: "workspace:list-open-locations",
     activateWorkspaceLocation: "workspace:activate-location",
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
@@ -402,9 +411,22 @@ export interface PersistedShellStateV2 {
     readonly version: 2;
 }
 
+export interface PersistedShellStateV3 {
+    readonly activeSurface: PersistedShellSurface;
+    readonly expandedProjectIds: readonly string[];
+    readonly leftCollapsed: boolean;
+    readonly leftWidth: number;
+    readonly preferredDrawer: "left" | "right" | null;
+    readonly rightCollapsed: boolean;
+    readonly rightInspectorView: WorkspaceInspectorView;
+    readonly rightWidth: number;
+    readonly version: 3;
+}
+
 export type PersistedShellState =
     | LegacyPersistedShellState
-    | PersistedShellStateV2;
+    | PersistedShellStateV2
+    | PersistedShellStateV3;
 
 export interface WorkspaceSurfaceContentInsets {
     readonly left: number;
@@ -2239,6 +2261,17 @@ export interface WorkspaceSurfacePoolDiagnostics {
     readonly updatedAt: string;
 }
 
+export interface WorkspaceCatalogSnapshot {
+    readonly navigation: NativeAppWorkspaceNavigation;
+    readonly recoveryLayouts: readonly NativeWorkspaceMigrationRecoverySource[];
+    readonly workspaces: readonly NativeDurableWorkspaceSummary[];
+}
+
+export interface ResetWorkspaceLayoutInput {
+    readonly expectedRevision: number;
+    readonly scopeKey: string;
+}
+
 export interface WorkspaceSurfaceOperationDiagnostic {
     readonly durationMs: number;
     readonly finishedAt: string;
@@ -3787,6 +3820,10 @@ export interface ComandoApi {
     saveActiveProjectId: (projectId: string | null) => Promise<void>;
     saveActiveWorktreeId: (worktreeId: string | null) => Promise<void>;
     saveShellState: (snapshot: PersistedShellState | null) => Promise<void>;
+    getWorkspaceCatalog: () => Promise<WorkspaceCatalogSnapshot>;
+    resetWorkspaceLayout: (
+        input: ResetWorkspaceLayoutInput,
+    ) => Promise<NativeDurableWorkspace>;
     initializeWorkspaceSurfaces: (
         snapshot: WorkspaceNavigationSnapshot,
     ) => Promise<void>;
@@ -3797,6 +3834,7 @@ export interface ComandoApi {
         contextKey: string,
     ) => Promise<WorkspaceSurfaceCloseResult>;
     getWorkspaceSurfaceDiagnostics: () => Promise<WorkspaceSurfacePoolDiagnostics>;
+    setWorkspaceHostOverlayVisible: (visible: boolean) => Promise<void>;
     listOpenWorkspaceLocations: () => Promise<
         readonly OpenWorkspaceLocationSummary[]
     >;

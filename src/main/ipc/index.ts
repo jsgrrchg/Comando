@@ -251,6 +251,8 @@ import {
     openMacOsFullDiskAccessSettings,
 } from "@main/privacy-access";
 import type { WorkspaceGateway } from "@main/workspace/service";
+import type { NativePersistenceGateway } from "@main/native-backend/persistence";
+import { createEmptyWorkspaceLayoutSnapshot } from "@shared/workspace-restore";
 import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
 import { workspaceRuntimeOwnership } from "@main/workspace/runtime-ownership-coordinator";
@@ -275,6 +277,7 @@ interface RegisterIpcHandlersOptions {
         hostWindowId: string,
         contextKey: string,
     ) => Promise<WorkspaceNavigationSnapshot | null>;
+    readonly durableWorkspaceRepository: NativePersistenceGateway;
     readonly openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
     readonly moveWorkspaceContext: (
         sourceWindowId: string,
@@ -321,6 +324,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveActiveProjectId);
     ipcMain.removeHandler(IPC_CHANNELS.saveActiveWorktreeId);
     ipcMain.removeHandler(IPC_CHANNELS.saveShellState);
+    ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceCatalog);
+    ipcMain.removeHandler(IPC_CHANNELS.resetWorkspaceLayout);
     ipcMain.removeHandler(IPC_CHANNELS.setTrafficLightVisibility);
     ipcMain.removeHandler(IPC_CHANNELS.setNativeAppearance);
     ipcMain.removeHandler(IPC_CHANNELS.resolveTsconfigForPath);
@@ -411,6 +416,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.closeWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSurfaceDiagnostics);
+    ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceHostOverlayVisible);
     ipcMain.removeHandler(IPC_CHANNELS.listOpenWorkspaceLocations);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceLocation);
     ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
@@ -2045,6 +2051,51 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             }
         },
     );
+    ipcMain.handle(IPC_CHANNELS.getWorkspaceCatalog, async (event) => {
+        requireWindowContext(event.sender, "main");
+        if (workspaceSurfaceManager.isSurface(event.sender)) {
+            throw new Error("The workspace catalog is available only to the host.");
+        }
+        const [workspaces, navigation, migration] = await Promise.all([
+            options.durableWorkspaceRepository.listDurableWorkspaces(),
+            options.durableWorkspaceRepository.getWorkspaceNavigation(),
+            options.durableWorkspaceRepository
+                .exportWorkspaceMigrationDiagnostics()
+                .catch(() => null),
+        ]);
+        return {
+            navigation,
+            recoveryLayouts: migration?.recoveryLayouts ?? [],
+            workspaces,
+        };
+    });
+    ipcMain.handle(
+        IPC_CHANNELS.resetWorkspaceLayout,
+        async (
+            event,
+            input: { readonly expectedRevision?: unknown; readonly scopeKey?: unknown },
+        ) => {
+            requireWindowContext(event.sender, "main");
+            if (
+                workspaceSurfaceManager.isSurface(event.sender) ||
+                !input ||
+                typeof input.scopeKey !== "string" ||
+                !input.scopeKey ||
+                !Number.isSafeInteger(input.expectedRevision) ||
+                Number(input.expectedRevision) < 0
+            ) {
+                throw new Error("A valid durable workspace revision is required.");
+            }
+            return options.durableWorkspaceRepository.resetDurableWorkspace({
+                expectedRevision: Number(input.expectedRevision),
+                layoutSnapshot:
+                    createEmptyWorkspaceLayoutSnapshot() as unknown as Readonly<
+                        Record<string, unknown>
+                    >,
+                scopeKey: input.scopeKey,
+            });
+        },
+    );
     ipcMain.handle(
         IPC_CHANNELS.initializeWorkspaceSurfaces,
         async (event, snapshot: WorkspaceNavigationSnapshot) => {
@@ -2324,6 +2375,22 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 throw new Error("Diagnostics are available only to the host.");
             }
             return workspaceSurfaceManager.getSurfaceDiagnostics(context.windowId);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.setWorkspaceHostOverlayVisible,
+        (event, visible: unknown) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (
+                workspaceSurfaceManager.isSurface(event.sender) ||
+                typeof visible !== "boolean"
+            ) {
+                return;
+            }
+            workspaceSurfaceManager.setHostOverlayVisible(
+                context.windowId,
+                visible,
+            );
         },
     );
     ipcMain.handle(IPC_CHANNELS.listOpenWorkspaceLocations, (event) => {
