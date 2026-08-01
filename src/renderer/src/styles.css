@@ -640,8 +640,8 @@ text-align: center;
     min-height: 40px;
     padding: 0 14px;
     color: var(--color-text-secondary);
-    font-size: 10px;
-    font-weight: 500;
+    font-size: 12px;
+    font-weight: 600;
 }
 
 .workspace-navigator-tree-shell {
