@@ -216,6 +216,14 @@ interface FileTreeClipboardState {
     readonly worktreeId: string | null;
 }
 
+interface PendingFileTreeReveal {
+    readonly contextKey: string;
+    readonly projectId: string;
+    readonly relativePath: string;
+    readonly requestId: number;
+    readonly worktreeId: string | null;
+}
+
 function getProjectSearchDelayMs(query: string): number {
     return query.trim().length <= 1 ? 0 : PROJECT_SEARCH_FOLLOWUP_DEBOUNCE_MS;
 }
@@ -699,6 +707,11 @@ export function WorkspaceHostApp() {
     const [fileTreeRevealSignal, setFileTreeRevealSignal] = useState<
         number | null
     >(null);
+    const [pendingFileTreeReveal, setPendingFileTreeReveal] =
+        useState<PendingFileTreeReveal | null>(null);
+    const [revealedFilePathsByContext, setRevealedFilePathsByContext] =
+        useState<Record<string, string>>({});
+    const fileTreeRevealRequestIdRef = useRef(0);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
     const fileTreeInlineSubmitPendingRef = useRef(false);
     const fileTreeEntryIndexGenerationsRef = useRef(new Map<string, number>());
@@ -1577,11 +1590,6 @@ export function WorkspaceHostApp() {
         },
         [inspectorScopeKey],
     );
-    const setFileTreeFilter = useCallback(
-        (action: SetStateAction<string>) =>
-            setInspectorFilter("files", action),
-        [setInspectorFilter],
-    );
     const fileTreeSelection = fileTreeSelectionByScope[inspectorScopeKey] ?? {
         anchorPath: null,
         selectedPaths: [],
@@ -2026,14 +2034,23 @@ export function WorkspaceHostApp() {
     const isProjectRootExpanded =
         projectRootExpandedByContext[activeProjectContextKey] ?? true;
     void renameTabsForProjectPath;
+    const revealedActiveFilePath = workspaceActiveContextKey
+        ? (revealedFilePathsByContext[workspaceActiveContextKey] ?? null)
+        : null;
     const activeFilePath = useMemo(
         () =>
+            revealedActiveFilePath ??
             resolveActiveFileTreePath({
                 activeProjectId,
                 activeWorkspaceTab,
                 activeWorktreeId,
             }),
-        [activeProjectId, activeWorkspaceTab, activeWorktreeId],
+        [
+            activeProjectId,
+            activeWorkspaceTab,
+            activeWorktreeId,
+            revealedActiveFilePath,
+        ],
     );
     const activeGitError = activeGitContextKey
         ? (gitErrors[activeGitContextKey] ?? null)
@@ -3723,63 +3740,93 @@ export function WorkspaceHostApp() {
         enabled: stickyFoldersEnabled && !isFilteringFileTree,
     });
 
-    const revealFileInHostTree = useCallback(async (
-        request: WorkspaceSurfaceFileRevealRequest,
-    ) => {
+    const revealFileInHostTree = useCallback(
+        (request: WorkspaceSurfaceFileRevealRequest) => {
+            const requestId = fileTreeRevealRequestIdRef.current + 1;
+            fileTreeRevealRequestIdRef.current = requestId;
+            const targetProjectContextKey = getProjectContextKey(
+                request.projectId,
+                request.worktreeId,
+            );
+
+            setRightCollapsed(false);
+            setSidebarView("files");
+            setInspectorFiltersByScope((currentFilters) => {
+                const scopeFilters = currentFilters[request.contextKey] ?? {};
+                if (!scopeFilters.files) {
+                    return currentFilters;
+                }
+                return {
+                    ...currentFilters,
+                    [request.contextKey]: {
+                        ...scopeFilters,
+                        files: "",
+                    },
+                };
+            });
+            setProjectRootExpandedByContext((currentState) => ({
+                ...currentState,
+                [targetProjectContextKey]: true,
+            }));
+            // The host cannot read the surface's selected tab, so retain the IPC
+            // path until the tree has rendered and scrolled to the requested row.
+            setRevealedFilePathsByContext((currentPaths) =>
+                currentPaths[request.contextKey] === request.relativePath
+                    ? currentPaths
+                    : {
+                          ...currentPaths,
+                          [request.contextKey]: request.relativePath,
+                      },
+            );
+            setPendingFileTreeReveal({ ...request, requestId });
+        },
+        [setRightCollapsed, setSidebarView],
+    );
+
+    useEffect(() => {
         if (
-            useWorkspaceStore.getState().activeContextKey !==
-            request.contextKey
+            !pendingFileTreeReveal ||
+            workspaceActiveContextKey !== pendingFileTreeReveal.contextKey
         ) {
-            // The host may switch workspaces after main validates the request.
             return;
         }
-        const targetProjectContextKey = getProjectContextKey(
-            request.projectId,
-            request.worktreeId,
-        );
 
-        setRightCollapsed(false);
-        setSidebarView("files");
-        setFileTreeFilter("");
-        setProjectRootExpandedByContext((currentState) => ({
-            ...currentState,
-            [targetProjectContextKey]: true,
-        }));
+        const reveal = pendingFileTreeReveal;
+        let cancelled = false;
 
-        await revealPathInTree(
-            request.projectId,
-            request.relativePath,
-            request.worktreeId,
-        );
-        setFileTreeRevealSignal((currentSignal) =>
-            currentSignal === null ? 0 : currentSignal + 1,
-        );
-    }, [
-        revealPathInTree,
-        setFileTreeFilter,
-        setRightCollapsed,
-        setSidebarView,
-    ]);
+        void revealPathInTree(
+            reveal.projectId,
+            reveal.relativePath,
+            reveal.worktreeId,
+        )
+            .then(() => {
+                if (
+                    cancelled ||
+                    fileTreeRevealRequestIdRef.current !== reveal.requestId
+                ) {
+                    return;
+                }
+                setFileTreeRevealSignal(reveal.requestId);
+                setPendingFileTreeReveal((currentReveal) =>
+                    currentReveal?.requestId === reveal.requestId
+                        ? null
+                        : currentReveal,
+                );
+            })
+            .catch((error) => {
+                if (!cancelled) {
+                    console.error("[workspace-host] file reveal failed", error);
+                }
+            });
 
-    const handleRevealActiveFileInTree = useCallback(async () => {
-        if (
-            activeWorkspaceTab?.kind !== "file" ||
-            !activeWorkspaceTab.projectId
-        ) {
-            return;
-        }
-        const request: WorkspaceSurfaceFileRevealRequest = {
-            contextKey: getProjectContextKey(
-                activeWorkspaceTab.projectId,
-                activeWorkspaceTab.worktreeId ?? null,
-            ),
-            projectId: activeWorkspaceTab.projectId,
-            relativePath: activeWorkspaceTab.relativePath,
-            worktreeId: activeWorkspaceTab.worktreeId ?? null,
+        return () => {
+            cancelled = true;
         };
-
-        await revealFileInHostTree(request);
-    }, [activeWorkspaceTab, revealFileInHostTree]);
+    }, [
+        pendingFileTreeReveal,
+        revealPathInTree,
+        workspaceActiveContextKey,
+    ]);
 
     useEffect(() => {
         if (!isWorkspaceHostRenderer) {
@@ -3787,12 +3834,7 @@ export function WorkspaceHostApp() {
         }
         return getComandoApi()?.onWorkspaceSurfaceFileRevealRequested(
             (request) => {
-                void revealFileInHostTree(request).catch((error) => {
-                    console.error(
-                        "[workspace-host] file reveal execution failed",
-                        error,
-                    );
-                });
+                revealFileInHostTree(request);
             },
         );
     }, [revealFileInHostTree]);
@@ -4031,28 +4073,6 @@ export function WorkspaceHostApp() {
         window.addEventListener("keydown", handleKeyDown);
         return () => window.removeEventListener("keydown", handleKeyDown);
     }, [handleCreateTreeEntry]);
-
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.defaultPrevented) {
-                return;
-            }
-
-            if (!(event.metaKey || event.ctrlKey) || event.altKey) {
-                return;
-            }
-
-            if (!event.shiftKey || event.key.toLowerCase() !== "e") {
-                return;
-            }
-
-            event.preventDefault();
-            void handleRevealActiveFileInTree();
-        };
-
-        window.addEventListener("keydown", handleKeyDown);
-        return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [handleRevealActiveFileInTree]);
 
     useEffect(() => {
         if (!isMac) return;
