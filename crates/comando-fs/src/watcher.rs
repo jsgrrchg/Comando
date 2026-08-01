@@ -607,10 +607,12 @@ fn is_worktree_inventory_path(relative_path: &str) -> bool {
     let normalized = relative_path.replace('\\', "/").to_lowercase();
     let segments = normalized.split('/').collect::<Vec<_>>();
     segments.first() == Some(&"worktrees")
-        && (segments.len() <= 2
-            || segments
-                .last()
-                .is_some_and(|segment| matches!(*segment, "gitdir" | "commondir" | "locked")))
+        // Directory metadata changes are emitted for ordinary index writes on some
+        // backends, so only Git's topology marker files may invalidate every scope.
+        && segments.len() >= 3
+        && segments
+            .last()
+            .is_some_and(|segment| matches!(*segment, "gitdir" | "commondir" | "locked"))
 }
 
 fn git_dir_invalidation_reason(relative_path: &str) -> Option<GitWatchInvalidationReason> {
@@ -1103,6 +1105,31 @@ mod tests {
     }
 
     #[test]
+    fn ignores_linked_worktree_directory_metadata_events() {
+        let temp = TempDir::new().expect("temp");
+        let common_dir = temp.path().join("repo/.git");
+        let primary_root = worktree_root(&temp.path().join("repo"), "project_1:primary");
+        let linked_root = worktree_root(&temp.path().join("linked"), "worktree-linked");
+        let metadata_root = GitMetadataWatchRoot {
+            watch_path: common_dir.clone(),
+            common_dir_path: common_dir.clone(),
+            scopes: vec![
+                git_watch_scope(&primary_root, &common_dir, &common_dir, true),
+                git_watch_scope(
+                    &linked_root,
+                    &common_dir.join("worktrees/linked"),
+                    &common_dir,
+                    false,
+                ),
+            ],
+        };
+
+        let routed = route_git_metadata_path(&metadata_root, &common_dir.join("worktrees/linked"));
+
+        assert!(routed.is_empty());
+    }
+
+    #[test]
     fn routes_shared_refs_to_every_worktree_scope() {
         let temp = TempDir::new().expect("temp");
         let common_dir = temp.path().join("repo/.git");
@@ -1181,7 +1208,9 @@ mod tests {
         let _ = watchers.drain(true);
         run_git(&linked_path, &["add", "tracked.txt"]);
 
-        let invalidations = wait_for_git_invalidations(&mut watchers);
+        let invalidations = wait_for_git_invalidations(&mut watchers, |invalidation| {
+            invalidation.worktree_id == linked_root.worktree_id && invalidation.reason == "status"
+        });
         assert!(invalidations.iter().any(|invalidation| {
             invalidation.worktree_id == linked_root.worktree_id && invalidation.reason == "status"
         }));
@@ -1192,7 +1221,9 @@ mod tests {
         );
 
         run_git(&linked_path, &["commit", "-m", "linked commit"]);
-        let commit_invalidations = wait_for_git_invalidations(&mut watchers);
+        let commit_invalidations = wait_for_git_invalidations(&mut watchers, |invalidation| {
+            invalidation.worktree_id == linked_root.worktree_id && invalidation.reason == "branch"
+        });
         assert!(commit_invalidations.iter().any(|invalidation| {
             invalidation.worktree_id == linked_root.worktree_id && invalidation.reason == "branch"
         }));
@@ -1239,15 +1270,19 @@ mod tests {
         )
     }
 
-    fn wait_for_git_invalidations(
+    fn wait_for_git_invalidations<F>(
         watchers: &mut WatcherRegistry,
-    ) -> Vec<NativeGitRepositoryInvalidation> {
+        is_expected: F,
+    ) -> Vec<NativeGitRepositoryInvalidation>
+    where
+        F: Fn(&NativeGitRepositoryInvalidation) -> bool,
+    {
         let started = Instant::now();
         let mut invalidations = Vec::new();
         while started.elapsed() < Duration::from_secs(3) {
             thread::sleep(Duration::from_millis(50));
             invalidations.extend(watchers.drain(false).git_invalidations);
-            if !invalidations.is_empty() {
+            if invalidations.iter().any(&is_expected) {
                 break;
             }
         }
