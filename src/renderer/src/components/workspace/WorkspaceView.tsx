@@ -164,6 +164,10 @@ import {
     getEditorLineNumbersMinChars,
     hasRenderableGitGutterChange,
 } from "@renderer/components/workspace/gitGutter";
+import {
+    GitGutterController,
+    type GitGutterDiffSource,
+} from "@renderer/components/workspace/gitGutterController";
 import { buildLiveGitGutterDiff } from "@renderer/components/workspace/gitGutterLiveDiff";
 import { buildInlineReviewDecorations } from "@renderer/components/workspace/inlineReviewDecorations";
 import { buildInlineReviewDiffEditorOptions } from "@renderer/components/workspace/inlineReviewDiffEditorOptions";
@@ -4586,6 +4590,16 @@ function FileTabView({
         [activeGitChange],
     );
     const shouldShowGitGutter = hasRenderableGitGutterChange(activeGitChange);
+    const gitGutterRevision = useMemo(() => {
+        if (!activeGitChangeSignature) {
+            return null;
+        }
+
+        return [
+            gitSnapshot?.headSha ?? "",
+            activeGitChangeSignature,
+        ].join("\u0000");
+    }, [activeGitChangeSignature, gitSnapshot?.headSha]);
     const gitGutterDiffRequestKey = useMemo(
         () =>
             getGitGutterDiffRequestKey({
@@ -4599,11 +4613,14 @@ function FileTabView({
             tab.worktreeId,
         ],
     );
-    const [gitGutterDiffState, setGitGutterDiffState] = useState<{
-        readonly base: GitOriginalFile | null;
-        readonly diff: GitFileDiff | null;
-        readonly key: string;
-    } | null>(null);
+    const [gitGutterDiffState, setGitGutterDiffState] =
+        useState<GitGutterDiffSource | null>(null);
+    const [gitGutterController] = useState(
+        () =>
+            new GitGutterController({
+                onSourceChange: setGitGutterDiffState,
+            }),
+    );
     const [gitGutterLiveDiffState, setGitGutterLiveDiffState] =
         useState<GitGutterLiveDiffState | null>(null);
     const gitGutterSource =
@@ -4615,7 +4632,9 @@ function FileTabView({
             ? gitGutterLiveDiffState
             : null;
     const gitGutterDiff =
-        gitGutterLiveState?.status === "ready"
+        !gitGutterSource
+            ? null
+            : gitGutterLiveState?.status === "ready"
             ? gitGutterLiveState.diff
             : gitGutterLiveState?.status === "unavailable"
               ? null
@@ -5921,25 +5940,15 @@ function FileTabView({
     );
 
     useEffect(() => {
-        if (
-            !document ||
-            document.kind === "image" ||
-            !canEdit ||
-            !shouldShowGitGutter
-        ) {
-            return scheduleEffectStateUpdate(() => {
-                setGitGutterDiffState({
-                    base: null,
-                    diff: null,
-                    key: gitGutterDiffRequestKey,
-                });
-            });
-        }
+        const shouldLoad =
+            document !== null &&
+            document.kind !== "image" &&
+            canEdit &&
+            shouldShowGitGutter;
 
-        const controller = new AbortController();
-
-        const loadGitDiff = async () => {
-            try {
+        gitGutterController.update({
+            key: gitGutterDiffRequestKey,
+            load: async () => {
                 const comandoApi = window.comando;
                 if (!comandoApi) {
                     throw new Error("The desktop bridge is not available yet.");
@@ -5955,39 +5964,30 @@ function FileTabView({
                     comandoApi.getGitOriginalFile(diffInput),
                 ]);
 
-                if (!controller.signal.aborted) {
-                    setGitGutterDiffState({
-                        base,
-                        diff,
-                        key: gitGutterDiffRequestKey,
-                    });
-                }
-            } catch {
-                if (!controller.signal.aborted) {
-                    setGitGutterDiffState({
-                        base: null,
-                        diff: null,
-                        key: gitGutterDiffRequestKey,
-                    });
-                }
-            }
-        };
-
-        void loadGitDiff();
-
-        return () => {
-            controller.abort();
-        };
+                return { base, diff };
+            },
+            revision: gitGutterRevision,
+            shouldLoad,
+        });
     }, [
         activeGitChangeSignature,
         canEdit,
         document,
+        gitGutterController,
         gitGutterDiffRequestKey,
+        gitGutterRevision,
         shouldShowGitGutter,
         tab.projectId,
         tab.relativePath,
         tab.worktreeId,
     ]);
+
+    useEffect(
+        () => () => {
+            gitGutterController.dispose();
+        },
+        [gitGutterController],
+    );
 
     useEffect(() => {
         const base = gitGutterSource?.base ?? null;
