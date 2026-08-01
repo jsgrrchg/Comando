@@ -357,7 +357,7 @@
 :root[data-platform="linux"],
 :root.dark[data-platform="linux"] {
     --vibrancy-opacity: 0%;
-    --desktop-titlebar-height: 40px;
+    --desktop-titlebar-height: 32px;
     --windows-acrylic-tint: color-mix(
         in srgb,
         var(--color-bg-panel) var(--chrome-background-opacity),

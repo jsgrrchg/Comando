@@ -150,7 +150,7 @@ describe("window titlebar overlays", () => {
 
         expect(window.setTitleBarOverlay).toHaveBeenCalledWith({
             color: "#00000000",
-            height: 40,
+            height: 32,
             symbolColor: "#e8e8e8",
         });
     });
@@ -173,14 +173,14 @@ describe("window titlebar overlays", () => {
 
         expect(electronMocks.windows[0]?.options).toMatchObject({
             titleBarStyle: "hidden",
-            trafficLightPosition: { x: 14, y: 12 },
+            trafficLightPosition: { x: 14, y: 8 },
         });
         expect(electronMocks.windows).toHaveLength(1);
 
         electronMocks.windows[0]?.triggerDidFinishLoad();
         expect(
             electronMocks.windows[0]?.setWindowButtonPosition,
-        ).toHaveBeenCalledWith({ x: 14, y: 12 });
+        ).toHaveBeenCalledWith({ x: 14, y: 8 });
     });
 
     it("uses the native overlay and solid shell fallback on Linux", () => {
@@ -193,7 +193,7 @@ describe("window titlebar overlays", () => {
             backgroundMaterial: undefined,
             titleBarOverlay: {
                 color: "#00000000",
-                height: 40,
+                height: 32,
                 symbolColor: "#1c1c1c",
             },
             titleBarStyle: "hidden",

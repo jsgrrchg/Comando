@@ -28,7 +28,7 @@ export function DesktopWindowChrome({
             aria-label="Window controls"
             className="app-drag desktop-titlebar desktop-window-chrome relative flex shrink-0 items-center select-none"
             style={{
-                height: "var(--desktop-titlebar-height, 40px)",
+                height: "var(--desktop-titlebar-height, 32px)",
                 paddingLeft: platform === "darwin" ? 84 : 8,
                 paddingRight:
                     platform === "win32" || platform === "linux"

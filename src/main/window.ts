@@ -19,8 +19,8 @@ import { debugBenignError } from "./observability/logging";
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 const MIN_VISIBLE_RESTORE_OVERLAP = 80;
 
-export const DESKTOP_TITLE_BAR_HEIGHT = 40;
-export const MAC_MAIN_TRAFFIC_LIGHT_POSITION = { x: 14, y: 12 };
+export const DESKTOP_TITLE_BAR_HEIGHT = 32;
+export const MAC_MAIN_TRAFFIC_LIGHT_POSITION = { x: 14, y: 8 };
 
 type WindowKind = "main";
 
