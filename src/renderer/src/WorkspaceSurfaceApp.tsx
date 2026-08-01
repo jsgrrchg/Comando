@@ -30,6 +30,11 @@ import { activateWorkspaceSurfaceLayoutRuntime } from "./app/workspace/workspace
 import { SIDEBAR_AGENT_DRAG_EVENT } from "./components/sidebar/sidebarAgentDragEvents";
 import { SIDEBAR_GITHUB_DRAG_EVENT } from "./components/sidebar/sidebarGitHubDragEvents";
 import { SidebarGitScopePicker } from "./components/sidebar/SidebarGitScopePicker";
+import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
+import {
+    isQuickOpenFileShortcut,
+    useWorkspaceQuickOpen,
+} from "./components/workspace/useWorkspaceQuickOpen";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { findPaneById } from "./app/workspace/tree";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
@@ -150,6 +155,8 @@ export function WorkspaceSurfaceApp() {
     const refreshProjectTabs = useWorkspaceStore(
         (state) => state.refreshProjectTabs,
     );
+    const openFileTab = useWorkspaceStore((state) => state.openFileTab);
+    const activePaneId = useWorkspaceStore((state) => state.activePaneId);
     const activeContext = useWorkspaceStore((state) =>
         state.activeContextKey
             ? (state.contextsByKey[state.activeContextKey] ?? null)
@@ -523,6 +530,13 @@ export function WorkspaceSurfaceApp() {
             projectId: activeProjectId,
         });
     }, [activeProjectId]);
+    const quickOpen = useWorkspaceQuickOpen({
+        activePaneId,
+        activeProjectId,
+        activeWorktreeId,
+        openFileTab,
+    });
+    const openQuickOpenPalette = quickOpen.openPalette;
 
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
@@ -536,6 +550,11 @@ export function WorkspaceSurfaceApp() {
             if (!event.shiftKey && event.key === ",") {
                 event.preventDefault();
                 openSettings();
+                return;
+            }
+            if (isQuickOpenFileShortcut(event)) {
+                event.preventDefault();
+                openQuickOpenPalette();
                 return;
             }
             if (
@@ -574,7 +593,12 @@ export function WorkspaceSurfaceApp() {
         };
         window.addEventListener("keydown", handleKeyDown, true);
         return () => window.removeEventListener("keydown", handleKeyDown, true);
-    }, [activeContext, bootstrap?.platform, openSettings]);
+    }, [
+        activeContext,
+        bootstrap?.platform,
+        openSettings,
+        openQuickOpenPalette,
+    ]);
 
     const recentProjects = useMemo(
         () =>
@@ -639,6 +663,24 @@ export function WorkspaceSurfaceApp() {
                     runtimeCatalog={runtimeCatalog}
                 />
             </main>
+            <QuickOpenFilePalette
+                loading={quickOpen.loading}
+                onChangeQuery={quickOpen.onChangeQuery}
+                onClose={quickOpen.close}
+                onHoverIndex={quickOpen.onHoverIndex}
+                onInputKeyDown={quickOpen.onInputKeyDown}
+                onSelect={(item) => {
+                    void quickOpen.select(item);
+                }}
+                open={quickOpen.open}
+                projectName={
+                    projects.find((project) => project.id === activeProjectId)
+                        ?.name ?? null
+                }
+                query={quickOpen.query}
+                results={quickOpen.results}
+                selectedIndex={quickOpen.selectedIndex}
+            />
         </div>
     );
 }

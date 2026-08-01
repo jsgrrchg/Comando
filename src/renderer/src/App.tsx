@@ -57,10 +57,6 @@ import {
     resolveFileTreeMovePickerSelectedIndex,
     type FileTreeMoveDestination,
 } from "./app/projects/file-tree-move-destinations";
-import {
-    searchProjectQuickOpenEntries,
-    type ProjectQuickOpenMatch,
-} from "./app/projects/quick-open";
 import { filterProjectEntriesForTreeFilter } from "./app/projects/tree-filter";
 import { filterProjectEntriesInWorker } from "./app/projects/tree-filter-worker-client";
 import { getProjectContextKey } from "./app/projects/context-key";
@@ -153,7 +149,6 @@ import {
     createWorkspaceQuickDirectory,
     createWorkspaceQuickFile,
 } from "./components/workspace/quick-create";
-import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
 import type { WorkspacePaneRecentProject } from "./components/workspace/WorkspacePaneEmptyState";
 import {
     closeWorkspaceTabsWithConfirmation,
@@ -533,9 +528,6 @@ export function WorkspaceHostApp() {
     const renameTabsForProjectPath = useWorkspaceStore(
         (state) => state.renameTabsForProjectPath,
     );
-    const workspaceActivePaneId = useWorkspaceStore(
-        (state) => state.activePaneId,
-    );
     const workspaceError = useWorkspaceStore((state) => state.error);
     const activeWorkspaceTab = useWorkspaceStore(selectActiveWorkspaceTab);
 
@@ -668,13 +660,6 @@ export function WorkspaceHostApp() {
         useState<Record<string, readonly ProjectTreeNode[]>>({});
     const [fileTreeBackendSearchResults, setFileTreeBackendSearchResults] =
         useState<readonly ProjectTreeNode[]>([]);
-    const [isQuickOpenOpen, setIsQuickOpenOpen] = useState(false);
-    const [isQuickOpenLoading, setIsQuickOpenLoading] = useState(false);
-    const [quickOpenQuery, setQuickOpenQuery] = useState("");
-    const [quickOpenSearchResults, setQuickOpenSearchResults] = useState<
-        readonly ProjectTreeNode[]
-    >([]);
-    const [quickOpenSelectedIndex, setQuickOpenSelectedIndex] = useState(0);
     const [fileTreeInlineEditor, setFileTreeInlineEditor] =
         useState<FileExplorerInlineEditorState | null>(null);
     const [fileTreeClipboard, setFileTreeClipboard] =
@@ -790,7 +775,6 @@ export function WorkspaceHostApp() {
         [setFileTreeEntryIndexByContext],
     );
     const fileTreeBackendSearchRequestRef = useRef(0);
-    const quickOpenSearchRequestRef = useRef(0);
     const sidebarScrollRef = useRef<HTMLDivElement | null>(null);
     const sidebarScrollPositionsRef = useRef<SidebarScrollPositionStore>(
         new Map(),
@@ -1758,11 +1742,6 @@ export function WorkspaceHostApp() {
             setFileTreeBackendSearchResults([]);
             setFileTreeContextMenu(null);
             setIsFileTreeSearchOpen(false);
-            setIsQuickOpenLoading(false);
-            setIsQuickOpenOpen(false);
-            setQuickOpenQuery("");
-            setQuickOpenSearchResults([]);
-            setQuickOpenSelectedIndex(0);
         });
     }, [activeProjectId, activeWorktreeId]);
 
@@ -1791,83 +1770,6 @@ export function WorkspaceHostApp() {
         fileTreeEntryIndexByContext,
         loadFileTreeEntryIndex,
     ]);
-
-    useEffect(() => {
-        const normalizedQuery = quickOpenQuery.trim();
-
-        if (
-            !isQuickOpenOpen ||
-            !activeProjectId ||
-            !normalizedQuery ||
-            !window.comando
-        ) {
-            quickOpenSearchRequestRef.current += 1;
-            return scheduleEffectStateUpdate(() => {
-                setQuickOpenSearchResults([]);
-                setIsQuickOpenLoading(false);
-            });
-        }
-
-        const cancelLoadingUpdate = scheduleEffectStateUpdate(() => {
-            setIsQuickOpenLoading(true);
-        });
-        const requestId = quickOpenSearchRequestRef.current + 1;
-        quickOpenSearchRequestRef.current = requestId;
-        const search = () => {
-            void window.comando
-                .searchProjectEntries({
-                    limit: 120,
-                    projectId: activeProjectId,
-                    query: normalizedQuery,
-                    searchContext: "quick-open",
-                    worktreeId: activeWorktreeId,
-                })
-                .then((results) => {
-                    if (quickOpenSearchRequestRef.current !== requestId) {
-                        return;
-                    }
-
-                    setQuickOpenSearchResults(results);
-                })
-                .catch(() => {
-                    if (quickOpenSearchRequestRef.current !== requestId) {
-                        return;
-                    }
-
-                    setQuickOpenSearchResults([]);
-                })
-                .finally(() => {
-                    if (quickOpenSearchRequestRef.current !== requestId) {
-                        return;
-                    }
-
-                    setIsQuickOpenLoading(false);
-                });
-        };
-
-        const delayMs = getProjectSearchDelayMs(normalizedQuery);
-        if (delayMs === 0) {
-            search();
-            return cancelLoadingUpdate;
-        }
-
-        const timeoutId = window.setTimeout(search, delayMs);
-
-        return () => {
-            cancelLoadingUpdate();
-            window.clearTimeout(timeoutId);
-        };
-    }, [activeProjectId, activeWorktreeId, isQuickOpenOpen, quickOpenQuery]);
-
-    useEffect(() => {
-        if (!isQuickOpenOpen) {
-            return;
-        }
-
-        return scheduleEffectStateUpdate(() => {
-            setQuickOpenSelectedIndex(0);
-        });
-    }, [isQuickOpenOpen, quickOpenQuery]);
 
     const stopDragging = useEffectEvent(() => {
         setDragState(null);
@@ -2165,27 +2067,6 @@ export function WorkspaceHostApp() {
     );
     const fileTreeSearchNodes = fileTreeSearchTree.nodes;
     const fileTreeSearchExpandedPaths = fileTreeSearchTree.expandedDirectoryPaths;
-    const quickOpenResults = useMemo(
-        () =>
-            searchProjectQuickOpenEntries(
-                quickOpenSearchResults,
-                quickOpenQuery,
-            ),
-        [quickOpenQuery, quickOpenSearchResults],
-    );
-    useEffect(() => {
-        if (quickOpenResults.length === 0) {
-            return scheduleEffectStateUpdate(() => {
-                setQuickOpenSelectedIndex(0);
-            });
-        }
-
-        return scheduleEffectStateUpdate(() => {
-            setQuickOpenSelectedIndex((currentIndex) =>
-                Math.min(currentIndex, quickOpenResults.length - 1),
-            );
-        });
-    }, [quickOpenResults.length]);
     const isProjectRootExpanded =
         projectRootExpandedByContext[activeProjectContextKey] ?? true;
     void renameTabsForProjectPath;
@@ -4030,97 +3911,6 @@ export function WorkspaceHostApp() {
         [],
     );
 
-    const closeQuickOpen = useCallback(() => {
-        setIsQuickOpenLoading(false);
-        setIsQuickOpenOpen(false);
-        setQuickOpenQuery("");
-        setQuickOpenSelectedIndex(0);
-    }, []);
-
-    const handleQuickOpenSelect = useCallback(
-        async (item: ProjectQuickOpenMatch) => {
-            if (!activeProjectId) {
-                return;
-            }
-
-            closeQuickOpen();
-            await openFileTab(
-                activeProjectId,
-                item.relativePath,
-                activeWorktreeId,
-                undefined,
-                workspaceActivePaneId,
-            );
-        },
-        [
-            activeProjectId,
-            activeWorktreeId,
-            closeQuickOpen,
-            openFileTab,
-            workspaceActivePaneId,
-        ],
-    );
-
-    const handleQuickOpenInputKeyDown = useCallback(
-        (event: ReactKeyboardEvent<HTMLInputElement>) => {
-            if (event.key === "Escape") {
-                event.preventDefault();
-                closeQuickOpen();
-                return;
-            }
-
-            if (quickOpenResults.length === 0) {
-                return;
-            }
-
-            if (event.key === "ArrowDown") {
-                event.preventDefault();
-                setQuickOpenSelectedIndex((currentIndex) =>
-                    currentIndex >= quickOpenResults.length - 1
-                        ? 0
-                        : currentIndex + 1,
-                );
-                return;
-            }
-
-            if (event.key === "ArrowUp") {
-                event.preventDefault();
-                setQuickOpenSelectedIndex((currentIndex) =>
-                    currentIndex <= 0
-                        ? quickOpenResults.length - 1
-                        : currentIndex - 1,
-                );
-                return;
-            }
-
-            if (event.key === "Home") {
-                event.preventDefault();
-                setQuickOpenSelectedIndex(0);
-                return;
-            }
-
-            if (event.key === "End") {
-                event.preventDefault();
-                setQuickOpenSelectedIndex(quickOpenResults.length - 1);
-                return;
-            }
-
-            if (event.key === "Enter") {
-                event.preventDefault();
-                const selectedItem = quickOpenResults[quickOpenSelectedIndex];
-                if (selectedItem) {
-                    void handleQuickOpenSelect(selectedItem);
-                }
-            }
-        },
-        [
-            closeQuickOpen,
-            handleQuickOpenSelect,
-            quickOpenResults,
-            quickOpenSelectedIndex,
-        ],
-    );
-
     const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>(() =>
         createInitialAppUpdateState(),
     );
@@ -4177,32 +3967,6 @@ export function WorkspaceHostApp() {
             window.removeEventListener("keydown", handleKeyDown);
         };
     }, [openSettingsWindow]);
-
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.defaultPrevented) {
-                return;
-            }
-
-            if (!(event.metaKey || event.ctrlKey) || event.altKey) {
-                return;
-            }
-
-            if (event.shiftKey || event.key.toLowerCase() !== "t") {
-                return;
-            }
-
-            event.preventDefault();
-            setIsQuickOpenOpen(true);
-            setQuickOpenQuery("");
-            setQuickOpenSelectedIndex(0);
-        };
-
-        window.addEventListener("keydown", handleKeyDown, true);
-        return () => {
-            window.removeEventListener("keydown", handleKeyDown, true);
-        };
-    }, []);
 
     useEffect(() => {
         if (isMac) {
@@ -4920,21 +4684,6 @@ export function WorkspaceHostApp() {
                         runtimeCatalog={runtimeCatalog}
                     />
                 </main>
-                <QuickOpenFilePalette
-                    loading={isQuickOpenLoading}
-                    onChangeQuery={setQuickOpenQuery}
-                    onClose={closeQuickOpen}
-                    onHoverIndex={setQuickOpenSelectedIndex}
-                    onInputKeyDown={handleQuickOpenInputKeyDown}
-                    onSelect={(item) => {
-                        void handleQuickOpenSelect(item);
-                    }}
-                    open={isQuickOpenOpen}
-                    projectName={activeProject?.name ?? null}
-                    query={quickOpenQuery}
-                    results={quickOpenResults}
-                    selectedIndex={quickOpenSelectedIndex}
-                />
             </div>
         );
     }
@@ -5144,22 +4893,6 @@ export function WorkspaceHostApp() {
                     onClose={closeFileTreeContextMenu}
                 />
             ) : null}
-
-            <QuickOpenFilePalette
-                loading={isQuickOpenLoading}
-                onChangeQuery={setQuickOpenQuery}
-                onClose={closeQuickOpen}
-                onHoverIndex={setQuickOpenSelectedIndex}
-                onInputKeyDown={handleQuickOpenInputKeyDown}
-                onSelect={(item) => {
-                    void handleQuickOpenSelect(item);
-                }}
-                open={isQuickOpenOpen}
-                projectName={activeProject?.name ?? null}
-                query={quickOpenQuery}
-                results={quickOpenResults}
-                selectedIndex={quickOpenSelectedIndex}
-            />
 
             <FileTreeMoveDestinationPicker
                 destinations={fileTreeMoveDestinations}
