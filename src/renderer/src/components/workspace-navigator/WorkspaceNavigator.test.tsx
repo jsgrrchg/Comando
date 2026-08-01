@@ -96,6 +96,70 @@ describe("WorkspaceNavigator", () => {
         ]);
     });
 
+    it("reorders projects through the pointer drag handle", async () => {
+        vi.stubGlobal("comando", {
+            showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
+        });
+        const model = createModel();
+        const firstProject = model.projects[0];
+        if (!firstProject) {
+            throw new Error("Expected a project fixture.");
+        }
+        const onReorderProjects = vi.fn();
+        mount(
+            <WorkspaceNavigator
+                {...createProps({
+                    model: {
+                        ...model,
+                        projects: [
+                            ...model.projects,
+                            {
+                                ...firstProject,
+                                id: "project-b",
+                                name: "Testing",
+                                workspaces: [],
+                            },
+                        ],
+                    },
+                    onReorderProjects,
+                })}
+            />,
+        );
+        await act(async () => Promise.resolve());
+
+        const projectRows = container?.querySelectorAll<HTMLElement>(
+            ".workspace-navigator-project-row",
+        );
+        const handles = container?.querySelectorAll<HTMLElement>(
+            ".workspace-navigator-project-drag-handle",
+        );
+        vi.spyOn(projectRows?.[0] as HTMLElement, "getBoundingClientRect").mockReturnValue(
+            createRect(0, 32),
+        );
+        vi.spyOn(projectRows?.[1] as HTMLElement, "getBoundingClientRect").mockReturnValue(
+            createRect(100, 32),
+        );
+
+        act(() => {
+            handles?.[0]?.dispatchEvent(createPointerEvent("pointerdown", 8));
+        });
+        act(() => {
+            handles?.[0]?.dispatchEvent(createPointerEvent("pointermove", 120));
+        });
+        expect(
+            container?.querySelectorAll(".workspace-navigator-project")[1]
+                ?.getAttribute("data-drop-position"),
+        ).toBe("after");
+        act(() => {
+            handles?.[0]?.dispatchEvent(createPointerEvent("pointerup", 120));
+        });
+
+        expect(onReorderProjects).toHaveBeenCalledWith([
+            "project-b",
+            "project-a",
+        ]);
+    });
+
     it("keeps every project's workspaces visible", async () => {
         vi.stubGlobal("comando", {
             showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
@@ -119,7 +183,9 @@ describe("WorkspaceNavigator", () => {
         expect(
             projectRow?.getAttribute("aria-expanded"),
         ).toBe("true");
-        expect(projectRow?.draggable).toBe(true);
+        expect(
+            container?.querySelector(".workspace-navigator-project-drag-handle"),
+        ).toBeTruthy();
         expect(projectRow?.getAttribute("aria-roledescription")).toBe(
             "draggable project",
         );
@@ -481,6 +547,30 @@ function mount(element: React.ReactNode): void {
     document.body.appendChild(container);
     root = createRoot(container);
     act(() => root?.render(element));
+}
+
+function createPointerEvent(type: string, clientY: number): MouseEvent {
+    const event = new MouseEvent(type, {
+        bubbles: true,
+        button: 0,
+        clientY,
+    });
+    Object.defineProperty(event, "pointerId", { value: 1 });
+    return event;
+}
+
+function createRect(top: number, height: number): DOMRect {
+    return {
+        bottom: top + height,
+        height,
+        left: 0,
+        right: 200,
+        top,
+        width: 200,
+        x: 0,
+        y: top,
+        toJSON: () => ({}),
+    };
 }
 
 function createProps(

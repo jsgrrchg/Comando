@@ -3,8 +3,8 @@ import {
     useMemo,
     useRef,
     useState,
-    type DragEvent,
     type KeyboardEvent,
+    type PointerEvent,
     type ReactNode,
 } from "react";
 
@@ -94,8 +94,6 @@ type VisibleTreeItem =
     | { readonly id: string; readonly kind: "workspace"; readonly label: string; readonly project: WorkspaceNavigatorProject; readonly workspace: WorkspaceNavigatorWorkspace };
 
 const TYPEAHEAD_RESET_MS = 650;
-const PROJECT_DRAG_MIME = "application/x-comando-project-id";
-
 export function reorderProjectIds(
     projectIds: readonly string[],
     draggedProjectId: string,
@@ -207,6 +205,52 @@ export function WorkspaceNavigator({
         }
         setFocusedItemId(id);
         itemRefs.current.get(id)?.focus();
+    };
+
+    const resolveProjectDropTarget = (
+        clientY: number,
+        sourceProjectId: string,
+    ): { readonly position: "after" | "before"; readonly projectId: string } | null => {
+        const candidates = model.projects.filter(
+            (project) => project.id !== sourceProjectId,
+        );
+        for (const candidate of candidates) {
+            const row = itemRefs.current.get(`project:${candidate.id}`);
+            if (!row) {
+                continue;
+            }
+            const rect = row.getBoundingClientRect();
+            if (clientY < rect.top + rect.height / 2) {
+                return { position: "before", projectId: candidate.id };
+            }
+        }
+        const lastCandidate = candidates.at(-1);
+        return lastCandidate
+            ? { position: "after", projectId: lastCandidate.id }
+            : null;
+    };
+
+    const finishProjectPointerDrag = (
+        event: PointerEvent<HTMLElement>,
+        projectId: string,
+    ) => {
+        if (draggedProjectId !== projectId) {
+            return;
+        }
+        const target = resolveProjectDropTarget(event.clientY, projectId);
+        if (target) {
+            onReorderProjects(
+                reorderProjectIds(
+                    model.projects.map((project) => project.id),
+                    projectId,
+                    target.projectId,
+                    target.position,
+                ),
+            );
+        }
+        event.currentTarget.releasePointerCapture?.(event.pointerId);
+        setDraggedProjectId(null);
+        setProjectDropTarget(null);
     };
 
     const runWorkspaceActivation = async (
@@ -585,7 +629,6 @@ export function WorkspaceNavigator({
                     aria-roledescription="draggable project"
                     className="workspace-navigator-project-row"
                     data-missing={project.isMissing || undefined}
-                    draggable
                     onContextMenu={(event) => {
                         event.preventDefault();
                         void openNativeMenu(
@@ -595,50 +638,7 @@ export function WorkspaceNavigator({
                         );
                     }}
                     onFocus={() => setFocusedItemId(projectItem.id)}
-                    onDragEnd={() => {
-                        setDraggedProjectId(null);
-                        setProjectDropTarget(null);
-                    }}
-                    onDragOver={(event: DragEvent<HTMLElement>) => {
-                        if (!draggedProjectId || draggedProjectId === project.id) {
-                            return;
-                        }
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = "move";
-                        const rect = event.currentTarget.getBoundingClientRect();
-                        setProjectDropTarget({
-                            position:
-                                event.clientY < rect.top + rect.height / 2
-                                    ? "before"
-                                    : "after",
-                            projectId: project.id,
-                        });
-                    }}
-                    onDragStart={(event: DragEvent<HTMLElement>) => {
-                        event.dataTransfer.effectAllowed = "move";
-                        event.dataTransfer.setData(PROJECT_DRAG_MIME, project.id);
-                        event.dataTransfer.setData("text/plain", project.name);
-                        setDraggedProjectId(project.id);
-                    }}
-                    onDrop={(event: DragEvent<HTMLElement>) => {
-                        const sourceProjectId =
-                            draggedProjectId ||
-                            event.dataTransfer.getData(PROJECT_DRAG_MIME);
-                        if (!sourceProjectId || sourceProjectId === project.id) {
-                            return;
-                        }
-                        event.preventDefault();
-                        const rect = event.currentTarget.getBoundingClientRect();
-                        onReorderProjects(
-                            reorderProjectIds(
-                                model.projects.map((candidate) => candidate.id),
-                                sourceProjectId,
-                                project.id,
-                                event.clientY < rect.top + rect.height / 2
-                                    ? "before"
-                                    : "after",
-                            ),
-                        );
+                    onPointerCancel={() => {
                         setDraggedProjectId(null);
                         setProjectDropTarget(null);
                     }}
@@ -649,6 +649,35 @@ export function WorkspaceNavigator({
                     role="treeitem"
                     tabIndex={focusedItemId === projectItem.id ? 0 : -1}
                 >
+                    <span
+                        aria-hidden="true"
+                        className="workspace-navigator-project-drag-handle"
+                        onPointerDown={(event: PointerEvent<HTMLElement>) => {
+                            if (event.button !== 0) {
+                                return;
+                            }
+                            event.preventDefault();
+                            event.stopPropagation();
+                            event.currentTarget.setPointerCapture?.(event.pointerId);
+                            setDraggedProjectId(project.id);
+                            setProjectDropTarget(null);
+                        }}
+                        onPointerMove={(event: PointerEvent<HTMLElement>) => {
+                            if (draggedProjectId !== project.id) {
+                                return;
+                            }
+                            event.preventDefault();
+                            setProjectDropTarget(
+                                resolveProjectDropTarget(event.clientY, project.id),
+                            );
+                        }}
+                        onPointerUp={(event: PointerEvent<HTMLElement>) =>
+                            finishProjectPointerDrag(event, project.id)
+                        }
+                        title={`Reorder ${project.name}`}
+                    >
+                        <IconGrip />
+                    </span>
                     <ProjectAvatar name={project.name} />
                     <span className="min-w-0 flex-1 truncate">{project.name}</span>
                     {project.isMissing ? (
@@ -1411,6 +1440,19 @@ function formatRelativeTime(iso: string | null): string | null {
         return `${months}mo ago`;
     }
     return `${Math.floor(months / 12)}y ago`;
+}
+
+function IconGrip() {
+    return (
+        <svg aria-hidden="true" fill="currentColor" viewBox="0 0 12 16">
+            <circle cx="3" cy="4" r="1" />
+            <circle cx="9" cy="4" r="1" />
+            <circle cx="3" cy="8" r="1" />
+            <circle cx="9" cy="8" r="1" />
+            <circle cx="3" cy="12" r="1" />
+            <circle cx="9" cy="12" r="1" />
+        </svg>
+    );
 }
 
 function IconBranch() {

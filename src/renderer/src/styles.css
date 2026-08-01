@@ -698,12 +698,32 @@ text-align: center;
 .workspace-navigator-project-row {
     min-height: 32px;
     padding: 4px 7px;
-    cursor: grab;
     font-size: 12.5px;
     font-weight: 600;
 }
 
-.workspace-navigator-project-row:active {
+.workspace-navigator-project-drag-handle {
+    display: flex;
+    flex: 0 0 12px;
+    align-items: center;
+    justify-content: center;
+    width: 12px;
+    color: var(--color-text-secondary);
+    cursor: grab;
+    opacity: 0.45;
+    touch-action: none;
+}
+
+.workspace-navigator-project-drag-handle svg {
+    width: 9px;
+    height: 14px;
+}
+
+.workspace-navigator-project-row:hover .workspace-navigator-project-drag-handle {
+    opacity: 0.9;
+}
+
+.workspace-navigator-project-drag-handle:active {
     cursor: grabbing;
 }
 
