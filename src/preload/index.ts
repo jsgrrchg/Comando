@@ -206,6 +206,7 @@ import {
     type WorkspaceSurfaceActionEnvelope,
     type WorkspaceSurfaceFileRevealRequest,
     type WorkspaceSurfaceActionStatus,
+    type WorkspaceSurfaceContentInsets,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceLifecycleEvent,
@@ -1326,6 +1327,13 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(
             IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset,
             width,
+        ),
+    setWorkspaceSurfaceContentInsets: (
+        insets: WorkspaceSurfaceContentInsets,
+    ) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.setWorkspaceSurfaceContentInsets,
+            insets,
         ),
     setTrafficLightVisibility: (visible: boolean) =>
         ipcRenderer.invoke(IPC_CHANNELS.setTrafficLightVisibility, visible),

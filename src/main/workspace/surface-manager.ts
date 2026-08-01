@@ -27,6 +27,7 @@ import type {
     WorkspaceSurfaceActionStatus,
     WorkspaceSurfaceActivationResult,
     WorkspaceSurfaceCloseResult,
+    WorkspaceSurfaceContentInsets,
     WorkspaceSurfaceHardLease,
     WorkspaceSurfaceFileRevealRequest,
     WorkspaceSurfaceDragEvent,
@@ -86,8 +87,7 @@ interface WorkspaceSurfaceBounds {
 interface WorkspaceSurfaceHostRecord {
     readonly activationCoordinator: WorkspaceActivationCoordinator;
     activeContextKey: string | null;
-    contentInset: number;
-    contentLeftInset: number;
+    contentInsets: WorkspaceSurfaceContentInsets;
     disposalScheduled: boolean;
     readonly hostWindow: BrowserWindow;
     readonly hostWindowId: string;
@@ -207,9 +207,14 @@ export class WorkspaceSurfaceManager {
             this.#hostsByWindowId.set(host.hostWindowId, host);
             this.#resolveHostReadyWaiters(host.hostWindowId, true);
             const createdHost = host;
-            hostWindow.on("resize", () => {
+            const scheduleLayout = () => {
                 this.#scheduleActiveSurfaceLayout(createdHost);
-            });
+            };
+            hostWindow.on("resize", scheduleLayout);
+            hostWindow.on("enter-full-screen", scheduleLayout);
+            hostWindow.on("leave-full-screen", scheduleLayout);
+            hostWindow.on("maximize", scheduleLayout);
+            hostWindow.on("unmaximize", scheduleLayout);
         }
         host.context = hostContext;
         const isInitialSync = host.snapshot.contexts.length === 0;
@@ -600,31 +605,51 @@ export class WorkspaceSurfaceManager {
 
     setContentInset(hostWindowId: string, height: number): void {
         const host = this.#hostsByWindowId.get(hostWindowId);
-        if (!host || !Number.isFinite(height)) {
+        if (!host) {
             return;
         }
-
-        const nextContentInset = Math.max(0, Math.round(height));
-        if (host.contentInset === nextContentInset) {
-            return;
-        }
-
-        host.contentInset = nextContentInset;
-        this.#scheduleActiveSurfaceLayout(host);
+        this.setContentInsets(hostWindowId, {
+            ...host.contentInsets,
+            top: height,
+        });
     }
 
     setContentLeftInset(hostWindowId: string, width: number): void {
         const host = this.#hostsByWindowId.get(hostWindowId);
-        if (!host || !Number.isFinite(width)) {
+        if (!host) {
+            return;
+        }
+        this.setContentInsets(hostWindowId, {
+            ...host.contentInsets,
+            left: width,
+        });
+    }
+
+    setContentInsets(
+        hostWindowId: string,
+        insets: WorkspaceSurfaceContentInsets | null | undefined,
+    ): void {
+        const host = this.#hostsByWindowId.get(hostWindowId);
+        if (
+            !host ||
+            !insets ||
+            !Number.isFinite(insets.top) ||
+            !Number.isFinite(insets.left) ||
+            !Number.isFinite(insets.right)
+        ) {
             return;
         }
 
-        const nextContentLeftInset = Math.max(0, Math.round(width));
-        if (host.contentLeftInset === nextContentLeftInset) {
+        const nextInsets = {
+            left: Math.max(0, Math.round(insets.left)),
+            right: Math.max(0, Math.round(insets.right)),
+            top: Math.max(0, Math.round(insets.top)),
+        };
+        if (areWorkspaceSurfaceInsetsEqual(host.contentInsets, nextInsets)) {
             return;
         }
 
-        host.contentLeftInset = nextContentLeftInset;
+        host.contentInsets = nextInsets;
         this.#scheduleActiveSurfaceLayout(host);
     }
 
@@ -1300,8 +1325,11 @@ export class WorkspaceSurfaceManager {
         Object.assign(host, {
             activationCoordinator,
             activeContextKey: null,
-            contentInset: DESKTOP_TITLE_BAR_HEIGHT,
-            contentLeftInset: 0,
+            contentInsets: {
+                left: 0,
+                right: 0,
+                top: DESKTOP_TITLE_BAR_HEIGHT,
+            },
             disposalScheduled: false,
             hostWindow,
             hostWindowId: hostContext.windowId,
@@ -1980,10 +2008,15 @@ export class WorkspaceSurfaceManager {
     ): WorkspaceSurfaceBounds {
         const bounds = host.hostWindow.getContentBounds();
         return {
-            height: Math.max(0, bounds.height - host.contentInset),
-            width: Math.max(0, bounds.width - host.contentLeftInset),
-            x: host.contentLeftInset,
-            y: host.contentInset,
+            height: Math.max(0, bounds.height - host.contentInsets.top),
+            width: Math.max(
+                0,
+                bounds.width -
+                    host.contentInsets.left -
+                    host.contentInsets.right,
+            ),
+            x: host.contentInsets.left,
+            y: host.contentInsets.top,
         };
     }
 
@@ -2033,6 +2066,17 @@ function areWorkspaceSurfaceBoundsEqual(
         left.width === right.width &&
         left.x === right.x &&
         left.y === right.y
+    );
+}
+
+function areWorkspaceSurfaceInsetsEqual(
+    left: WorkspaceSurfaceContentInsets,
+    right: WorkspaceSurfaceContentInsets,
+): boolean {
+    return (
+        left.left === right.left &&
+        left.right === right.right &&
+        left.top === right.top
     );
 }
 

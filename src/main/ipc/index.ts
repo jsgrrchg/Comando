@@ -181,6 +181,7 @@ import {
     type WorkspaceContextMenuInput,
     type WorkspaceSurfaceActionRequest,
     type WorkspaceSurfaceActionCompletion,
+    type WorkspaceSurfaceContentInsets,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceLeaseReport,
@@ -429,6 +430,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.showNativeContextMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
+    ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInsets);
     ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
     ipcMain.removeHandler(IPC_CHANNELS.getChatSessionState);
     ipcMain.removeHandler(IPC_CHANNELS.createTerminalSession);
@@ -2599,6 +2601,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 workspaceSurfaceManager.setContentLeftInset(
                     context.windowId,
                     width,
+                );
+            }
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.setWorkspaceSurfaceContentInsets,
+        (event, insets: WorkspaceSurfaceContentInsets) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (!workspaceSurfaceManager.isSurface(event.sender)) {
+                workspaceSurfaceManager.setContentInsets(
+                    context.windowId,
+                    insets,
                 );
             }
         },

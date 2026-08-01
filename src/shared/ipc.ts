@@ -165,6 +165,7 @@ export const IPC_CHANNELS = {
     showNativeContextMenu: "app:show-native-context-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
     setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
+    setWorkspaceSurfaceContentInsets: "workspace:set-surface-content-insets",
     notifyFileBuffer: "workspace:notify-file-buffer",
     getChatSessionState: "workspace:get-chat-session-state",
     createTerminalSession: "terminals:create-session",
@@ -347,7 +348,23 @@ export interface ProjectEditorSettings {
     readonly suggestionsEnabled: boolean | null;
 }
 
-export type PersistedShellSurface = "projects" | "workspace" | "composer";
+export type LegacyPersistedShellSurface =
+    | "projects"
+    | "workspace"
+    | "composer";
+
+export type PersistedShellSurface =
+    | "navigator"
+    | "workspace"
+    | "inspector"
+    | "composer";
+
+export type WorkspaceInspectorView =
+    | "files"
+    | "git"
+    | "agents"
+    | "issues"
+    | "pull_requests";
 
 export interface DatabaseStatus {
     readonly databaseFile: string;
@@ -366,16 +383,33 @@ export interface AppBootstrapSnapshot {
     };
 }
 
-export interface PersistedShellState {
-    readonly activeSurface: PersistedShellSurface;
+export interface LegacyPersistedShellState {
+    readonly activeSurface: LegacyPersistedShellSurface;
     readonly leftCollapsed?: boolean;
     readonly leftWidth: number;
-    readonly sidebarView?:
-        | "files"
-        | "git"
-        | "agents"
-        | "issues"
-        | "pull_requests";
+    readonly sidebarView?: WorkspaceInspectorView;
+    readonly version?: 1;
+}
+
+export interface PersistedShellStateV2 {
+    readonly activeSurface: PersistedShellSurface;
+    readonly leftCollapsed: boolean;
+    readonly leftWidth: number;
+    readonly preferredDrawer: "left" | "right" | null;
+    readonly rightCollapsed: boolean;
+    readonly rightInspectorView: WorkspaceInspectorView;
+    readonly rightWidth: number;
+    readonly version: 2;
+}
+
+export type PersistedShellState =
+    | LegacyPersistedShellState
+    | PersistedShellStateV2;
+
+export interface WorkspaceSurfaceContentInsets {
+    readonly left: number;
+    readonly right: number;
+    readonly top: number;
 }
 
 export interface CheckCommandAvailabilityInput {
@@ -3786,6 +3820,9 @@ export interface ComandoApi {
     ) => Promise<string | null>;
     setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
     setWorkspaceSurfaceContentLeftInset: (width: number) => Promise<void>;
+    setWorkspaceSurfaceContentInsets: (
+        insets: WorkspaceSurfaceContentInsets,
+    ) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;
     setNativeAppearance: (mode: ThemeMode) => Promise<void>;
     resolveTsconfigForPath: (

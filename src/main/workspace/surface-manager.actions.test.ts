@@ -367,6 +367,98 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
     });
 
+    it("applies top, left and right insets atomically only to the active surface", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const host = createHostWindow();
+        manager.syncHost(host.window, createHostContext(), createSnapshot());
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        const firstSurface = electronMocks.views[0];
+        const activation = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const activeSurface = electronMocks.views[1];
+        notifySurfaceReady(manager, activeSurface?.webContents);
+        await activation;
+        firstSurface?.setBounds.mockClear();
+        activeSurface?.setBounds.mockClear();
+
+        manager.setContentInsets("host-1", {
+            left: 281,
+            right: 341,
+            top: 52,
+        });
+
+        await vi.waitFor(() =>
+            expect(activeSurface?.setBounds).toHaveBeenLastCalledWith({
+                height: 748,
+                width: 578,
+                x: 281,
+                y: 52,
+            }),
+        );
+        expect(firstSurface?.setBounds).not.toHaveBeenCalled();
+        expect(activeSurface?.setBounds).toHaveBeenCalledOnce();
+    });
+
+    it("keeps bounds aligned through drawer, zoom and fullscreen changes", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const host = createHostWindow();
+        manager.syncHost(host.window, createHostContext(), createSnapshot());
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        const surface = electronMocks.views[0];
+        surface?.setBounds.mockClear();
+
+        // Insets arrive already scaled by the host renderer's zoom factor.
+        manager.setContentInsets("host-1", {
+            left: 351.25,
+            right: 426.25,
+            top: 65,
+        });
+        await vi.waitFor(() =>
+            expect(surface?.setBounds).toHaveBeenLastCalledWith({
+                height: 735,
+                width: 423,
+                x: 351,
+                y: 65,
+            }),
+        );
+
+        manager.setContentInsets("host-1", { left: 0, right: 0, top: 65 });
+        await vi.waitFor(() =>
+            expect(surface?.setBounds).toHaveBeenLastCalledWith({
+                height: 735,
+                width: 1_200,
+                x: 0,
+                y: 65,
+            }),
+        );
+
+        host.getContentBounds.mockReturnValue({
+            height: 900,
+            width: 1_480,
+            x: 0,
+            y: 0,
+        });
+        host.emit("enter-full-screen");
+        await vi.waitFor(() =>
+            expect(surface?.setBounds).toHaveBeenLastCalledWith({
+                height: 835,
+                width: 1_480,
+                x: 0,
+                y: 65,
+            }),
+        );
+    });
+
     it("waits until a new host renderer registers its surface container", async () => {
         const manager = new WorkspaceSurfaceManager();
         const ready = manager.waitForHost("host-1", 100);
@@ -1228,10 +1320,12 @@ describe("WorkspaceSurfaceManager action routing", () => {
 });
 
 function createHostWindow(): {
+    readonly emit: (event: string) => void;
     readonly getContentBounds: ReturnType<typeof vi.fn>;
     readonly send: ReturnType<typeof vi.fn>;
     readonly window: BrowserWindow;
 } {
+    const listeners = new Map<string, Set<() => void>>();
     const send = vi.fn();
     const getContentBounds = vi.fn(() => ({
         height: 800,
@@ -1251,10 +1345,23 @@ function createHostWindow(): {
         },
         getContentBounds,
         isDestroyed: () => false,
-        on: vi.fn(),
+        on: vi.fn((event: string, listener: () => void) => {
+            const eventListeners = listeners.get(event) ?? new Set();
+            eventListeners.add(listener);
+            listeners.set(event, eventListeners);
+        }),
         webContents,
     } as unknown as BrowserWindow;
-    return { getContentBounds, send, window };
+    return {
+        emit: (event) => {
+            for (const listener of listeners.get(event) ?? []) {
+                listener();
+            }
+        },
+        getContentBounds,
+        send,
+        window,
+    };
 }
 
 function createHostContext(): WindowContextSnapshot {

@@ -66,7 +66,14 @@ import {
     runDeduplicatedContextRefresh,
 } from "./app/workspace/context-activation-refresh";
 import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
-import { shellLayoutConstraints } from "./app/layout/shell-layout";
+import {
+    getShellGridTemplateColumns,
+    getShellPanelWidthRange,
+    getShellSurfaceSideInsets,
+    scaleShellSurfaceInsets,
+    shellLayoutConstraints,
+    type ShellPanelSide,
+} from "./app/layout/shell-layout";
 import {
     COMPOSER_PROJECT_FILE_ENTRY_LIST_MIME,
     COMPOSER_PROJECT_ENTRY_LIST_MIME,
@@ -85,7 +92,10 @@ import { useGitStore } from "./app/store/git-store";
 import { useGitHubStore } from "./app/store/github-store";
 import { useProjectsStore } from "./app/store/projects-store";
 import { useSettingsStore } from "./app/store/settings-store";
-import { useShellStore } from "./app/store/shell-store";
+import {
+    createPersistedShellState,
+    useShellStore,
+} from "./app/store/shell-store";
 import { workspaceCatalogStore } from "./app/store/workspace-catalog-store";
 import {
     flushWorkspacePersistenceNow,
@@ -160,7 +170,7 @@ import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 
 type DragState = {
-    readonly side: "left";
+    readonly side: ShellPanelSide;
     readonly startWidth: number;
     readonly startX: number;
 } | null;
@@ -568,14 +578,32 @@ export function WorkspaceHostApp() {
     const activeSurface = useShellStore((state) => state.activeSurface);
     const focusSurface = useShellStore((state) => state.focusSurface);
     const hydrateShell = useShellStore((state) => state.hydrate);
-    const leftCollapsed = useShellStore((state) => state.leftCollapsed);
+    const leftCollapsed = useShellStore(
+        (state) => state.responsive.left.collapsed,
+    );
+    const leftCollapsedPreference = useShellStore(
+        (state) => state.leftCollapsed,
+    );
     const leftWidth = useShellStore((state) => state.leftWidth);
+    const leftEffectiveWidth = useShellStore(
+        (state) => state.responsive.left.width,
+    );
     const nudgePanel = useShellStore((state) => state.nudgePanel);
+    const preferredDrawer = useShellStore((state) => state.preferredDrawer);
     const resizePanel = useShellStore((state) => state.resizePanel);
+    const rightCollapsed = useShellStore((state) => state.rightCollapsed);
+    const rightWidth = useShellStore((state) => state.rightWidth);
+    const rightEffectiveWidth = useShellStore(
+        (state) => state.responsive.right.width,
+    );
+    const shellResponsive = useShellStore((state) => state.responsive);
+    const shellViewportWidth = useShellStore((state) => state.viewportWidth);
     const setResizingPanel = useShellStore((state) => state.setResizingPanel);
     const setLeftCollapsed = useShellStore((state) => state.setLeftCollapsed);
-    const setSidebarView = useShellStore((state) => state.setSidebarView);
-    const sidebarView = useShellStore((state) => state.sidebarView);
+    const setSidebarView = useShellStore(
+        (state) => state.setRightInspectorView,
+    );
+    const sidebarView = useShellStore((state) => state.rightInspectorView);
     const syncViewport = useShellStore((state) => state.syncViewport);
     const toggleLeftCollapsed = useShellStore(
         (state) => state.toggleLeftCollapsed,
@@ -599,6 +627,9 @@ export function WorkspaceHostApp() {
     const hydrateAiSettings = useAiStore((state) => state.hydrateSettings);
     const stickyFoldersEnabled = useSettingsStore(
         (state) => state.appearance.stickyFoldersEnabled,
+    );
+    const appZoomFactor = useSettingsStore(
+        (state) => state.appearance.zoomFactor,
     );
     const runtimeCatalog = useSettingsStore((state) => state.runtimeCatalog);
 
@@ -1025,27 +1056,26 @@ export function WorkspaceHostApp() {
         if (!element || !comandoApi) {
             return;
         }
-        const updateInset = () => {
-            void comandoApi.setWorkspaceSurfaceContentInset(
-                element.getBoundingClientRect().height,
+        const updateInsets = () => {
+            const sideInsets = getShellSurfaceSideInsets(shellResponsive);
+            void comandoApi.setWorkspaceSurfaceContentInsets(
+                scaleShellSurfaceInsets(
+                    {
+                        // WebContentsView bounds use device-independent pixels,
+                        // while the renderer reports zoomed CSS coordinates.
+                        left: sideInsets.left,
+                        right: sideInsets.right,
+                        top: element.getBoundingClientRect().height,
+                    },
+                    appZoomFactor,
+                ),
             );
         };
-        updateInset();
-        const observer = new ResizeObserver(updateInset);
+        updateInsets();
+        const observer = new ResizeObserver(updateInsets);
         observer.observe(element);
         return () => observer.disconnect();
-    }, []);
-
-    useLayoutEffect(() => {
-        if (!isWorkspaceHostRenderer) {
-            return;
-        }
-        void getComandoApi()?.setWorkspaceSurfaceContentLeftInset(
-            leftCollapsed
-                ? 0
-                : leftWidth + shellLayoutConstraints.handleWidth,
-        );
-    }, [leftCollapsed, leftWidth]);
+    }, [appZoomFactor, shellResponsive]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -1351,7 +1381,7 @@ export function WorkspaceHostApp() {
         );
     }, []);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         syncViewport(window.innerWidth);
 
         const handleResize = () => {
@@ -1371,12 +1401,17 @@ export function WorkspaceHostApp() {
         }
 
         const timeout = window.setTimeout(() => {
-            void comandoApi.saveShellState({
-                activeSurface,
-                leftCollapsed,
-                leftWidth,
-                sidebarView,
-            });
+            void comandoApi.saveShellState(
+                createPersistedShellState({
+                    activeSurface,
+                    leftCollapsed: leftCollapsedPreference,
+                    leftWidth,
+                    preferredDrawer,
+                    rightCollapsed,
+                    rightInspectorView: sidebarView,
+                    rightWidth,
+                }),
+            );
         }, 120);
 
         return () => {
@@ -1384,9 +1419,12 @@ export function WorkspaceHostApp() {
         };
     }, [
         activeSurface,
-        leftCollapsed,
+        leftCollapsedPreference,
         leftWidth,
         persistenceReady,
+        preferredDrawer,
+        rightCollapsed,
+        rightWidth,
         sidebarView,
     ]);
 
@@ -1652,12 +1690,36 @@ export function WorkspaceHostApp() {
     }, [dragState, setResizingPanel]);
 
     const gridTemplateColumns = useMemo(() => {
-        const leftCol = leftCollapsed ? 0 : leftWidth;
-        const leftHandle = leftCollapsed
-            ? 0
-            : shellLayoutConstraints.handleWidth;
-        return `${leftCol}px ${leftHandle}px minmax(0, 1fr)`;
-    }, [leftCollapsed, leftWidth]);
+        return getShellGridTemplateColumns(shellResponsive);
+    }, [shellResponsive]);
+    const leftPanelPersistent =
+        !shellResponsive.left.collapsed && !shellResponsive.left.overlay;
+    const rightPanelPersistent =
+        !shellResponsive.right.collapsed && !shellResponsive.right.overlay;
+    const leftPanelWidthRange = useMemo(
+        () =>
+            getShellPanelWidthRange(
+                {
+                    leftWidth: leftEffectiveWidth,
+                    rightWidth: rightEffectiveWidth,
+                },
+                "left",
+                shellViewportWidth,
+            ),
+        [leftEffectiveWidth, rightEffectiveWidth, shellViewportWidth],
+    );
+    const rightPanelWidthRange = useMemo(
+        () =>
+            getShellPanelWidthRange(
+                {
+                    leftWidth: leftEffectiveWidth,
+                    rightWidth: rightEffectiveWidth,
+                },
+                "right",
+                shellViewportWidth,
+            ),
+        [leftEffectiveWidth, rightEffectiveWidth, shellViewportWidth],
+    );
 
     const activeProject =
         projects.find((project) => project.id === activeProjectId) ?? null;
@@ -4922,9 +4984,8 @@ export function WorkspaceHostApp() {
         }
         void useWorkspaceStore.getState().activateContext(contextKey);
     };
-    const workspaceSurfaceContentLeftInset = leftCollapsed
-        ? 0
-        : leftWidth + shellLayoutConstraints.handleWidth;
+    const workspaceSurfaceContentLeftInset =
+        getShellSurfaceSideInsets(shellResponsive).left;
     const openWorkspaceSurfaceGitScopeMenu = useCallback(
         (anchor: { readonly width: number; readonly x: number }) => {
             void getComandoApi()?.openWorkspaceSurfaceGitScopeMenu({
@@ -4994,25 +5055,29 @@ export function WorkspaceHostApp() {
             >
                 <div ref={workspaceHostTitleBarRef}>{desktopTopBar}</div>
                 <div
-                    className="grid min-h-0 flex-1"
+                    className="relative grid min-h-0 flex-1"
                     style={{ gridTemplateColumns }}
                 >
                     <aside
+                        aria-hidden={!leftPanelPersistent}
                         className="app-sidebar flex min-h-0 flex-col"
+                        aria-label="Workspace navigator"
                         style={
-                            leftCollapsed ? { overflow: "hidden" } : undefined
+                            leftPanelPersistent
+                                ? undefined
+                                : { overflow: "hidden" }
                         }
-                        data-active={activeSurface === "projects"}
-                        onClick={() => focusSurface("projects")}
-                        onFocus={() => focusSurface("projects")}
-                        tabIndex={0}
+                        data-active={activeSurface === "navigator"}
+                        onClick={() => focusSurface("navigator")}
+                        onFocus={() => focusSurface("navigator")}
+                        tabIndex={leftPanelPersistent ? 0 : -1}
                     >
-                        {!leftCollapsed && sidebarContent}
+                        {leftPanelPersistent && sidebarContent}
                     </aside>
 
                     <div
                         style={
-                            leftCollapsed
+                            !leftPanelPersistent
                                 ? {
                                       overflow: "hidden",
                                       pointerEvents: "none",
@@ -5021,30 +5086,127 @@ export function WorkspaceHostApp() {
                         }
                     >
                         <SplitHandle
+                            hidden={!leftPanelPersistent}
                             label="Resize project sidebar"
-                            onPointerDown={(event) =>
-                                startDragging(
-                                    "left",
-                                    event,
-                                    leftWidth,
-                                    setDragState,
-                                )
-                            }
-                            onStepBackward={() =>
+                            max={leftPanelWidthRange.max}
+                            min={leftPanelWidthRange.min}
+                            onDecrease={() =>
                                 nudgePanel(
                                     "left",
                                     -shellLayoutConstraints.keyboardStep,
                                 )
                             }
-                            onStepForward={() =>
+                            onIncrease={() =>
                                 nudgePanel(
                                     "left",
                                     shellLayoutConstraints.keyboardStep,
                                 )
                             }
+                            onMaximum={() =>
+                                resizePanel("left", leftPanelWidthRange.max)
+                            }
+                            onMinimum={() =>
+                                resizePanel("left", leftPanelWidthRange.min)
+                            }
+                            onPointerDown={(event) =>
+                                startDragging(
+                                    "left",
+                                    event,
+                                    leftEffectiveWidth,
+                                    setDragState,
+                                )
+                            }
+                            side="left"
+                            value={leftEffectiveWidth}
                         />
                     </div>
                     <div className="min-h-0" />
+                    <div
+                        style={
+                            !rightPanelPersistent
+                                ? {
+                                      overflow: "hidden",
+                                      pointerEvents: "none",
+                                  }
+                                : undefined
+                        }
+                    >
+                        <SplitHandle
+                            hidden={!rightPanelPersistent}
+                            label="Resize workspace inspector"
+                            max={rightPanelWidthRange.max}
+                            min={rightPanelWidthRange.min}
+                            onDecrease={() =>
+                                nudgePanel(
+                                    "right",
+                                    -shellLayoutConstraints.keyboardStep,
+                                )
+                            }
+                            onIncrease={() =>
+                                nudgePanel(
+                                    "right",
+                                    shellLayoutConstraints.keyboardStep,
+                                )
+                            }
+                            onMaximum={() =>
+                                resizePanel("right", rightPanelWidthRange.max)
+                            }
+                            onMinimum={() =>
+                                resizePanel("right", rightPanelWidthRange.min)
+                            }
+                            onPointerDown={(event) =>
+                                startDragging(
+                                    "right",
+                                    event,
+                                    rightEffectiveWidth,
+                                    setDragState,
+                                )
+                            }
+                            side="right"
+                            value={rightEffectiveWidth}
+                        />
+                    </div>
+                    <aside
+                        aria-label="Workspace inspector"
+                        aria-hidden={!rightPanelPersistent}
+                        className="app-sidebar min-h-0"
+                        data-active={activeSurface === "inspector"}
+                        data-shell-panel="right"
+                        onClick={() => focusSurface("inspector")}
+                        onFocus={() => focusSurface("inspector")}
+                        style={
+                            rightPanelPersistent
+                                ? undefined
+                                : { overflow: "hidden" }
+                        }
+                        tabIndex={rightPanelPersistent ? 0 : -1}
+                    />
+
+                    {shellResponsive.left.overlay && !leftCollapsed ? (
+                        <aside
+                            aria-label="Workspace navigator"
+                            className="app-sidebar absolute inset-y-0 left-0 z-20 flex min-h-0 flex-col overflow-hidden shadow-xl"
+                            data-shell-overlay="left"
+                            onClick={() => focusSurface("navigator")}
+                            onFocus={() => focusSurface("navigator")}
+                            style={{ width: shellResponsive.left.width }}
+                            tabIndex={0}
+                        >
+                            {sidebarContent}
+                        </aside>
+                    ) : null}
+                    {shellResponsive.right.overlay &&
+                    !shellResponsive.right.collapsed ? (
+                        <aside
+                            aria-label="Workspace inspector"
+                            className="app-sidebar absolute inset-y-0 right-0 z-20 min-h-0 overflow-hidden shadow-xl"
+                            data-shell-overlay="right"
+                            onClick={() => focusSurface("inspector")}
+                            onFocus={() => focusSurface("inspector")}
+                            style={{ width: shellResponsive.right.width }}
+                            tabIndex={0}
+                        />
+                    ) : null}
                 </div>
 
             </div>
@@ -5135,7 +5297,7 @@ export function WorkspaceHostApp() {
                 <div className="flex h-full flex-col overflow-hidden">
                     {desktopTopBar}
                     <div
-                        className="grid min-h-0 flex-1"
+                        className="relative grid min-h-0 flex-1"
                         style={{
                             gridTemplateColumns,
                             transition: dragState
@@ -5144,23 +5306,25 @@ export function WorkspaceHostApp() {
                         }}
                     >
                         <aside
+                            aria-label="Workspace navigator"
+                            aria-hidden={!leftPanelPersistent}
                             className="app-sidebar flex min-h-0 flex-col"
                             style={
-                                leftCollapsed
-                                    ? { overflow: "hidden" }
-                                    : undefined
+                                leftPanelPersistent
+                                    ? undefined
+                                    : { overflow: "hidden" }
                             }
-                            data-active={activeSurface === "projects"}
-                            onClick={() => focusSurface("projects")}
-                            onFocus={() => focusSurface("projects")}
-                            tabIndex={0}
+                            data-active={activeSurface === "navigator"}
+                            onClick={() => focusSurface("navigator")}
+                            onFocus={() => focusSurface("navigator")}
+                            tabIndex={leftPanelPersistent ? 0 : -1}
                         >
-                            {!leftCollapsed && sidebarContent}
+                            {leftPanelPersistent && sidebarContent}
                         </aside>
 
                         <div
                             style={
-                                leftCollapsed
+                                !leftPanelPersistent
                                     ? {
                                           overflow: "hidden",
                                           pointerEvents: "none",
@@ -5169,27 +5333,44 @@ export function WorkspaceHostApp() {
                             }
                         >
                             <SplitHandle
+                                hidden={!leftPanelPersistent}
                                 label="Resize project sidebar"
-                                onPointerDown={(event) =>
-                                    startDragging(
-                                        "left",
-                                        event,
-                                        leftWidth,
-                                        setDragState,
-                                    )
-                                }
-                                onStepBackward={() =>
+                                max={leftPanelWidthRange.max}
+                                min={leftPanelWidthRange.min}
+                                onDecrease={() =>
                                     nudgePanel(
                                         "left",
                                         -shellLayoutConstraints.keyboardStep,
                                     )
                                 }
-                                onStepForward={() =>
+                                onIncrease={() =>
                                     nudgePanel(
                                         "left",
                                         shellLayoutConstraints.keyboardStep,
                                     )
                                 }
+                                onMaximum={() =>
+                                    resizePanel(
+                                        "left",
+                                        leftPanelWidthRange.max,
+                                    )
+                                }
+                                onMinimum={() =>
+                                    resizePanel(
+                                        "left",
+                                        leftPanelWidthRange.min,
+                                    )
+                                }
+                                onPointerDown={(event) =>
+                                    startDragging(
+                                        "left",
+                                        event,
+                                        leftEffectiveWidth,
+                                        setDragState,
+                                    )
+                                }
+                                side="left"
+                                value={leftEffectiveWidth}
                             />
                         </div>
 
@@ -5213,6 +5394,98 @@ export function WorkspaceHostApp() {
                                 runtimeCatalog={runtimeCatalog}
                             />
                         </main>
+                        <div
+                            style={
+                                !rightPanelPersistent
+                                    ? {
+                                          overflow: "hidden",
+                                          pointerEvents: "none",
+                                      }
+                                    : undefined
+                            }
+                        >
+                            <SplitHandle
+                                hidden={!rightPanelPersistent}
+                                label="Resize workspace inspector"
+                                max={rightPanelWidthRange.max}
+                                min={rightPanelWidthRange.min}
+                                onDecrease={() =>
+                                    nudgePanel(
+                                        "right",
+                                        -shellLayoutConstraints.keyboardStep,
+                                    )
+                                }
+                                onIncrease={() =>
+                                    nudgePanel(
+                                        "right",
+                                        shellLayoutConstraints.keyboardStep,
+                                    )
+                                }
+                                onMaximum={() =>
+                                    resizePanel(
+                                        "right",
+                                        rightPanelWidthRange.max,
+                                    )
+                                }
+                                onMinimum={() =>
+                                    resizePanel(
+                                        "right",
+                                        rightPanelWidthRange.min,
+                                    )
+                                }
+                                onPointerDown={(event) =>
+                                    startDragging(
+                                        "right",
+                                        event,
+                                        rightEffectiveWidth,
+                                        setDragState,
+                                    )
+                                }
+                                side="right"
+                                value={rightEffectiveWidth}
+                            />
+                        </div>
+                        <aside
+                            aria-label="Workspace inspector"
+                            aria-hidden={!rightPanelPersistent}
+                            className="app-sidebar min-h-0"
+                            data-active={activeSurface === "inspector"}
+                            data-shell-panel="right"
+                            onClick={() => focusSurface("inspector")}
+                            onFocus={() => focusSurface("inspector")}
+                            style={
+                                rightPanelPersistent
+                                    ? undefined
+                                    : { overflow: "hidden" }
+                            }
+                            tabIndex={rightPanelPersistent ? 0 : -1}
+                        />
+
+                        {shellResponsive.left.overlay && !leftCollapsed ? (
+                            <aside
+                                aria-label="Workspace navigator"
+                                className="app-sidebar absolute inset-y-0 left-0 z-20 flex min-h-0 flex-col overflow-hidden shadow-xl"
+                                data-shell-overlay="left"
+                                onClick={() => focusSurface("navigator")}
+                                onFocus={() => focusSurface("navigator")}
+                                style={{ width: shellResponsive.left.width }}
+                                tabIndex={0}
+                            >
+                                {sidebarContent}
+                            </aside>
+                        ) : null}
+                        {shellResponsive.right.overlay &&
+                        !shellResponsive.right.collapsed ? (
+                            <aside
+                                aria-label="Workspace inspector"
+                                className="app-sidebar absolute inset-y-0 right-0 z-20 min-h-0 overflow-hidden shadow-xl"
+                                data-shell-overlay="right"
+                                onClick={() => focusSurface("inspector")}
+                                onFocus={() => focusSurface("inspector")}
+                                style={{ width: shellResponsive.right.width }}
+                                tabIndex={0}
+                            />
+                        ) : null}
                     </div>
                 </div>
 
@@ -5560,7 +5833,7 @@ function getComandoApi(): ComandoApi | null {
 }
 
 function startDragging(
-    side: "left",
+    side: ShellPanelSide,
     event: ReactPointerEvent<HTMLDivElement>,
     startWidth: number,
     setDragState: (dragState: DragState) => void,
