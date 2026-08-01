@@ -1268,9 +1268,7 @@ function WorkspaceRowBadge({
               ? "Cleanup pending"
             : isMissing
               ? "Missing"
-              : status === "active"
-                ? "Active"
-                : null;
+              : null;
     return label ? <span className="workspace-navigator-row-badge">{label}</span> : null;
 }
 
