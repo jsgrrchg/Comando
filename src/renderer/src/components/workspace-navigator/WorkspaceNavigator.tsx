@@ -3,6 +3,7 @@ import {
     useMemo,
     useRef,
     useState,
+    type DragEvent,
     type KeyboardEvent,
     type ReactNode,
 } from "react";
@@ -57,6 +58,7 @@ export interface WorkspaceNavigatorProps {
     readonly onOpenFolder: () => Promise<void>;
     readonly onOpenSettings: () => void;
     readonly onRemoveProject: (project: WorkspaceNavigatorProject) => Promise<void>;
+    readonly onReorderProjects: (projectIds: readonly string[]) => void;
     readonly onResetWorkspace: (
         workspace: WorkspaceNavigatorWorkspace,
     ) => Promise<void>;
@@ -92,6 +94,29 @@ type VisibleTreeItem =
     | { readonly id: string; readonly kind: "workspace"; readonly label: string; readonly project: WorkspaceNavigatorProject; readonly workspace: WorkspaceNavigatorWorkspace };
 
 const TYPEAHEAD_RESET_MS = 650;
+const PROJECT_DRAG_MIME = "application/x-comando-project-id";
+
+export function reorderProjectIds(
+    projectIds: readonly string[],
+    draggedProjectId: string,
+    targetProjectId: string,
+    position: "after" | "before",
+): readonly string[] {
+    if (
+        draggedProjectId === targetProjectId ||
+        !projectIds.includes(draggedProjectId) ||
+        !projectIds.includes(targetProjectId)
+    ) {
+        return projectIds;
+    }
+
+    const reordered = projectIds.filter(
+        (projectId) => projectId !== draggedProjectId,
+    );
+    const targetIndex = reordered.indexOf(targetProjectId);
+    reordered.splice(targetIndex + (position === "after" ? 1 : 0), 0, draggedProjectId);
+    return reordered;
+}
 
 export function WorkspaceNavigator({
     error,
@@ -110,6 +135,7 @@ export function WorkspaceNavigator({
     onOpenFolder,
     onOpenSettings,
     onRemoveProject,
+    onReorderProjects,
     onResetWorkspace,
     onRetry,
     onRetryInventory,
@@ -124,6 +150,11 @@ export function WorkspaceNavigator({
     >({});
     const [operationError, setOperationError] = useState<string | null>(null);
     const [dialog, setDialog] = useState<NavigatorDialog>(null);
+    const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
+    const [projectDropTarget, setProjectDropTarget] = useState<{
+        readonly position: "after" | "before";
+        readonly projectId: string;
+    } | null>(null);
     const activationAttemptRef = useRef(0);
     const itemRefs = useRef(new Map<string, HTMLElement>());
     const typeaheadRef = useRef({ query: "", updatedAt: 0 });
@@ -226,6 +257,30 @@ export function WorkspaceNavigator({
         const currentIndex = visibleItems.findIndex(
             (candidate) => candidate.id === item.id,
         );
+        if (
+            item.kind === "project" &&
+            event.altKey &&
+            (event.key === "ArrowDown" || event.key === "ArrowUp")
+        ) {
+            event.preventDefault();
+            const projectIds = model.projects.map((project) => project.id);
+            const projectIndex = projectIds.indexOf(item.project.id);
+            const targetProjectId =
+                projectIds[
+                    projectIndex + (event.key === "ArrowDown" ? 1 : -1)
+                ];
+            if (targetProjectId) {
+                onReorderProjects(
+                    reorderProjectIds(
+                        projectIds,
+                        item.project.id,
+                        targetProjectId,
+                        event.key === "ArrowDown" ? "after" : "before",
+                    ),
+                );
+            }
+            return;
+        }
         if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
             const direction = event.key === "ArrowDown" ? 1 : -1;
@@ -512,13 +567,25 @@ export function WorkspaceNavigator({
         if (!projectItem) {
             return null;
         }
+        const dropPosition =
+            projectDropTarget?.projectId === project.id
+                ? projectDropTarget.position
+                : undefined;
         return (
-            <div className="workspace-navigator-project" key={project.id}>
+            <div
+                className="workspace-navigator-project"
+                data-dragging={draggedProjectId === project.id || undefined}
+                data-drop-position={dropPosition}
+                key={project.id}
+            >
                 <div
+                    aria-describedby="workspace-navigator-reorder-instructions"
                     aria-expanded="true"
                     aria-level={1}
+                    aria-roledescription="draggable project"
                     className="workspace-navigator-project-row"
                     data-missing={project.isMissing || undefined}
+                    draggable
                     onContextMenu={(event) => {
                         event.preventDefault();
                         void openNativeMenu(
@@ -528,6 +595,53 @@ export function WorkspaceNavigator({
                         );
                     }}
                     onFocus={() => setFocusedItemId(projectItem.id)}
+                    onDragEnd={() => {
+                        setDraggedProjectId(null);
+                        setProjectDropTarget(null);
+                    }}
+                    onDragOver={(event: DragEvent<HTMLElement>) => {
+                        if (!draggedProjectId || draggedProjectId === project.id) {
+                            return;
+                        }
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        setProjectDropTarget({
+                            position:
+                                event.clientY < rect.top + rect.height / 2
+                                    ? "before"
+                                    : "after",
+                            projectId: project.id,
+                        });
+                    }}
+                    onDragStart={(event: DragEvent<HTMLElement>) => {
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData(PROJECT_DRAG_MIME, project.id);
+                        event.dataTransfer.setData("text/plain", project.name);
+                        setDraggedProjectId(project.id);
+                    }}
+                    onDrop={(event: DragEvent<HTMLElement>) => {
+                        const sourceProjectId =
+                            draggedProjectId ||
+                            event.dataTransfer.getData(PROJECT_DRAG_MIME);
+                        if (!sourceProjectId || sourceProjectId === project.id) {
+                            return;
+                        }
+                        event.preventDefault();
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        onReorderProjects(
+                            reorderProjectIds(
+                                model.projects.map((candidate) => candidate.id),
+                                sourceProjectId,
+                                project.id,
+                                event.clientY < rect.top + rect.height / 2
+                                    ? "before"
+                                    : "after",
+                            ),
+                        );
+                        setDraggedProjectId(null);
+                        setProjectDropTarget(null);
+                    }}
                     onKeyDown={(event) =>
                         handleTreeKeyDown(event, projectItem)
                     }
@@ -552,6 +666,7 @@ export function WorkspaceNavigator({
                         <button
                             aria-label={`New worktree in ${project.name}`}
                             className="workspace-navigator-project-add"
+                            draggable={false}
                             onClick={(event) => {
                                 event.stopPropagation();
                                 setDialog({ kind: "new-worktree", project });
@@ -661,6 +776,12 @@ export function WorkspaceNavigator({
 
     return (
         <nav aria-label="Workspace navigator" className="workspace-navigator">
+            <span
+                className="sr-only"
+                id="workspace-navigator-reorder-instructions"
+            >
+                Drag to reorder projects, or press Alt with the up or down arrow.
+            </span>
             <div className="workspace-navigator-heading">Projects</div>
 
             <div className="workspace-navigator-tree-shell">

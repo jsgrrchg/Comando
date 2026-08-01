@@ -10,6 +10,25 @@ import type { WorkspaceCatalogEntry } from "../store/workspace-catalog-store";
 import { buildWorkspaceNavigatorModel } from "./model";
 
 describe("workspace navigator model", () => {
+    it("applies the persisted project order and appends unknown projects", () => {
+        const first = projectFixture("project-a", "Comando");
+        const second = projectFixture("project-b", "Testing");
+        const addedLater = projectFixture("project-c", "Later");
+        const model = buildWorkspaceNavigatorModel({
+            catalogEntries: {},
+            diagnostics: null,
+            projectOrder: [second.id, first.id],
+            projects: [first, second, addedLater],
+            worktreesByProject: {},
+        });
+
+        expect(model.projects.map((project) => project.id)).toEqual([
+            "project-b",
+            "project-a",
+            "project-c",
+        ]);
+    });
+
     it("builds primary and worktree rows from registry, inventory, and durable tombstones", () => {
         const project = projectFixture("project-a", "Comando");
         const durableMissing = catalogFixture(

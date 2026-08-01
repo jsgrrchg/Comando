@@ -20,6 +20,9 @@ import {
 
 const initialLayout = createDefaultShellLayout();
 const INITIAL_VIEWPORT_WIDTH = 1_440;
+type NormalizedPersistedShellState = PersistedShellStateV3 & {
+    readonly projectOrder: readonly string[];
+};
 
 export interface ShellStore extends ShellLayoutDimensions {
     readonly activeSurface: ShellSurface;
@@ -29,6 +32,7 @@ export interface ShellStore extends ShellLayoutDimensions {
     readonly leftCollapsed: boolean;
     readonly leftCollapsedChangedLocally: boolean;
     readonly preferredDrawer: ShellPanelSide | null;
+    readonly projectOrder: readonly string[];
     readonly responsive: ShellResponsiveLayout;
     readonly rightCollapsed: boolean;
     readonly rightCollapsedChangedLocally: boolean;
@@ -42,6 +46,7 @@ export interface ShellStore extends ShellLayoutDimensions {
     setProjectExpanded: (projectId: string, expanded: boolean) => void;
     setPanelCollapsed: (side: ShellPanelSide, collapsed: boolean) => void;
     setPreferredDrawer: (side: ShellPanelSide | null) => void;
+    setProjectOrder: (projectIds: readonly string[]) => void;
     setResizingPanel: (resizing: boolean) => void;
     setRightCollapsed: (collapsed: boolean) => void;
     setRightInspectorView: (view: WorkspaceInspectorView) => void;
@@ -54,7 +59,7 @@ export interface ShellStore extends ShellLayoutDimensions {
 
 export function migratePersistedShellState(
     snapshot: PersistedShellState | null,
-): PersistedShellStateV3 {
+): NormalizedPersistedShellState {
     if (snapshot?.version === 2 || snapshot?.version === 3) {
         return {
             activeSurface: normalizeActiveSurface(snapshot.activeSurface),
@@ -70,6 +75,10 @@ export function migratePersistedShellState(
             preferredDrawer: normalizePreferredDrawer(
                 snapshot.preferredDrawer,
             ),
+            projectOrder:
+                snapshot.version === 3
+                    ? normalizeProjectOrder(snapshot.projectOrder)
+                    : [],
             rightCollapsed: snapshot.rightCollapsed === true,
             rightInspectorView: normalizeInspectorView(
                 snapshot.rightInspectorView,
@@ -88,6 +97,7 @@ export function migratePersistedShellState(
         leftCollapsed: false,
         leftWidth: initialLayout.leftWidth,
         preferredDrawer: null,
+        projectOrder: [],
         // The legacy panel becomes the inspector; navigator preferences start
         // from their own defaults instead of inheriting unrelated UI state.
         rightCollapsed: snapshot?.leftCollapsed === true,
@@ -108,6 +118,7 @@ export function createPersistedShellState(
         | "leftCollapsed"
         | "leftWidth"
         | "preferredDrawer"
+        | "projectOrder"
         | "rightCollapsed"
         | "rightInspectorView"
         | "rightWidth"
@@ -119,6 +130,7 @@ export function createPersistedShellState(
         leftCollapsed: state.leftCollapsed,
         leftWidth: state.leftWidth,
         preferredDrawer: state.preferredDrawer,
+        projectOrder: state.projectOrder,
         rightCollapsed: state.rightCollapsed,
         rightInspectorView: state.rightInspectorView,
         rightWidth: state.rightWidth,
@@ -129,6 +141,7 @@ export function createPersistedShellState(
 const initialPreferences = {
     leftCollapsed: false,
     preferredDrawer: null,
+    projectOrder: [],
     rightCollapsed: false,
 };
 
@@ -141,6 +154,7 @@ export const useShellStore = create<ShellStore>((set) => ({
     leftCollapsedChangedLocally: false,
     leftWidth: initialLayout.leftWidth,
     preferredDrawer: initialPreferences.preferredDrawer,
+    projectOrder: initialPreferences.projectOrder,
     responsive: resolveShellResponsiveLayout(
         initialLayout,
         initialPreferences,
@@ -169,6 +183,7 @@ export const useShellStore = create<ShellStore>((set) => ({
                 preferredDrawer: state.drawerChangedLocally
                     ? state.preferredDrawer
                     : migrated.preferredDrawer,
+                projectOrder: migrated.projectOrder,
                 rightCollapsed: state.rightCollapsedChangedLocally
                     ? state.rightCollapsed
                     : migrated.rightCollapsed,
@@ -231,6 +246,8 @@ export const useShellStore = create<ShellStore>((set) => ({
                 preferredDrawer: side,
             }),
         ),
+    setProjectOrder: (projectIds) =>
+        set({ projectOrder: normalizeProjectOrder(projectIds) }),
     setResizingPanel: (resizing) => set({ isResizingPanel: resizing }),
     setRightCollapsed: (collapsed) => {
         setPanelEffectiveCollapsed(set, "right", collapsed);
@@ -362,6 +379,20 @@ function normalizeActiveSurface(surface: unknown): ShellSurface {
 }
 
 function normalizeExpandedProjectIds(value: unknown): readonly string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return [
+        ...new Set(
+            value.filter(
+                (projectId): projectId is string =>
+                    typeof projectId === "string" && projectId.length > 0,
+            ),
+        ),
+    ];
+}
+
+function normalizeProjectOrder(value: unknown): readonly string[] {
     if (!Array.isArray(value)) {
         return [];
     }

@@ -421,6 +421,7 @@ export interface PersistedShellStateV3 {
     readonly leftCollapsed: boolean;
     readonly leftWidth: number;
     readonly preferredDrawer: "left" | "right" | null;
+    readonly projectOrder?: readonly string[];
     readonly rightCollapsed: boolean;
     readonly rightInspectorView: WorkspaceInspectorView;
     readonly rightWidth: number;

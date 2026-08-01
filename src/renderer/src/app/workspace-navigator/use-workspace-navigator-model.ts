@@ -4,6 +4,7 @@ import { useStore } from "zustand";
 import { getGitContextKey } from "../git/context-key";
 import { useGitStore } from "../store/git-store";
 import { useProjectsStore } from "../store/projects-store";
+import { useShellStore } from "../store/shell-store";
 import { workspaceCatalogStore } from "../store/workspace-catalog-store";
 import {
     buildWorkspaceNavigatorModel,
@@ -12,6 +13,7 @@ import {
 
 export function useWorkspaceNavigatorModel(): WorkspaceNavigatorModel {
     const projects = useProjectsStore((state) => state.projects);
+    const projectOrder = useShellStore((state) => state.projectOrder);
     const worktreesByProject = useGitStore(
         (state) => state.worktreesByProject,
     );
@@ -39,8 +41,16 @@ export function useWorkspaceNavigatorModel(): WorkspaceNavigatorModel {
             inventoryLoadingByProject,
             projects,
             pendingDeletionByScopeKey: catalog.pendingDeletionByScopeKey,
+            projectOrder,
             recoveryByScopeKey: catalog.recoveryByScopeKey,
             worktreesByProject,
         });
-    }, [catalog, gitErrors, loadingContexts, projects, worktreesByProject]);
+    }, [
+        catalog,
+        gitErrors,
+        loadingContexts,
+        projectOrder,
+        projects,
+        worktreesByProject,
+    ]);
 }

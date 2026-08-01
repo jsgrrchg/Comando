@@ -6,6 +6,7 @@ import { getWorkspaceScopeKey } from "@shared/workspace-context";
 
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
+import { useShellStore } from "@renderer/app/store/shell-store";
 import {
     refreshDurableWorkspaceCatalog,
     workspaceCatalogStore,
@@ -39,6 +40,7 @@ export function WorkspaceNavigatorPanel({
     );
     const projects = useProjectsStore((state) => state.projects);
     const projectsError = useProjectsStore((state) => state.error);
+    const setProjectOrder = useShellStore((state) => state.setProjectOrder);
     const addProjects = useProjectsStore((state) => state.addProjects);
     const cloneRepository = useProjectsStore(
         (state) => state.cloneRepository,
@@ -335,6 +337,7 @@ export function WorkspaceNavigatorPanel({
                 await removeProject(project.id);
                 await refreshCatalog();
             }}
+            onReorderProjects={setProjectOrder}
             onResetWorkspace={async (workspace) => {
                 const revision = workspace.catalogEntry.revision;
                 if (revision === null || !window.comando) {

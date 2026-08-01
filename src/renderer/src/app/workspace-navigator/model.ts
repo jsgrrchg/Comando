@@ -67,6 +67,7 @@ export interface BuildWorkspaceNavigatorModelInput {
     readonly pendingDeletionByScopeKey?: Readonly<
         Record<string, NativeWorkspaceDeletionJournalEntry>
     >;
+    readonly projectOrder?: readonly string[];
     readonly worktreesByProject: Readonly<
         Record<string, readonly GitWorktreeSummary[]>
     >;
@@ -79,6 +80,7 @@ export function buildWorkspaceNavigatorModel({
     inventoryLoadingByProject = {},
     projects,
     pendingDeletionByScopeKey = {},
+    projectOrder = [],
     recoveryByScopeKey = {},
     worktreesByProject,
 }: BuildWorkspaceNavigatorModelInput): WorkspaceNavigatorModel {
@@ -200,15 +202,24 @@ export function buildWorkspaceNavigatorModel({
         },
     );
 
+    const projectOrderIndex = new Map(
+        projectOrder.map((projectId, index) => [projectId, index]),
+    );
+    const orderedNavigatorProjects = navigatorProjects.toSorted(
+        (left, right) =>
+            (projectOrderIndex.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+            (projectOrderIndex.get(right.id) ?? Number.MAX_SAFE_INTEGER),
+    );
+
     return {
         activeScopeKey:
             diagnostics?.activeScopeKey ??
-            navigatorProjects
+            orderedNavigatorProjects
                 .flatMap((project) => project.workspaces)
                 .find((workspace) => workspace.status === "active")?.scopeKey ??
             null,
-        projects: navigatorProjects,
-        workspaceCount: navigatorProjects.reduce(
+        projects: orderedNavigatorProjects,
+        workspaceCount: orderedNavigatorProjects.reduce(
             (total, project) => total + project.workspaces.length,
             0,
         ),

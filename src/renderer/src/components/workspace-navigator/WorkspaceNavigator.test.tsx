@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { NativeContextMenuInput } from "@shared/ipc";
 
 import type { WorkspaceNavigatorModel } from "@renderer/app/workspace-navigator/model";
-import { WorkspaceNavigator, type WorkspaceNavigatorProps } from "./WorkspaceNavigator";
+import {
+    reorderProjectIds,
+    WorkspaceNavigator,
+    type WorkspaceNavigatorProps,
+} from "./WorkspaceNavigator";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean })
     .IS_REACT_ACT_ENVIRONMENT = true;
@@ -23,6 +27,75 @@ afterEach(() => {
 });
 
 describe("WorkspaceNavigator", () => {
+    it("reorders projects around the selected drop edge", () => {
+        expect(
+            reorderProjectIds(
+                ["project-a", "project-b", "project-c"],
+                "project-a",
+                "project-c",
+                "after",
+            ),
+        ).toEqual(["project-b", "project-c", "project-a"]);
+        expect(
+            reorderProjectIds(
+                ["project-a", "project-b", "project-c"],
+                "project-c",
+                "project-a",
+                "before",
+            ),
+        ).toEqual(["project-c", "project-a", "project-b"]);
+    });
+
+    it("supports accessible project reordering with Alt and arrow keys", async () => {
+        vi.stubGlobal("comando", {
+            showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
+        });
+        const model = createModel();
+        const firstProject = model.projects[0];
+        if (!firstProject) {
+            throw new Error("Expected a project fixture.");
+        }
+        const onReorderProjects = vi.fn();
+        mount(
+            <WorkspaceNavigator
+                {...createProps({
+                    model: {
+                        ...model,
+                        projects: [
+                            ...model.projects,
+                            {
+                                ...firstProject,
+                                id: "project-b",
+                                name: "Testing",
+                                workspaces: [],
+                            },
+                        ],
+                    },
+                    onReorderProjects,
+                })}
+            />,
+        );
+        await act(async () => Promise.resolve());
+
+        const projectRows = container?.querySelectorAll<HTMLElement>(
+            ".workspace-navigator-project-row",
+        );
+        act(() => {
+            projectRows?.[1]?.dispatchEvent(
+                new KeyboardEvent("keydown", {
+                    altKey: true,
+                    bubbles: true,
+                    key: "ArrowUp",
+                }),
+            );
+        });
+
+        expect(onReorderProjects).toHaveBeenCalledWith([
+            "project-b",
+            "project-a",
+        ]);
+    });
+
     it("keeps every project's workspaces visible", async () => {
         vi.stubGlobal("comando", {
             showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
@@ -46,6 +119,10 @@ describe("WorkspaceNavigator", () => {
         expect(
             projectRow?.getAttribute("aria-expanded"),
         ).toBe("true");
+        expect(projectRow?.draggable).toBe(true);
+        expect(projectRow?.getAttribute("aria-roledescription")).toBe(
+            "draggable project",
+        );
         expect(
             container?.querySelector(".workspace-navigator-chevron"),
         ).toBeNull();
@@ -439,6 +516,7 @@ function createProps(
         onOpenFolder: vi.fn(() => Promise.resolve()),
         onOpenSettings: vi.fn(),
         onRemoveProject: vi.fn(() => Promise.resolve()),
+        onReorderProjects: vi.fn(),
         onResetWorkspace: vi.fn(() => Promise.resolve()),
         onRetry: vi.fn(() => Promise.resolve()),
         onRetryInventory: vi.fn(() => Promise.resolve()),

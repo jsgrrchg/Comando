@@ -546,6 +546,7 @@ export function WorkspaceHostApp() {
     );
     const nudgePanel = useShellStore((state) => state.nudgePanel);
     const preferredDrawer = useShellStore((state) => state.preferredDrawer);
+    const projectOrder = useShellStore((state) => state.projectOrder);
     const resizePanel = useShellStore((state) => state.resizePanel);
     const rightCollapsed = useShellStore((state) => state.rightCollapsed);
     const rightWidth = useShellStore((state) => state.rightWidth);
@@ -1547,6 +1548,7 @@ export function WorkspaceHostApp() {
                     leftCollapsed: leftCollapsedPreference,
                     leftWidth,
                     preferredDrawer,
+                    projectOrder,
                     rightCollapsed,
                     rightInspectorView: sidebarView,
                     rightWidth,
@@ -1564,6 +1566,7 @@ export function WorkspaceHostApp() {
         leftWidth,
         persistenceReady,
         preferredDrawer,
+        projectOrder,
         rightCollapsed,
         rightWidth,
         sidebarView,

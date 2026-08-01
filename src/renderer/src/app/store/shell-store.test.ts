@@ -23,6 +23,7 @@ function resetShellStore(): void {
         leftCollapsedChangedLocally: false,
         leftWidth: layout.leftWidth,
         preferredDrawer: null,
+        projectOrder: [],
         responsive: resolveShellResponsiveLayout(
             layout,
             {
@@ -59,6 +60,7 @@ describe("shell-store", () => {
             leftCollapsed: false,
             leftWidth: shellLayoutConstraints.defaultLeftWidth,
             preferredDrawer: null,
+            projectOrder: [],
             rightCollapsed: true,
             rightInspectorView: "git",
             rightWidth: 412,
@@ -89,14 +91,18 @@ describe("shell-store", () => {
         });
     });
 
-    it("persists expanded navigator projects in v3 without duplicates", () => {
+    it("persists navigator project preferences in v3 without duplicates", () => {
         useShellStore.getState().setProjectExpanded("project-a", true);
         useShellStore.getState().setProjectExpanded("project-a", true);
         useShellStore.getState().setProjectExpanded("project-b", true);
+        useShellStore
+            .getState()
+            .setProjectOrder(["project-b", "project-a", "project-b"]);
 
         const persisted = createPersistedShellState(useShellStore.getState());
         expect(persisted).toMatchObject({
             expandedProjectIds: ["project-a", "project-b"],
+            projectOrder: ["project-b", "project-a"],
             version: 3,
         });
 
