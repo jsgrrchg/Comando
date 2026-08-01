@@ -82,6 +82,7 @@ vi.mock("electron", () => ({
 vi.mock("@main/window", () => ({
     DESKTOP_TITLE_BAR_HEIGHT: 52,
     getRendererPreloadPath: () => "/tmp/preload.js",
+    installWindowOpenHandler: vi.fn(),
     loadRendererContents: vi.fn(),
 }));
 
@@ -141,6 +142,37 @@ describe("WorkspaceSurfaceManager action routing", () => {
 
         manager.setHostOverlayVisible("host-1", false);
         expect(surface.setVisible).toHaveBeenLastCalledWith(true);
+    });
+
+    it("delegates workspace shortcuts from the surface to singleton navigation", () => {
+        const manager = new WorkspaceSurfaceManager();
+        const host = createHostWindow();
+        manager.syncHost(host.window, createHostContext(), createSnapshot());
+        const surface = electronMocks.views[0];
+        if (!surface) {
+            throw new Error("Expected an active surface.");
+        }
+        const preventDefault = vi.fn();
+
+        surface.webContents.emit(
+            "before-input-event",
+            { preventDefault },
+            {
+                alt: true,
+                code: "BracketRight",
+                control: process.platform !== "darwin",
+                key: "]",
+                meta: process.platform === "darwin",
+                shift: false,
+                type: "keyDown",
+            },
+        );
+
+        expect(preventDefault).toHaveBeenCalledOnce();
+        expect(host.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceNavigationRequested,
+            "next",
+        );
     });
 
     it("recreates a surface with the same runtime owner and a new subscriber", async () => {

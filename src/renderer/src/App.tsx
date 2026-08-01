@@ -1,4 +1,6 @@
 import {
+    lazy,
+    Suspense,
     useCallback,
     useEffect,
     useEffectEvent,
@@ -153,14 +155,13 @@ import {
 import { QuickOpenFilePalette } from "./components/workspace/QuickOpenFilePalette";
 import type { WorkspacePaneRecentProject } from "./components/workspace/WorkspacePaneEmptyState";
 import {
-    closeWorkspaceContextWithConfirmation,
     closeWorkspaceTabsWithConfirmation,
 } from "./components/workspace/workspaceCloseGuard";
 import {
-    DesktopTopBar,
     type ProjectContextMenuProject,
-    type ProjectContextTabItem,
-} from "./components/DesktopTopBar";
+} from "./components/ProjectContextMenu";
+import { DesktopWindowChrome } from "./components/DesktopWindowChrome";
+import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { SidebarGitScopePicker } from "./components/sidebar/SidebarGitScopePicker";
 import { WorkspaceSurfaceProjectContextMenu } from "./components/ProjectContextMenu";
 import { WorkspaceNavigatorPanel } from "./components/workspace-navigator/WorkspaceNavigatorPanel";
@@ -171,6 +172,11 @@ import {
 } from "./components/workspace-inspector";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
+
+const EmbeddedSettingsApp = lazy(async () => {
+    const module = await import("./SettingsApp");
+    return { default: module.SettingsApp };
+});
 
 type DragState = {
     readonly side: ShellPanelSide;
@@ -489,95 +495,21 @@ export function WorkspaceHostApp() {
             ),
         [closeWorkspaceTab],
     );
-    const requestCloseWorkspaceContext = useCallback(
+    const requestCloseWorkspaceSurface = useCallback(
         async (contextKey: string) => {
             const comandoApi = getComandoApi();
-            const flushSurfaceContext = async (): Promise<boolean> => {
-                if (!isWorkspaceHostRenderer || !comandoApi) {
-                    return true;
-                }
-                const snapshot = await comandoApi.captureWorkspaceSurfaceContext(
-                    contextKey,
-                );
-                if (snapshot) {
-                    useWorkspaceStore
-                        .getState()
-                        .applySurfaceNavigationSnapshot(snapshot);
-                }
-                return true;
-            };
-
-            if (!(await flushSurfaceContext())) {
-                return;
-            }
-
-            const workspaceState = useWorkspaceStore.getState();
-            const context = workspaceState.contextsByKey[contextKey];
-            if (!context) {
-                return;
-            }
-
-            const tabsById =
-                workspaceState.activeContextKey === contextKey
-                    ? workspaceState.tabsById
-                    : context.workspace.tabsById;
-            const workspaceName =
-                useProjectsStore
-                    .getState()
-                    .projects.find((project) => project.id === context.projectId)
-                    ?.name ?? "this workspace";
-            return closeWorkspaceContextWithConfirmation(
-                {
-                    projectId: context.projectId,
-                    sessions: useAiStore.getState().sessions,
-                    tabsById,
-                    worktreeId: context.worktreeId,
-                },
-                async () => {
-                    if (!(await flushSurfaceContext())) {
-                        return;
-                    }
-                    await useWorkspaceStore.getState().closeContext(contextKey);
-                },
-                {
-                    confirm: async (summary) => {
-                        if (!comandoApi) {
-                            return false;
-                        }
-
-                        return comandoApi.confirmWorkspaceClose({
-                            activeAgentCount: summary.activeAgentCount,
-                            dirtyFileCount: summary.dirtyFileCount,
-                            workspaceName,
-                        });
-                    },
-                },
-            );
-        },
-        [],
-    );
-    const requestMoveWorkspaceContext = useCallback(
-        (contextKey: string, targetWindowId: string | null) => {
-            const workspaceState = useWorkspaceStore.getState();
-            const context = workspaceState.contextsByKey[contextKey];
-            if (!context) {
-                return Promise.resolve();
-            }
-
-            const comandoApi = getComandoApi();
             if (!comandoApi) {
-                return Promise.reject(
-                    new Error("The desktop bridge is unavailable."),
+                throw new Error("The desktop bridge is unavailable.");
+            }
+            const result = await comandoApi.closeWorkspaceSurface(contextKey);
+            if (result.status === "blocked") {
+                throw new Error(
+                    result.leases.map((lease) => lease.message).join(" "),
                 );
             }
-
-            // The main process owns the atomic persistence and live surface move.
-            return comandoApi.moveWorkspaceContext({
-                contextKey,
-                projectId: context.projectId,
-                targetWindowId,
-                worktreeId: context.worktreeId,
-            });
+            if (result.status === "failed") {
+                throw new Error(result.message);
+            }
         },
         [],
     );
@@ -653,6 +585,9 @@ export function WorkspaceHostApp() {
     const toggleLeftCollapsed = useShellStore(
         (state) => state.toggleLeftCollapsed,
     );
+    const toggleRightCollapsed = useShellStore(
+        (state) => state.toggleRightCollapsed,
+    );
     const applyAiRuntimeStatus = useAiStore(
         (state) => state.applyRuntimeStatus,
     );
@@ -671,6 +606,61 @@ export function WorkspaceHostApp() {
         (state) => state.appearance.stickyFoldersEnabled,
     );
     const workspaceNavigatorModel = useWorkspaceNavigatorModel();
+    const activateWorkspaceFromCatalog = useCallback(
+        async (scopeKey: string) => {
+            const workspace = workspaceNavigatorModel.projects
+                .flatMap((project) => project.workspaces)
+                .find((candidate) => candidate.scopeKey === scopeKey);
+            const comandoApi = getComandoApi();
+            if (!workspace || !comandoApi) {
+                throw new Error("This workspace is no longer available.");
+            }
+            const contextKey = await useWorkspaceStore
+                .getState()
+                .ensureContext(workspace.projectId, workspace.worktreeId);
+            await comandoApi.initializeWorkspaceSurfaces(
+                useWorkspaceStore.getState().getNavigationSnapshot(),
+            );
+            const result = await comandoApi.activateWorkspaceSurface(contextKey);
+            if (result.status === "failed") {
+                throw new Error(result.message);
+            }
+            if (result.status === "stale") {
+                throw new Error(
+                    "A newer workspace selection replaced this request.",
+                );
+            }
+        },
+        [workspaceNavigatorModel.projects],
+    );
+    const navigateWorkspace = useCallback(
+        (direction: "next" | "previous") => {
+            const scopeKeys = workspaceNavigatorModel.projects.flatMap(
+                (project) =>
+                    project.workspaces
+                        .filter((workspace) => !workspace.isMissing)
+                        .map((workspace) => workspace.scopeKey),
+            );
+            if (scopeKeys.length < 2) {
+                return;
+            }
+            const activeIndex = scopeKeys.indexOf(
+                workspaceNavigatorModel.activeScopeKey ?? "",
+            );
+            if (activeIndex < 0) {
+                return;
+            }
+            const targetIndex =
+                direction === "next"
+                    ? (activeIndex + 1) % scopeKeys.length
+                    : (activeIndex - 1 + scopeKeys.length) % scopeKeys.length;
+            const scopeKey = scopeKeys[targetIndex];
+            if (scopeKey) {
+                void activateWorkspaceFromCatalog(scopeKey);
+            }
+        },
+        [activateWorkspaceFromCatalog, workspaceNavigatorModel],
+    );
     const appZoomFactor = useSettingsStore(
         (state) => state.appearance.zoomFactor,
     );
@@ -708,6 +698,12 @@ export function WorkspaceHostApp() {
     const [persistenceReady, setPersistenceReady] = useState(false);
     const [workspaceSurfaceProjectMenuRequest, setWorkspaceSurfaceProjectMenuRequest] =
         useState<{ readonly id: number } | null>(null);
+    const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
+    const [settingsView, setSettingsView] = useState<{
+        readonly initialCategory?: SettingsWindowCategory;
+        readonly projectId: string | null;
+        readonly requestId: number;
+    } | null>(null);
     const pendingContextTreeRefreshesRef = useRef(
         new Map<string, Promise<void>>(),
     );
@@ -1231,7 +1227,7 @@ export function WorkspaceHostApp() {
             return;
         }
 
-        const unsubscribe = comandoApi.onProjectWindowRequested((payload) => {
+        const unsubscribe = comandoApi.onProjectWorkspaceRequested((payload) => {
             void (async () => {
                 const requestedWorktreeId =
                     payload.worktreeId !== undefined
@@ -1240,9 +1236,13 @@ export function WorkspaceHostApp() {
                               payload.projectId
                           ] ?? null);
 
-                await useWorkspaceStore
+                const contextKey = await useWorkspaceStore
                     .getState()
-                    .openContext(payload.projectId, requestedWorktreeId);
+                    .ensureContext(payload.projectId, requestedWorktreeId);
+                await comandoApi.initializeWorkspaceSurfaces(
+                    useWorkspaceStore.getState().getNavigationSnapshot(),
+                );
+                await comandoApi.activateWorkspaceSurface(contextKey);
 
                 if (payload.branchName !== undefined) {
                     selectGitBranch(
@@ -1381,10 +1381,97 @@ export function WorkspaceHostApp() {
             return;
         }
 
-        return comandoApi.onSidebarToggleRequested(() => {
+        return comandoApi.onNavigatorToggleRequested(() => {
             toggleLeftCollapsed();
         });
     }, [toggleLeftCollapsed]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi) {
+            return;
+        }
+
+        return comandoApi.onInspectorToggleRequested(() => {
+            toggleRightCollapsed();
+        });
+    }, [toggleRightCollapsed]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi || !isWorkspaceHostRenderer) {
+            return;
+        }
+
+        return comandoApi.onInternalNavigationRequested((rawUrl) => {
+            try {
+                const url = new URL(rawUrl);
+                if (url.protocol !== "comando:") {
+                    return;
+                }
+                if (url.hostname === "settings") {
+                    const category = url.searchParams.get("category");
+                    void comandoApi.openSettingsWindow({
+                        initialCategory: isSettingsWindowCategory(category)
+                            ? category
+                            : undefined,
+                        projectId: activeProjectId,
+                    });
+                    return;
+                }
+                if (url.hostname === "workspace") {
+                    const projectId = url.searchParams.get("projectId");
+                    if (!projectId) {
+                        return;
+                    }
+                    void comandoApi.activateProjectWorkspace({
+                        branchName: url.searchParams.get("branch"),
+                        projectId,
+                        worktreeId: url.searchParams.get("worktreeId"),
+                    });
+                }
+            } catch {
+                // Invalid internal URLs are rejected without navigating the host renderer.
+            }
+        });
+    }, [activeProjectId]);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi || !isWorkspaceHostRenderer) {
+            return;
+        }
+
+        return comandoApi.onWorkspaceSwitcherRequested(() => {
+            setSettingsView(null);
+            setWorkspaceSwitcherOpen(true);
+        });
+    }, []);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi || !isWorkspaceHostRenderer) {
+            return;
+        }
+
+        return comandoApi.onSettingsViewRequested((request) => {
+            setWorkspaceSwitcherOpen(false);
+            setSettingsView((current) => ({
+                initialCategory: request.initialCategory,
+                projectId: request.projectId,
+                requestId: (current?.requestId ?? 0) + 1,
+            }));
+        });
+    }, []);
+
+    useEffect(() => {
+        const comandoApi = getComandoApi();
+        if (!comandoApi || !isWorkspaceHostRenderer) {
+            return;
+        }
+
+        return comandoApi.onWorkspaceNavigationRequested(navigateWorkspace);
+    }, [navigateWorkspace]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -1415,6 +1502,20 @@ export function WorkspaceHostApp() {
             unsubscribe();
         };
     }, [reopenLastClosedTab]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        void getComandoApi()?.setWorkspaceHostOverlayVisible(
+            settingsView !== null,
+        );
+        return () => {
+            if (settingsView !== null) {
+                void getComandoApi()?.setWorkspaceHostOverlayVisible(false);
+            }
+        };
+    }, [settingsView]);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -1863,52 +1964,8 @@ export function WorkspaceHostApp() {
     const activeProject =
         projects.find((project) => project.id === activeProjectId) ?? null;
     useEffect(() => {
-        document.title = activeProject
-            ? `${activeProject.name} — Comando`
-            : (bootstrap?.app.windowTitle ?? "Comando");
-    }, [activeProject, bootstrap?.app.windowTitle]);
-    const projectContextTabs = useMemo<readonly ProjectContextTabItem[]>(
-        () =>
-            openWorkspaceContextKeys.flatMap((contextKey) => {
-                const context = workspaceContextsByKey[contextKey];
-                const project = context
-                    ? projects.find((entry) => entry.id === context.projectId)
-                    : null;
-                if (!context) {
-                    return [];
-                }
-
-                const worktrees =
-                    gitWorktreesByProject[context.projectId] ?? [];
-                const worktree = worktrees.find((entry) =>
-                    areGitWorktreeIdsEquivalent(
-                        context.projectId,
-                        context.worktreeId,
-                        entry.isPrimary ? null : entry.id,
-                    ),
-                );
-                return [
-                    {
-                        fullPath: worktree?.rootPath ?? project?.rootPath ?? null,
-                        key: context.key,
-                        projectId: context.projectId,
-                        projectName: project?.name ?? "Missing project",
-                        worktreeId: context.worktreeId,
-                        worktreeLabel: worktree
-                            ? getWorktreeDisplayLabel(worktree)
-                            : context.worktreeId
-                              ? "Missing worktree"
-                              : "Main checkout",
-                    },
-                ];
-            }),
-        [
-            gitWorktreesByProject,
-            openWorkspaceContextKeys,
-            projects,
-            workspaceContextsByKey,
-        ],
-    );
+        document.title = bootstrap?.app.windowTitle ?? "Comando";
+    }, [bootstrap?.app.windowTitle]);
     const workspaceRecentProjects = useMemo<
         readonly WorkspacePaneRecentProject[]
     >(() => {
@@ -4254,14 +4311,22 @@ export function WorkspaceHostApp() {
             }
 
             event.preventDefault();
-            void requestCloseWorkspaceContext(workspaceActiveContextKey);
+            void requestCloseWorkspaceSurface(workspaceActiveContextKey).catch(
+                (error) => {
+                    window.alert(
+                        error instanceof Error
+                            ? error.message
+                            : "Could not close this workspace.",
+                    );
+                },
+            );
         };
 
         window.addEventListener("keydown", handleKeyDown, true);
         return () => {
             window.removeEventListener("keydown", handleKeyDown, true);
         };
-    }, [requestCloseWorkspaceContext, workspaceActiveContextKey]);
+    }, [requestCloseWorkspaceSurface, workspaceActiveContextKey]);
 
     useEffect(() => {
         const isSupportedPlatform =
@@ -4288,30 +4353,13 @@ export function WorkspaceHostApp() {
                     : event.code === "BracketLeft"
                       ? "previous"
                       : null;
-            if (!direction || openWorkspaceContextKeys.length < 2) {
-                return;
-            }
-
-            const activeIndex = openWorkspaceContextKeys.indexOf(
-                workspaceActiveContextKey ?? "",
-            );
-            if (activeIndex < 0) {
-                return;
-            }
-
-            const targetIndex =
-                direction === "next"
-                    ? (activeIndex + 1) % openWorkspaceContextKeys.length
-                    : (activeIndex - 1 + openWorkspaceContextKeys.length) %
-                      openWorkspaceContextKeys.length;
-            const targetContextKey = openWorkspaceContextKeys[targetIndex];
-            if (!targetContextKey) {
+            if (!direction) {
                 return;
             }
 
             event.preventDefault();
             event.stopPropagation();
-            void useWorkspaceStore.getState().activateContext(targetContextKey);
+            navigateWorkspace(direction);
         };
 
         window.addEventListener("keydown", handleKeyDown, true);
@@ -4321,8 +4369,7 @@ export function WorkspaceHostApp() {
     }, [
         bootstrap?.platform,
         isMac,
-        openWorkspaceContextKeys,
-        workspaceActiveContextKey,
+        navigateWorkspace,
     ]);
 
     useEffect(() => {
@@ -4622,40 +4669,6 @@ export function WorkspaceHostApp() {
         })();
     };
 
-    const activateWorkspaceContext = (contextKey: string) => {
-        if (isWorkspaceHostRenderer) {
-            void getComandoApi()?.activateWorkspaceSurface(contextKey);
-            return;
-        }
-        void useWorkspaceStore.getState().activateContext(contextKey);
-    };
-    const activateWorkspaceFromCatalog = useCallback(
-        async (scopeKey: string) => {
-            const workspace = workspaceNavigatorModel.projects
-                .flatMap((project) => project.workspaces)
-                .find((candidate) => candidate.scopeKey === scopeKey);
-            const comandoApi = getComandoApi();
-            if (!workspace || !comandoApi) {
-                throw new Error("This workspace is no longer available.");
-            }
-            const contextKey = await useWorkspaceStore
-                .getState()
-                .ensureContext(workspace.projectId, workspace.worktreeId);
-            await comandoApi.initializeWorkspaceSurfaces(
-                useWorkspaceStore.getState().getNavigationSnapshot(),
-            );
-            const result = await comandoApi.activateWorkspaceSurface(contextKey);
-            if (result.status === "failed") {
-                throw new Error(result.message);
-            }
-            if (result.status === "stale") {
-                throw new Error(
-                    "A newer workspace selection replaced this request.",
-                );
-            }
-        },
-        [workspaceNavigatorModel.projects],
-    );
     const workspaceSwitcherEntries = useMemo(
         () =>
             workspaceNavigatorModel.projects.flatMap((project) =>
@@ -4678,51 +4691,31 @@ export function WorkspaceHostApp() {
             ),
         [workspaceNavigatorModel],
     );
-    const desktopTopBar = (
-        <DesktopTopBar
-            activeContextKey={workspaceActiveContextKey}
-            contexts={projectContextTabs}
-            leftSidebarCollapsed={leftCollapsed}
-            menuProjects={projectContextMenuProjects}
-            onOpenProjectMenu={
-                isWorkspaceHostRenderer && workspaceActiveContextKey
-                    ? () => {
-                          void getComandoApi()?.openWorkspaceSurfaceProjectMenu();
-                      }
-                    : undefined
+    const desktopWindowChrome = (
+        <DesktopWindowChrome
+            inspectorControlsId={
+                shellResponsive.right.overlay
+                    ? "workspace-inspector-drawer"
+                    : "workspace-inspector"
             }
-            onActivateContext={activateWorkspaceContext}
-            onActivateWorkspace={activateWorkspaceFromCatalog}
-            onCloneRepository={async (repositoryUrl) => {
-                const projectIds = await cloneRepository(repositoryUrl);
-                for (const projectId of projectIds) {
-                    await useWorkspaceStore.getState().openContext(projectId);
-                }
-                return projectIds.length > 0;
-            }}
-            onCloseContext={(contextKey) => {
-                void requestCloseWorkspaceContext(contextKey);
-            }}
-            onMoveContext={requestMoveWorkspaceContext}
-            onOpenProject={handleOpenProject}
-            onOpenProjects={handleOpenProjects}
-            onOpenSettings={(initialCategory) =>
-                openSettingsWindow(initialCategory)
+            inspectorExpanded={!shellResponsive.right.collapsed}
+            navigatorControlsId={
+                shellResponsive.left.overlay
+                    ? "workspace-navigator-drawer"
+                    : "workspace-navigator"
             }
-            onOpenWorktree={(projectId, worktreeId) => {
-                void useWorkspaceStore
-                    .getState()
-                    .openContext(projectId, worktreeId);
-            }}
-            onReorderContext={(contextKey, targetIndex) => {
-                void useWorkspaceStore
-                    .getState()
-                    .reorderContext(contextKey, targetIndex);
-            }}
-            onToggleLeftSidebar={toggleLeftCollapsed}
+            navigatorExpanded={!shellResponsive.left.collapsed}
+            onToggleInspector={toggleRightCollapsed}
+            onToggleNavigator={toggleLeftCollapsed}
             platform={bootstrap?.platform ?? null}
-            settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
-            workspaceSwitcherEntries={workspaceSwitcherEntries}
+        />
+    );
+    const workspaceSwitcher = (
+        <WorkspaceSwitcher
+            entries={workspaceSwitcherEntries}
+            onActivate={activateWorkspaceFromCatalog}
+            onClose={() => setWorkspaceSwitcherOpen(false)}
+            open={workspaceSwitcherOpen}
         />
     );
 
@@ -4732,7 +4725,27 @@ export function WorkspaceHostApp() {
                 className="relative flex h-screen min-h-0 flex-col text-text-primary"
                 data-platform={bootstrap?.platform ?? undefined}
             >
-                <div ref={workspaceHostTitleBarRef}>{desktopTopBar}</div>
+                <div ref={workspaceHostTitleBarRef}>{desktopWindowChrome}</div>
+                {workspaceSwitcher}
+                {settingsView ? (
+                    <main className="min-h-0 flex-1 overflow-hidden bg-bg-primary">
+                        <Suspense
+                            fallback={
+                                <div className="grid h-full place-items-center text-xs text-text-secondary">
+                                    Loading settings…
+                                </div>
+                            }
+                        >
+                            <EmbeddedSettingsApp
+                                embedded
+                                initialCategory={settingsView.initialCategory}
+                                initialCategoryRequestId={settingsView.requestId}
+                                onClose={() => setSettingsView(null)}
+                                projectId={settingsView.projectId}
+                            />
+                        </Suspense>
+                    </main>
+                ) : (
                 <div
                     className="relative grid min-h-0 flex-1"
                     style={{ gridTemplateColumns }}
@@ -4741,6 +4754,11 @@ export function WorkspaceHostApp() {
                         aria-hidden={!leftPanelPersistent}
                         className="app-sidebar flex min-h-0 flex-col"
                         aria-label="Workspace navigator"
+                        id={
+                            shellResponsive.left.overlay
+                                ? undefined
+                                : "workspace-navigator"
+                        }
                         style={
                             leftPanelPersistent
                                 ? undefined
@@ -4864,6 +4882,11 @@ export function WorkspaceHostApp() {
                         className="app-sidebar min-h-0"
                         data-active={activeSurface === "inspector"}
                         data-shell-panel="right"
+                        id={
+                            shellResponsive.right.overlay
+                                ? undefined
+                                : "workspace-inspector"
+                        }
                         onClick={() => focusSurface("inspector")}
                         onFocus={() => focusSurface("inspector")}
                         style={
@@ -4876,35 +4899,49 @@ export function WorkspaceHostApp() {
                         {rightPanelPersistent && workspaceInspectorContent}
                     </aside>
 
-                    {shellResponsive.left.overlay && !leftCollapsed ? (
+                    {shellResponsive.left.overlay ? (
                         <aside
                             aria-label="Workspace navigator"
+                            aria-hidden={leftCollapsed}
                             className="app-sidebar absolute inset-y-0 left-0 z-20 flex min-h-0 flex-col overflow-hidden shadow-xl"
                             data-shell-overlay="left"
+                            id="workspace-navigator-drawer"
                             onClick={() => focusSurface("navigator")}
                             onFocus={() => focusSurface("navigator")}
-                            style={{ width: shellResponsive.left.width }}
-                            tabIndex={0}
+                            style={
+                                leftCollapsed
+                                    ? { display: "none" }
+                                    : { width: shellResponsive.left.width }
+                            }
+                            tabIndex={leftCollapsed ? -1 : 0}
                         >
-                            {leftSidebarContent}
+                            {!leftCollapsed && leftSidebarContent}
                         </aside>
                     ) : null}
-                    {shellResponsive.right.overlay &&
-                    !shellResponsive.right.collapsed ? (
+                    {shellResponsive.right.overlay ? (
                         <aside
                             aria-label="Workspace inspector"
+                            aria-hidden={shellResponsive.right.collapsed}
                             className="app-sidebar absolute inset-y-0 right-0 z-20 min-h-0 overflow-hidden shadow-xl"
                             data-shell-overlay="right"
+                            id="workspace-inspector-drawer"
                             onClick={() => focusSurface("inspector")}
                             onFocus={() => focusSurface("inspector")}
-                            style={{ width: shellResponsive.right.width }}
-                            tabIndex={0}
+                            style={
+                                shellResponsive.right.collapsed
+                                    ? { display: "none" }
+                                    : { width: shellResponsive.right.width }
+                            }
+                            tabIndex={
+                                shellResponsive.right.collapsed ? -1 : 0
+                            }
                         >
-                            {workspaceInspectorContent}
+                            {!shellResponsive.right.collapsed &&
+                                workspaceInspectorContent}
                         </aside>
                     ) : null}
                 </div>
-
+                )}
             </div>
         );
     }
@@ -4985,7 +5022,8 @@ export function WorkspaceHostApp() {
         >
             <div className="relative h-screen">
                 <div className="flex h-full flex-col overflow-hidden">
-                    {desktopTopBar}
+                    {desktopWindowChrome}
+                    {workspaceSwitcher}
                     <div
                         className="relative grid min-h-0 flex-1"
                         style={{
@@ -4999,6 +5037,11 @@ export function WorkspaceHostApp() {
                             aria-label="Workspace navigator"
                             aria-hidden={!leftPanelPersistent}
                             className="app-sidebar flex min-h-0 flex-col"
+                            id={
+                                shellResponsive.left.overlay
+                                    ? undefined
+                                    : "workspace-navigator"
+                            }
                             style={
                                 leftPanelPersistent
                                     ? undefined
@@ -5141,6 +5184,11 @@ export function WorkspaceHostApp() {
                             className="app-sidebar min-h-0"
                             data-active={activeSurface === "inspector"}
                             data-shell-panel="right"
+                            id={
+                                shellResponsive.right.overlay
+                                    ? undefined
+                                    : "workspace-inspector"
+                            }
                             onClick={() => focusSurface("inspector")}
                             onFocus={() => focusSurface("inspector")}
                             style={
@@ -5153,31 +5201,48 @@ export function WorkspaceHostApp() {
                             {rightPanelPersistent && workspaceInspectorContent}
                         </aside>
 
-                        {shellResponsive.left.overlay && !leftCollapsed ? (
+                        {shellResponsive.left.overlay ? (
                             <aside
                                 aria-label="Workspace navigator"
+                                aria-hidden={leftCollapsed}
                                 className="app-sidebar absolute inset-y-0 left-0 z-20 flex min-h-0 flex-col overflow-hidden shadow-xl"
                                 data-shell-overlay="left"
+                                id="workspace-navigator-drawer"
                                 onClick={() => focusSurface("navigator")}
                                 onFocus={() => focusSurface("navigator")}
-                                style={{ width: shellResponsive.left.width }}
-                                tabIndex={0}
+                                style={
+                                    leftCollapsed
+                                        ? { display: "none" }
+                                        : { width: shellResponsive.left.width }
+                                }
+                                tabIndex={leftCollapsed ? -1 : 0}
                             >
-                                {leftSidebarContent}
+                                {!leftCollapsed && leftSidebarContent}
                             </aside>
                         ) : null}
-                        {shellResponsive.right.overlay &&
-                        !shellResponsive.right.collapsed ? (
+                        {shellResponsive.right.overlay ? (
                             <aside
                                 aria-label="Workspace inspector"
+                                aria-hidden={shellResponsive.right.collapsed}
                                 className="app-sidebar absolute inset-y-0 right-0 z-20 min-h-0 overflow-hidden shadow-xl"
                                 data-shell-overlay="right"
+                                id="workspace-inspector-drawer"
                                 onClick={() => focusSurface("inspector")}
                                 onFocus={() => focusSurface("inspector")}
-                                style={{ width: shellResponsive.right.width }}
-                                tabIndex={0}
+                                style={
+                                    shellResponsive.right.collapsed
+                                        ? { display: "none" }
+                                        : {
+                                              width: shellResponsive.right
+                                                  .width,
+                                          }
+                                }
+                                tabIndex={
+                                    shellResponsive.right.collapsed ? -1 : 0
+                                }
                             >
-                                {workspaceInspectorContent}
+                                {!shellResponsive.right.collapsed &&
+                                    workspaceInspectorContent}
                             </aside>
                         ) : null}
                     </div>
@@ -5514,6 +5579,23 @@ function getSettingsUpdateMenuLabel(state: AppUpdateState): string | null {
     }
 
     return null;
+}
+
+function isSettingsWindowCategory(
+    value: string | null,
+): value is SettingsWindowCategory {
+    return (
+        value === "appearance" ||
+        value === "editor" ||
+        value === "terminal" ||
+        value === "projects" ||
+        value === "github" ||
+        value === "ai" ||
+        value === "privacy" ||
+        value === "shortcuts" ||
+        value === "runtimes" ||
+        value === "updates"
+    );
 }
 
 function normalizeFileTreeClipboardWorktreeId(

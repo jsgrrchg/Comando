@@ -1,5 +1,4 @@
 import type {
-    MoveWorkspaceContextInput,
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
@@ -14,6 +13,13 @@ import type {
     WorkspaceSurfaceManager,
     WorkspaceSurfaceTransferResult,
 } from "./surface-manager";
+
+interface MoveWorkspaceContextInput {
+    readonly contextKey: string;
+    readonly projectId: string;
+    readonly targetWindowId: string | null;
+    readonly worktreeId: string | null;
+}
 
 interface WorkspaceMoveManager {
     getHostSnapshotForWindow(

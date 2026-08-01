@@ -69,22 +69,42 @@ import { openExternalUrl } from "./app/utils/external-url";
 const AI_PROVIDER_RUNTIME_IDS = AI_PROVIDER_IDS;
 const RELEASE_NOTES_URL = "https://github.com/jsgrrchg/Comando/releases/latest";
 
-export function SettingsApp() {
+export interface SettingsAppProps {
+    readonly embedded?: boolean;
+    readonly initialCategory?: SettingsWindowProps["initialCategory"];
+    readonly initialCategoryRequestId?: number;
+    readonly onClose?: () => void;
+    readonly projectId?: string | null;
+}
+
+export function SettingsApp({
+    embedded = false,
+    initialCategory: requestedInitialCategory,
+    initialCategoryRequestId = 0,
+    onClose,
+    projectId,
+}: SettingsAppProps = {}) {
     const runtimeProjectId = useMemo(() => {
+        if (projectId !== undefined) {
+            return projectId;
+        }
         const params = new URLSearchParams(window.location.search);
         return params.get("projectId");
-    }, []);
+    }, [projectId]);
     const initialCategory = useMemo(() => {
+        if (requestedInitialCategory) {
+            return requestedInitialCategory;
+        }
         const params = new URLSearchParams(window.location.search);
         const value = params.get("category");
         return isSettingsWindowCategory(value) ? value : undefined;
-    }, []);
+    }, [requestedInitialCategory]);
     const [requestedCategory, setRequestedCategory] = useState<{
         readonly category: SettingsWindowProps["initialCategory"];
         readonly requestId: number;
     }>({
         category: initialCategory,
-        requestId: 0,
+        requestId: initialCategoryRequestId,
     });
     const [appAppearance, setAppAppearance] = useState<AppAppearanceSettings>(
         getDefaultAppAppearance(),
@@ -171,6 +191,13 @@ export function SettingsApp() {
     const latestSettingsRevisionRef = useRef(0);
 
     useResolvedAppearance();
+
+    useEffect(() => {
+        setRequestedCategory({
+            category: initialCategory,
+            requestId: initialCategoryRequestId,
+        });
+    }, [initialCategory, initialCategoryRequestId]);
 
     useEffect(() => {
         if (!window.comando) {
@@ -864,8 +891,10 @@ export function SettingsApp() {
 
     return (
         <SettingsWindow
+            embedded={embedded}
             initialCategory={requestedCategory.category}
             initialCategoryRequestId={requestedCategory.requestId}
+            onClose={onClose}
             aiChat={{
                 chatFontFamily: aiChat.chatFontFamily,
                 chatFontFamilies: chatFontFamilies,

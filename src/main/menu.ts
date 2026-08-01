@@ -8,15 +8,14 @@ interface InstallApplicationMenuOptions {
     readonly adjustAppZoom: (
         direction: "decrease" | "increase" | "reset",
     ) => void;
-    readonly closeFocusedWindowSurface: () => void;
+    readonly closeActiveTab: () => void;
+    readonly closeActiveWorkspace: () => void;
     readonly getFocusedMainWindowContext: () => WindowContextSnapshot | null;
-    readonly openNewMainWindow: (
-        projectId?: string | null,
-    ) => Promise<void> | void;
     readonly openWorkspaceSwitcher: () => void;
     readonly reopenLastClosedTab: () => void;
-    readonly toggleSidebar: () => void;
-    readonly openSettingsWindow: (
+    readonly toggleInspector: () => void;
+    readonly toggleNavigator: () => void;
+    readonly openSettingsView: (
         projectId: string | null,
     ) => Promise<void> | void;
 }
@@ -33,14 +32,8 @@ export function installApplicationMenu(
             Menu.buildFromTemplate([
                 {
                     click: () => {
-                        void options.openNewMainWindow(null);
-                    },
-                    label: "New Window",
-                },
-                {
-                    click: () => {
                         const context = options.getFocusedMainWindowContext();
-                        void options.openSettingsWindow(
+                        void options.openSettingsView(
                             context?.projectId ?? null,
                         );
                     },
@@ -51,20 +44,13 @@ export function installApplicationMenu(
     }
 }
 
-function buildMenuTemplate(
+export function buildMenuTemplate(
     options: InstallApplicationMenuOptions,
 ): MenuItemConstructorOptions[] {
     const isMac = process.platform === "darwin";
     const fileMenu: MenuItemConstructorOptions = {
         label: "File",
         submenu: [
-            {
-                accelerator: "CmdOrCtrl+Alt+Shift+N",
-                click: () => {
-                    void options.openNewMainWindow(null);
-                },
-                label: "New Window",
-            },
             {
                 accelerator: "CmdOrCtrl+Shift+O",
                 click: () => {
@@ -77,7 +63,7 @@ function buildMenuTemplate(
                 accelerator: "CmdOrCtrl+,",
                 click: () => {
                     const context = options.getFocusedMainWindowContext();
-                    void options.openSettingsWindow(context?.projectId ?? null);
+                    void options.openSettingsView(context?.projectId ?? null);
                 },
                 label: "Settings",
             },
@@ -89,11 +75,18 @@ function buildMenuTemplate(
                 },
                 label: "Reopen Closed Tab",
             },
+            {
+                accelerator: "CmdOrCtrl+Shift+W",
+                click: () => {
+                    options.closeActiveWorkspace();
+                },
+                label: "Close Workspace",
+            },
             isMac
                 ? {
                       accelerator: "CmdOrCtrl+W",
                       click: () => {
-                          options.closeFocusedWindowSurface();
+                          options.closeActiveTab();
                       },
                       label: "Close",
                   }
@@ -122,9 +115,16 @@ function buildMenuTemplate(
             {
                 accelerator: "CmdOrCtrl+B",
                 click: () => {
-                    options.toggleSidebar();
+                    options.toggleNavigator();
                 },
-                label: "Toggle Sidebar",
+                label: "Toggle Navigator",
+            },
+            {
+                accelerator: "CmdOrCtrl+Shift+B",
+                click: () => {
+                    options.toggleInspector();
+                },
+                label: "Toggle Inspector",
             },
             { type: "separator" },
             {

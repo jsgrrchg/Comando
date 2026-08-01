@@ -1193,7 +1193,7 @@ export function SidebarGitScopePicker({
         setFocusIndex(-1);
     }, [query]);
 
-    const handleOpenWorktreeInNewTab = useCallback(
+    const handleActivateWorktreeWorkspace = useCallback(
         async (nextWorktreeId: string | null) => {
             if (!projectId || isBusy) {
                 return;
@@ -1232,7 +1232,7 @@ export function SidebarGitScopePicker({
                 setActionError(
                     error instanceof Error
                         ? error.message
-                        : "Could not open this worktree in a new tab.",
+                        : "Could not activate this workspace.",
                 );
             } finally {
                 setIsBusy(false);
@@ -1281,7 +1281,7 @@ export function SidebarGitScopePicker({
                     worktreeId ?? snapshot?.currentWorktreeId ?? null,
                 )
             ) {
-                await handleOpenWorktreeInNewTab(linkedWorktree.id);
+                await handleActivateWorktreeWorkspace(linkedWorktree.id);
                 return;
             }
 
@@ -1339,7 +1339,7 @@ export function SidebarGitScopePicker({
         [
             branches,
             checkoutBranch,
-            handleOpenWorktreeInNewTab,
+            handleActivateWorktreeWorkspace,
             isBusy,
             projectId,
             refreshProjectTree,
@@ -1634,35 +1634,6 @@ export function SidebarGitScopePicker({
         ],
     );
 
-    const handleOpenWorktreeInNewWindow = useCallback(
-        async (targetWorktree: GitWorktreeSummary) => {
-            if (!projectId || isBusy) {
-                return;
-            }
-
-            setActionError(null);
-            setIsBusy(true);
-
-            try {
-                await getComandoApi().openProjectWindow({
-                    projectId,
-                    worktreeId: targetWorktree.id,
-                });
-                setIsOpen(false);
-                setQuery("");
-            } catch (error) {
-                setActionError(
-                    error instanceof Error
-                        ? error.message
-                        : "Could not open this worktree in a new window.",
-                );
-            } finally {
-                setIsBusy(false);
-            }
-        },
-        [isBusy, projectId],
-    );
-
     const handleRevealWorktreeInFinder = useCallback(
         async (targetWorktree: GitWorktreeSummary) => {
             if (!projectId) {
@@ -1896,9 +1867,9 @@ export function SidebarGitScopePicker({
             if (linkedWorktree) {
                 entries.push({
                     action: () =>
-                        void handleOpenWorktreeInNewWindow(linkedWorktree),
+                        void handleActivateWorktreeWorkspace(linkedWorktree.id),
                     disabled: isBusy,
-                    label: "Open Worktree in New Window",
+                    label: "Activate Worktree",
                 });
             }
 
@@ -1944,15 +1915,9 @@ export function SidebarGitScopePicker({
         return [
             {
                 action: () =>
-                    void handleOpenWorktreeInNewTab(row.worktree.id),
+                    void handleActivateWorktreeWorkspace(row.worktree.id),
                 disabled: isBusy || row.isActive,
-                label: "Open in New Tab",
-            },
-            {
-                action: () =>
-                    void handleOpenWorktreeInNewWindow(row.worktree),
-                disabled: isBusy,
-                label: "Open in New Window",
+                label: "Activate Workspace",
             },
             {
                 action: () => void handleRevealWorktreeInFinder(row.worktree),
@@ -1976,11 +1941,10 @@ export function SidebarGitScopePicker({
         handleCreateWorktreeFromBranch,
         handleDeleteLocalBranch,
         handleDeleteRemoteBranch,
-        handleOpenWorktreeInNewWindow,
+        handleActivateWorktreeWorkspace,
         handleRemoveWorktree,
         handleRevealWorktreeInFinder,
         handleSelectBranch,
-        handleOpenWorktreeInNewTab,
         isBusy,
         itemContextMenu,
         openBranchCreationForm,
@@ -2028,14 +1992,14 @@ export function SidebarGitScopePicker({
         } else if (item.kind === "branch") {
             void handleSelectBranch(item.branch);
         } else {
-            void handleOpenWorktreeInNewTab(item.worktree.id);
+            void handleActivateWorktreeWorkspace(item.worktree.id);
         }
     }, [
         defaultBranchCreationBase,
         flatItems,
         focusIndex,
         handleSelectBranch,
-        handleOpenWorktreeInNewTab,
+        handleActivateWorktreeWorkspace,
         openBranchCreationForm,
     ]);
 
@@ -2314,7 +2278,7 @@ export function SidebarGitScopePicker({
                             isBusy
                                 ? undefined
                                 : () =>
-                                      void handleOpenWorktreeInNewTab(
+                                      void handleActivateWorktreeWorkspace(
                                           row.worktree.id,
                                       )
                         }
@@ -2342,7 +2306,7 @@ export function SidebarGitScopePicker({
             handleBranchContextMenu,
             handleMenuTriggerClick,
             handleSelectBranch,
-            handleOpenWorktreeInNewTab,
+            handleActivateWorktreeWorkspace,
             handleWorktreeContextMenu,
             isBusy,
             toggleSection,

@@ -41,10 +41,6 @@ interface DesktopTopBarProps {
     readonly onActivateWorkspace: (scopeKey: string) => Promise<void>;
     readonly onCloneRepository: (repositoryUrl: string) => Promise<boolean>;
     readonly onCloseContext: (contextKey: string) => void;
-    readonly onMoveContext: (
-        contextKey: string,
-        targetWindowId: string | null,
-    ) => Promise<void> | void;
     readonly onOpenProject: (projectId: string) => void;
     readonly onOpenProjects: () => void;
     readonly onOpenSettings: (initialCategory?: "updates") => void;
@@ -69,7 +65,6 @@ export function DesktopTopBar({
     onActivateWorkspace,
     onCloneRepository,
     onCloseContext,
-    onMoveContext,
     onOpenProject,
     onOpenProjects,
     onOpenSettings,
@@ -246,7 +241,6 @@ export function DesktopTopBar({
                                 void openWorkspaceContextMenu({
                                     context,
                                     onCloseContext,
-                                    onMoveContext,
                                     x: event.clientX,
                                     y: event.clientY,
                                 });
@@ -415,10 +409,6 @@ export function DesktopTopBar({
 async function openWorkspaceContextMenu(input: {
     readonly context: ProjectContextTabItem;
     readonly onCloseContext: (contextKey: string) => void;
-    readonly onMoveContext: (
-        contextKey: string,
-        targetWindowId: string | null,
-    ) => Promise<void> | void;
     readonly x: number;
     readonly y: number;
 }): Promise<void> {
@@ -436,21 +426,6 @@ async function openWorkspaceContextMenu(input: {
             await writeClipboardText(input.context.fullPath);
         } catch {
             window.alert("Could not copy the project path.");
-        }
-        return;
-    }
-    if (action?.type === "move") {
-        try {
-            await input.onMoveContext(
-                input.context.key,
-                action.targetWindowId,
-            );
-        } catch (error) {
-            window.alert(
-                error instanceof Error
-                    ? error.message
-                    : "Could not move the workspace.",
-            );
         }
         return;
     }

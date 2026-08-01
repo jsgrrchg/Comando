@@ -42,6 +42,7 @@ import type {
 import {
     DESKTOP_TITLE_BAR_HEIGHT,
     getRendererPreloadPath,
+    installWindowOpenHandler,
     loadRendererContents,
 } from "@main/window";
 import { windowRegistry } from "@main/windows/registry";
@@ -1552,6 +1553,14 @@ export class WorkspaceSurfaceManager {
         });
         const webContents = view.webContents;
         const webContentsId = webContents.id;
+        installWindowOpenHandler(webContents, (url) => {
+            if (!host.hostWindow.webContents.isDestroyed()) {
+                host.hostWindow.webContents.send(
+                    IPC_EVENTS.internalNavigationRequested,
+                    url,
+                );
+            }
+        });
         view.setVisible(false);
         webContents.setZoomFactor(
             host.hostWindow.webContents.getZoomFactor(),
@@ -1628,17 +1637,11 @@ export class WorkspaceSurfaceManager {
             if (!currentHost) {
                 return;
             }
-            const nextContextKey = getAdjacentContextKey(
-                currentHost.snapshot.openContextKeys,
-                currentHost.activeContextKey,
+            event.preventDefault();
+            currentHost.hostWindow.webContents.send(
+                IPC_EVENTS.workspaceNavigationRequested,
                 direction,
             );
-            if (!nextContextKey) {
-                return;
-            }
-
-            event.preventDefault();
-            void this.activate(currentHost.hostWindowId, nextContextKey);
         });
         webContents.once("did-finish-load", () => {
             if (!webContents.isDestroyed() && surface.runtimeOwnerId) {
@@ -2150,25 +2153,6 @@ function resolveWorkspaceSurfaceSwitchDirection(
         return "previous";
     }
     return null;
-}
-
-function getAdjacentContextKey(
-    contextKeys: readonly string[],
-    activeContextKey: string | null,
-    direction: "next" | "previous",
-): string | null {
-    if (contextKeys.length < 2 || !activeContextKey) {
-        return null;
-    }
-    const activeIndex = contextKeys.indexOf(activeContextKey);
-    if (activeIndex < 0) {
-        return null;
-    }
-    const targetIndex =
-        direction === "next"
-            ? (activeIndex + 1) % contextKeys.length
-            : (activeIndex - 1 + contextKeys.length) % contextKeys.length;
-    return contextKeys[targetIndex] ?? null;
 }
 
 function toSurfaceSnapshot(

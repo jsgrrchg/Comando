@@ -30,7 +30,7 @@ export const IPC_CHANNELS = {
     openExternalUrl: "app:open-external-url",
     openGeneratedImage: "app:open-generated-image",
     revealGeneratedImage: "app:reveal-generated-image",
-    openProjectWindow: "app:open-project-window",
+    activateProjectWorkspace: "app:activate-project-workspace",
     confirmWorkspaceClose: "workspace:confirm-close",
     checkCommandAvailability: "app:check-command-availability",
     readClaudeCodeTranscript: "app:read-claude-code-transcript",
@@ -151,8 +151,6 @@ export const IPC_CHANNELS = {
     closeWorkspaceSurface: "workspace:close-surface",
     getWorkspaceSurfaceDiagnostics: "workspace:get-surface-diagnostics",
     setWorkspaceHostOverlayVisible: "workspace:set-host-overlay-visible",
-    listOpenWorkspaceLocations: "workspace:list-open-locations",
-    activateWorkspaceLocation: "workspace:activate-location",
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
     dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
     dispatchWorkspaceSurfaceAction: "workspace:dispatch-surface-action",
@@ -170,7 +168,6 @@ export const IPC_CHANNELS = {
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
     openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
     showWorkspaceContextMenu: "workspace:show-context-menu",
-    moveWorkspaceContext: "workspace:move-context",
     showNativeContextMenu: "app:show-native-context-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
     setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
@@ -230,17 +227,21 @@ export const IPC_EVENTS = {
     appUpdateState: "app:update-state",
     appPrivacyAccessState: "app:privacy-access-state",
     settingsCategoryRequested: "settings:category-requested",
+    settingsViewRequested: "settings:view-requested",
     projectAppDataCleared: "projects:app-data-cleared",
     projectsUpdated: "projects:updated",
     projectTreeInvalidated: "projects:tree-invalidated",
-    projectWindowRequested: "app:project-window-requested",
+    projectWorkspaceRequested: "app:project-workspace-requested",
     themeUpdated: "app:theme-updated",
     settingsUpdated: "settings:updated",
     projectSettingsUpdated: "settings:project-updated",
-    sidebarToggleRequested: "shell:sidebar-toggle-requested",
+    navigatorToggleRequested: "shell:navigator-toggle-requested",
+    inspectorToggleRequested: "shell:inspector-toggle-requested",
+    internalNavigationRequested: "app:internal-navigation-requested",
     workspaceCloseActiveTab: "workspace:close-active-tab",
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
     workspaceSwitcherRequested: "workspace:switcher-requested",
+    workspaceNavigationRequested: "workspace:navigation-requested",
     workspaceFlushRequested: "workspace:flush-requested",
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
     workspaceSurfaceSnapshotRequested: "workspace:surface-snapshot-requested",
@@ -893,7 +894,7 @@ export interface OpenSettingsWindowInput {
     readonly projectId: string | null;
 }
 
-export interface OpenProjectWindowInput {
+export interface ActivateProjectWorkspaceInput {
     readonly branchName?: string | null;
     readonly projectId: string;
     readonly worktreeId?: string | null;
@@ -2653,19 +2654,7 @@ export interface WorkspaceContextMenuInput {
 
 export type WorkspaceContextMenuAction =
     | { readonly type: "copy_full_path" }
-    | {
-          readonly type: "move";
-          /** A null destination asks the main process to create an empty window. */
-          readonly targetWindowId: string | null;
-      }
     | { readonly type: "close" };
-
-export interface MoveWorkspaceContextInput {
-    readonly contextKey: string;
-    readonly projectId: string;
-    readonly targetWindowId: string | null;
-    readonly worktreeId: string | null;
-}
 
 export type NativeContextMenuEntry =
     | {
@@ -3781,7 +3770,9 @@ export interface ComandoApi {
     openExternalUrl: (url: string) => Promise<void>;
     openGeneratedImage: (path: string) => Promise<void>;
     revealGeneratedImage: (path: string) => Promise<void>;
-    openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
+    activateProjectWorkspace: (
+        input: ActivateProjectWorkspaceInput,
+    ) => Promise<void>;
     confirmWorkspaceClose: (
         input: ConfirmWorkspaceCloseInput,
     ) => Promise<boolean>;
@@ -3838,12 +3829,6 @@ export interface ComandoApi {
     ) => Promise<WorkspaceSurfaceCloseResult>;
     getWorkspaceSurfaceDiagnostics: () => Promise<WorkspaceSurfacePoolDiagnostics>;
     setWorkspaceHostOverlayVisible: (visible: boolean) => Promise<void>;
-    listOpenWorkspaceLocations: () => Promise<
-        readonly OpenWorkspaceLocationSummary[]
-    >;
-    activateWorkspaceLocation: (
-        input: ActivateWorkspaceLocationInput,
-    ) => Promise<boolean>;
     requestWorkspaceSurfaceContext: (
         input: WorkspaceSurfaceContextRequest,
     ) => Promise<void>;
@@ -3855,7 +3840,6 @@ export interface ComandoApi {
     showWorkspaceContextMenu: (
         input: WorkspaceContextMenuInput,
     ) => Promise<WorkspaceContextMenuAction | null>;
-    moveWorkspaceContext: (input: MoveWorkspaceContextInput) => Promise<void>;
     showNativeContextMenu: (
         input: NativeContextMenuInput,
     ) => Promise<string | null>;
@@ -4060,8 +4044,8 @@ export interface ComandoApi {
     onProjectsUpdated: (
         listener: (projects: readonly ProjectSummary[]) => void,
     ) => () => void;
-    onProjectWindowRequested: (
-        listener: (payload: OpenProjectWindowInput) => void,
+    onProjectWorkspaceRequested: (
+        listener: (payload: ActivateProjectWorkspaceInput) => void,
     ) => () => void;
     listProjectTree: (
         input: ListProjectTreeInput,
@@ -4276,10 +4260,20 @@ export interface ComandoApi {
     onProjectSettingsUpdated: (
         listener: (payload: ProjectSettingsUpdatedEvent) => void,
     ) => () => void;
-    onSidebarToggleRequested: (listener: () => void) => () => void;
+    onNavigatorToggleRequested: (listener: () => void) => () => void;
+    onInspectorToggleRequested: (listener: () => void) => () => void;
+    onInternalNavigationRequested: (
+        listener: (url: string) => void,
+    ) => () => void;
+    onSettingsViewRequested: (
+        listener: (request: OpenSettingsWindowInput) => void,
+    ) => () => void;
     onWorkspaceCloseActiveTab: (listener: () => void) => () => void;
     onWorkspaceReopenLastClosedTab: (listener: () => void) => () => void;
     onWorkspaceSwitcherRequested: (listener: () => void) => () => void;
+    onWorkspaceNavigationRequested: (
+        listener: (direction: "next" | "previous") => void,
+    ) => () => void;
     onWorkspaceFlushRequested: (
         listener: () => Promise<void> | void,
     ) => () => void;

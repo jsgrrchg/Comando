@@ -8,6 +8,10 @@ interface MockedBrowserWindow {
     readonly setWindowButtonPosition: ReturnType<typeof vi.fn>;
     readonly setTitleBarOverlay: ReturnType<typeof vi.fn>;
     readonly setVibrancy: ReturnType<typeof vi.fn>;
+    readonly webContents: {
+        readonly send: ReturnType<typeof vi.fn>;
+        readonly setWindowOpenHandler: ReturnType<typeof vi.fn>;
+    };
     triggerDidFinishLoad(): void;
 }
 
@@ -33,6 +37,7 @@ const electronMocks = vi.hoisted(() => {
                     this.didFinishLoadHandlers.push(listener);
                 }
             }),
+            send: vi.fn(),
             setWindowOpenHandler: vi.fn(),
         };
 
@@ -96,7 +101,6 @@ vi.mock("electron", () => ({
 
 import {
     createMainWindow,
-    createSettingsWindow,
     refreshWindowsTitleBarOverlays,
 } from "./window";
 
@@ -153,20 +157,38 @@ describe("window titlebar overlays", () => {
         vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
 
         createMainWindow();
-        createSettingsWindow();
 
         expect(electronMocks.windows[0]?.options).toMatchObject({
             titleBarStyle: "hidden",
             trafficLightPosition: { x: 14, y: 12 },
         });
-        expect(electronMocks.windows[1]?.options).toMatchObject({
-            titleBarStyle: "hidden",
-            trafficLightPosition: { x: 14, y: 14 },
-        });
+        expect(electronMocks.windows).toHaveLength(1);
 
         electronMocks.windows[0]?.triggerDidFinishLoad();
         expect(
             electronMocks.windows[0]?.setWindowButtonPosition,
         ).toHaveBeenCalledWith({ x: 14, y: 12 });
+    });
+
+    it("routes internal window opens to the host and external links to the system", () => {
+        createMainWindow();
+        const window = electronMocks.windows[0];
+        const handler = window?.webContents.setWindowOpenHandler.mock
+            .calls[0]?.[0] as ((input: { url: string }) => { action: string });
+
+        expect(handler({ url: "comando://settings" })).toEqual({
+            action: "deny",
+        });
+        expect(window?.webContents.send).toHaveBeenCalledWith(
+            "app:internal-navigation-requested",
+            "comando://settings",
+        );
+
+        expect(handler({ url: "https://example.com" })).toEqual({
+            action: "deny",
+        });
+        expect(electronMocks.shell.openExternal).toHaveBeenCalledWith(
+            "https://example.com/",
+        );
     });
 });

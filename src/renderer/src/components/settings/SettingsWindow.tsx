@@ -505,6 +505,7 @@ function getDynamicCategorySearchValues(
 }
 
 export function SettingsWindow({
+    embedded = false,
     aiChat,
     appAppearance,
     appEditor,
@@ -517,6 +518,7 @@ export function SettingsWindow({
     updates,
     initialCategory = "appearance",
     initialCategoryRequestId = 0,
+    onClose,
 }: SettingsWindowProps) {
     const [active, setActive] = useState<Category>(initialCategory);
     const [search, setSearch] = useState("");
@@ -564,7 +566,7 @@ export function SettingsWindow({
     return (
         <div
             style={{
-                height: "100vh",
+                height: embedded ? "100%" : "100vh",
                 backgroundColor: "transparent",
                 color: "var(--color-text-primary)",
                 display: "flex",
@@ -586,7 +588,22 @@ export function SettingsWindow({
                     position: "relative",
                 }}
             >
-                <div style={{ width: 70, flexShrink: 0 }} />
+                <div
+                    className="app-no-drag"
+                    style={{ width: 110, flexShrink: 0 }}
+                >
+                    {onClose ? (
+                        <button
+                            aria-label="Close settings"
+                            className="settings-inline-close"
+                            onClick={onClose}
+                            type="button"
+                        >
+                            <span aria-hidden="true">‹</span>
+                            Workspace
+                        </button>
+                    ) : null}
+                </div>
                 <span
                     style={{
                         color: "var(--color-text-secondary)",

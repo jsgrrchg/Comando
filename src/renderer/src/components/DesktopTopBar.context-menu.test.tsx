@@ -27,7 +27,6 @@ function renderTopBar() {
     mountedContainers.push(container);
 
     const onCloseContext = vi.fn();
-    const onMoveContext = vi.fn();
     const onOpenProject = vi.fn();
     const root = createRoot(container);
     mountedRoots.push(root);
@@ -67,7 +66,6 @@ function renderTopBar() {
                 onActivateWorkspace: vi.fn(() => Promise.resolve()),
                 onCloneRepository: vi.fn(() => Promise.resolve(true)),
                 onCloseContext,
-                onMoveContext,
                 onOpenProject,
                 onOpenProjects: vi.fn(),
                 onOpenSettings: vi.fn(),
@@ -84,26 +82,17 @@ function renderTopBar() {
     return {
         container,
         onCloseContext,
-        onMoveContext,
         onOpenProject,
     };
 }
 
 describe("DesktopTopBar context menu", () => {
-    it("offers move and close actions for the context clicked with the secondary button", async () => {
+    it("offers path copy and close actions for the context clicked with the secondary button", async () => {
         const writeClipboardText = vi.fn(() => Promise.resolve());
         const writeText = vi.fn(() => Promise.resolve());
         const showWorkspaceContextMenu = vi
             .fn()
             .mockResolvedValueOnce({ type: "copy_full_path" })
-            .mockResolvedValueOnce({
-                targetWindowId: "target-window",
-                type: "move",
-            })
-            .mockResolvedValueOnce({
-                targetWindowId: null,
-                type: "move",
-            })
             .mockResolvedValueOnce({ type: "close" });
         vi.stubGlobal("navigator", {
             ...navigator,
@@ -113,8 +102,7 @@ describe("DesktopTopBar context menu", () => {
             showWorkspaceContextMenu,
             writeClipboardText,
         });
-        const { container, onCloseContext, onMoveContext } =
-            renderTopBar();
+        const { container, onCloseContext } = renderTopBar();
         const tab = container.querySelector<HTMLElement>(
             '[data-project-context-tab-key="project-2::__primary__"]',
         );
@@ -154,40 +142,6 @@ describe("DesktopTopBar context menu", () => {
             );
             await Promise.resolve();
         });
-        expect(onMoveContext).toHaveBeenCalledWith(
-            "project-2::__primary__",
-            "target-window",
-        );
-        expect(onCloseContext).not.toHaveBeenCalled();
-
-        await act(async () => {
-            tab?.dispatchEvent(
-                new MouseEvent("contextmenu", {
-                    bubbles: true,
-                    cancelable: true,
-                    clientX: 120,
-                    clientY: 40,
-                }),
-            );
-            await Promise.resolve();
-        });
-        expect(onMoveContext).toHaveBeenLastCalledWith(
-            "project-2::__primary__",
-            null,
-        );
-        expect(onCloseContext).not.toHaveBeenCalled();
-
-        await act(async () => {
-            tab?.dispatchEvent(
-                new MouseEvent("contextmenu", {
-                    bubbles: true,
-                    cancelable: true,
-                    clientX: 120,
-                    clientY: 40,
-                }),
-            );
-            await Promise.resolve();
-        });
         expect(onCloseContext).toHaveBeenCalledWith(
             "project-2::__primary__",
         );
@@ -203,7 +157,6 @@ describe("DesktopTopBar context menu", () => {
             );
             await Promise.resolve();
         });
-        expect(onMoveContext).toHaveBeenCalledTimes(2);
         expect(onCloseContext).toHaveBeenCalledTimes(1);
     });
 

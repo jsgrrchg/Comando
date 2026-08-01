@@ -46,7 +46,7 @@ import {
     type DeleteProjectEntryInput,
     type FileBufferNotificationInput,
     type NativeContextMenuInput,
-    type MoveWorkspaceContextInput,
+    type ActivateProjectWorkspaceInput,
     type EnqueueAiPromptInput,
     type GitBranchDiffFile,
     type GitBranchDiffInput,
@@ -143,15 +143,12 @@ import {
     type GitWorktreeDiffSection,
     type GitWorktreeListInput,
     type GitWorktreeSummary as SharedGitWorktreeSummary,
-    type ActivateWorkspaceLocationInput,
     type ListAiSessionHistoryInput,
     type ListProjectEntriesInput,
     type ListProjectTreeInput,
     type OpenProjectEntryExternallyInput,
     type OpenProjectFileInput,
-    type OpenProjectWindowInput,
     type OpenSettingsWindowInput,
-    type OpenWorkspaceLocationSummary,
     type PrepareAiSessionInput,
     type PersistedShellState,
     type PersistenceSnapshot,
@@ -234,7 +231,6 @@ import {
     applyWindowTransparencyToAllWindows,
     broadcastSettingsUpdated,
 } from "@main/settings/window-zoom";
-import { openSettingsWindow } from "@main/settings/window";
 import type { TerminalGateway } from "@main/terminals/service";
 import {
     checkForAppUpdates,
@@ -256,8 +252,6 @@ import { createEmptyWorkspaceLayoutSnapshot } from "@shared/workspace-restore";
 import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
 import { workspaceRuntimeOwnership } from "@main/workspace/runtime-ownership-coordinator";
-import { buildWorkspaceMoveDestinations } from "@main/workspace/move-destinations";
-import { activateOpenWorkspaceLocation } from "@main/workspace/location-navigation";
 import {
     activateWorkspaceSurfaceAndNotifyHost,
     persistWorkspaceSurfaceSnapshot,
@@ -278,11 +272,11 @@ interface RegisterIpcHandlersOptions {
         contextKey: string,
     ) => Promise<WorkspaceNavigationSnapshot | null>;
     readonly durableWorkspaceRepository: NativePersistenceGateway;
-    readonly openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
-    readonly moveWorkspaceContext: (
-        sourceWindowId: string,
-        input: MoveWorkspaceContextInput,
+    readonly focusMainWindow: () => void;
+    readonly activateProjectWorkspace: (
+        input: ActivateProjectWorkspaceInput,
     ) => Promise<void>;
+    readonly openSettingsView: (input: OpenSettingsWindowInput) => Promise<void>;
     readonly persistenceService: PersistenceGateway;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
@@ -304,7 +298,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openExternalUrl);
     ipcMain.removeHandler(IPC_CHANNELS.openGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.revealGeneratedImage);
-    ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
+    ipcMain.removeHandler(IPC_CHANNELS.activateProjectWorkspace);
     ipcMain.removeHandler(IPC_CHANNELS.confirmWorkspaceClose);
     ipcMain.removeHandler(IPC_CHANNELS.checkCommandAvailability);
     ipcMain.removeHandler(IPC_CHANNELS.readClaudeCodeTranscript);
@@ -417,8 +411,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.closeWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSurfaceDiagnostics);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceHostOverlayVisible);
-    ipcMain.removeHandler(IPC_CHANNELS.listOpenWorkspaceLocations);
-    ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceLocation);
     ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceAction);
@@ -432,7 +424,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
     ipcMain.removeHandler(IPC_CHANNELS.showWorkspaceContextMenu);
-    ipcMain.removeHandler(IPC_CHANNELS.moveWorkspaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.showNativeContextMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
@@ -617,9 +608,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         },
     );
     ipcMain.handle(
-        IPC_CHANNELS.openProjectWindow,
-        (_event, input: OpenProjectWindowInput) =>
-            options.openProjectWindow(input),
+        IPC_CHANNELS.activateProjectWorkspace,
+        (_event, input: ActivateProjectWorkspaceInput) =>
+            options.activateProjectWorkspace(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.confirmWorkspaceClose,
@@ -796,14 +787,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.openSettingsWindow,
-        (_event, input: OpenSettingsWindowInput) => {
-            const appearance = options.settingsService.loadAppAppearanceSettings();
-            openSettingsWindow(
-                input,
-                appearance.zoomFactor,
-                appearance.transparencyEnabled,
-            );
-        },
+        (_event, input: OpenSettingsWindowInput) =>
+            options.openSettingsView(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.saveActiveProjectId,
@@ -823,7 +808,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const ownerWindow = BrowserWindow.fromWebContents(event.sender);
             if (ownerWindow) {
                 ownerWindow.setTitle(
-                    buildMainWindowTitle(options.projectService, projectId),
+                    buildMainWindowTitle(),
                 );
             }
         },
@@ -1652,6 +1637,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         options.projectService.listProjects(),
     );
     ipcMain.handle(IPC_CHANNELS.openProjects, async (event) => {
+        options.focusMainWindow();
         const ownerWindow =
             BrowserWindow.fromWebContents(event.sender) ??
             BrowserWindow.getFocusedWindow();
@@ -1681,6 +1667,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.cloneRepository,
         async (event, input: CloneRepositoryInput): Promise<CloneRepositoryResult> => {
+            options.focusMainWindow();
             const repositoryUrl = input?.repositoryUrl?.trim() ?? "";
             if (!repositoryUrl) {
                 throw new Error("Repository URL is required.");
@@ -2046,7 +2033,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const ownerWindow = BrowserWindow.fromWebContents(event.sender);
             if (ownerWindow) {
                 ownerWindow.setTitle(
-                    buildMainWindowTitle(options.projectService, projectId),
+                    buildMainWindowTitle(),
                 );
             }
         },
@@ -2330,10 +2317,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const hostWindow = BrowserWindow.fromWebContents(event.sender);
             if (hostWindow) {
                 hostWindow.setTitle(
-                    buildMainWindowTitle(
-                        options.projectService,
-                        activeContext?.projectId ?? null,
-                    ),
+                    buildMainWindowTitle(),
                 );
             }
             return result;
@@ -2370,7 +2354,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 );
                 const hostWindow = BrowserWindow.fromWebContents(event.sender);
                 hostWindow?.setTitle(
-                    buildMainWindowTitle(options.projectService, null),
+                    buildMainWindowTitle(),
                 );
             }
             return result;
@@ -2400,90 +2384,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 context.windowId,
                 visible,
             );
-        },
-    );
-    ipcMain.handle(IPC_CHANNELS.listOpenWorkspaceLocations, (event) => {
-        const sourceContext = requireWindowContext(event.sender, "main");
-        if (workspaceSurfaceManager.isSurface(event.sender)) {
-            return [];
-        }
-        return workspaceSurfaceManager.listOpenWorkspaceLocations().map(
-            (location): OpenWorkspaceLocationSummary => ({
-                ...location,
-                isCurrentWindow:
-                    location.hostWindowId === sourceContext.windowId,
-                windowTitle:
-                    windowRegistry
-                        .getWindowByStableId(location.hostWindowId)
-                        ?.getTitle() ?? "Comando",
-            }),
-        );
-    });
-    ipcMain.handle(
-        IPC_CHANNELS.activateWorkspaceLocation,
-        async (event, input: ActivateWorkspaceLocationInput) => {
-            requireWindowContext(event.sender, "main");
-            if (
-                workspaceSurfaceManager.isSurface(event.sender) ||
-                !isActivateWorkspaceLocationInput(input)
-            ) {
-                return false;
-            }
-            return activateOpenWorkspaceLocation({
-                focusWindow: focusWorkspaceWindow,
-                location: input,
-                manager: workspaceSurfaceManager,
-                notifyChannel: IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
-                onActivated: async (location, snapshot) => {
-                    const targetContext = windowRegistry
-                        .listMainWindowContexts()
-                        .find(
-                            (candidate) =>
-                                candidate.windowId === location.hostWindowId,
-                        );
-                    if (!targetContext?.workspaceId) {
-                        throw new Error(
-                            "The target workspace window is unavailable.",
-                        );
-                    }
-                    await options.workspaceService.saveSnapshot(
-                        targetContext.workspaceId,
-                        snapshot,
-                    );
-                    const latestSnapshot =
-                        workspaceSurfaceManager.getHostSnapshotForWindow(
-                            location.hostWindowId,
-                        );
-                    if (
-                        latestSnapshot &&
-                        latestSnapshot.activeContextKey !==
-                            snapshot.activeContextKey
-                    ) {
-                        await options.workspaceService.saveSnapshot(
-                            targetContext.workspaceId,
-                            latestSnapshot,
-                        );
-                    }
-                    options.persistenceService.saveActiveProjectId(
-                        location.hostWindowId,
-                        location.projectId,
-                        location.worktreeId,
-                    );
-                    windowRegistry.updateMainWindowProjectId(
-                        location.hostWindowId,
-                        location.projectId,
-                        location.worktreeId,
-                    );
-                    windowRegistry
-                        .getWindowByStableId(location.hostWindowId)
-                        ?.setTitle(
-                            buildMainWindowTitle(
-                                options.projectService,
-                                location.projectId,
-                            ),
-                        );
-                },
-            });
         },
     );
     ipcMain.handle(
@@ -2538,38 +2438,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.showWorkspaceContextMenu,
         (event, input: WorkspaceContextMenuInput) => {
-            const sourceContext = requireWindowContext(event.sender, "main");
+            requireWindowContext(event.sender, "main");
             const window = BrowserWindow.fromWebContents(event.sender);
             if (!window || workspaceSurfaceManager.isSurface(event.sender)) {
                 return null;
             }
-
-            const destinations = buildWorkspaceMoveDestinations({
-                candidates: windowRegistry
-                    .listMainWindowContexts()
-                    .flatMap((context) => {
-                        const candidateWindow =
-                            windowRegistry.getWindowByStableId(context.windowId);
-                        const snapshot =
-                            workspaceSurfaceManager.getHostSnapshotForWindow(
-                                context.windowId,
-                            );
-                        return candidateWindow && snapshot
-                            ? [
-                                  {
-                                      snapshot,
-                                      windowId: context.windowId,
-                                      windowTitle: candidateWindow.getTitle(),
-                                  },
-                              ]
-                            : [];
-                    }),
-                scope: {
-                    projectId: input.projectId,
-                    worktreeId: input.worktreeId,
-                },
-                sourceWindowId: sourceContext.windowId,
-            });
 
             return new Promise<WorkspaceContextMenuAction | null>((resolve) => {
                 let selected = false;
@@ -2585,35 +2458,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     },
                     { type: "separator" },
                     {
-                        label: "Move to Window",
-                        submenu: [
-                            ...destinations.map((destination) => ({
-                                click: () =>
-                                    select({
-                                        targetWindowId:
-                                            destination.targetWindowId,
-                                        type: "move",
-                                    }),
-                                enabled: destination.enabled,
-                                label: destination.label,
-                            })),
-                            ...(destinations.length > 0
-                                ? ([{ type: "separator" }] as const)
-                                : []),
-                            {
-                                click: () =>
-                                    select({
-                                        targetWindowId: null,
-                                        type: "move",
-                                    }),
-                                label: "New Window",
-                            },
-                        ],
-                    },
-                    { type: "separator" },
-                    {
                         click: () => select({ type: "close" }),
-                        label: "Close",
+                        label: "Close Workspace",
                     },
                 ]);
                 menu.popup({
@@ -2625,27 +2471,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     y: Math.max(0, Math.round(input.y)),
                 });
             });
-        },
-    );
-    ipcMain.handle(
-        IPC_CHANNELS.moveWorkspaceContext,
-        async (event, input: MoveWorkspaceContextInput): Promise<void> => {
-            const sourceContext = requireWindowContext(event.sender, "main");
-            if (workspaceSurfaceManager.isSurface(event.sender)) {
-                throw new Error("Workspace moves must start from a host window.");
-            }
-            if (
-                !input ||
-                typeof input.contextKey !== "string" ||
-                typeof input.projectId !== "string" ||
-                (input.worktreeId !== null &&
-                    typeof input.worktreeId !== "string") ||
-                (input.targetWindowId !== null &&
-                    typeof input.targetWindowId !== "string")
-            ) {
-                throw new Error("The workspace move request is invalid.");
-            }
-            await options.moveWorkspaceContext(sourceContext.windowId, input);
         },
     );
     ipcMain.handle(
@@ -3176,50 +3001,8 @@ function getPersistenceOwnerId(context: WindowContextSnapshot): string {
     return context.hostWindowId ?? context.windowId;
 }
 
-function isActivateWorkspaceLocationInput(
-    input: ActivateWorkspaceLocationInput,
-): input is ActivateWorkspaceLocationInput {
-    return (
-        Boolean(input) &&
-        typeof input.contextKey === "string" &&
-        input.contextKey.length > 0 &&
-        typeof input.hostWindowId === "string" &&
-        input.hostWindowId.length > 0 &&
-        typeof input.projectId === "string" &&
-        input.projectId.length > 0 &&
-        (input.worktreeId === null || typeof input.worktreeId === "string")
-    );
-}
-
-function focusWorkspaceWindow(windowId: string): void {
-    const window = windowRegistry.getWindowByStableId(windowId);
-    if (!window || window.isDestroyed()) {
-        return;
-    }
-    if (window.isMinimized()) {
-        window.restore();
-    }
-    window.show();
-    window.focus();
-}
-
-function buildMainWindowTitle(
-    projectService: ProjectService,
-    projectId: string | null,
-): string {
-    if (!projectId) {
-        return "Comando";
-    }
-
-    try {
-        const rootPath = projectService.getProjectRootPath(projectId);
-        const projectName =
-            rootPath.split(/[\\/]/).filter(Boolean).at(-1) ?? projectId;
-        return `Comando · ${projectName}`;
-    } catch (error) {
-        debugBenignError("ipc.resolveWindowTitle", error);
-        return "Comando";
-    }
+function buildMainWindowTitle(): string {
+    return "Comando";
 }
 
 interface ResolvedGitScope {
