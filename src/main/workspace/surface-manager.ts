@@ -1078,7 +1078,18 @@ export class WorkspaceSurfaceManager {
             windowRegistry.unregisterEmbeddedRenderer(webContents);
             this.#surfaceIdsByWebContentsId.delete(webContentsId);
         });
-        loadRendererContents(webContents, `window=workspace-surface&surface=${id}`);
+        const rendererSearch = new URLSearchParams({
+            project: workspaceContext.projectId,
+            revision: "0",
+            scope: contextKey,
+            surface: id,
+            window: "workspace-surface",
+        });
+        if (workspaceContext.worktreeId) {
+            rendererSearch.set("worktree", workspaceContext.worktreeId);
+        }
+        // Scope is fixed before renderer bootstrap; a surface is never rebound.
+        loadRendererContents(webContents, rendererSearch.toString());
     }
 
     #getActiveSurface(hostWindowId: string): WorkspaceSurfaceRecord | null {

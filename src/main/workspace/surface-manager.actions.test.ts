@@ -77,10 +77,35 @@ vi.mock("@main/windows/registry", () => ({
 }));
 
 import { WorkspaceSurfaceManager } from "./surface-manager";
+import { loadRendererContents } from "@main/window";
 
 describe("WorkspaceSurfaceManager action routing", () => {
     beforeEach(() => {
         electronMocks.reset();
+        vi.mocked(loadRendererContents).mockClear();
+    });
+
+    it("binds each renderer URL to one scope and generation", () => {
+        const manager = new WorkspaceSurfaceManager();
+        manager.syncHost(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+
+        const searches = vi
+            .mocked(loadRendererContents)
+            .mock.calls.map(([, search]) => new URLSearchParams(search));
+        expect(searches).toHaveLength(2);
+        expect(searches[0]?.get("window")).toBe("workspace-surface");
+        expect(searches[0]?.get("scope")).toBe(
+            "project-a::__primary__",
+        );
+        expect(searches[0]?.get("project")).toBe("project-a");
+        expect(searches[0]?.get("surface")).toBeTruthy();
+        expect(searches[1]?.get("scope")).toBe(
+            "project-b::__primary__",
+        );
     });
 
     it("waits until a new host renderer registers its surface container", async () => {

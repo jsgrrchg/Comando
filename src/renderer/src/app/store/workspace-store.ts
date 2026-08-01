@@ -68,6 +68,7 @@ import {
     updateChatDraft,
     updateFileDraft as applyFileDraft,
     workspaceStateFromSnapshot,
+    workspaceStateFromSerializedSnapshot,
     workspaceStateToSnapshot,
     type RuntimeWorkspaceChatHistoryTab,
     type RuntimeWorkspaceGitCommitTab,
@@ -102,6 +103,7 @@ import { useAiStore } from "./ai-store";
 import { useProjectsStore } from "./projects-store";
 import { useSettingsStore } from "./settings-store";
 import { getProjectContextKey } from "../projects/context-key";
+import { persistActiveWorkspaceSurfaceLayout } from "../workspace/workspace-surface-layout-runtime";
 
 export type WorkspaceQuickCreateAction =
     | AiRuntimeId
@@ -154,6 +156,15 @@ interface WorkspaceStore extends WorkspaceTreeState {
     ) => void;
     readonly openContextKeys: readonly string[];
     readonly scopeEpoch: number;
+    hydrateSurfaceLayout: (input: {
+        readonly generation: string;
+        readonly lastActivatedAt: string;
+        readonly layout: WorkspaceLayoutSnapshot;
+        readonly projectId: string;
+        readonly revision: number;
+        readonly scopeKey: string;
+        readonly worktreeId: string | null;
+    }) => Promise<void>;
     activateContext: (contextKey: string) => Promise<void>;
     closeContext: (contextKey: string) => Promise<void>;
     closeOtherTabs: (tabId: string) => Promise<void>;
@@ -468,9 +479,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 context.key,
                 {
                     ...context,
-                    workspace: workspaceStateFromSnapshot(
+                    workspace: deserializeWorkspaceForRenderer(
                         context.workspace,
-                        createHydratedRuntimeTabs(context.workspace),
+                        isWorkspaceSurfaceHost ? "host" : "surface",
                     ),
                 } satisfies RuntimeWorkspaceContext,
             ]),
@@ -496,6 +507,50 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             openContextKeys,
             scopeEpoch: state.scopeEpoch + 1,
         }));
+    },
+
+    hydrateSurfaceLayout: async (input) => {
+        const workspace = deserializeWorkspaceForRenderer(
+            input.layout,
+            "surface",
+        );
+        const scopeEpoch = get().scopeEpoch + 1;
+        const context: RuntimeWorkspaceContext = {
+            key: input.scopeKey,
+            lastActivatedAt: input.lastActivatedAt,
+            projectId: input.projectId,
+            workspace,
+            worktreeId: input.worktreeId,
+        };
+        set({
+            ...workspace,
+            activeContextKey: input.scopeKey,
+            contextsByKey: { [input.scopeKey]: context },
+            deferredPaneIds: getDeferredWorkspacePaneIds(workspace),
+            error: null,
+            hydrated: true,
+            lastFocusedChatTabId: getPaneChatTabId(
+                workspace,
+                workspace.activePaneId,
+            ),
+            lastFocusedRuntimeId:
+                getPaneRuntimeId(workspace, workspace.activePaneId) ?? "codex",
+            openContextKeys: [input.scopeKey],
+            recentActiveTabIds: recordRecentTabActivation(
+                [],
+                getPaneActiveTabId(workspace, workspace.activePaneId),
+            ),
+            recentClosedTabs: [],
+            recentFocusedChatTabIds: recordRecentChatFocus(
+                [],
+                getPaneChatTabId(workspace, workspace.activePaneId),
+            ),
+            scopeEpoch,
+        });
+        await activateWorkspaceRuntimePanes(workspace, get, set, {
+            contextKey: input.scopeKey,
+            scopeEpoch,
+        });
     },
 
     activateContext: async (contextKey) => {
@@ -1417,9 +1472,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                     context.key,
                     {
                         ...context,
-                        workspace: workspaceStateFromSnapshot(
+                        workspace: deserializeWorkspaceForRenderer(
                             context.workspace,
-                            createHydratedRuntimeTabs(context.workspace),
+                            isWorkspaceSurfaceHost ? "host" : "surface",
                         ),
                     } satisfies RuntimeWorkspaceContext,
                 ]),
@@ -3544,6 +3599,19 @@ function workspaceStoreToNavigationSnapshot(
     };
 }
 
+export function deserializeWorkspaceForRenderer(
+    snapshot: WorkspaceLayoutSnapshot,
+    renderer: "host" | "surface",
+): WorkspaceTreeState {
+    if (renderer === "host") {
+        return workspaceStateFromSerializedSnapshot(snapshot);
+    }
+    return workspaceStateFromSnapshot(
+        snapshot,
+        createHydratedRuntimeTabs(snapshot),
+    );
+}
+
 function createHydratedRuntimeTabs(
     snapshot: WorkspaceLayoutSnapshot,
 ): Record<string, RuntimeWorkspaceTab> {
@@ -3925,9 +3993,16 @@ async function flushWorkspacePersistence(
 async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
     try {
         const state = get();
-        await getComandoApi().saveWorkspaceSnapshot(
-            workspaceStoreToNavigationSnapshot(state),
-        );
+        const navigation = workspaceStoreToNavigationSnapshot(state);
+        const persistedBySurfaceCoordinator = state.activeContextKey
+            ? await persistActiveWorkspaceSurfaceLayout({
+                  layout: workspaceStateToSnapshot(state),
+                  scopeKey: state.activeContextKey,
+              })
+            : false;
+        if (!persistedBySurfaceCoordinator) {
+            await getComandoApi().saveWorkspaceSnapshot(navigation);
+        }
         workspacePersistFailureCount = 0;
     } catch (error) {
         // Workspace persistence failure silently loses layout/tabs on restart;

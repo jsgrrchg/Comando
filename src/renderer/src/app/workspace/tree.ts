@@ -136,6 +136,20 @@ export function workspaceStateFromSnapshot(
     };
 }
 
+export function workspaceStateFromSerializedSnapshot(
+    snapshot: WorkspaceSnapshot,
+): WorkspaceTreeState {
+    // The host only needs a lossless v3 projection. Avoid adding file, terminal,
+    // or chat runtime fields that could accidentally start surface work there.
+    return {
+        activePaneId: snapshot.activePaneId,
+        rootNode: normalizeWorkspaceNodeTabs(snapshot.rootNode),
+        tabsById: Object.fromEntries(
+            snapshot.tabs.map((tab) => [tab.id, tab]),
+        ) as Record<string, RuntimeWorkspaceTab>,
+    };
+}
+
 export function workspaceStateToSnapshot(
     state: WorkspaceTreeState,
 ): WorkspaceSnapshot {

@@ -79,12 +79,14 @@ import {
     isPrimaryPointerButton,
 } from "./app/pointerGuards";
 import { useAppStore } from "./app/store/app-store";
+import { appNavigationStore } from "./app/store/app-navigation-store";
 import { useAiStore } from "./app/store/ai-store";
 import { useGitStore } from "./app/store/git-store";
 import { useGitHubStore } from "./app/store/github-store";
 import { useProjectsStore } from "./app/store/projects-store";
 import { useSettingsStore } from "./app/store/settings-store";
 import { useShellStore } from "./app/store/shell-store";
+import { workspaceCatalogStore } from "./app/store/workspace-catalog-store";
 import {
     flushWorkspacePersistenceNow,
     getBestMatchingChatTabId,
@@ -252,7 +254,7 @@ function selectActiveWorkspaceTab(
     return state.tabsById[activePane.activeTabId] ?? null;
 }
 
-export function App() {
+export function WorkspaceHostApp() {
     useSystemTheme();
 
     const bootstrap = useAppStore((state) => state.bootstrap);
@@ -386,6 +388,26 @@ export function App() {
     );
     const setActiveWorktree = useGitStore((state) => state.setActiveWorktree);
     const selectGitBranch = useGitStore((state) => state.selectBranch);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer || !workspaceNavigationHydrated) {
+            return;
+        }
+        const snapshot = useWorkspaceStore
+            .getState()
+            .getNavigationSnapshot();
+        workspaceCatalogStore.getState().replaceLegacy(snapshot);
+        workspaceCatalogStore
+            .getState()
+            .mergeRegistry(projects, gitWorktreesByProject);
+        appNavigationStore.getState().replaceLegacy(snapshot);
+    }, [
+        gitWorktreesByProject,
+        projects,
+        workspaceActiveContextKey,
+        workspaceContextsByKey,
+        workspaceNavigationHydrated,
+    ]);
 
     void loadingNodeKeys;
     void removeProject;
@@ -5229,6 +5251,8 @@ export function App() {
         </div>
     );
 }
+
+export const App = WorkspaceHostApp;
 
 function FileTreeMoveDestinationPicker({
     destinations,

@@ -29,6 +29,7 @@ import {
     type RuntimeWorkspaceTab,
     type WorkspaceTreeState,
     workspaceStateFromSnapshot,
+    workspaceStateFromSerializedSnapshot,
     workspaceStateToSnapshot,
 } from "./tree";
 
@@ -844,6 +845,41 @@ describe("workspace tree helpers", () => {
             tabIds: ["tab-2", "tab-1"],
             type: "pane",
         });
+    });
+
+    it("keeps host snapshots serialized without constructing runtime tabs", () => {
+        const state = workspaceStateFromSerializedSnapshot({
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: "terminal-1",
+                id: "pane-root",
+                tabIds: ["terminal-1"],
+                type: "pane",
+            },
+            tabs: [
+                {
+                    createdAt: "2026-07-31T12:00:00.000Z",
+                    id: "terminal-1",
+                    kind: "terminal",
+                    projectId: "project-1",
+                    sessionId: "session-1",
+                    title: "Terminal",
+                    worktreeId: null,
+                },
+            ],
+        });
+
+        expect(state.tabsById["terminal-1"]).toEqual({
+            createdAt: "2026-07-31T12:00:00.000Z",
+            id: "terminal-1",
+            kind: "terminal",
+            projectId: "project-1",
+            sessionId: "session-1",
+            title: "Terminal",
+            worktreeId: null,
+        });
+        expect(state.tabsById["terminal-1"]).not.toHaveProperty("output");
+        expect(state.tabsById["terminal-1"]).not.toHaveProperty("isReady");
     });
 
     it("moves a tab to another pane at a specific index", () => {
