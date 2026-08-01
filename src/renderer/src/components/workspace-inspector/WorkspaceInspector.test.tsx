@@ -45,7 +45,7 @@ describe("WorkspaceInspector", () => {
             ),
         ).toEqual(["Files", "Agents", "Git"]);
         expect(
-            container?.querySelectorAll(".workspace-inspector-tab--compact"),
+            container?.querySelectorAll(".sidebar-action-row--icon"),
         ).toHaveLength(2);
 
         act(() => {

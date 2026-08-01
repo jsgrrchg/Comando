@@ -132,12 +132,12 @@ export function WorkspaceInspector({
                                 aria-label={label}
                                 aria-selected={selected}
                                 className={[
-                                    "workspace-inspector-tab app-no-drag",
+                                    "workspace-inspector-tab sidebar-action-row sidebar-action-row--compact app-no-drag",
                                     compact
-                                        ? "workspace-inspector-tab--compact"
-                                        : "",
+                                        ? "sidebar-action-row--icon shrink-0"
+                                        : "min-w-0 flex-1",
                                     selected
-                                        ? "workspace-inspector-tab--active"
+                                        ? "sidebar-action-row--active"
                                         : "",
                                 ]
                                     .filter(Boolean)
@@ -252,50 +252,136 @@ function InspectorState({ copy }: { readonly copy: string }) {
 function InspectorViewIcon({ view }: { readonly view: WorkspaceInspectorView }) {
     if (view === "files") {
         return (
-            <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
+            <svg
+                aria-hidden="true"
+                className="h-4 w-4 shrink-0"
+                fill="none"
+                viewBox="0 0 16 16"
+            >
                 <path
                     d="M2 3a1 1 0 0 1 1-1h3.5l1.5 1.5H13a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3Z"
                     fill="currentColor"
-                    opacity="0.7"
+                    opacity="0.55"
                 />
             </svg>
         );
     }
     if (view === "git") {
         return (
-            <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
-                <circle cx="4.5" cy="4" r="1.5" stroke="currentColor" />
-                <circle cx="4.5" cy="12" r="1.5" stroke="currentColor" />
-                <circle cx="11.5" cy="4" r="1.5" stroke="currentColor" />
-                <path d="M4.5 5.5v5M11.5 5.5v1A3 3 0 0 1 8.5 9.5h-4" stroke="currentColor" />
+            <svg
+                aria-hidden="true"
+                className="h-4 w-4 shrink-0"
+                fill="none"
+                viewBox="0 0 16 16"
+            >
+                <circle
+                    cx="4.5"
+                    cy="4"
+                    r="1.6"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                />
+                <circle
+                    cx="4.5"
+                    cy="12"
+                    r="1.6"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                />
+                <circle
+                    cx="11.5"
+                    cy="4"
+                    r="1.6"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                />
+                <path
+                    d="M4.5 5.6v4.8"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeWidth="1.2"
+                />
+                <path
+                    d="M11.5 5.6v1.4A2.5 2.5 0 0 1 9 9.5H7a2.5 2.5 0 0 0-2.5 2.5"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeWidth="1.2"
+                />
             </svg>
         );
     }
     if (view === "agents") {
         return (
-            <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
-                <rect x="3.5" y="5.5" width="9" height="7" rx="2" stroke="currentColor" />
-                <path d="M8 5.5V3" stroke="currentColor" />
-                <circle cx="6.3" cy="9" r=".8" fill="currentColor" />
-                <circle cx="9.7" cy="9" r=".8" fill="currentColor" />
+            <svg
+                aria-hidden="true"
+                className="h-4 w-4 shrink-0"
+                fill="none"
+                viewBox="0 0 16 16"
+            >
+                <rect
+                    fill="currentColor"
+                    fillOpacity="0.15"
+                    height="7"
+                    rx="2"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    width="8.5"
+                    x="3.75"
+                    y="5.5"
+                />
+                <path
+                    d="M8 5.5V3.4"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeWidth="1.2"
+                />
+                <circle cx="8" cy="2.8" fill="currentColor" r="0.95" />
+                <circle cx="6.3" cy="9" fill="currentColor" r="1" />
+                <circle cx="9.7" cy="9" fill="currentColor" r="1" />
             </svg>
         );
     }
     if (view === "issues") {
         return (
-            <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
-                <circle cx="8" cy="8" r="5.2" stroke="currentColor" />
-                <path d="M8 4.8v4" stroke="currentColor" />
-                <circle cx="8" cy="11.2" r=".7" fill="currentColor" />
+            <svg
+                aria-hidden="true"
+                className="h-4 w-4 shrink-0"
+                fill="none"
+                viewBox="0 0 16 16"
+            >
+                <circle
+                    cx="8"
+                    cy="8"
+                    r="5.2"
+                    stroke="currentColor"
+                    strokeWidth="1.15"
+                />
+                <path
+                    d="M8 4.9v3.8"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeWidth="1.25"
+                />
+                <circle cx="8" cy="11.1" fill="currentColor" r="0.75" />
             </svg>
         );
     }
     return (
-        <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
-            <circle cx="5" cy="4" r="1.1" fill="currentColor" />
-            <circle cx="5" cy="12" r="1.1" fill="currentColor" />
-            <circle cx="11" cy="8" r="1.1" fill="currentColor" />
-            <path d="M5 5v6M6 4h2a3 3 0 0 1 3 3" stroke="currentColor" />
+        <svg
+            aria-hidden="true"
+            className="h-4 w-4 shrink-0"
+            fill="none"
+            viewBox="0 0 16 16"
+        >
+            <circle cx="5" cy="4" fill="currentColor" r="1.2" />
+            <circle cx="5" cy="12" fill="currentColor" r="1.2" />
+            <circle cx="11" cy="8" fill="currentColor" r="1.2" />
+            <path
+                d="M5 5.2v5.6M6.2 4H8a3 3 0 0 1 3 3v0"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeWidth="1.15"
+            />
         </svg>
     );
 }
