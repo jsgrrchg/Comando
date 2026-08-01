@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Instant;
@@ -14,7 +15,7 @@ use comando_ai::history::{
     LegacyAiHistoryReader,
 };
 use comando_ai::runtime_setup::{invalidate_runtime_auth_on_error, reconcile_grok_auth};
-use comando_fs::{FsError, ProjectFsService, ProjectRoot};
+use comando_fs::{FsError, GitWatchScope, ProjectFsService, ProjectRoot};
 use comando_git::{
     GitBranchListScope, GitError, GitFileDiffRequest, GitRunOptions, GitRunner, checkout_branch,
     commit, create_branch, create_worktree, delete_local_branch, delete_remote_branch,
@@ -2192,10 +2193,43 @@ impl NativeBackend {
         };
 
         self.fs_service.sync_state(state);
-        match self.fs_service.sync_watchers_from_registry() {
+        let git_scopes = self.resolve_git_watch_scopes();
+        match self.fs_service.sync_watchers_from_registry(git_scopes) {
             Ok(()) => response_only(request.id, json!({"synced": true})),
             Err(error) => error_only(request.id, fs_error(error)),
         }
+    }
+
+    fn resolve_git_watch_scopes(&self) -> Vec<GitWatchScope> {
+        self.fs_service
+            .roots()
+            .into_iter()
+            .filter_map(|root| {
+                let resolution = resolve_repository(&self.git_runner, &root.root_path).ok()?;
+                let git_dir_path = resolution.git_dir_path.map(PathBuf::from)?;
+                let common_dir_output = self
+                    .git_runner
+                    .run(
+                        &root.root_path,
+                        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                        GitRunOptions::read_only(),
+                    )
+                    .ok()?;
+                let common_dir_path =
+                    resolve_git_metadata_path(&root.root_path, common_dir_output.stdout.trim())?;
+                let is_primary = root
+                    .worktree_id
+                    .as_ref()
+                    .is_none_or(|id| id.0.ends_with(":primary"));
+
+                Some(GitWatchScope {
+                    root,
+                    git_dir_path: normalize_existing_path(git_dir_path),
+                    common_dir_path,
+                    is_primary,
+                })
+            })
+            .collect()
     }
 
     fn index_rebuild_project(&mut self, request: RpcRequest) -> CommandResult {
@@ -4286,6 +4320,22 @@ impl NativeBackend {
 
         response_only(request.id, json!({"queued": true}))
     }
+}
+
+fn resolve_git_metadata_path(root_path: &std::path::Path, raw_path: &str) -> Option<PathBuf> {
+    if raw_path.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(raw_path);
+    Some(normalize_existing_path(if path.is_absolute() {
+        path
+    } else {
+        root_path.join(path)
+    }))
+}
+
+fn normalize_existing_path(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 fn apply_runtime_settings(

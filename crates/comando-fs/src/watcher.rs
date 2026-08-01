@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,12 +17,13 @@ use crate::error::FsError;
 use crate::now_rfc3339;
 use crate::origin::{WriteTracker, hash_bytes};
 use crate::path::normalize_relative_path;
-use crate::policy::{
-    GitWatchInvalidationReason, git_watch_invalidation_reason, should_ignore_watch_path,
-};
-use crate::registry::ProjectRoot;
+#[cfg(feature = "test-hooks")]
+use crate::policy::git_watch_invalidation_reason;
+use crate::policy::{GitWatchInvalidationReason, should_ignore_watch_path};
+use crate::registry::{GitWatchScope, ProjectRoot};
 
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(140);
+const GIT_WATCH_DEBOUNCE: Duration = Duration::from_millis(75);
 const SELF_WRITE_HASH_RETRY_DELAY: Duration = Duration::from_millis(20);
 const SELF_WRITE_HASH_RETRY_ATTEMPTS: usize = 5;
 const MAX_RELATIVE_PATHS_PER_INVALIDATION: usize = 256;
@@ -38,6 +39,9 @@ pub struct WatcherDrain {
 pub struct WatcherRegistry {
     watchers: HashMap<String, RecommendedWatcher>,
     roots: HashMap<String, ProjectRoot>,
+    metadata_managed_root_keys: HashSet<String>,
+    metadata_watchers: HashMap<String, RecommendedWatcher>,
+    metadata_roots: HashMap<String, GitMetadataWatchRoot>,
     write_tracker: WriteTracker,
     pending: Arc<Mutex<HashMap<String, PendingInvalidation>>>,
     pending_git_invalidations: Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
@@ -68,11 +72,21 @@ struct PendingFsEvent {
     watch_key: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitMetadataWatchRoot {
+    watch_path: PathBuf,
+    common_dir_path: PathBuf,
+    scopes: Vec<GitWatchScope>,
+}
+
 impl WatcherRegistry {
     pub fn new() -> Self {
         Self {
             watchers: HashMap::new(),
             roots: HashMap::new(),
+            metadata_managed_root_keys: HashSet::new(),
+            metadata_watchers: HashMap::new(),
+            metadata_roots: HashMap::new(),
             write_tracker: WriteTracker::new(),
             pending: Arc::new(Mutex::new(HashMap::new())),
             pending_git_invalidations: Arc::new(Mutex::new(HashMap::new())),
@@ -85,12 +99,40 @@ impl WatcherRegistry {
     }
 
     pub fn sync_roots(&mut self, roots: Vec<ProjectRoot>) -> Result<(), FsError> {
+        self.sync_topology(roots, Vec::new())
+    }
+
+    pub fn sync_topology(
+        &mut self,
+        roots: Vec<ProjectRoot>,
+        git_scopes: Vec<GitWatchScope>,
+    ) -> Result<(), FsError> {
+        let metadata_managed_root_keys = git_scopes
+            .iter()
+            .map(|scope| watch_key(&scope.root))
+            .collect::<HashSet<_>>();
+        // Metadata watchers must be live before working-tree callbacks start
+        // ignoring .git, otherwise a partial sync could create a blind spot.
+        self.sync_metadata_roots(git_scopes)?;
         let desired = roots
             .into_iter()
             .filter(|root| root.root_path.is_dir())
             .map(|root| (watch_key(&root), root))
             .collect::<HashMap<_, _>>();
 
+        for (key, root) in &desired {
+            let metadata_managed = metadata_managed_root_keys.contains(key);
+            if self.roots.get(key) == Some(root)
+                && self.watchers.contains_key(key)
+                && self.metadata_managed_root_keys.contains(key) == metadata_managed
+            {
+                continue;
+            }
+
+            self.start_root(key.clone(), root.clone(), metadata_managed)?;
+        }
+
+        // Stop obsolete watchers only after every replacement is live.
         let current_keys = self.roots.keys().cloned().collect::<Vec<_>>();
         for key in current_keys {
             if !desired.contains_key(&key) {
@@ -98,15 +140,7 @@ impl WatcherRegistry {
             }
         }
 
-        for (key, root) in desired {
-            if self.watchers.contains_key(&key) {
-                self.roots.insert(key, root);
-                continue;
-            }
-
-            self.start_root(key, root)?;
-        }
-
+        self.metadata_managed_root_keys = metadata_managed_root_keys;
         Ok(())
     }
 
@@ -115,7 +149,7 @@ impl WatcherRegistry {
         if self.watchers.contains_key(&key) {
             return Ok(());
         }
-        self.start_root(key, root)
+        self.start_root(key, root, false)
     }
 
     pub fn stop(&mut self, root: &ProjectRoot) {
@@ -163,7 +197,7 @@ impl WatcherRegistry {
         let ready_git_keys = pending_git_invalidations
             .iter()
             .filter(|(_, pending)| {
-                force || now.duration_since(pending.last_event_at) >= WATCH_DEBOUNCE
+                force || now.duration_since(pending.last_event_at) >= GIT_WATCH_DEBOUNCE
             })
             .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
@@ -197,7 +231,12 @@ impl WatcherRegistry {
         }
     }
 
-    fn start_root(&mut self, key: String, root: ProjectRoot) -> Result<(), FsError> {
+    fn start_root(
+        &mut self,
+        key: String,
+        root: ProjectRoot,
+        metadata_managed: bool,
+    ) -> Result<(), FsError> {
         let watch_root = root.root_path.clone();
         let pending = Arc::clone(&self.pending);
         let pending_git_invalidations = Arc::clone(&self.pending_git_invalidations);
@@ -220,6 +259,7 @@ impl WatcherRegistry {
                         write_tracker: &write_tracker,
                         pending: &pending,
                         pending_git_invalidations: &pending_git_invalidations,
+                        metadata_managed,
                         fs_events: &fs_events,
                     },
                     event,
@@ -232,9 +272,70 @@ impl WatcherRegistry {
         Ok(())
     }
 
+    fn sync_metadata_roots(&mut self, git_scopes: Vec<GitWatchScope>) -> Result<(), FsError> {
+        let desired = build_metadata_watch_roots(git_scopes);
+        for (key, metadata_root) in &desired {
+            if self.metadata_roots.get(key) == Some(metadata_root)
+                && self.metadata_watchers.contains_key(key)
+            {
+                continue;
+            }
+            self.start_metadata_root(key.clone(), metadata_root.clone())?;
+        }
+
+        let current_keys = self.metadata_roots.keys().cloned().collect::<Vec<_>>();
+        for key in current_keys {
+            if !desired.contains_key(&key) {
+                self.metadata_watchers.remove(&key);
+                self.metadata_roots.remove(&key);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn start_metadata_root(
+        &mut self,
+        key: String,
+        metadata_root: GitMetadataWatchRoot,
+    ) -> Result<(), FsError> {
+        let pending_git_invalidations = Arc::clone(&self.pending_git_invalidations);
+        let root_for_callback = metadata_root.clone();
+
+        let mut watcher =
+            notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
+                match result {
+                    Ok(event) => handle_git_metadata_event(
+                        &root_for_callback,
+                        &pending_git_invalidations,
+                        event,
+                    ),
+                    Err(_) => {
+                        // An overflow or backend error means the exact mutation is unknown.
+                        // Refresh every scope so the next registry sync can heal the topology.
+                        for scope in &root_for_callback.scopes {
+                            record_pending_git_invalidation(
+                                &watch_key(&scope.root),
+                                &scope.root,
+                                GitWatchInvalidationReason::Unknown,
+                                &pending_git_invalidations,
+                            );
+                        }
+                    }
+                }
+            })?;
+        watcher.watch(&metadata_root.watch_path, RecursiveMode::Recursive)?;
+
+        // Inserting only after watch() succeeds keeps the previous watcher alive on failure.
+        self.metadata_roots.insert(key.clone(), metadata_root);
+        self.metadata_watchers.insert(key, watcher);
+        Ok(())
+    }
+
     fn remove_root(&mut self, key: &str) {
         self.watchers.remove(key);
         self.roots.remove(key);
+        self.metadata_managed_root_keys.remove(key);
         self.pending.lock().expect("watch pending lock").remove(key);
         self.pending_git_invalidations
             .lock()
@@ -283,6 +384,7 @@ struct NotifyEventContext<'a> {
     write_tracker: &'a WriteTracker,
     pending: &'a Arc<Mutex<HashMap<String, PendingInvalidation>>>,
     pending_git_invalidations: &'a Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
+    metadata_managed: bool,
     fs_events: &'a Arc<Mutex<Vec<PendingFsEvent>>>,
 }
 
@@ -304,17 +406,20 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
         let Some(relative_path) = normalize_watched_path(context.watch_root, &absolute_path) else {
             continue;
         };
-        if should_ignore_watch_path(&relative_path) {
+        // Git metadata has a separate topology-aware watcher. Ignoring it here
+        // prevents linked-worktree events from being attributed to the primary scope.
+        if is_git_admin_path(&relative_path) {
+            if !context.metadata_managed {
+                record_pending_git_invalidation(
+                    context.key,
+                    context.root,
+                    GitWatchInvalidationReason::Unknown,
+                    context.pending_git_invalidations,
+                );
+            }
             continue;
         }
-
-        if let Some(reason) = git_watch_invalidation_reason(&relative_path) {
-            record_pending_git_invalidation(
-                context.key,
-                context.root,
-                reason,
-                context.pending_git_invalidations,
-            );
+        if should_ignore_watch_path(&relative_path) {
             continue;
         }
 
@@ -363,6 +468,212 @@ fn handle_notify_event(context: NotifyEventContext<'_>, event: Event) {
                 watch_key: context.key.to_string(),
             });
     }
+}
+
+fn build_metadata_watch_roots(
+    mut scopes: Vec<GitWatchScope>,
+) -> HashMap<String, GitMetadataWatchRoot> {
+    scopes.sort_by(|left, right| {
+        left.root
+            .project_id
+            .0
+            .cmp(&right.root.project_id.0)
+            .then_with(|| watch_key(&left.root).cmp(&watch_key(&right.root)))
+    });
+    let mut roots = HashMap::<String, GitMetadataWatchRoot>::new();
+
+    for scope in scopes {
+        if !scope.common_dir_path.is_dir() || !scope.git_dir_path.is_dir() {
+            continue;
+        }
+
+        let common_key = metadata_watch_key(&scope.common_dir_path);
+        roots
+            .entry(common_key)
+            .or_insert_with(|| GitMetadataWatchRoot {
+                watch_path: scope.common_dir_path.clone(),
+                common_dir_path: scope.common_dir_path.clone(),
+                scopes: Vec::new(),
+            })
+            .scopes
+            .push(scope.clone());
+
+        // Standard linked worktree gitdirs live below commonDir. Keep support
+        // for separate layouts without installing duplicate recursive watchers.
+        if !scope.git_dir_path.starts_with(&scope.common_dir_path) {
+            let git_dir_key = metadata_watch_key(&scope.git_dir_path);
+            roots
+                .entry(git_dir_key)
+                .or_insert_with(|| GitMetadataWatchRoot {
+                    watch_path: scope.git_dir_path.clone(),
+                    common_dir_path: scope.common_dir_path.clone(),
+                    scopes: Vec::new(),
+                })
+                .scopes
+                .push(scope);
+        }
+    }
+
+    for root in roots.values_mut() {
+        root.scopes.sort_by_key(|scope| watch_key(&scope.root));
+        root.scopes.dedup_by(|left, right| left.root == right.root);
+    }
+
+    roots
+}
+
+fn handle_git_metadata_event(
+    metadata_root: &GitMetadataWatchRoot,
+    pending_git_invalidations: &Arc<Mutex<HashMap<String, PendingGitInvalidation>>>,
+    event: Event,
+) {
+    for path in event.paths {
+        let absolute_path = if path.is_absolute() {
+            path
+        } else {
+            metadata_root.watch_path.join(path)
+        };
+
+        for (root, reason) in route_git_metadata_path(metadata_root, &absolute_path) {
+            record_pending_git_invalidation(
+                &watch_key(&root),
+                &root,
+                reason,
+                pending_git_invalidations,
+            );
+        }
+    }
+}
+
+fn route_git_metadata_path(
+    metadata_root: &GitMetadataWatchRoot,
+    absolute_path: &Path,
+) -> Vec<(ProjectRoot, GitWatchInvalidationReason)> {
+    let common_relative = normalize_watched_path(&metadata_root.common_dir_path, absolute_path);
+    if common_relative
+        .as_deref()
+        .is_some_and(is_worktree_inventory_path)
+    {
+        return metadata_root
+            .scopes
+            .iter()
+            .map(|scope| (scope.root.clone(), GitWatchInvalidationReason::Worktree))
+            .collect();
+    }
+
+    let exact_scope = metadata_root
+        .scopes
+        .iter()
+        .filter(|scope| absolute_path.starts_with(&scope.git_dir_path))
+        .max_by_key(|scope| scope.git_dir_path.components().count());
+
+    if let Some(scope) = exact_scope.filter(|scope| {
+        scope.git_dir_path != scope.common_dir_path
+            || metadata_root.watch_path != scope.common_dir_path
+    }) {
+        let Some(relative_path) = normalize_watched_path(&scope.git_dir_path, absolute_path) else {
+            return Vec::new();
+        };
+        return git_dir_invalidation_reason(&relative_path)
+            .map(|reason| vec![(scope.root.clone(), reason)])
+            .unwrap_or_default();
+    }
+
+    let Some(relative_path) = common_relative else {
+        return Vec::new();
+    };
+    let normalized = relative_path.replace('\\', "/").to_lowercase();
+
+    if let Some(reason) = primary_git_dir_invalidation_reason(&normalized) {
+        return metadata_root
+            .scopes
+            .iter()
+            .filter(|scope| scope.is_primary)
+            .map(|scope| (scope.root.clone(), reason))
+            .collect();
+    }
+
+    let Some(reason) = common_git_invalidation_reason(&normalized) else {
+        return Vec::new();
+    };
+    metadata_root
+        .scopes
+        .iter()
+        .map(|scope| (scope.root.clone(), reason))
+        .collect()
+}
+
+fn is_worktree_inventory_path(relative_path: &str) -> bool {
+    let normalized = relative_path.replace('\\', "/").to_lowercase();
+    let segments = normalized.split('/').collect::<Vec<_>>();
+    segments.first() == Some(&"worktrees")
+        && (segments.len() <= 2
+            || segments
+                .last()
+                .is_some_and(|segment| matches!(*segment, "gitdir" | "commondir" | "locked")))
+}
+
+fn git_dir_invalidation_reason(relative_path: &str) -> Option<GitWatchInvalidationReason> {
+    let normalized = relative_path.replace('\\', "/").to_lowercase();
+    match normalized.as_str() {
+        "index" | "index.lock" => Some(GitWatchInvalidationReason::Status),
+        "head" | "logs/head" => Some(GitWatchInvalidationReason::Branch),
+        "orig_head" | "merge_head" | "cherry_pick_head" | "rebase_head" => {
+            Some(GitWatchInvalidationReason::Status)
+        }
+        "gitdir" | "commondir" | "locked" => Some(GitWatchInvalidationReason::Worktree),
+        path if path.starts_with("rebase-merge/")
+            || path.starts_with("rebase-apply/")
+            || path.starts_with("sequencer/") =>
+        {
+            Some(GitWatchInvalidationReason::Status)
+        }
+        path if path.starts_with("refs/") || path.starts_with("logs/refs/") => {
+            Some(GitWatchInvalidationReason::Branch)
+        }
+        _ => None,
+    }
+}
+
+fn primary_git_dir_invalidation_reason(relative_path: &str) -> Option<GitWatchInvalidationReason> {
+    match relative_path {
+        "index" | "index.lock" => Some(GitWatchInvalidationReason::Status),
+        "head" | "logs/head" => Some(GitWatchInvalidationReason::Branch),
+        "orig_head" | "merge_head" | "cherry_pick_head" | "rebase_head" => {
+            Some(GitWatchInvalidationReason::Status)
+        }
+        path if path.starts_with("rebase-merge/")
+            || path.starts_with("rebase-apply/")
+            || path.starts_with("sequencer/") =>
+        {
+            Some(GitWatchInvalidationReason::Status)
+        }
+        _ => None,
+    }
+}
+
+fn common_git_invalidation_reason(relative_path: &str) -> Option<GitWatchInvalidationReason> {
+    match relative_path {
+        "packed-refs" => Some(GitWatchInvalidationReason::Branch),
+        "fetch_head" | "config" => Some(GitWatchInvalidationReason::Remote),
+        path if path.starts_with("refs/remotes/") || path.starts_with("logs/refs/remotes/") => {
+            Some(GitWatchInvalidationReason::Remote)
+        }
+        path if path.starts_with("refs/") || path.starts_with("logs/refs/") => {
+            Some(GitWatchInvalidationReason::Branch)
+        }
+        path if path.starts_with("worktrees/") => Some(GitWatchInvalidationReason::Worktree),
+        _ => None,
+    }
+}
+
+fn is_git_admin_path(relative_path: &str) -> bool {
+    let normalized = relative_path.replace('\\', "/").to_lowercase();
+    normalized == ".git" || normalized.starts_with(".git/")
+}
+
+fn metadata_watch_key(path: &Path) -> String {
+    format!("git-metadata:{}", path.to_string_lossy())
 }
 
 fn record_pending_git_invalidation(
@@ -486,6 +797,7 @@ fn watch_key(root: &ProjectRoot) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs::{self, OpenOptions};
+    use std::process::Command;
     use std::thread;
     use std::time::Duration;
 
@@ -560,6 +872,7 @@ mod tests {
                 write_tracker: &tracker,
                 pending: &watchers.pending,
                 pending_git_invalidations: &watchers.pending_git_invalidations,
+                metadata_managed: false,
                 fs_events: &watchers.fs_events,
             },
             event,
@@ -612,6 +925,7 @@ mod tests {
                 write_tracker: &tracker,
                 pending: &watchers.pending,
                 pending_git_invalidations: &watchers.pending_git_invalidations,
+                metadata_managed: false,
                 fs_events: &watchers.fs_events,
             },
             event,
@@ -669,6 +983,41 @@ mod tests {
     }
 
     #[test]
+    fn unmanaged_git_directory_creation_requests_topology_recovery() {
+        let temp = TempDir::new().expect("temp");
+        let git_dir = temp.path().join(".git");
+        fs::create_dir(&git_dir).expect("git dir");
+        let head_path = git_dir.join("HEAD");
+        fs::write(&head_path, "ref: refs/heads/main\n").expect("head");
+        let root = project_root(temp.path());
+        let mut watchers = WatcherRegistry::new();
+        let key = watch_key(&root);
+        watchers.roots.insert(key.clone(), root.clone());
+        let tracker = watchers.write_tracker();
+        let mut event = Event::new(EventKind::Create(notify::event::CreateKind::File));
+        event.paths.push(head_path);
+
+        handle_notify_event(
+            NotifyEventContext {
+                key: &key,
+                root: &root,
+                watch_root: temp.path(),
+                write_tracker: &tracker,
+                pending: &watchers.pending,
+                pending_git_invalidations: &watchers.pending_git_invalidations,
+                metadata_managed: false,
+                fs_events: &watchers.fs_events,
+            },
+            event,
+        );
+
+        let drain = watchers.drain(true);
+        assert_eq!(drain.git_invalidations.len(), 1);
+        assert_eq!(drain.git_invalidations[0].reason, "unknown");
+        assert!(drain.invalidations.is_empty());
+    }
+
+    #[test]
     fn discards_events_from_a_worktree_removed_before_its_callback_runs() {
         let temp = TempDir::new().expect("temp");
         let active_path = temp.path().join("active");
@@ -703,6 +1052,7 @@ mod tests {
                 write_tracker: &tracker,
                 pending: &watchers.pending,
                 pending_git_invalidations: &watchers.pending_git_invalidations,
+                metadata_managed: false,
                 fs_events: &watchers.fs_events,
             },
             event,
@@ -726,6 +1076,182 @@ mod tests {
         assert_eq!(drain.invalidations[0].worktree_id, active_root.worktree_id,);
         assert!(drain.git_invalidations.is_empty());
         assert!(drain.fs_events.is_empty());
+    }
+
+    #[test]
+    fn routes_linked_worktree_index_to_its_exact_scope() {
+        let temp = TempDir::new().expect("temp");
+        let common_dir = temp.path().join("repo/.git");
+        let primary_root = worktree_root(&temp.path().join("repo"), "project_1:primary");
+        let linked_root = worktree_root(&temp.path().join("linked"), "worktree-linked");
+        let linked_git_dir = common_dir.join("worktrees/linked");
+        let metadata_root = GitMetadataWatchRoot {
+            watch_path: common_dir.clone(),
+            common_dir_path: common_dir.clone(),
+            scopes: vec![
+                git_watch_scope(&primary_root, &common_dir, &common_dir, true),
+                git_watch_scope(&linked_root, &linked_git_dir, &common_dir, false),
+            ],
+        };
+
+        let routed = route_git_metadata_path(&metadata_root, &linked_git_dir.join("index"));
+
+        assert_eq!(
+            routed,
+            vec![(linked_root, GitWatchInvalidationReason::Status)]
+        );
+    }
+
+    #[test]
+    fn routes_shared_refs_to_every_worktree_scope() {
+        let temp = TempDir::new().expect("temp");
+        let common_dir = temp.path().join("repo/.git");
+        let primary_root = worktree_root(&temp.path().join("repo"), "project_1:primary");
+        let linked_root = worktree_root(&temp.path().join("linked"), "worktree-linked");
+        let metadata_root = GitMetadataWatchRoot {
+            watch_path: common_dir.clone(),
+            common_dir_path: common_dir.clone(),
+            scopes: vec![
+                git_watch_scope(&primary_root, &common_dir, &common_dir, true),
+                git_watch_scope(
+                    &linked_root,
+                    &common_dir.join("worktrees/linked"),
+                    &common_dir,
+                    false,
+                ),
+            ],
+        };
+
+        let routed =
+            route_git_metadata_path(&metadata_root, &common_dir.join("refs/heads/feature"));
+
+        assert_eq!(routed.len(), 2);
+        assert!(
+            routed
+                .iter()
+                .all(|(_, reason)| { *reason == GitWatchInvalidationReason::Branch })
+        );
+    }
+
+    #[test]
+    fn observes_git_add_and_commit_inside_a_real_linked_worktree() {
+        let temp = TempDir::new().expect("temp");
+        let primary_path = temp.path().join("primary");
+        let linked_path = temp.path().join("linked");
+        fs::create_dir(&primary_path).expect("primary directory");
+        run_git(&primary_path, &["init", "-b", "main"]);
+        run_git(&primary_path, &["config", "user.name", "Test User"]);
+        run_git(
+            &primary_path,
+            &["config", "user.email", "test@example.invalid"],
+        );
+        fs::write(primary_path.join("tracked.txt"), "base\n").expect("base file");
+        run_git(&primary_path, &["add", "tracked.txt"]);
+        run_git(&primary_path, &["commit", "-m", "initial"]);
+        run_git(
+            &primary_path,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "feature",
+                linked_path.to_str().expect("linked path"),
+            ],
+        );
+
+        let common_dir = git_path(&linked_path, "--git-common-dir");
+        let primary_git_dir = git_path(&primary_path, "--git-dir");
+        let linked_git_dir = git_path(&linked_path, "--git-dir");
+        let primary_root = worktree_root(&primary_path, "project_1:primary");
+        let linked_root = worktree_root(&linked_path, "worktree-linked");
+        let mut watchers = WatcherRegistry::new();
+        watchers
+            .sync_topology(
+                vec![primary_root.clone(), linked_root.clone()],
+                vec![
+                    git_watch_scope(&primary_root, &primary_git_dir, &common_dir, true),
+                    git_watch_scope(&linked_root, &linked_git_dir, &common_dir, false),
+                ],
+            )
+            .expect("watch topology");
+        thread::sleep(Duration::from_millis(120));
+
+        fs::write(linked_path.join("tracked.txt"), "changed\n").expect("linked change");
+        thread::sleep(Duration::from_millis(250));
+        let _ = watchers.drain(true);
+        run_git(&linked_path, &["add", "tracked.txt"]);
+
+        let invalidations = wait_for_git_invalidations(&mut watchers);
+        assert!(invalidations.iter().any(|invalidation| {
+            invalidation.worktree_id == linked_root.worktree_id && invalidation.reason == "status"
+        }));
+        assert!(
+            !invalidations
+                .iter()
+                .any(|invalidation| invalidation.worktree_id == primary_root.worktree_id)
+        );
+
+        run_git(&linked_path, &["commit", "-m", "linked commit"]);
+        let commit_invalidations = wait_for_git_invalidations(&mut watchers);
+        assert!(commit_invalidations.iter().any(|invalidation| {
+            invalidation.worktree_id == linked_root.worktree_id && invalidation.reason == "branch"
+        }));
+    }
+
+    fn git_watch_scope(
+        root: &ProjectRoot,
+        git_dir_path: &Path,
+        common_dir_path: &Path,
+        is_primary: bool,
+    ) -> GitWatchScope {
+        GitWatchScope {
+            root: root.clone(),
+            git_dir_path: git_dir_path.to_path_buf(),
+            common_dir_path: common_dir_path.to_path_buf(),
+            is_primary,
+        }
+    }
+
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn git_path(cwd: &Path, argument: &str) -> PathBuf {
+        let output = Command::new("git")
+            .args(["rev-parse", "--path-format=absolute", argument])
+            .current_dir(cwd)
+            .output()
+            .expect("resolve git path");
+        assert!(output.status.success(), "resolve {argument}");
+        PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("utf8 git path")
+                .trim(),
+        )
+    }
+
+    fn wait_for_git_invalidations(
+        watchers: &mut WatcherRegistry,
+    ) -> Vec<NativeGitRepositoryInvalidation> {
+        let started = Instant::now();
+        let mut invalidations = Vec::new();
+        while started.elapsed() < Duration::from_secs(3) {
+            thread::sleep(Duration::from_millis(50));
+            invalidations.extend(watchers.drain(false).git_invalidations);
+            if !invalidations.is_empty() {
+                break;
+            }
+        }
+        invalidations
     }
 
     fn worktree_root(path: &Path, worktree_id: &str) -> ProjectRoot {
