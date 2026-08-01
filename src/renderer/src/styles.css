@@ -2010,7 +2010,6 @@ button {
 .workspace-inspector-tab__label {
     min-width: 0;
     overflow: hidden;
-    font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
