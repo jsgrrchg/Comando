@@ -1783,10 +1783,7 @@ function FragmentPane({
 function WorkspacePaneView({
     defaultProjectId,
     defaultWorktreeId,
-    recentProjects,
     paneId,
-    onOpenProject,
-    onOpenProjects,
     onRequestCreateFile,
     runtimeCatalog,
     tabDrag,
@@ -3115,11 +3112,7 @@ function WorkspacePaneView({
                                     <GitHubPullRequestTabView tab={activeTab} />
                                 ) : null
                             ) : (
-                                <WorkspacePaneEmptyState
-                                    onOpenProject={onOpenProject}
-                                    onOpenProjects={onOpenProjects}
-                                    recentProjects={recentProjects}
-                                />
+                                <WorkspacePaneEmptyState />
                             )}
                         </>
                     ) : null}
