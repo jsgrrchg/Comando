@@ -81,6 +81,74 @@ export type NativeDurableWorkspacePurgeOutput = {
     readonly purgedScopeKey: NativeWorkspaceScopeKey;
 };
 
+export type NativeWorkspaceDeletionKind =
+    | "clear_project_data"
+    | "delete_worktree";
+
+export type NativeWorkspaceDeletionStatus =
+    | "checkout_deleted"
+    | "completed"
+    | "failed"
+    | "pending"
+    | "purging";
+
+export type NativeWorkspaceDeletionJournalEntry = {
+    readonly operationId: string;
+    readonly kind: NativeWorkspaceDeletionKind;
+    readonly scopeKey: NativeWorkspaceScopeKey;
+    readonly projectId: NativeProjectId;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly checkoutPath: string | null;
+    readonly status: NativeWorkspaceDeletionStatus;
+    readonly forceApproved: boolean;
+    readonly sessionIds: readonly string[];
+    readonly errorCode: string | null;
+    readonly startedAt: string;
+    readonly updatedAt: string;
+};
+
+export type NativeWorkspaceDeletionBeginInput = {
+    readonly operationId: string;
+    readonly kind: NativeWorkspaceDeletionKind;
+    readonly scopeKey: NativeWorkspaceScopeKey;
+    readonly projectId: NativeProjectId;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly checkoutPath: string | null;
+    readonly forceApproved: boolean;
+    readonly sessionIds: readonly string[];
+};
+
+export type NativeWorkspaceDeletionUpdateInput = {
+    readonly operationId: string;
+    readonly status: NativeWorkspaceDeletionStatus;
+    readonly errorCode: string | null;
+};
+
+export type NativeWorkspaceRecoveryLayoutSummary = {
+    readonly id: string;
+    readonly scopeKey: NativeWorkspaceScopeKey;
+    readonly sourceWindowId: string | null;
+    readonly sourceWorkspaceId: string | null;
+    readonly sourceRevision: number;
+    readonly sourceUpdatedAt: string;
+    readonly snapshotHash: string;
+    readonly createdAt: string;
+};
+
+export type NativeWorkspaceRecoveryApplyInput = {
+    readonly recoveryId: string;
+    readonly scopeKey: NativeWorkspaceScopeKey;
+    readonly expectedRevision: number;
+};
+
+export type NativeWorkspaceReassociateInput = {
+    readonly sourceScopeKey: NativeWorkspaceScopeKey;
+    readonly targetScopeKey: NativeWorkspaceScopeKey;
+    readonly projectId: NativeProjectId;
+    readonly targetWorktreeId: NativeWorktreeId;
+    readonly expectedRevision: number;
+};
+
 export type NativeLegacyWorkspaceContext = {
     readonly scopeKey: NativeWorkspaceScopeKey;
     readonly projectId: NativeProjectId;

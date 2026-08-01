@@ -31,9 +31,14 @@ describe("workspace navigator model", () => {
             recoveryByScopeKey: {
                 [durableMissing.scopeKey]: [
                     {
+                        createdAt: "2026-08-01T00:00:00.000Z",
+                        id: "recovery-a",
                         scopeKey: durableMissing.scopeKey,
                         snapshotHash: "hash-a",
+                        sourceRevision: 1,
+                        sourceUpdatedAt: "2026-08-01T00:00:00.000Z",
                         sourceWindowId: "legacy-window",
+                        sourceWorkspaceId: null,
                     },
                 ],
             },
@@ -128,6 +133,55 @@ describe("workspace navigator model", () => {
             workspaces: [expect.objectContaining({ isPrimary: true })],
         });
         expect(model.projects[1]?.inventoryError).toBeNull();
+    });
+
+    it("hides archived projects and exposes resumable deletion tombstones", () => {
+        const archived = catalogFixture("project-hidden", null, "archived");
+        const project = projectFixture("project-a", "Comando");
+        const deleting = catalogFixture("project-a", "worktree-delete");
+        const model = buildWorkspaceNavigatorModel({
+            catalogEntries: {
+                [archived.scopeKey]: archived,
+                [deleting.scopeKey]: deleting,
+            },
+            diagnostics: null,
+            pendingDeletionByScopeKey: {
+                [deleting.scopeKey]: {
+                    checkoutPath: "/projects/project-a-delete",
+                    errorCode: "post_checkout:interrupted",
+                    forceApproved: true,
+                    kind: "delete_worktree",
+                    operationId: "delete-a",
+                    projectId: project.id,
+                    scopeKey: deleting.scopeKey,
+                    sessionIds: ["session-a"],
+                    startedAt: "2026-08-01T00:00:00.000Z",
+                    status: "failed",
+                    updatedAt: "2026-08-01T00:01:00.000Z",
+                    worktreeId: "worktree-delete",
+                },
+            },
+            projects: [project],
+            worktreesByProject: {
+                [project.id]: [
+                    worktreeFixture(project.id, null, true, "main"),
+                    worktreeFixture(
+                        project.id,
+                        "worktree-delete",
+                        false,
+                        "feature/delete",
+                    ),
+                ],
+            },
+        });
+
+        expect(model.projects.map((candidate) => candidate.id)).toEqual([
+            "project-a",
+        ]);
+        expect(model.projects[0]?.workspaces[1]).toMatchObject({
+            deletionOperation: { operationId: "delete-a" },
+            status: "deletion-pending",
+        });
     });
 
     it("models a large catalog without creating surface diagnostics", () => {

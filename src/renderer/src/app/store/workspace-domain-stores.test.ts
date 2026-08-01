@@ -138,9 +138,14 @@ describe("workspace host domain stores", () => {
         ]);
         workspaceCatalogStore.getState().setRecoveryLayouts([
             {
+                createdAt: "2026-08-01T00:00:00.000Z",
+                id: "recovery-a",
                 scopeKey: "project-1::__primary__",
                 snapshotHash: "hash-a",
+                sourceRevision: 1,
+                sourceUpdatedAt: "2026-08-01T00:00:00.000Z",
                 sourceWindowId: "legacy-window",
+                sourceWorkspaceId: null,
             },
         ]);
         workspaceCatalogStore.getState().setSurfaceDiagnostics({
@@ -177,6 +182,7 @@ describe("workspace host domain stores", () => {
                         shellSnapshot: {},
                         updatedAt: "2026-08-01T00:00:00.000Z",
                     },
+                    pendingDeletions: [],
                     recoveryLayouts: [],
                     workspaces: [],
                 }),
@@ -197,5 +203,39 @@ describe("workspace host domain stores", () => {
             revision: 8,
             source: "durable",
         });
+    });
+
+    it("shows only post-checkout deletion journals as cleanup tombstones", () => {
+        const base = {
+            checkoutPath: "/tmp/worktree",
+            forceApproved: false,
+            kind: "delete_worktree" as const,
+            projectId: "project-1",
+            sessionIds: [] as readonly string[],
+            startedAt: "2026-08-01T00:00:00.000Z",
+            status: "failed" as const,
+            updatedAt: "2026-08-01T00:01:00.000Z",
+            worktreeId: "worktree-1",
+        };
+        workspaceCatalogStore.getState().setPendingDeletions([
+            {
+                ...base,
+                errorCode: "pre_checkout:git failed",
+                operationId: "before-checkout",
+                scopeKey: "project-1::before",
+            },
+            {
+                ...base,
+                errorCode: "post_checkout:filesystem failed",
+                operationId: "after-checkout",
+                scopeKey: "project-1::after",
+            },
+        ]);
+
+        expect(
+            Object.keys(
+                workspaceCatalogStore.getState().pendingDeletionByScopeKey,
+            ),
+        ).toEqual(["project-1::after"]);
     });
 });

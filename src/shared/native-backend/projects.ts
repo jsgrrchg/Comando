@@ -82,8 +82,10 @@ export type NativeProjectRelocateResult = {
 
 export type NativeProjectAppDataSummary = {
     readonly chatSessionCount: number;
+    readonly durableWorkspaceCount: number;
     readonly projectSettingsCount: number;
     readonly recentProjectCount: number;
+    readonly recoveryLayoutCount: number;
     readonly workspaceLayoutCount: number;
     readonly workspaceSessionCount: number;
     readonly workspaceTabCount: number;

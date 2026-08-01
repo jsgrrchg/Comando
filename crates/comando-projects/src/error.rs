@@ -33,6 +33,9 @@ pub enum ProjectRegistryError {
 
     #[error("I/O project registry error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("Workspace lifecycle update failed: {0}")]
+    Lifecycle(String),
 }
 
 impl ProjectRegistryError {
@@ -45,7 +48,7 @@ impl ProjectRegistryError {
             Self::ProjectPathAlreadyRegistered { .. } | Self::WorktreePathAlreadyRegistered => {
                 NativeErrorCode::Conflict
             }
-            Self::Sqlite(_) | Self::Io(_) => NativeErrorCode::InternalError,
+            Self::Sqlite(_) | Self::Io(_) | Self::Lifecycle(_) => NativeErrorCode::InternalError,
         }
     }
 

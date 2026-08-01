@@ -105,6 +105,14 @@ impl<'a> ProjectRegistry<'a> {
             "DELETE FROM recent_projects WHERE project_id = ?1",
             [&project_id.0],
         )?;
+        let archived_scope_keys = project_scope_keys(&transaction, &project_id.0)?;
+        transaction.execute(
+            "UPDATE durable_workspaces SET lifecycle = 'archived', layout_revision = layout_revision + 1, updated_at = ?1 WHERE project_id = ?2 AND lifecycle <> 'archived'",
+            params![comando_persistence::store::now_rfc3339(), project_id.0],
+        )?;
+        remove_navigation_scopes(&transaction, &archived_scope_keys)?;
+        comando_persistence::refresh_v3_projection(&transaction)
+            .map_err(|error| ProjectRegistryError::Lifecycle(error.to_string()))?;
         transaction.commit()?;
 
         load_project_state(self.connection)
@@ -363,6 +371,18 @@ impl<'a> ProjectRegistry<'a> {
                 params_from_iter(worktree_ids.iter()),
             )?;
         }
+        let scope_keys = project_scope_keys(&transaction, &project_id.0)?;
+        remove_navigation_scopes(&transaction, &scope_keys)?;
+        transaction.execute(
+            "DELETE FROM workspace_layout_recovery WHERE scope_key IN (SELECT scope_key FROM durable_workspaces WHERE project_id = ?1)",
+            [&project_id.0],
+        )?;
+        transaction.execute(
+            "DELETE FROM durable_workspaces WHERE project_id = ?1",
+            [&project_id.0],
+        )?;
+        comando_persistence::refresh_v3_projection(&transaction)
+            .map_err(|error| ProjectRegistryError::Lifecycle(error.to_string()))?;
         transaction.commit()?;
 
         Ok(NativeProjectClearAppDataResult {
@@ -426,6 +446,15 @@ impl<'a> ProjectRegistry<'a> {
             if existing.is_primary == 1 && !desired_worktrees.contains_key(&existing_root_key) {
                 continue;
             }
+            // Preserve closed-session ownership before the worktree FK is cleared.
+            transaction.execute(
+                "INSERT OR IGNORE INTO workspace_scope_session_tombstones (scope_key, session_id, project_id, created_at) SELECT durable_workspaces.scope_key, chat_sessions.id, ?1, ?2 FROM durable_workspaces JOIN chat_sessions ON chat_sessions.project_id = durable_workspaces.project_id AND chat_sessions.worktree_id = durable_workspaces.worktree_id WHERE durable_workspaces.project_id = ?1 AND durable_workspaces.worktree_id = ?3",
+                params![project_id.0, now, existing.id],
+            )?;
+            transaction.execute(
+                "UPDATE durable_workspaces SET lifecycle = 'orphaned', layout_revision = layout_revision + 1, updated_at = ?1 WHERE project_id = ?2 AND worktree_id = ?3 AND lifecycle <> 'orphaned'",
+                params![now, project_id.0, existing.id],
+            )?;
             transaction.execute(
                 "DELETE FROM project_worktrees WHERE id = ?1",
                 [&existing.id],
@@ -477,8 +506,14 @@ impl<'a> ProjectRegistry<'a> {
                     now
                 ],
             )?;
+            transaction.execute(
+                "UPDATE durable_workspaces SET lifecycle = 'active', layout_revision = layout_revision + 1, updated_at = ?1 WHERE project_id = ?2 AND worktree_id = ?3 AND lifecycle = 'orphaned'",
+                params![now, project_id.0, worktree_id],
+            )?;
         }
 
+        comando_persistence::refresh_v3_projection(&transaction)
+            .map_err(|error| ProjectRegistryError::Lifecycle(error.to_string()))?;
         transaction.commit()?;
         list_project_worktrees(self.connection, &project_id.0)
     }
@@ -498,6 +533,47 @@ pub fn load_project_state(
         projects: list_project_records(connection)?,
         worktrees: list_visible_worktrees(connection)?,
     })
+}
+
+fn project_scope_keys(
+    connection: &Connection,
+    project_id: &str,
+) -> Result<BTreeSet<String>, ProjectRegistryError> {
+    let mut statement =
+        connection.prepare("SELECT scope_key FROM durable_workspaces WHERE project_id = ?1")?;
+    let rows = statement.query_map([project_id], |row| row.get::<_, String>(0))?;
+    rows.collect::<Result<BTreeSet<_>, _>>()
+        .map_err(ProjectRegistryError::from)
+}
+
+fn remove_navigation_scopes(
+    connection: &Connection,
+    scope_keys: &BTreeSet<String>,
+) -> Result<(), ProjectRegistryError> {
+    if scope_keys.is_empty() {
+        return Ok(());
+    }
+    let (active_scope_key, recent_json, revision): (Option<String>, String, i64) =
+        connection.query_row(
+            "SELECT active_scope_key, recent_scope_keys_json, revision FROM app_workspace_navigation WHERE singleton_id = 'main'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    let recent_scope_keys = serde_json::from_str::<Vec<String>>(&recent_json)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|scope_key| !scope_keys.contains(scope_key))
+        .collect::<Vec<_>>();
+    connection.execute(
+        "UPDATE app_workspace_navigation SET active_scope_key = ?1, recent_scope_keys_json = ?2, revision = ?3, updated_at = ?4 WHERE singleton_id = 'main'",
+        params![
+            active_scope_key.filter(|scope_key| !scope_keys.contains(scope_key)),
+            serde_json::to_string(&recent_scope_keys).unwrap_or_else(|_| "[]".to_string()),
+            revision.saturating_add(1),
+            comando_persistence::store::now_rfc3339(),
+        ],
+    )?;
+    Ok(())
 }
 
 fn add_project_path(
@@ -550,6 +626,13 @@ fn add_project_path(
             project_id
         }
     };
+
+    transaction.execute(
+        "UPDATE durable_workspaces SET lifecycle = 'active', layout_revision = layout_revision + 1, updated_at = ?1 WHERE project_id = ?2 AND lifecycle = 'archived'",
+        params![now, project_id],
+    )?;
+    comando_persistence::refresh_v3_projection(transaction)
+        .map_err(|error| ProjectRegistryError::Lifecycle(error.to_string()))?;
 
     ensure_project_roots(transaction, &project_id, metadata)?;
     ensure_primary_worktree(
@@ -979,6 +1062,11 @@ fn project_app_data_summary(
             "SELECT COUNT(*) FROM chat_sessions WHERE project_id = ?1",
             project_id,
         )?,
+        durable_workspace_count: count_project_rows(
+            connection,
+            "SELECT COUNT(*) FROM durable_workspaces WHERE project_id = ?1",
+            project_id,
+        )?,
         project_settings_count: count_project_rows(
             connection,
             "SELECT COUNT(*) FROM project_settings WHERE project_id = ?1",
@@ -987,6 +1075,11 @@ fn project_app_data_summary(
         recent_project_count: count_project_rows(
             connection,
             "SELECT COUNT(*) FROM recent_projects WHERE project_id = ?1",
+            project_id,
+        )?,
+        recovery_layout_count: count_project_rows(
+            connection,
+            "SELECT COUNT(*) FROM workspace_layout_recovery WHERE scope_key IN (SELECT scope_key FROM durable_workspaces WHERE project_id = ?1)",
             project_id,
         )?,
         workspace_layout_count,
@@ -1379,6 +1472,119 @@ mod tests {
     }
 
     #[test]
+    fn removing_and_readding_project_archives_then_revives_durable_workspaces() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let project_root = create_dir(temp_dir.path(), "archive-reopen");
+        let mut connection = create_current_schema();
+        let first = ProjectRegistry::new(&mut connection)
+            .add_project_paths(std::slice::from_ref(&project_root))
+            .expect("first add");
+        let project_id = first.project_ids_to_open[0].0.clone();
+        let scope_key = format!("{project_id}::__primary__");
+        seed_durable_workspace(
+            &connection,
+            &scope_key,
+            &project_id,
+            &format!("{project_id}:primary"),
+        );
+        seed_navigation(&connection, &scope_key);
+
+        ProjectRegistry::new(&mut connection)
+            .remove_project(&comando_types::ids::ProjectId(project_id.clone()))
+            .expect("project hidden");
+        assert_eq!(workspace_lifecycle(&connection, &scope_key), "archived");
+        assert_eq!(navigation_active_scope(&connection), None);
+
+        let reopened = ProjectRegistry::new(&mut connection)
+            .add_project_paths(std::slice::from_ref(&project_root))
+            .expect("project reopened");
+        assert_eq!(reopened.project_ids_to_open[0].0, project_id);
+        assert_eq!(workspace_lifecycle(&connection, &scope_key), "active");
+    }
+
+    #[test]
+    fn external_worktree_recreation_keeps_the_old_scope_orphaned() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let project_root = create_dir(temp_dir.path(), "external-project");
+        let worktree_root = create_dir(temp_dir.path(), "external-worktree");
+        let mut connection = create_current_schema();
+        let added = ProjectRegistry::new(&mut connection)
+            .add_project_paths(std::slice::from_ref(&project_root))
+            .expect("project added");
+        let project_id = added.project_ids_to_open[0].clone();
+        let initial = ProjectRegistry::new(&mut connection)
+            .sync_project_worktrees(
+                &project_id,
+                &[
+                    NativeProjectSyncWorktree {
+                        root_path: project_root.clone(),
+                        branch_name: Some("main".to_string()),
+                        head_sha: Some("root".to_string()),
+                    },
+                    NativeProjectSyncWorktree {
+                        root_path: worktree_root.clone(),
+                        branch_name: Some("feature".to_string()),
+                        head_sha: Some("feature-a".to_string()),
+                    },
+                ],
+            )
+            .expect("initial sync");
+        let removed_id = initial
+            .iter()
+            .find(|worktree| !worktree.is_primary)
+            .expect("secondary worktree")
+            .id
+            .0
+            .clone();
+        let scope_key = format!("{}::{removed_id}", project_id.0);
+        seed_durable_workspace(&connection, &scope_key, &project_id.0, &removed_id);
+        connection.execute(
+            "INSERT INTO chat_sessions (id, project_id, worktree_id) VALUES ('session-external', ?1, ?2)",
+            params![project_id.0, removed_id],
+        ).expect("scoped chat");
+
+        ProjectRegistry::new(&mut connection)
+            .sync_project_worktrees(
+                &project_id,
+                &[NativeProjectSyncWorktree {
+                    root_path: project_root.clone(),
+                    branch_name: Some("main".to_string()),
+                    head_sha: Some("root".to_string()),
+                }],
+            )
+            .expect("external removal synced");
+        assert_eq!(workspace_lifecycle(&connection, &scope_key), "orphaned");
+        assert_eq!(tombstone_session_count(&connection, &scope_key), 1);
+
+        let recreated = ProjectRegistry::new(&mut connection)
+            .sync_project_worktrees(
+                &project_id,
+                &[
+                    NativeProjectSyncWorktree {
+                        root_path: project_root,
+                        branch_name: Some("main".to_string()),
+                        head_sha: Some("root".to_string()),
+                    },
+                    NativeProjectSyncWorktree {
+                        root_path: worktree_root,
+                        branch_name: Some("feature".to_string()),
+                        head_sha: Some("feature-b".to_string()),
+                    },
+                ],
+            )
+            .expect("recreated worktree synced");
+        let recreated_id = recreated
+            .iter()
+            .find(|worktree| !worktree.is_primary)
+            .expect("recreated secondary")
+            .id
+            .0
+            .clone();
+        assert_ne!(recreated_id, removed_id);
+        assert_eq!(workspace_lifecycle(&connection, &scope_key), "orphaned");
+    }
+
+    #[test]
     fn add_multiple_paths_is_transactional_on_invalid_path() {
         let temp_dir = TempDir::new().expect("temp dir");
         let project_root = create_dir(temp_dir.path(), "valid");
@@ -1427,16 +1633,103 @@ mod tests {
                     project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
                     last_opened_at TEXT NOT NULL
                 );
+                CREATE TABLE chat_sessions (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+                    worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL
+                );
                 CREATE TABLE workspace_sessions (
                     id TEXT PRIMARY KEY,
                     active_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
                     active_worktree_id TEXT REFERENCES project_worktrees(id) ON DELETE SET NULL,
                     last_opened_at TEXT NOT NULL
                 );
+                CREATE TABLE durable_workspaces (
+                    scope_key TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    worktree_id TEXT,
+                    runtime_owner_id TEXT NOT NULL,
+                    layout_snapshot_json TEXT NOT NULL,
+                    layout_revision INTEGER NOT NULL,
+                    lifecycle TEXT NOT NULL,
+                    last_activated_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE workspace_v3_compatibility (
+                    singleton_id TEXT PRIMARY KEY,
+                    projection_template_json TEXT NOT NULL,
+                    projection_revision INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE app_workspace_navigation (
+                    singleton_id TEXT PRIMARY KEY,
+                    active_scope_key TEXT,
+                    recent_scope_keys_json TEXT NOT NULL,
+                    shell_snapshot_json TEXT NOT NULL,
+                    revision INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE workspace_scope_session_tombstones (
+                    scope_key TEXT NOT NULL REFERENCES durable_workspaces(scope_key) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                    project_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY(scope_key, session_id)
+                );
                 ",
             )
             .expect("schema");
         connection
+    }
+
+    fn seed_durable_workspace(
+        connection: &Connection,
+        scope_key: &str,
+        project_id: &str,
+        worktree_id: &str,
+    ) {
+        connection.execute(
+            "INSERT INTO durable_workspaces (scope_key, project_id, worktree_id, runtime_owner_id, layout_snapshot_json, layout_revision, lifecycle, last_activated_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, '{\"tabs\":[]}', 1, 'active', 'now', 'now', 'now')",
+            params![scope_key, project_id, worktree_id, format!("owner:{scope_key}")],
+        ).expect("durable workspace");
+    }
+
+    fn seed_navigation(connection: &Connection, scope_key: &str) {
+        connection.execute(
+            "INSERT INTO app_workspace_navigation (singleton_id, active_scope_key, recent_scope_keys_json, shell_snapshot_json, revision, updated_at) VALUES ('main', ?1, ?2, '{}', 1, 'now')",
+            params![scope_key, serde_json::to_string(&vec![scope_key]).unwrap()],
+        ).expect("navigation");
+    }
+
+    fn workspace_lifecycle(connection: &Connection, scope_key: &str) -> String {
+        connection
+            .query_row(
+                "SELECT lifecycle FROM durable_workspaces WHERE scope_key = ?1",
+                [scope_key],
+                |row| row.get(0),
+            )
+            .expect("workspace lifecycle")
+    }
+
+    fn navigation_active_scope(connection: &Connection) -> Option<String> {
+        connection
+            .query_row(
+                "SELECT active_scope_key FROM app_workspace_navigation WHERE singleton_id = 'main'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("active scope")
+    }
+
+    fn tombstone_session_count(connection: &Connection, scope_key: &str) -> i64 {
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM workspace_scope_session_tombstones WHERE scope_key = ?1",
+                [scope_key],
+                |row| row.get(0),
+            )
+            .expect("tombstone count")
     }
 
     fn seed_project(

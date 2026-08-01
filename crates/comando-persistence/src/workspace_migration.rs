@@ -867,9 +867,7 @@ fn verify_existing_backup(
     Ok(())
 }
 
-pub(crate) fn refresh_v3_projection(
-    connection: &Connection,
-) -> Result<Option<Value>, PersistenceError> {
+pub fn refresh_v3_projection(connection: &Connection) -> Result<Option<Value>, PersistenceError> {
     let compatibility = connection
         .query_row(
             "SELECT projection_template_json, projection_revision FROM workspace_v3_compatibility WHERE singleton_id = ?1",

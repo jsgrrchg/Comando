@@ -7,7 +7,10 @@ import {
     type ReactNode,
 } from "react";
 
-import type { NativeContextMenuEntry } from "@shared/ipc";
+import type {
+    DeleteWorktreePreflightResult,
+    NativeContextMenuEntry,
+} from "@shared/ipc";
 
 import type {
     WorkspaceNavigatorModel,
@@ -16,7 +19,6 @@ import type {
 } from "@renderer/app/workspace-navigator/model";
 
 export interface WorkspaceNavigatorProps {
-    readonly deleteUnavailableReason: string;
     readonly error: string | null;
     readonly expandedProjectIds: readonly string[];
     readonly model: WorkspaceNavigatorModel;
@@ -29,6 +31,24 @@ export interface WorkspaceNavigatorProps {
     readonly onCreateWorktree: (
         project: WorkspaceNavigatorProject,
         branchName: string,
+    ) => Promise<void>;
+    readonly onDeleteWorktree: (
+        workspace: WorkspaceNavigatorWorkspace,
+        forceApproved: boolean,
+    ) => Promise<void>;
+    readonly onPreflightDeleteWorktree: (
+        workspace: WorkspaceNavigatorWorkspace,
+    ) => Promise<DeleteWorktreePreflightResult>;
+    readonly onApplyRecoveryLayout: (
+        workspace: WorkspaceNavigatorWorkspace,
+        recoveryId: string,
+    ) => Promise<void>;
+    readonly onReassociateWorkspace: (
+        workspace: WorkspaceNavigatorWorkspace,
+        target: WorkspaceNavigatorWorkspace,
+    ) => Promise<void>;
+    readonly onRemoveSavedWorkspace: (
+        workspace: WorkspaceNavigatorWorkspace,
     ) => Promise<void>;
     readonly onOpenFolder: () => Promise<void>;
     readonly onOpenSettings: () => void;
@@ -51,9 +71,19 @@ export interface WorkspaceNavigatorProps {
 
 type NavigatorDialog =
     | { readonly kind: "clone" }
-    | { readonly kind: "delete"; readonly workspace: WorkspaceNavigatorWorkspace }
+    | {
+          readonly kind: "delete";
+          readonly preflight: DeleteWorktreePreflightResult;
+          readonly workspace: WorkspaceNavigatorWorkspace;
+      }
     | { readonly kind: "new-worktree"; readonly project: WorkspaceNavigatorProject }
     | { readonly kind: "recovery"; readonly workspace: WorkspaceNavigatorWorkspace }
+    | {
+          readonly candidates: readonly WorkspaceNavigatorWorkspace[];
+          readonly kind: "reassociate";
+          readonly workspace: WorkspaceNavigatorWorkspace;
+      }
+    | { readonly kind: "remove-saved"; readonly workspace: WorkspaceNavigatorWorkspace }
     | { readonly kind: "reset"; readonly workspace: WorkspaceNavigatorWorkspace }
     | null;
 
@@ -64,7 +94,6 @@ type VisibleTreeItem =
 const TYPEAHEAD_RESET_MS = 650;
 
 export function WorkspaceNavigator({
-    deleteUnavailableReason,
     error,
     expandedProjectIds,
     model,
@@ -73,6 +102,11 @@ export function WorkspaceNavigator({
     onCloseWorkspace,
     onCopyPath,
     onCreateWorktree,
+    onDeleteWorktree,
+    onPreflightDeleteWorktree,
+    onApplyRecoveryLayout,
+    onReassociateWorkspace,
+    onRemoveSavedWorkspace,
     onOpenFolder,
     onOpenSettings,
     onRemoveProject,
@@ -200,7 +234,7 @@ export function WorkspaceNavigator({
     const runWorkspaceActivation = async (
         workspace: WorkspaceNavigatorWorkspace,
     ) => {
-        if (pendingScopeKey) {
+        if (pendingScopeKey || workspace.deletionOperation) {
             return;
         }
         setPendingScopeKey(workspace.scopeKey);
@@ -392,7 +426,32 @@ export function WorkspaceNavigator({
         } else if (action === "recovery") {
             setDialog({ kind: "recovery", workspace });
         } else if (action === "delete-worktree") {
-            setDialog({ kind: "delete", workspace });
+            if (workspace.deletionOperation) {
+                await runOperation(
+                    () => onDeleteWorktree(workspace, false),
+                    "Could not finish app-data cleanup.",
+                );
+            } else {
+                await runOperation(async () => {
+                    const preflight = await onPreflightDeleteWorktree(workspace);
+                    setDialog({ kind: "delete", preflight, workspace });
+                }, "Could not inspect this worktree.");
+            }
+        } else if (action === "remove-saved") {
+            setDialog({ kind: "remove-saved", workspace });
+        } else if (action === "reassociate") {
+            const project = model.projects.find(
+                (candidate) => candidate.id === workspace.projectId,
+            );
+            const candidates =
+                project?.workspaces.filter(
+                    (candidate) =>
+                        candidate.scopeKey !== workspace.scopeKey &&
+                        !candidate.isPrimary &&
+                        !candidate.isMissing &&
+                        candidate.catalogEntry.revision === null,
+                ) ?? [];
+            setDialog({ candidates, kind: "reassociate", workspace });
         }
     };
 
@@ -421,11 +480,7 @@ export function WorkspaceNavigator({
             : []),
         { type: "separator" },
         {
-            enabled:
-                !project.isMissing &&
-                project.workspaces.every(
-                    (workspace) => workspace.catalogEntry.source === "registry",
-                ),
+            enabled: !project.isMissing,
             id: "remove-project",
             label: "Remove Project from Navigator",
         },
@@ -435,7 +490,9 @@ export function WorkspaceNavigator({
         workspace: WorkspaceNavigatorWorkspace,
     ): readonly NativeContextMenuEntry[] => [
         {
-            enabled: workspace.scopeKey !== model.activeScopeKey,
+            enabled:
+                workspace.scopeKey !== model.activeScopeKey &&
+                !workspace.deletionOperation,
             id: "activate",
             label: "Activate Workspace",
         },
@@ -457,25 +514,52 @@ export function WorkspaceNavigator({
         },
         { type: "separator" },
         {
-            enabled: workspace.catalogEntry.revision !== null,
+            enabled:
+                workspace.catalogEntry.revision !== null &&
+                !workspace.deletionOperation,
             id: "reset",
             label: "Reset Workspace Layout…",
         },
         {
-            enabled: workspace.recoveryLayouts.length > 0,
+            enabled:
+                workspace.recoveryLayouts.length > 0 &&
+                !workspace.deletionOperation,
             id: "recovery",
             label: `Recovery Layouts (${workspace.recoveryLayouts.length})`,
         },
-        ...(!workspace.isPrimary
+        ...(workspace.deletionOperation
             ? [
                   { type: "separator" as const },
                   {
                       enabled: true,
                       id: "delete-worktree",
-                      label: "Delete Worktree…",
+                      label: "Finish App Data Cleanup",
                   },
               ]
-            : []),
+            : workspace.isMissing && !workspace.isPrimary
+            ? [
+                  { type: "separator" as const },
+                  {
+                      enabled: true,
+                      id: "reassociate",
+                      label: "Reassociate Worktree…",
+                  },
+                  {
+                      enabled: workspace.catalogEntry.revision !== null,
+                      id: "remove-saved",
+                      label: "Remove Saved Workspace…",
+                  },
+              ]
+            : !workspace.isPrimary
+              ? [
+                    { type: "separator" as const },
+                    {
+                        enabled: true,
+                        id: "delete-worktree",
+                        label: "Delete Worktree…",
+                    },
+                ]
+              : []),
     ];
 
     const renderProject = (project: WorkspaceNavigatorProject) => {
@@ -542,6 +626,11 @@ export function WorkspaceNavigator({
                             return (
                                 <div
                                     aria-current={active ? "page" : undefined}
+                                    aria-disabled={
+                                        workspace.deletionOperation
+                                            ? true
+                                            : undefined
+                                    }
                                     aria-describedby={
                                         localError
                                             ? `workspace-error-${workspace.scopeKey}`
@@ -732,17 +821,52 @@ export function WorkspaceNavigator({
                             title={`Reset ${dialog.workspace.label}?`}
                         />
                     ) : dialog.kind === "delete" ? (
-                        <ConfirmationDialog
-                            confirmDisabledReason={deleteUnavailableReason}
-                            confirmLabel="Delete Worktree"
-                            danger
-                            description={`This will permanently delete ${dialog.workspace.rootPath ?? dialog.workspace.worktreeId ?? dialog.workspace.label} and purge its layout, drafts, recovery layouts, navigation references, transcripts, runtime metadata, and recoverable terminal data. The parent project and sibling worktrees are not affected.`}
+                        <DeleteWorktreeDialog
                             onCancel={() => setDialog(null)}
-                            onConfirm={() => Promise.resolve()}
-                            title={`Delete ${dialog.workspace.label}?`}
+                            onConfirm={async (forceApproved) => {
+                                await onDeleteWorktree(
+                                    dialog.workspace,
+                                    forceApproved,
+                                );
+                                setDialog(null);
+                            }}
+                            preflight={dialog.preflight}
+                            workspace={dialog.workspace}
+                        />
+                    ) : dialog.kind === "remove-saved" ? (
+                        <ConfirmationDialog
+                            confirmLabel="Remove Saved Workspace"
+                            danger
+                            description="This removes the saved layout, drafts, recovery layouts, and navigation references for this missing worktree. Chat history is preserved."
+                            onCancel={() => setDialog(null)}
+                            onConfirm={async () => {
+                                await onRemoveSavedWorkspace(dialog.workspace);
+                                setDialog(null);
+                            }}
+                            title={`Remove ${dialog.workspace.label}?`}
+                        />
+                    ) : dialog.kind === "reassociate" ? (
+                        <ReassociateDialog
+                            candidates={dialog.candidates}
+                            onCancel={() => setDialog(null)}
+                            onConfirm={async (target) => {
+                                await onReassociateWorkspace(
+                                    dialog.workspace,
+                                    target,
+                                );
+                                setDialog(null);
+                            }}
+                            workspace={dialog.workspace}
                         />
                     ) : (
                         <RecoveryDialog
+                            onApply={async (recoveryId) => {
+                                await onApplyRecoveryLayout(
+                                    dialog.workspace,
+                                    recoveryId,
+                                );
+                                setDialog(null);
+                            }}
                             onClose={() => setDialog(null)}
                             workspace={dialog.workspace}
                         />
@@ -981,27 +1105,164 @@ function ConfirmationDialog({
     );
 }
 
+function DeleteWorktreeDialog({
+    onCancel,
+    onConfirm,
+    preflight,
+    workspace,
+}: {
+    readonly onCancel: () => void;
+    readonly onConfirm: (forceApproved: boolean) => Promise<void>;
+    readonly preflight: DeleteWorktreePreflightResult;
+    readonly workspace: WorkspaceNavigatorWorkspace;
+}) {
+    const [riskReviewed, setRiskReviewed] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const disabledReason =
+        preflight.blockers[0] ??
+        (preflight.requiresForce && !riskReviewed
+            ? "Review and approve the uncommitted-change warning first."
+            : null);
+    const submit = async () => {
+        setSubmitting(true);
+        setError(null);
+        try {
+            await onConfirm(preflight.requiresForce && riskReviewed);
+        } catch (cause) {
+            setError(formatError(cause, "The worktree could not be deleted."));
+            setSubmitting(false);
+        }
+    };
+    return (
+        <div>
+            <h2>Delete {workspace.label}?</h2>
+            <p>This permanently removes the checkout and all app data saved exclusively for this workspace. The parent project and sibling worktrees are preserved.</p>
+            <dl className="workspace-navigator-delete-inventory">
+                <div><dt>Checkout</dt><dd>{preflight.inventory.checkoutPath}</dd></div>
+                <div><dt>Saved layout</dt><dd>{preflight.inventory.workspaceLayoutCount}</dd></div>
+                <div><dt>Recovery layouts</dt><dd>{preflight.inventory.recoveryLayoutCount}</dd></div>
+                <div><dt>Chat sessions</dt><dd>{preflight.inventory.chatSessionCount}</dd></div>
+                <div><dt>Live runtimes</dt><dd>{preflight.inventory.runtimeCount}</dd></div>
+            </dl>
+            {preflight.blockers.map((blocker) => (
+                <div className="workspace-navigator-dialog-error" key={blocker} role="alert">{blocker}</div>
+            ))}
+            {preflight.warnings.map((warning) => (
+                <div className="workspace-navigator-dialog-warning" key={warning} role="status">{warning}</div>
+            ))}
+            {preflight.requiresForce ? (
+                <label className="workspace-navigator-danger-check">
+                    <input
+                        checked={riskReviewed}
+                        onChange={(event) => setRiskReviewed(event.target.checked)}
+                        type="checkbox"
+                    />
+                    I understand that uncommitted and untracked files will be deleted.
+                </label>
+            ) : null}
+            {error ? <div className="workspace-navigator-dialog-error" role="alert">{error}</div> : null}
+            <div className="workspace-navigator-dialog-actions">
+                <button disabled={submitting} onClick={onCancel} type="button">Cancel</button>
+                <button
+                    className="danger"
+                    disabled={submitting || Boolean(disabledReason)}
+                    onClick={() => void submit()}
+                    title={disabledReason ?? undefined}
+                    type="button"
+                >
+                    {submitting ? "Deleting…" : "Delete Worktree"}
+                </button>
+            </div>
+        </div>
+    );
+}
+
+function ReassociateDialog({
+    candidates,
+    onCancel,
+    onConfirm,
+    workspace,
+}: {
+    readonly candidates: readonly WorkspaceNavigatorWorkspace[];
+    readonly onCancel: () => void;
+    readonly onConfirm: (target: WorkspaceNavigatorWorkspace) => Promise<void>;
+    readonly workspace: WorkspaceNavigatorWorkspace;
+}) {
+    const [targetScopeKey, setTargetScopeKey] = useState(candidates[0]?.scopeKey ?? "");
+    const target = candidates.find((candidate) => candidate.scopeKey === targetScopeKey);
+    return (
+        <NavigatorFormDialog
+            description={`Choose the recreated worktree that should receive ${workspace.label}'s saved layout and recovery data. Matching is never inferred automatically.`}
+            onCancel={onCancel}
+            onSubmit={async () => {
+                if (target) await onConfirm(target);
+            }}
+            submitDisabled={!target}
+            submitLabel="Reassociate"
+            title="Reassociate Worktree"
+        >
+            {candidates.length > 0 ? (
+                <select
+                    aria-label="Replacement worktree"
+                    onChange={(event) => setTargetScopeKey(event.target.value)}
+                    value={targetScopeKey}
+                >
+                    {candidates.map((candidate) => (
+                        <option key={candidate.scopeKey} value={candidate.scopeKey}>{candidate.label}</option>
+                    ))}
+                </select>
+            ) : (
+                <div className="workspace-navigator-dialog-warning" role="status">No unassociated replacement worktree is available.</div>
+            )}
+        </NavigatorFormDialog>
+    );
+}
+
 function RecoveryDialog({
+    onApply,
     onClose,
     workspace,
 }: {
+    readonly onApply: (recoveryId: string) => Promise<void>;
     readonly onClose: () => void;
     readonly workspace: WorkspaceNavigatorWorkspace;
 }) {
+    const [applyingId, setApplyingId] = useState<string | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const apply = async (recoveryId: string) => {
+        setApplyingId(recoveryId);
+        setError(null);
+        try {
+            await onApply(recoveryId);
+        } catch (cause) {
+            setError(formatError(cause, "The recovery layout could not be applied."));
+        } finally {
+            setApplyingId(null);
+        }
+    };
     return (
         <div>
             <h2>Recovery Layouts</h2>
-            <p>Saved alternatives for {workspace.label}. Recovery sources remain read-only until the lifecycle tooling can apply one safely.</p>
+            <p>Applying an alternative replaces the current panes, tabs, and drafts. Chat transcripts remain unchanged.</p>
             <ul className="workspace-navigator-recovery-list">
                 {workspace.recoveryLayouts.map((layout) => (
-                    <li key={`${layout.sourceWindowId}:${layout.snapshotHash}`}>
-                        <span>{layout.sourceWindowId}</span>
+                    <li key={layout.id}>
+                        <span>{layout.sourceWindowId ?? "Legacy workspace"}</span>
                         <code>{layout.snapshotHash.slice(0, 12)}</code>
+                        <button
+                            disabled={applyingId !== null}
+                            onClick={() => void apply(layout.id)}
+                            type="button"
+                        >
+                            {applyingId === layout.id ? "Applying…" : "Apply"}
+                        </button>
                     </li>
                 ))}
             </ul>
+            {error ? <div className="workspace-navigator-dialog-error" role="alert">{error}</div> : null}
             <div className="workspace-navigator-dialog-actions">
-                <button onClick={onClose} type="button">Done</button>
+                <button disabled={applyingId !== null} onClick={onClose} type="button">Done</button>
             </div>
         </div>
     );
@@ -1038,6 +1299,8 @@ function WorkspaceRowBadge({
           ? "Retry"
           : status === "activity"
             ? "Activity"
+            : status === "deletion-pending"
+              ? "Cleanup pending"
             : isMissing
               ? "Missing"
               : status === "active"

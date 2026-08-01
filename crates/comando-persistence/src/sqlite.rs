@@ -8,11 +8,12 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::PersistenceError;
 
-pub const STORAGE_SCHEMA_VERSION: &str = "3";
+pub const STORAGE_SCHEMA_VERSION: &str = "4";
 pub const STORAGE_MODE_SQLITE_CURRENT: &str = "sqlite-current";
 
 const DURABLE_WORKSPACE_SCHEMA_MIGRATION_ID: &str = "2026-07-31-durable-workspaces-v4";
 const WORKSPACE_COMPATIBILITY_SCHEMA_MIGRATION_ID: &str = "2026-07-31-workspace-v3-compatibility";
+const WORKSPACE_LIFECYCLE_SCHEMA_MIGRATION_ID: &str = "2026-08-01-workspace-lifecycle";
 
 const REQUIRED_TABLES: &[(&str, &[&str])] = &[
     (
@@ -117,14 +118,22 @@ const REQUIRED_TABLES: &[(&str, &[&str])] = &[
         "workspace_deletion_journal",
         &[
             "operation_id",
+            "operation_kind",
             "scope_key",
+            "project_id",
+            "worktree_id",
             "checkout_path",
             "status",
             "force_approved",
             "error_code",
+            "session_ids_json",
             "started_at",
             "updated_at",
         ],
+    ),
+    (
+        "workspace_scope_session_tombstones",
+        &["scope_key", "session_id", "project_id", "created_at"],
     ),
 ];
 
@@ -164,6 +173,7 @@ impl SqlitePersistenceStore {
         ensure_current_schema(&connection)?;
         ensure_durable_workspace_schema(&mut connection)?;
         ensure_workspace_compatibility_schema(&mut connection)?;
+        ensure_workspace_lifecycle_schema(&mut connection)?;
         validate_schema(&connection)?;
         crate::metadata::ensure_metadata(&connection, STORAGE_SCHEMA_VERSION, &config.mode)?;
 
@@ -207,6 +217,71 @@ impl SqlitePersistenceStore {
     pub fn mode(&self) -> &NativePersistenceMode {
         &self.mode
     }
+}
+
+fn ensure_workspace_lifecycle_schema(connection: &mut Connection) -> Result<(), PersistenceError> {
+    let already_applied = connection
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE id = ?1",
+            [WORKSPACE_LIFECYCLE_SCHEMA_MIGRATION_ID],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if already_applied {
+        return Ok(());
+    }
+
+    let transaction = connection.transaction()?;
+    ensure_column(
+        &transaction,
+        "workspace_deletion_journal",
+        "operation_kind",
+        "TEXT NOT NULL DEFAULT 'delete_worktree'",
+    )?;
+    ensure_column(
+        &transaction,
+        "workspace_deletion_journal",
+        "project_id",
+        "TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_column(
+        &transaction,
+        "workspace_deletion_journal",
+        "worktree_id",
+        "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "workspace_deletion_journal",
+        "session_ids_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    transaction.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS workspace_scope_session_tombstones (
+            scope_key TEXT NOT NULL REFERENCES durable_workspaces(scope_key) ON DELETE CASCADE,
+            session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            project_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(scope_key, session_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_workspace_scope_session_tombstones_project
+            ON workspace_scope_session_tombstones(project_id, scope_key);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_deletion_journal_incomplete_scope
+            ON workspace_deletion_journal(operation_kind, scope_key)
+            WHERE status <> 'completed';
+        ",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations (id, applied_at) VALUES (?1, ?2)",
+        rusqlite::params![
+            WORKSPACE_LIFECYCLE_SCHEMA_MIGRATION_ID,
+            crate::store::now_rfc3339(),
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(())
 }
 
 fn ensure_workspace_compatibility_schema(
@@ -766,7 +841,7 @@ mod tests {
         assert!(second_output.metadata_ready);
         assert_eq!(
             metadata_value(store.connection(), "native.schema_version"),
-            "3"
+            STORAGE_SCHEMA_VERSION
         );
         assert_eq!(
             metadata_value(store.connection(), "native.storage_mode"),
@@ -808,7 +883,7 @@ mod tests {
         assert_eq!(store.health().project_count, 0);
         assert_eq!(
             metadata_value(store.connection(), "native.schema_version"),
-            "3"
+            STORAGE_SCHEMA_VERSION
         );
     }
 
@@ -837,7 +912,7 @@ mod tests {
         })
         .expect("legacy database migrates");
 
-        assert_eq!(output.schema_version, "3");
+        assert_eq!(output.schema_version, STORAGE_SCHEMA_VERSION);
         let legacy_last_opened: String = store
             .connection()
             .query_row(
@@ -901,7 +976,7 @@ mod tests {
         })
         .expect("phase two schema upgrade");
 
-        assert_eq!(output.schema_version, "3");
+        assert_eq!(output.schema_version, STORAGE_SCHEMA_VERSION);
         assert!(table_exists(store.connection(), "workspace_v3_compatibility").unwrap());
         assert_eq!(
             store

@@ -1245,8 +1245,10 @@ export function SettingsApp({
                     if (!window.comando) {
                         return {
                             chatSessionCount: 0,
+                            durableWorkspaceCount: 0,
                             projectSettingsCount: 0,
                             recentProjectCount: 0,
+                            recoveryLayoutCount: 0,
                             workspaceLayoutCount: 0,
                             workspaceSessionCount: 0,
                             workspaceTabCount: 0,

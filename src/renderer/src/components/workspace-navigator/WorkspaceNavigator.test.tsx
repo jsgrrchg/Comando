@@ -109,7 +109,7 @@ describe("WorkspaceNavigator", () => {
             await Promise.resolve();
         });
         expect(document.body.textContent).toContain(
-            "purge its layout, drafts, recovery layouts",
+            "all app data saved exclusively for this workspace",
         );
         expect(document.body.textContent).toContain(
             "/projects/comando-feature",
@@ -117,8 +117,7 @@ describe("WorkspaceNavigator", () => {
         const destructiveButton = container?.querySelector<HTMLButtonElement>(
             ".workspace-navigator-dialog-actions .danger",
         );
-        expect(destructiveButton?.disabled).toBe(true);
-        expect(destructiveButton?.title).toContain("journal");
+        expect(destructiveButton?.disabled).toBe(false);
     });
 
     it("keeps the committed row active while activation fails and exposes retry copy", async () => {
@@ -144,6 +143,76 @@ describe("WorkspaceNavigator", () => {
         expect(rows?.[1]?.textContent).toContain("Retry");
         expect(rows?.[1]?.getAttribute("aria-label")).toContain("Comando");
     });
+
+    it("retries deletion-pending cleanup without running checkout preflight again", async () => {
+        vi.stubGlobal("comando", {
+            showNativeContextMenu: vi.fn(() =>
+                Promise.resolve("delete-worktree"),
+            ),
+        });
+        const model = createModel();
+        const pendingWorkspace = model.projects[0]?.workspaces[1];
+        if (!pendingWorkspace) {
+            throw new Error("Expected secondary workspace fixture.");
+        }
+        const pendingModel: WorkspaceNavigatorModel = {
+            ...model,
+            projects: [
+                {
+                    ...model.projects[0],
+                    workspaces: [
+                        model.projects[0].workspaces[0],
+                        {
+                            ...pendingWorkspace,
+                            deletionOperation: {
+                                checkoutPath: pendingWorkspace.rootPath,
+                                errorCode: "post_checkout:interrupted",
+                                forceApproved: false,
+                                kind: "delete_worktree",
+                                operationId: "delete-a",
+                                projectId: pendingWorkspace.projectId,
+                                scopeKey: pendingWorkspace.scopeKey,
+                                sessionIds: [],
+                                startedAt: "2026-08-01T00:00:00.000Z",
+                                status: "failed",
+                                updatedAt: "2026-08-01T00:01:00.000Z",
+                                worktreeId: pendingWorkspace.worktreeId,
+                            },
+                            status: "deletion-pending",
+                        },
+                    ],
+                },
+            ],
+        };
+        const onDeleteWorktree = vi.fn(() => Promise.resolve());
+        const onPreflightDeleteWorktree = vi.fn();
+        mount(
+            <WorkspaceNavigator
+                {...createProps({
+                    model: pendingModel,
+                    onDeleteWorktree,
+                    onPreflightDeleteWorktree,
+                })}
+            />,
+        );
+        await act(async () => Promise.resolve());
+        const rows = container?.querySelectorAll<HTMLElement>(
+            ".workspace-navigator-workspace-row",
+        );
+
+        await act(async () => {
+            rows?.[1]?.dispatchEvent(
+                new MouseEvent("contextmenu", { bubbles: true }),
+            );
+            await Promise.resolve();
+        });
+
+        expect(onDeleteWorktree).toHaveBeenCalledWith(
+            expect.objectContaining({ scopeKey: "project-a::worktree-feature" }),
+            false,
+        );
+        expect(onPreflightDeleteWorktree).not.toHaveBeenCalled();
+    });
 });
 
 function mount(element: React.ReactNode): void {
@@ -157,8 +226,6 @@ function createProps(
     overrides: Partial<WorkspaceNavigatorProps> = {},
 ): WorkspaceNavigatorProps {
     return {
-        deleteUnavailableReason:
-            "Deletion requires the durable journal and purge pipeline.",
         error: null,
         expandedProjectIds: ["project-a"],
         model: createModel(),
@@ -167,6 +234,24 @@ function createProps(
         onCloseWorkspace: vi.fn(() => Promise.resolve()),
         onCopyPath: vi.fn(() => Promise.resolve()),
         onCreateWorktree: vi.fn(() => Promise.resolve()),
+        onDeleteWorktree: vi.fn(() => Promise.resolve()),
+        onPreflightDeleteWorktree: vi.fn(() =>
+            Promise.resolve({
+                blockers: [],
+                inventory: {
+                    chatSessionCount: 0,
+                    checkoutPath: "/projects/comando-feature",
+                    recoveryLayoutCount: 0,
+                    runtimeCount: 0,
+                    workspaceLayoutCount: 1,
+                },
+                requiresForce: false,
+                warnings: [],
+            }),
+        ),
+        onApplyRecoveryLayout: vi.fn(() => Promise.resolve()),
+        onReassociateWorkspace: vi.fn(() => Promise.resolve()),
+        onRemoveSavedWorkspace: vi.fn(() => Promise.resolve()),
         onOpenFolder: vi.fn(() => Promise.resolve()),
         onOpenSettings: vi.fn(),
         onRemoveProject: vi.fn(() => Promise.resolve()),
@@ -224,6 +309,7 @@ function workspace(
             source: "durable" as const,
             worktreeId,
         },
+        deletionOperation: null,
         isMissing: false,
         isPrimary: worktreeId === null,
         isResident: active,

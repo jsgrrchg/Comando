@@ -17,6 +17,12 @@ import type {
     NativeWorkspaceMigrationRollbackOutput,
     NativeWorkspaceMigrationRunInput,
     NativeWorkspaceMigrationRunOutput,
+    NativeWorkspaceDeletionBeginInput,
+    NativeWorkspaceDeletionJournalEntry,
+    NativeWorkspaceDeletionUpdateInput,
+    NativeWorkspaceRecoveryApplyInput,
+    NativeWorkspaceRecoveryLayoutSummary,
+    NativeWorkspaceReassociateInput,
 } from "@shared/native-backend";
 
 export interface NativeBackendRequester {
@@ -108,6 +114,75 @@ export class NativePersistenceGateway {
     ): Promise<NativeDurableWorkspacePurgeOutput> {
         return parseNativeDurableWorkspacePurgeOutput(
             await this.#client.request("durable_workspace_purge", { ...input }),
+        );
+    }
+
+    async listWorkspaceRecoveryLayouts(): Promise<readonly NativeWorkspaceRecoveryLayoutSummary[]> {
+        const output = requireRecord(
+            await this.#client.request("workspace_recovery_list"),
+            "Native workspace recovery list",
+        );
+        if (!Array.isArray(output.layouts)) {
+            throw new Error("Native workspace recovery list must contain layouts.");
+        }
+        return output.layouts.map(parseNativeWorkspaceRecoveryLayout);
+    }
+
+    async applyWorkspaceRecoveryLayout(
+        input: NativeWorkspaceRecoveryApplyInput,
+    ): Promise<NativeDurableWorkspace> {
+        return parseNativeDurableWorkspace(
+            await this.#client.request("workspace_recovery_apply", { ...input }),
+        );
+    }
+
+    async reassociateWorkspace(
+        input: NativeWorkspaceReassociateInput,
+    ): Promise<NativeDurableWorkspace> {
+        return parseNativeDurableWorkspace(
+            await this.#client.request("workspace_reassociate", { ...input }),
+        );
+    }
+
+    async forgetWorkspaceSessionReferences(sessionId: string): Promise<number> {
+        return requireRevision(
+            await this.#client.request("workspace_forget_session", { sessionId }),
+            "changedWorkspaceCount",
+        );
+    }
+
+    async beginWorkspaceDeletion(
+        input: NativeWorkspaceDeletionBeginInput,
+    ): Promise<NativeWorkspaceDeletionJournalEntry> {
+        return parseNativeWorkspaceDeletion(
+            await this.#client.request("workspace_deletion_begin", { ...input }),
+        );
+    }
+
+    async updateWorkspaceDeletion(
+        input: NativeWorkspaceDeletionUpdateInput,
+    ): Promise<NativeWorkspaceDeletionJournalEntry> {
+        return parseNativeWorkspaceDeletion(
+            await this.#client.request("workspace_deletion_update", { ...input }),
+        );
+    }
+
+    async listIncompleteWorkspaceDeletions(): Promise<readonly NativeWorkspaceDeletionJournalEntry[]> {
+        const output = requireRecord(
+            await this.#client.request("workspace_deletion_list_incomplete"),
+            "Native workspace deletion list",
+        );
+        if (!Array.isArray(output.operations)) {
+            throw new Error("Native workspace deletion list must contain operations.");
+        }
+        return output.operations.map(parseNativeWorkspaceDeletion);
+    }
+
+    async completeWorkspaceDeletion(
+        operationId: string,
+    ): Promise<NativeWorkspaceDeletionJournalEntry> {
+        return parseNativeWorkspaceDeletion(
+            await this.#client.request("workspace_deletion_complete", { operationId }),
         );
     }
 
@@ -278,6 +353,62 @@ function parseNativeDurableWorkspacePurgeOutput(
     return {
         navigation: parseNativeAppWorkspaceNavigation(record.navigation),
         purgedScopeKey: requireString(record.purgedScopeKey, "purgedScopeKey"),
+    };
+}
+
+function parseNativeWorkspaceRecoveryLayout(
+    value: unknown,
+): NativeWorkspaceRecoveryLayoutSummary {
+    const record = requireRecord(value, "Native workspace recovery layout");
+    return {
+        createdAt: requireString(record.createdAt, "createdAt"),
+        id: requireString(record.id, "id"),
+        scopeKey: requireString(record.scopeKey, "scopeKey"),
+        snapshotHash: requireString(record.snapshotHash, "snapshotHash"),
+        sourceRevision: requireRevision(record.sourceRevision, "sourceRevision"),
+        sourceUpdatedAt: requireString(record.sourceUpdatedAt, "sourceUpdatedAt"),
+        sourceWindowId: requireNullableString(record.sourceWindowId, "sourceWindowId"),
+        sourceWorkspaceId: requireNullableString(record.sourceWorkspaceId, "sourceWorkspaceId"),
+    };
+}
+
+function parseNativeWorkspaceDeletion(
+    value: unknown,
+): NativeWorkspaceDeletionJournalEntry {
+    const record = requireRecord(value, "Native workspace deletion operation");
+    const kind = record.kind;
+    const status = record.status;
+    if (kind !== "delete_worktree" && kind !== "clear_project_data") {
+        throw new Error("Native workspace deletion kind is invalid.");
+    }
+    if (
+        status !== "pending" &&
+        status !== "checkout_deleted" &&
+        status !== "purging" &&
+        status !== "completed" &&
+        status !== "failed"
+    ) {
+        throw new Error("Native workspace deletion status is invalid.");
+    }
+    if (
+        !Array.isArray(record.sessionIds) ||
+        !record.sessionIds.every((sessionId) => typeof sessionId === "string")
+    ) {
+        throw new Error("Native workspace deletion sessionIds must be strings.");
+    }
+    return {
+        checkoutPath: requireNullableString(record.checkoutPath, "checkoutPath"),
+        errorCode: requireNullableString(record.errorCode, "errorCode"),
+        forceApproved: requireBoolean(record.forceApproved, "forceApproved"),
+        kind,
+        operationId: requireString(record.operationId, "operationId"),
+        projectId: requireString(record.projectId, "projectId"),
+        scopeKey: requireString(record.scopeKey, "scopeKey"),
+        sessionIds: record.sessionIds,
+        startedAt: requireString(record.startedAt, "startedAt"),
+        status,
+        updatedAt: requireString(record.updatedAt, "updatedAt"),
+        worktreeId: requireNullableString(record.worktreeId, "worktreeId"),
     };
 }
 

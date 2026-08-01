@@ -45,9 +45,11 @@ use comando_types::commands::{
     PERSISTENCE_OPEN_STORE, PROJECT_ADD, PROJECT_CLEAR_APP_DATA, PROJECT_GET_APP_DATA_SUMMARY,
     PROJECT_LIST, PROJECT_RELOCATE, PROJECT_REMOVE, PROJECT_SYNC_WORKTREES, PROJECT_TOUCH,
     SETTINGS_GET_PROJECT, SETTINGS_GET_SNAPSHOT, SETTINGS_SAVE_PROJECT, SETTINGS_SAVE_SNAPSHOT,
-    WORKSPACE_MIGRATION_EXPORT_DIAGNOSTICS, WORKSPACE_MIGRATION_ROLLBACK, WORKSPACE_MIGRATION_RUN,
-    WORKSPACE_MIGRATION_SYNC_LEGACY, WORKSPACE_NAVIGATION_GET, WORKSPACE_NAVIGATION_SAVE_SHELL,
-    WORKSPACE_NAVIGATION_SET_ACTIVE,
+    WORKSPACE_DELETION_BEGIN, WORKSPACE_DELETION_COMPLETE, WORKSPACE_DELETION_LIST_INCOMPLETE,
+    WORKSPACE_DELETION_UPDATE, WORKSPACE_FORGET_SESSION, WORKSPACE_MIGRATION_EXPORT_DIAGNOSTICS,
+    WORKSPACE_MIGRATION_ROLLBACK, WORKSPACE_MIGRATION_RUN, WORKSPACE_MIGRATION_SYNC_LEGACY,
+    WORKSPACE_NAVIGATION_GET, WORKSPACE_NAVIGATION_SAVE_SHELL, WORKSPACE_NAVIGATION_SET_ACTIVE,
+    WORKSPACE_REASSOCIATE, WORKSPACE_RECOVERY_APPLY, WORKSPACE_RECOVERY_LIST,
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
@@ -291,6 +293,14 @@ impl NativeBackend {
             DURABLE_WORKSPACE_ARCHIVE => self.archive_durable_workspace(request),
             DURABLE_WORKSPACE_RESET => self.reset_durable_workspace(request),
             DURABLE_WORKSPACE_PURGE => self.purge_durable_workspace(request),
+            WORKSPACE_RECOVERY_LIST => self.list_workspace_recovery_layouts(request),
+            WORKSPACE_RECOVERY_APPLY => self.apply_workspace_recovery_layout(request),
+            WORKSPACE_REASSOCIATE => self.reassociate_workspace(request),
+            WORKSPACE_FORGET_SESSION => self.forget_workspace_session_references(request),
+            WORKSPACE_DELETION_BEGIN => self.begin_workspace_deletion(request),
+            WORKSPACE_DELETION_UPDATE => self.update_workspace_deletion(request),
+            WORKSPACE_DELETION_LIST_INCOMPLETE => self.list_incomplete_workspace_deletions(request),
+            WORKSPACE_DELETION_COMPLETE => self.complete_workspace_deletion(request),
             WORKSPACE_NAVIGATION_GET => self.get_workspace_navigation(request),
             WORKSPACE_NAVIGATION_SET_ACTIVE => self.set_active_workspace(request),
             WORKSPACE_NAVIGATION_SAVE_SHELL => self.save_workspace_shell(request),
@@ -635,6 +645,128 @@ impl NativeBackend {
             return backend_not_ready(request.id);
         };
         persistence_response(request.id, store.purge_durable_workspace(input))
+    }
+
+    fn list_workspace_recovery_layouts(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(
+            request.id,
+            store
+                .list_workspace_recovery_layouts()
+                .map(|layouts| native_workspace::NativeWorkspaceRecoveryListOutput { layouts }),
+        )
+    }
+
+    fn apply_workspace_recovery_layout(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeWorkspaceRecoveryApplyInput>(&request) {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.apply_workspace_recovery_layout(input))
+    }
+
+    fn reassociate_workspace(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_workspace::NativeWorkspaceReassociateInput>(&request)
+        {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        let session_ids = match store.durable_workspace_session_ids(&input.source_scope_key) {
+            Ok(session_ids) => session_ids
+                .into_iter()
+                .map(comando_types::ids::SessionId)
+                .collect::<Vec<_>>(),
+            Err(error) => return error_only(request.id, error.to_native_error()),
+        };
+        if !session_ids.is_empty() {
+            // Updating file metadata first keeps a failed SQLite move safely retryable.
+            let history_store = match self.ai_history_store() {
+                Ok(history_store) => history_store,
+                Err(error) => return error_only(request.id, error),
+            };
+            if let Err(error) = history_store.reassociate_sessions(
+                &session_ids,
+                &input.project_id,
+                &input.target_worktree_id,
+            ) {
+                return error_only(request.id, error.to_native_error());
+            }
+        }
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.reassociate_workspace(input))
+    }
+
+    fn forget_workspace_session_references(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeWorkspaceForgetSessionInput>(&request) {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.forget_workspace_session_references(input))
+    }
+
+    fn begin_workspace_deletion(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeWorkspaceDeletionBeginInput>(&request) {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.begin_workspace_deletion(input))
+    }
+
+    fn update_workspace_deletion(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeWorkspaceDeletionUpdateInput>(&request) {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.update_workspace_deletion(input))
+    }
+
+    fn list_incomplete_workspace_deletions(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(
+            request.id,
+            store
+                .list_incomplete_workspace_deletions()
+                .map(
+                    |operations| native_workspace::NativeWorkspaceDeletionListOutput { operations },
+                ),
+        )
+    }
+
+    fn complete_workspace_deletion(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeWorkspaceDeletionOperationInput>(&request) {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.complete_workspace_deletion(input))
     }
 
     fn get_workspace_navigation(&mut self, request: RpcRequest) -> CommandResult {

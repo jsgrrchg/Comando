@@ -7,7 +7,8 @@ import type {
     NativeAppWorkspaceNavigation,
     NativeDurableWorkspace,
     NativeDurableWorkspaceSummary,
-    NativeWorkspaceMigrationRecoverySource,
+    NativeWorkspaceDeletionJournalEntry,
+    NativeWorkspaceRecoveryLayoutSummary,
 } from "./native-backend/workspace";
 
 export type { AppTerminalSettings } from "./terminal-settings";
@@ -146,6 +147,11 @@ export const IPC_CHANNELS = {
     saveWorkspaceSnapshot: "workspace:save-snapshot",
     getWorkspaceCatalog: "workspace:get-catalog",
     resetWorkspaceLayout: "workspace:reset-layout",
+    applyWorkspaceRecoveryLayout: "workspace:apply-recovery-layout",
+    reassociateWorkspace: "workspace:reassociate",
+    removeSavedWorkspace: "workspace:remove-saved",
+    preflightDeleteWorktree: "workspace:preflight-delete-worktree",
+    deleteWorktree: "workspace:delete-worktree",
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
     closeWorkspaceSurface: "workspace:close-surface",
@@ -1964,8 +1970,10 @@ export interface ProjectAddResult {
 
 export interface ProjectAppDataSummary {
     readonly chatSessionCount: number;
+    readonly durableWorkspaceCount: number;
     readonly projectSettingsCount: number;
     readonly recentProjectCount: number;
+    readonly recoveryLayoutCount: number;
     readonly workspaceLayoutCount: number;
     readonly workspaceSessionCount: number;
     readonly workspaceTabCount: number;
@@ -2267,13 +2275,63 @@ export interface WorkspaceSurfacePoolDiagnostics {
 
 export interface WorkspaceCatalogSnapshot {
     readonly navigation: NativeAppWorkspaceNavigation;
-    readonly recoveryLayouts: readonly NativeWorkspaceMigrationRecoverySource[];
+    readonly recoveryLayouts: readonly NativeWorkspaceRecoveryLayoutSummary[];
+    readonly pendingDeletions: readonly NativeWorkspaceDeletionJournalEntry[];
     readonly workspaces: readonly NativeDurableWorkspaceSummary[];
 }
 
 export interface ResetWorkspaceLayoutInput {
     readonly expectedRevision: number;
     readonly scopeKey: string;
+}
+
+export interface ApplyWorkspaceRecoveryLayoutInput {
+    readonly expectedRevision: number;
+    readonly recoveryId: string;
+    readonly scopeKey: string;
+}
+
+export interface ReassociateWorkspaceInput {
+    readonly expectedRevision: number;
+    readonly projectId: string;
+    readonly sourceScopeKey: string;
+    readonly targetScopeKey: string;
+    readonly targetWorktreeId: string;
+}
+
+export interface RemoveSavedWorkspaceInput {
+    readonly expectedRevision: number;
+    readonly scopeKey: string;
+}
+
+export interface DeleteWorktreePreflightInput {
+    readonly projectId: string;
+    readonly scopeKey: string;
+    readonly worktreeId: string;
+}
+
+export interface DeleteWorktreeDataInventory {
+    readonly chatSessionCount: number;
+    readonly checkoutPath: string;
+    readonly recoveryLayoutCount: number;
+    readonly runtimeCount: number;
+    readonly workspaceLayoutCount: number;
+}
+
+export interface DeleteWorktreePreflightResult {
+    readonly blockers: readonly string[];
+    readonly inventory: DeleteWorktreeDataInventory;
+    readonly requiresForce: boolean;
+    readonly warnings: readonly string[];
+}
+
+export interface DeleteWorktreeInput extends DeleteWorktreePreflightInput {
+    readonly forceApproved: boolean;
+}
+
+export interface DeleteWorktreeResult {
+    readonly operationId: string;
+    readonly status: "completed";
 }
 
 export interface WorkspaceSurfaceOperationDiagnostic {
@@ -3818,6 +3876,21 @@ export interface ComandoApi {
     resetWorkspaceLayout: (
         input: ResetWorkspaceLayoutInput,
     ) => Promise<NativeDurableWorkspace>;
+    applyWorkspaceRecoveryLayout: (
+        input: ApplyWorkspaceRecoveryLayoutInput,
+    ) => Promise<NativeDurableWorkspace>;
+    reassociateWorkspace: (
+        input: ReassociateWorkspaceInput,
+    ) => Promise<NativeDurableWorkspace>;
+    removeSavedWorkspace: (
+        input: RemoveSavedWorkspaceInput,
+    ) => Promise<void>;
+    preflightDeleteWorktree: (
+        input: DeleteWorktreePreflightInput,
+    ) => Promise<DeleteWorktreePreflightResult>;
+    deleteWorktree: (
+        input: DeleteWorktreeInput,
+    ) => Promise<DeleteWorktreeResult>;
     initializeWorkspaceSurfaces: (
         snapshot: WorkspaceNavigationSnapshot,
     ) => Promise<void>;

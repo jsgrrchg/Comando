@@ -23,9 +23,6 @@ import {
 } from "@renderer/app/workspace-navigator/project-actions";
 import { WorkspaceNavigator } from "./WorkspaceNavigator";
 
-const DELETE_UNAVAILABLE_REASON =
-    "Deletion is locked until the durable preflight, journal, and scoped data purge are available.";
-
 export function WorkspaceNavigatorPanel({
     model,
     settingsLabel,
@@ -110,7 +107,6 @@ export function WorkspaceNavigatorPanel({
 
     return (
         <WorkspaceNavigator
-            deleteUnavailableReason={DELETE_UNAVAILABLE_REASON}
             error={catalogError ?? projectsError}
             expandedProjectIds={expandedProjectIds}
             model={model}
@@ -193,6 +189,96 @@ export function WorkspaceNavigatorPanel({
                     rootPath: created.rootPath,
                 });
             }}
+            onPreflightDeleteWorktree={async (workspace) => {
+                if (!window.comando || !workspace.worktreeId) {
+                    throw new Error("This worktree cannot be deleted.");
+                }
+                return await window.comando.preflightDeleteWorktree({
+                    projectId: workspace.projectId,
+                    scopeKey: workspace.scopeKey,
+                    worktreeId: workspace.worktreeId,
+                });
+            }}
+            onDeleteWorktree={async (workspace, forceApproved) => {
+                if (!window.comando || !workspace.worktreeId) {
+                    throw new Error("This worktree cannot be deleted.");
+                }
+                await window.comando.deleteWorktree({
+                    forceApproved,
+                    projectId: workspace.projectId,
+                    scopeKey: workspace.scopeKey,
+                    worktreeId: workspace.worktreeId,
+                });
+                await useWorkspaceStore
+                    .getState()
+                    .removeWorktreeTabs(
+                        workspace.projectId,
+                        workspace.worktreeId,
+                    );
+                await hydrateProjects();
+                await refreshGitProject(workspace.projectId);
+                await refreshCatalog();
+            }}
+            onApplyRecoveryLayout={async (workspace, recoveryId) => {
+                const revision = workspace.catalogEntry.revision;
+                if (!window.comando || revision === null) {
+                    throw new Error("This recovery layout is unavailable.");
+                }
+                const closeResult = await window.comando.closeWorkspaceSurface(
+                    workspace.scopeKey,
+                );
+                if (closeResult.status === "blocked") {
+                    throw new Error(
+                        closeResult.leases.map((lease) => lease.message).join(" "),
+                    );
+                }
+                if (closeResult.status === "failed") {
+                    throw new Error(closeResult.message);
+                }
+                await window.comando.applyWorkspaceRecoveryLayout({
+                    expectedRevision: revision,
+                    recoveryId,
+                    scopeKey: workspace.scopeKey,
+                });
+                await refreshCatalog();
+            }}
+            onReassociateWorkspace={async (workspace, target) => {
+                const revision = workspace.catalogEntry.revision;
+                if (!window.comando || revision === null || !target.worktreeId) {
+                    throw new Error("This workspace cannot be reassociated.");
+                }
+                await window.comando.reassociateWorkspace({
+                    expectedRevision: revision,
+                    projectId: workspace.projectId,
+                    sourceScopeKey: workspace.scopeKey,
+                    targetScopeKey: target.scopeKey,
+                    targetWorktreeId: target.worktreeId,
+                });
+                await useWorkspaceStore
+                    .getState()
+                    .removeWorktreeTabs(
+                        workspace.projectId,
+                        workspace.worktreeId,
+                    );
+                await refreshCatalog();
+            }}
+            onRemoveSavedWorkspace={async (workspace) => {
+                const revision = workspace.catalogEntry.revision;
+                if (!window.comando || revision === null) {
+                    throw new Error("This saved workspace is unavailable.");
+                }
+                await window.comando.removeSavedWorkspace({
+                    expectedRevision: revision,
+                    scopeKey: workspace.scopeKey,
+                });
+                await useWorkspaceStore
+                    .getState()
+                    .removeWorktreeTabs(
+                        workspace.projectId,
+                        workspace.worktreeId,
+                    );
+                await refreshCatalog();
+            }}
             onOpenFolder={async () => {
                 const projectIds = await addProjects();
                 const projectId = projectIds[0];
@@ -228,13 +314,24 @@ export function WorkspaceNavigatorPanel({
                 ) {
                     return;
                 }
-                await removeProject(project.id);
-                workspaceCatalogStore
-                    .getState()
-                    .mergeRegistry(
-                        useProjectsStore.getState().projects,
-                        useGitStore.getState().worktreesByProject,
+                if (!window.comando) {
+                    throw new Error("The desktop bridge is unavailable.");
+                }
+                for (const workspace of project.workspaces) {
+                    const result = await window.comando.closeWorkspaceSurface(
+                        workspace.scopeKey,
                     );
+                    if (result.status === "blocked") {
+                        throw new Error(
+                            result.leases.map((lease) => lease.message).join(" "),
+                        );
+                    }
+                    if (result.status === "failed") {
+                        throw new Error(result.message);
+                    }
+                }
+                await removeProject(project.id);
+                await refreshCatalog();
             }}
             onResetWorkspace={async (workspace) => {
                 const revision = workspace.catalogEntry.revision;
@@ -319,6 +416,7 @@ function createPendingWorkspace(
             source: "registry",
             worktreeId,
         },
+        deletionOperation: null,
         isMissing: false,
         isPrimary: worktreeId === null,
         isResident: false,

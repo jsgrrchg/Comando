@@ -4,7 +4,10 @@ import type {
     WorkspaceSurfaceDiagnostic,
     WorkspaceSurfacePoolDiagnostics,
 } from "@shared/ipc";
-import type { NativeWorkspaceMigrationRecoverySource } from "@shared/native-backend";
+import type {
+    NativeWorkspaceDeletionJournalEntry,
+    NativeWorkspaceRecoveryLayoutSummary,
+} from "@shared/native-backend";
 import {
     getWorkspaceScopeKey,
     normalizeWorkspaceWorktreeId,
@@ -17,16 +20,18 @@ export type WorkspaceNavigatorRowStatus =
     | "activity"
     | "available"
     | "error"
+    | "deletion-pending"
     | "warming";
 
 export interface WorkspaceNavigatorWorkspace {
     readonly catalogEntry: WorkspaceCatalogEntry;
+    readonly deletionOperation: NativeWorkspaceDeletionJournalEntry | null;
     readonly isMissing: boolean;
     readonly isPrimary: boolean;
     readonly isResident: boolean;
     readonly label: string;
     readonly projectId: string;
-    readonly recoveryLayouts: readonly NativeWorkspaceMigrationRecoverySource[];
+    readonly recoveryLayouts: readonly NativeWorkspaceRecoveryLayoutSummary[];
     readonly rootPath: string | null;
     readonly scopeKey: string;
     readonly status: WorkspaceNavigatorRowStatus;
@@ -57,7 +62,10 @@ export interface BuildWorkspaceNavigatorModelInput {
     readonly inventoryLoadingByProject?: Readonly<Record<string, boolean>>;
     readonly projects: readonly ProjectSummary[];
     readonly recoveryByScopeKey?: Readonly<
-        Record<string, readonly NativeWorkspaceMigrationRecoverySource[]>
+        Record<string, readonly NativeWorkspaceRecoveryLayoutSummary[]>
+    >;
+    readonly pendingDeletionByScopeKey?: Readonly<
+        Record<string, NativeWorkspaceDeletionJournalEntry>
     >;
     readonly worktreesByProject: Readonly<
         Record<string, readonly GitWorktreeSummary[]>
@@ -70,6 +78,7 @@ export function buildWorkspaceNavigatorModel({
     inventoryErrorsByProject = {},
     inventoryLoadingByProject = {},
     projects,
+    pendingDeletionByScopeKey = {},
     recoveryByScopeKey = {},
     worktreesByProject,
 }: BuildWorkspaceNavigatorModelInput): WorkspaceNavigatorModel {
@@ -81,6 +90,7 @@ export function buildWorkspaceNavigatorModel({
         ...projects.map((project) => project.id),
         ...new Set(
             Object.values(catalogEntries)
+                .filter((entry) => entry.lifecycle !== "archived")
                 .map((entry) => entry.projectId)
                 .filter((projectId) => !registeredProjectIds.has(projectId)),
         ),
@@ -103,7 +113,9 @@ export function buildWorkspaceNavigatorModel({
             }
 
             const projectEntries = Object.values(catalogEntries).filter(
-                (entry) => entry.projectId === projectId,
+                (entry) =>
+                    entry.projectId === projectId &&
+                    entry.lifecycle !== "archived",
             );
             const orderedScopeKeys: string[] = [];
             const primaryScopeKey = getWorkspaceScopeKey(projectId, null);
@@ -144,10 +156,13 @@ export function buildWorkspaceNavigatorModel({
                     const presentation = resolveRowPresentation(
                         diagnostic,
                         isMissing,
+                        Boolean(pendingDeletionByScopeKey[scopeKey]),
                     );
                     return [
                         {
                             catalogEntry,
+                            deletionOperation:
+                                pendingDeletionByScopeKey[scopeKey] ?? null,
                             isMissing,
                             isPrimary,
                             isResident:
@@ -241,7 +256,14 @@ function getWorktreeDisplayLabel(worktree: GitWorktreeSummary): string {
 function resolveRowPresentation(
     diagnostic: WorkspaceSurfaceDiagnostic | null,
     isMissing: boolean,
+    deletionPending: boolean,
 ): { readonly message: string | null; readonly status: WorkspaceNavigatorRowStatus } {
+    if (deletionPending) {
+        return {
+            message: "Checkout removal completed; saved data cleanup is pending.",
+            status: "deletion-pending",
+        };
+    }
     if (diagnostic?.state === "error") {
         return {
             message: diagnostic.error ?? "The workspace could not be opened.",

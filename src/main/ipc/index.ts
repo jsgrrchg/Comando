@@ -8,6 +8,7 @@ import {
     type AppUpdateState,
     type AppBootstrapSnapshot,
     type AppWindowKind,
+    type ApplyWorkspaceRecoveryLayoutInput,
     type AiPermissionResponseInput,
     type AiRuntimeAuthDisconnectInput,
     type AiRuntimeAuthLaunchInput,
@@ -44,6 +45,8 @@ import {
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
+    type DeleteWorktreeInput,
+    type DeleteWorktreePreflightInput,
     type FileBufferNotificationInput,
     type NativeContextMenuInput,
     type ActivateProjectWorkspaceInput,
@@ -160,7 +163,9 @@ import {
     type OpenCodeRuntimeSettingsInput,
     type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
+    type ReassociateWorkspaceInput,
     type ReadClaudeCodeTranscriptInput,
+    type RemoveSavedWorkspaceInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
     type SaveImageAsInput,
@@ -179,6 +184,7 @@ import {
     type WorkspaceSurfaceActionRequest,
     type WorkspaceSurfaceActionCompletion,
     type WorkspaceSurfaceContentInsets,
+    type WorkspaceSurfaceCloseResult,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceLeaseReport,
@@ -261,6 +267,7 @@ import {
     isWorkspaceSurfaceActionCompletion,
     isWorkspaceSurfaceFileRevealRequest,
 } from "@main/workspace/surface-actions";
+import { WorkspaceDestructiveCoordinator } from "@main/workspace/destructive-coordinator";
 
 interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
@@ -285,6 +292,17 @@ interface RegisterIpcHandlersOptions {
 }
 
 export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
+    const destructiveCoordinator = new WorkspaceDestructiveCoordinator({
+        aiService: options.aiService,
+        durableWorkspaceRepository: options.durableWorkspaceRepository,
+        gitService: options.gitService,
+        projectService: options.projectService,
+        surfaceManager: workspaceSurfaceManager,
+        terminalService: options.terminalService,
+    });
+    void destructiveCoordinator.resumePendingOperations().catch((error) => {
+        debugBenignError("workspace.deletion.resume", error);
+    });
     ipcMain.removeHandler(IPC_CHANNELS.getBootstrapSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getAppUpdateState);
     ipcMain.removeHandler(IPC_CHANNELS.getAppPrivacyAccessState);
@@ -320,6 +338,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveShellState);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceCatalog);
     ipcMain.removeHandler(IPC_CHANNELS.resetWorkspaceLayout);
+    ipcMain.removeHandler(IPC_CHANNELS.applyWorkspaceRecoveryLayout);
+    ipcMain.removeHandler(IPC_CHANNELS.reassociateWorkspace);
+    ipcMain.removeHandler(IPC_CHANNELS.removeSavedWorkspace);
+    ipcMain.removeHandler(IPC_CHANNELS.preflightDeleteWorktree);
+    ipcMain.removeHandler(IPC_CHANNELS.deleteWorktree);
     ipcMain.removeHandler(IPC_CHANNELS.setTrafficLightVisibility);
     ipcMain.removeHandler(IPC_CHANNELS.setNativeAppearance);
     ipcMain.removeHandler(IPC_CHANNELS.resolveTsconfigForPath);
@@ -1730,8 +1753,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.clearProjectAppData,
-        async (_event, input: ClearProjectAppDataInput) => {
-            const result = await options.projectService.clearProjectAppData(
+        async (event, input: ClearProjectAppDataInput) => {
+            const cleared = await destructiveCoordinator.clearProjectAppData(
+                requireMainHostWindowId(event.sender),
                 input.projectId,
             );
             windowRegistry.forEachLiveWebContents((webContents) => {
@@ -1741,7 +1765,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 );
             });
             broadcastProjectsUpdated();
-            return result;
+            return {
+                cleared,
+                projects: options.projectService.listProjects(),
+            };
         },
     );
     ipcMain.handle(IPC_CHANNELS.relocateProject, async (event, projectId: string) => {
@@ -1785,6 +1812,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         };
     });
     ipcMain.handle(IPC_CHANNELS.removeProject, async (_event, projectId: string) => {
+        const scopes = (
+            await options.durableWorkspaceRepository.listDurableWorkspaces()
+        ).filter((workspace) => workspace.projectId === projectId);
+        for (const context of windowRegistry.listMainWindowContexts()) {
+            for (const workspace of scopes) {
+                assertWorkspaceSurfaceClosed(
+                    await workspaceSurfaceManager.closeWorkspaceSurface(
+                        context.windowId,
+                        workspace.scopeKey,
+                    ),
+                );
+            }
+        }
         await options.projectService.removeProject(projectId);
         broadcastProjectsUpdated();
     });
@@ -2043,16 +2083,17 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         if (workspaceSurfaceManager.isSurface(event.sender)) {
             throw new Error("The workspace catalog is available only to the host.");
         }
-        const [workspaces, navigation, migration] = await Promise.all([
+        const [workspaces, navigation, recoveryLayouts, pendingDeletions] = await Promise.all([
             options.durableWorkspaceRepository.listDurableWorkspaces(),
             options.durableWorkspaceRepository.getWorkspaceNavigation(),
             options.durableWorkspaceRepository
-                .exportWorkspaceMigrationDiagnostics()
-                .catch(() => null),
+                .listWorkspaceRecoveryLayouts(),
+            options.durableWorkspaceRepository.listIncompleteWorkspaceDeletions(),
         ]);
         return {
             navigation,
-            recoveryLayouts: migration?.recoveryLayouts ?? [],
+            pendingDeletions,
+            recoveryLayouts,
             workspaces,
         };
     });
@@ -2062,7 +2103,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             event,
             input: { readonly expectedRevision?: unknown; readonly scopeKey?: unknown },
         ) => {
-            requireWindowContext(event.sender, "main");
+            const context = requireWindowContext(event.sender, "main");
             if (
                 workspaceSurfaceManager.isSurface(event.sender) ||
                 !input ||
@@ -2073,6 +2114,12 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             ) {
                 throw new Error("A valid durable workspace revision is required.");
             }
+            assertWorkspaceSurfaceClosed(
+                await workspaceSurfaceManager.closeWorkspaceSurface(
+                    context.windowId,
+                    input.scopeKey,
+                ),
+            );
             return options.durableWorkspaceRepository.resetDurableWorkspace({
                 expectedRevision: Number(input.expectedRevision),
                 layoutSnapshot:
@@ -2081,6 +2128,82 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     >,
                 scopeKey: input.scopeKey,
             });
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.applyWorkspaceRecoveryLayout,
+        async (event, input: ApplyWorkspaceRecoveryLayoutInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error("Recovery layouts are available only to the host.");
+            }
+            assertWorkspaceSurfaceClosed(
+                await workspaceSurfaceManager.closeWorkspaceSurface(
+                    context.windowId,
+                    input.scopeKey,
+                ),
+            );
+            return options.durableWorkspaceRepository.applyWorkspaceRecoveryLayout(
+                input,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.reassociateWorkspace,
+        async (event, input: ReassociateWorkspaceInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error(
+                    "Workspace reassociation is available only to the host.",
+                );
+            }
+            assertWorkspaceSurfaceClosed(
+                await workspaceSurfaceManager.closeWorkspaceSurface(
+                    context.windowId,
+                    input.sourceScopeKey,
+                ),
+            );
+            return options.durableWorkspaceRepository.reassociateWorkspace(input);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.removeSavedWorkspace,
+        async (event, input: RemoveSavedWorkspaceInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error(
+                    "Saved workspaces can be removed only from the host.",
+                );
+            }
+            assertWorkspaceSurfaceClosed(
+                await workspaceSurfaceManager.closeWorkspaceSurface(
+                    context.windowId,
+                    input.scopeKey,
+                ),
+            );
+            await options.durableWorkspaceRepository.purgeDurableWorkspace(input);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.preflightDeleteWorktree,
+        async (event, input: DeleteWorktreePreflightInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            return destructiveCoordinator.preflightDeleteWorktree(
+                context.windowId,
+                input,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.deleteWorktree,
+        async (event, input: DeleteWorktreeInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            const result = await destructiveCoordinator.deleteWorktree(
+                context.windowId,
+                input,
+            );
+            broadcastProjectsUpdated();
+            return result;
         },
     );
     ipcMain.handle(
@@ -2750,8 +2873,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, input: AiSessionRenameMutationInput) =>
             options.aiService.renameSession(input),
     );
-    ipcMain.handle(IPC_CHANNELS.deleteAiSession, (_event, sessionId: string) =>
-        options.aiService.deleteSession(sessionId),
+    ipcMain.handle(
+        IPC_CHANNELS.deleteAiSession,
+        async (_event, sessionId: string) => {
+            await options.aiService.deleteSession(sessionId);
+            await options.durableWorkspaceRepository.forgetWorkspaceSessionReferences(
+                sessionId,
+            );
+        },
     );
     ipcMain.handle(IPC_CHANNELS.cancelAiSession, (_event, sessionId: string) =>
         options.aiService.cancelSession(sessionId),
@@ -2979,6 +3108,28 @@ function requireWindowContext(
     }
 
     return context;
+}
+
+function requireMainHostWindowId(sender: Electron.WebContents): string {
+    const context = windowRegistry.getContextByWebContents(sender);
+    const windowId =
+        (context?.windowKind === "main" ? context.windowId : context?.hostWindowId) ??
+        windowRegistry.getLastFocusedMainWindowId() ??
+        windowRegistry.listMainWindowContexts()[0]?.windowId ??
+        null;
+    if (!windowId) {
+        throw new Error("A main workspace host is required for this operation.");
+    }
+    return windowId;
+}
+
+function assertWorkspaceSurfaceClosed(result: WorkspaceSurfaceCloseResult): void {
+    if (result.status === "blocked") {
+        throw new Error(result.leases.map((lease) => lease.message).join(" "));
+    }
+    if (result.status === "failed") {
+        throw new Error(result.message);
+    }
 }
 
 function resolveRuntimeOwnerId(sender: Electron.WebContents): string | null {

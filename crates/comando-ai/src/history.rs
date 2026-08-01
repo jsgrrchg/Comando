@@ -477,6 +477,32 @@ impl AiHistoryStore {
         self.atomic_write_json(&self.metadata_path(&metadata.session_id), metadata)
     }
 
+    pub fn reassociate_sessions(
+        &self,
+        session_ids: &[SessionId],
+        project_id: &ProjectId,
+        worktree_id: &WorktreeId,
+    ) -> AiResult<usize> {
+        let mut changed = 0;
+        let mut seen = HashSet::new();
+        for session_id in session_ids {
+            if !seen.insert(session_id.0.as_str()) || !self.has_session(session_id) {
+                continue;
+            }
+            let mut metadata = self.load_metadata(session_id)?;
+            if metadata.project_id.as_ref() != Some(project_id)
+                || metadata.worktree_id.as_ref() == Some(worktree_id)
+            {
+                continue;
+            }
+            metadata.worktree_id = Some(worktree_id.clone());
+            metadata.updated_at = now_iso8601();
+            self.save_metadata(&metadata)?;
+            changed += 1;
+        }
+        Ok(changed)
+    }
+
     pub fn load_session_state(&self, session_id: &SessionId) -> AiResult<AiHistorySessionState> {
         self.recover_if_needed(session_id)?;
         let path = self.session_state_path(session_id);
@@ -3366,6 +3392,44 @@ mod tests {
             "kind": "assistant",
             "status": "completed"
         })
+    }
+
+    #[test]
+    fn reassociates_only_matching_modern_history_metadata() {
+        let (_temp, store) = store();
+        let matching = metadata("matching");
+        let mut other_project = metadata("other-project");
+        other_project.project_id = Some(ProjectId("project_2".to_string()));
+        store.create_session(matching).unwrap();
+        store.create_session(other_project).unwrap();
+
+        let changed = store
+            .reassociate_sessions(
+                &[
+                    SessionId("matching".to_string()),
+                    SessionId("other-project".to_string()),
+                    SessionId("missing".to_string()),
+                ],
+                &ProjectId("project_1".to_string()),
+                &WorktreeId("worktree_2".to_string()),
+            )
+            .unwrap();
+
+        assert_eq!(changed, 1);
+        assert_eq!(
+            store
+                .load_metadata(&SessionId("matching".to_string()))
+                .unwrap()
+                .worktree_id,
+            Some(WorktreeId("worktree_2".to_string())),
+        );
+        assert_eq!(
+            store
+                .load_metadata(&SessionId("other-project".to_string()))
+                .unwrap()
+                .worktree_id,
+            Some(WorktreeId("worktree_1".to_string())),
+        );
     }
 
     #[test]

@@ -1296,6 +1296,16 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceCatalog),
     resetWorkspaceLayout: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.resetWorkspaceLayout, input),
+    applyWorkspaceRecoveryLayout: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.applyWorkspaceRecoveryLayout, input),
+    reassociateWorkspace: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.reassociateWorkspace, input),
+    removeSavedWorkspace: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.removeSavedWorkspace, input),
+    preflightDeleteWorktree: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.preflightDeleteWorktree, input),
+    deleteWorktree: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.deleteWorktree, input),
     initializeWorkspaceSurfaces: (snapshot: WorkspaceNavigationSnapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
     activateWorkspaceSurface: (contextKey: string) =>

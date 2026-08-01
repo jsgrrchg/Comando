@@ -38,6 +38,7 @@ export function useWorkspaceNavigatorModel(): WorkspaceNavigatorModel {
             inventoryErrorsByProject,
             inventoryLoadingByProject,
             projects,
+            pendingDeletionByScopeKey: catalog.pendingDeletionByScopeKey,
             recoveryByScopeKey: catalog.recoveryByScopeKey,
             worktreesByProject,
         });

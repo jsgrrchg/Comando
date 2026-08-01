@@ -10,7 +10,8 @@ import type {
 import type {
     NativeDurableWorkspaceLifecycle,
     NativeDurableWorkspaceSummary,
-    NativeWorkspaceMigrationRecoverySource,
+    NativeWorkspaceDeletionJournalEntry,
+    NativeWorkspaceRecoveryLayoutSummary,
 } from "@shared/native-backend";
 import {
     getWorkspaceScopeKey,
@@ -33,7 +34,10 @@ interface WorkspaceCatalogState {
     readonly entriesByScopeKey: Readonly<Record<string, WorkspaceCatalogEntry>>;
     readonly error: string | null;
     readonly recoveryByScopeKey: Readonly<
-        Record<string, readonly NativeWorkspaceMigrationRecoverySource[]>
+        Record<string, readonly NativeWorkspaceRecoveryLayoutSummary[]>
+    >;
+    readonly pendingDeletionByScopeKey: Readonly<
+        Record<string, NativeWorkspaceDeletionJournalEntry>
     >;
     readonly status: "idle" | "loading" | "ready" | "error";
     readonly surfaceDiagnostics: WorkspaceSurfacePoolDiagnostics | null;
@@ -50,7 +54,10 @@ interface WorkspaceCatalogState {
     setError: (error: string) => void;
     setLoading: () => void;
     setRecoveryLayouts: (
-        layouts: readonly NativeWorkspaceMigrationRecoverySource[],
+        layouts: readonly NativeWorkspaceRecoveryLayoutSummary[],
+    ) => void;
+    setPendingDeletions: (
+        operations: readonly NativeWorkspaceDeletionJournalEntry[],
     ) => void;
     setSurfaceDiagnostics: (
         diagnostics: WorkspaceSurfacePoolDiagnostics,
@@ -62,6 +69,7 @@ export const workspaceCatalogStore = createStore<WorkspaceCatalogState>(
         entriesByScopeKey: {},
         error: null,
         recoveryByScopeKey: {},
+        pendingDeletionByScopeKey: {},
         status: "idle",
         surfaceDiagnostics: null,
         replaceDurable: (entries) => {
@@ -169,12 +177,30 @@ export const workspaceCatalogStore = createStore<WorkspaceCatalogState>(
         setRecoveryLayouts: (layouts) => {
             const recoveryByScopeKey: Record<
                 string,
-                NativeWorkspaceMigrationRecoverySource[]
+                NativeWorkspaceRecoveryLayoutSummary[]
             > = {};
             for (const layout of layouts) {
                 (recoveryByScopeKey[layout.scopeKey] ??= []).push(layout);
             }
             set({ recoveryByScopeKey });
+        },
+        setPendingDeletions: (operations) => {
+            set({
+                pendingDeletionByScopeKey: Object.fromEntries(
+                    operations
+                        .filter(
+                            (operation) =>
+                                operation.kind === "delete_worktree" &&
+                                (operation.status === "checkout_deleted" ||
+                                    operation.status === "purging" ||
+                                    (operation.status === "failed" &&
+                                        !operation.errorCode?.startsWith(
+                                            "pre_checkout:",
+                                        ))),
+                        )
+                        .map((operation) => [operation.scopeKey, operation]),
+                ),
+            });
         },
         setSurfaceDiagnostics: (surfaceDiagnostics) =>
             set({ surfaceDiagnostics }),
@@ -186,6 +212,7 @@ export function resetWorkspaceCatalogStoreForTests(): void {
         entriesByScopeKey: {},
         error: null,
         recoveryByScopeKey: {},
+        pendingDeletionByScopeKey: {},
         status: "idle",
         surfaceDiagnostics: null,
     });
@@ -210,6 +237,9 @@ export async function refreshDurableWorkspaceCatalog(
         workspaceCatalogStore
             .getState()
             .setRecoveryLayouts(catalog.recoveryLayouts);
+        workspaceCatalogStore
+            .getState()
+            .setPendingDeletions(catalog.pendingDeletions);
         workspaceCatalogStore
             .getState()
             .setSurfaceDiagnostics(diagnostics);

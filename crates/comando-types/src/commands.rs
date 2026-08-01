@@ -13,6 +13,14 @@ pub const DURABLE_WORKSPACE_SAVE: &str = "durable_workspace_save";
 pub const DURABLE_WORKSPACE_ARCHIVE: &str = "durable_workspace_archive";
 pub const DURABLE_WORKSPACE_RESET: &str = "durable_workspace_reset";
 pub const DURABLE_WORKSPACE_PURGE: &str = "durable_workspace_purge";
+pub const WORKSPACE_RECOVERY_LIST: &str = "workspace_recovery_list";
+pub const WORKSPACE_RECOVERY_APPLY: &str = "workspace_recovery_apply";
+pub const WORKSPACE_REASSOCIATE: &str = "workspace_reassociate";
+pub const WORKSPACE_FORGET_SESSION: &str = "workspace_forget_session";
+pub const WORKSPACE_DELETION_BEGIN: &str = "workspace_deletion_begin";
+pub const WORKSPACE_DELETION_UPDATE: &str = "workspace_deletion_update";
+pub const WORKSPACE_DELETION_LIST_INCOMPLETE: &str = "workspace_deletion_list_incomplete";
+pub const WORKSPACE_DELETION_COMPLETE: &str = "workspace_deletion_complete";
 pub const WORKSPACE_NAVIGATION_GET: &str = "workspace_navigation_get";
 pub const WORKSPACE_NAVIGATION_SET_ACTIVE: &str = "workspace_navigation_set_active";
 pub const WORKSPACE_NAVIGATION_SAVE_SHELL: &str = "workspace_navigation_save_shell";
@@ -57,6 +65,14 @@ pub const PERSISTENCE_COMMANDS: &[&str] = &[
     DURABLE_WORKSPACE_ARCHIVE,
     DURABLE_WORKSPACE_RESET,
     DURABLE_WORKSPACE_PURGE,
+    WORKSPACE_RECOVERY_LIST,
+    WORKSPACE_RECOVERY_APPLY,
+    WORKSPACE_REASSOCIATE,
+    WORKSPACE_FORGET_SESSION,
+    WORKSPACE_DELETION_BEGIN,
+    WORKSPACE_DELETION_UPDATE,
+    WORKSPACE_DELETION_LIST_INCOMPLETE,
+    WORKSPACE_DELETION_COMPLETE,
     WORKSPACE_NAVIGATION_GET,
     WORKSPACE_NAVIGATION_SET_ACTIVE,
     WORKSPACE_NAVIGATION_SAVE_SHELL,
