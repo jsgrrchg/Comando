@@ -493,7 +493,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             navigation.activeContextKey &&
             openContextKeys.includes(navigation.activeContextKey)
                 ? navigation.activeContextKey
-                : (openContextKeys[0] ?? null);
+                : isWorkspaceSurfaceHost
+                  ? null
+                  : (openContextKeys[0] ?? null);
         const activeContext = activeContextKey
             ? contextsByKey[activeContextKey]
             : null;
@@ -1486,7 +1488,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 navigation.activeContextKey &&
                 openContextKeys.includes(navigation.activeContextKey)
                     ? navigation.activeContextKey
-                    : (openContextKeys[0] ?? null);
+                    : isWorkspaceSurfaceHost
+                      ? null
+                      : (openContextKeys[0] ?? null);
             const activeContext = activeContextKey
                 ? contextsByKey[activeContextKey]
                 : null;

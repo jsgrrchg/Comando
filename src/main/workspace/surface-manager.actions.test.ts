@@ -101,7 +101,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
         vi.mocked(loadRendererContents).mockClear();
     });
 
-    it("binds each renderer URL to one scope and generation", () => {
+    it("binds only the cold-restored active renderer to one scope and generation", () => {
         const manager = new WorkspaceSurfaceManager();
         manager.syncHost(
             createHostWindow().window,
@@ -112,7 +112,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
         const searches = vi
             .mocked(loadRendererContents)
             .mock.calls.map(([, search]) => new URLSearchParams(search));
-        expect(searches).toHaveLength(2);
+        expect(searches).toHaveLength(1);
         expect(searches[0]?.get("window")).toBe("workspace-surface");
         expect(searches[0]?.get("scope")).toBe(
             "project-a::__primary__",
@@ -122,18 +122,20 @@ describe("WorkspaceSurfaceManager action routing", () => {
         expect(searches[0]?.get("runtime-owner")).toBe(
             "workspace-runtime:project-a::__primary__",
         );
-        expect(searches[1]?.get("scope")).toBe(
-            "project-b::__primary__",
-        );
     });
 
-    it("recreates a surface with the same runtime owner and a new subscriber", () => {
+    it("recreates a surface with the same runtime owner and a new subscriber", async () => {
         const manager = new WorkspaceSurfaceManager();
         const onSurfaceCreated = vi.fn();
         const onSurfaceDestroyed = vi.fn();
         manager.setLifecycleHandlers({
             onSurfaceCreated,
             onSurfaceDestroyed,
+            persistHostSnapshot: () => Promise.resolve(),
+            prepareSurfaceHibernate: (subscriber) =>
+                Promise.resolve(
+                    manager.getSurfaceSnapshot(subscriber.webContents)!,
+                ),
             resolveRuntimeOwner: () => ({
                 revision: 7,
                 runtimeOwnerId: "durable-runtime-owner",
@@ -150,15 +152,27 @@ describe("WorkspaceSurfaceManager action routing", () => {
             throw new Error("Expected the first surface.");
         }
         firstSurface.webContents.emit("did-finish-load");
+        notifySurfaceReady(manager, firstSurface.webContents);
+        await vi.waitFor(() =>
+            expect(
+                manager
+                    .getSurfaceDiagnostics("host-1")
+                    .surfaces.find(
+                        (surface) =>
+                            surface.scopeKey === "project-a::__primary__",
+                    )?.state,
+            ).toBe("active"),
+        );
         const firstBinding = manager.getSurfaceRuntimeSubscriber(
             asWebContents(firstSurface.webContents),
         );
 
-        manager.syncHost(host.window, createHostContext(), {
-            ...activeSnapshot,
-            activeContextKey: null,
-            openContextKeys: [],
-        });
+        await expect(
+            manager.closeWorkspaceSurface(
+                "host-1",
+                "project-a::__primary__",
+            ),
+        ).resolves.toMatchObject({ status: "closed" });
         manager.syncHost(host.window, createHostContext(), activeSnapshot);
         const secondSurface = electronMocks.views[1];
         if (!secondSurface) {
@@ -189,6 +203,170 @@ describe("WorkspaceSurfaceManager action routing", () => {
         ).toContain("revision=7");
     });
 
+    it("does not create one renderer per catalog row", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const contexts = Array.from({ length: 250 }, (_, index) =>
+            createPersistedContext(
+                `project-${index}::__primary__`,
+                `project-${index}`,
+            ),
+        );
+        manager.syncHost(createHostWindow().window, createHostContext(), {
+            activeContextKey: contexts[0]?.key ?? null,
+            contexts,
+            openContextKeys: contexts.map((context) => context.key),
+            version: 3,
+        });
+
+        expect(electronMocks.views).toHaveLength(1);
+        expect(manager.getSurfaceDiagnostics("host-1").surfaces).toHaveLength(250);
+        await vi.waitFor(() =>
+            expect(
+                manager
+                    .getSurfaceDiagnostics("host-1")
+                    .surfaces.filter((surface) => surface.generation !== null),
+            ).toHaveLength(1),
+        );
+    });
+
+    it("keeps the committed surface visible when a cold restore fails", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const host = createHostWindow();
+        manager.syncHost(host.window, createHostContext(), createSnapshot());
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        const firstSurface = electronMocks.views[0];
+
+        const activation = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const failedSurface = electronMocks.views[1];
+        const binding = manager.getSurfaceRuntimeSubscriber(
+            asWebContents(failedSurface.webContents),
+        );
+        if (!binding) {
+            throw new Error("Expected a bound cold surface.");
+        }
+        manager.notifySurfaceRestoreFailed(
+            asWebContents(failedSurface.webContents),
+            binding,
+            "restore failed",
+        );
+
+        await expect(activation).resolves.toEqual({
+            message: "restore failed",
+            scopeKey: "project-b::__primary__",
+            status: "failed",
+        });
+        expect(manager.getActiveContext("host-1")?.key).toBe(
+            "project-a::__primary__",
+        );
+        expect(firstSurface.setVisible).toHaveBeenLastCalledWith(true);
+        expect(failedSurface.webContents.close).toHaveBeenCalledOnce();
+    });
+
+    it("blocks close on renderer leases and preserves the durable row", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        manager.setLifecycleHandlers({
+            persistHostSnapshot: () => Promise.resolve(),
+            prepareSurfaceHibernate: (subscriber) =>
+                Promise.resolve(
+                    manager.getSurfaceSnapshot(subscriber.webContents)!,
+                ),
+        });
+        const host = createHostWindow();
+        manager.syncHost(host.window, createHostContext(), createSnapshot());
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        const surface = manager.getSurfaceWebContents(
+            "host-1",
+            "project-a::__primary__",
+        );
+        const binding = surface
+            ? manager.getSurfaceRuntimeSubscriber(surface)
+            : null;
+        if (!surface || !binding) {
+            throw new Error("Expected an active surface binding.");
+        }
+        manager.reportSurfaceLeases(surface, {
+            ...binding,
+            leases: [
+                {
+                    acquiredAt: "2026-08-01T00:00:00.000Z",
+                    id: "dirty:file-a",
+                    kind: "dirty-file",
+                    message: "A file has unsaved changes.",
+                },
+            ],
+        });
+
+        await expect(
+            manager.closeWorkspaceSurface(
+                "host-1",
+                "project-a::__primary__",
+            ),
+        ).resolves.toMatchObject({
+            leases: [expect.objectContaining({ kind: "dirty-file" })],
+            status: "blocked",
+        });
+        expect(manager.getSurfaceWebContents("host-1", binding.scopeKey)).toBe(
+            surface,
+        );
+        expect(
+            manager
+                .getHostSnapshotForWindow("host-1")
+                ?.contexts.some((context) => context.key === binding.scopeKey),
+        ).toBe(true);
+    });
+
+    it("recreates one host from active, warm and cold metadata without eager restore", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        const firstHost = createHostWindow();
+        const snapshot = createSnapshot();
+        manager.syncHost(firstHost.window, createHostContext(), snapshot);
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        const activation = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        notifySurfaceReady(
+            manager,
+            manager.getSurfaceWebContents(
+                "host-1",
+                "project-b::__primary__",
+            ),
+        );
+        await activation;
+        expect(electronMocks.views).toHaveLength(2);
+
+        manager.disposeHost("host-1", firstHost.window);
+        const secondHost = createHostWindow();
+        manager.syncHost(secondHost.window, createHostContext(), {
+            ...snapshot,
+            activeContextKey: "project-b::__primary__",
+        });
+
+        expect(electronMocks.views).toHaveLength(3);
+        const recreatedSearch = new URLSearchParams(
+            vi.mocked(loadRendererContents).mock.calls.at(-1)?.[1],
+        );
+        expect(recreatedSearch.get("scope")).toBe("project-b::__primary__");
+        expect(recreatedSearch.get("runtime-owner")).toBe(
+            "workspace-runtime:project-b::__primary__",
+        );
+    });
+
     it("waits until a new host renderer registers its surface container", async () => {
         const manager = new WorkspaceSurfaceManager();
         const ready = manager.waitForHost("host-1", 100);
@@ -203,15 +381,14 @@ describe("WorkspaceSurfaceManager action routing", () => {
         await expect(manager.waitForHost("host-1", 100)).resolves.toBe(true);
     });
 
-    it("delivers only to the active surface and rejects stale scopes", () => {
+    it("delivers only to the active surface and rejects stale scopes", async () => {
         const manager = new WorkspaceSurfaceManager();
         const host = createHostWindow();
         const snapshot = createSnapshot();
         manager.syncHost(host.window, createHostContext(), snapshot);
 
-        const [surfaceA, surfaceB] = electronMocks.views;
+        const [surfaceA] = electronMocks.views;
         expect(surfaceA).toBeDefined();
-        expect(surfaceB).toBeDefined();
 
         const actionA = createFileAction("project-a::__primary__", "project-a");
         const queuedActionA = manager.dispatchActiveSurfaceAction(
@@ -235,7 +412,6 @@ describe("WorkspaceSurfaceManager action routing", () => {
                 request: actionA,
             },
         );
-        expect(surfaceB.webContents.send).not.toHaveBeenCalled();
         expect(
             manager.claimSurfaceAction(
                 asWebContents(surfaceA.webContents),
@@ -251,7 +427,15 @@ describe("WorkspaceSurfaceManager action routing", () => {
             { actionId: queuedActionA.actionId, status: "completed" },
         );
 
-        manager.activate("host-1", "project-b::__primary__");
+        await manager.activate("host-1", "project-a::__primary__");
+        const activationB = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const surfaceB = electronMocks.views[1];
+        expect(surfaceB).toBeDefined();
+        notifySurfaceReady(manager, surfaceB.webContents);
+        await activationB;
         expect(manager.dispatchActiveSurfaceAction("host-1", actionA)).toEqual({
             delivered: false,
             reason: "inactive-context",
@@ -260,7 +444,6 @@ describe("WorkspaceSurfaceManager action routing", () => {
         expect(surfaceB.webContents.send).not.toHaveBeenCalled();
 
         const actionB = createFileAction("project-b::__primary__", "project-b");
-        notifySurfaceReady(manager, surfaceB.webContents);
         const sentActionB = manager.dispatchActiveSurfaceAction("host-1", actionB);
         expect(sentActionB).toMatchObject({
             delivered: true,
@@ -312,7 +495,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
         expect(surfaceB.webContents.send).toHaveBeenCalledTimes(1);
     });
 
-    it("rejects a queued action when its context becomes inactive", () => {
+    it("rejects a queued action when its context becomes inactive", async () => {
         const manager = new WorkspaceSurfaceManager();
         const host = createHostWindow();
         manager.syncHost(host.window, createHostContext(), createSnapshot());
@@ -326,8 +509,15 @@ describe("WorkspaceSurfaceManager action routing", () => {
             throw new Error("Expected the action to queue.");
         }
 
-        manager.activate("host-1", "project-b::__primary__");
+        const activationB = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const surfaceB = electronMocks.views[1];
+        notifySurfaceReady(manager, surfaceB.webContents);
+        await activationB;
         notifySurfaceReady(manager, surfaceA.webContents);
+        await Promise.resolve();
 
         expect(surfaceA.webContents.send).not.toHaveBeenCalled();
         expect(
@@ -345,11 +535,11 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
     });
 
-    it("reveals a surface file only through its active host context", () => {
+    it("reveals a surface file only through its active host context", async () => {
         const manager = new WorkspaceSurfaceManager();
         const host = createHostWindow();
         manager.syncHost(host.window, createHostContext(), createSnapshot());
-        const [surfaceA, surfaceB] = electronMocks.views;
+        const [surfaceA] = electronMocks.views;
         const requestA = createFileRevealRequest(
             "project-a::__primary__",
             "project-a",
@@ -366,7 +556,13 @@ describe("WorkspaceSurfaceManager action routing", () => {
             requestA,
         );
 
-        manager.activate("host-1", "project-b::__primary__");
+        const activationB = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const surfaceB = electronMocks.views[1];
+        notifySurfaceReady(manager, surfaceB.webContents);
+        await activationB;
         expect(
             manager.revealSurfaceFileInHostTree(
                 asWebContents(surfaceA.webContents),
@@ -451,7 +647,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
     });
 
-    it("resolves historical duplicates deterministically", () => {
+    it("resolves historical duplicates deterministically", async () => {
         const manager = new WorkspaceSurfaceManager();
         const firstHost = createHostWindow();
         const secondHost = createHostWindow();
@@ -493,7 +689,12 @@ describe("WorkspaceSurfaceManager action routing", () => {
             )?.hostWindowId,
         ).toBe("host-2");
 
-        manager.activate("host-1", "project-b::__primary__");
+        const activationB = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        notifySurfaceReady(manager, electronMocks.views.at(-1)?.webContents);
+        await activationB;
         expect(
             manager.findPreferredWorkspaceLocation(
                 { projectId: "project-a", worktreeId: null },
@@ -624,6 +825,16 @@ describe("WorkspaceSurfaceManager action routing", () => {
                 workspaceSessionId: "workspace-session-2",
             },
             singleContextSnapshot("project-c::__primary__", "project-c"),
+        );
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        await finishActiveSurface(
+            manager,
+            "host-2",
+            "project-c::__primary__",
         );
         const originalWebContents = manager.getSurfaceWebContents(
             "host-1",
@@ -1162,4 +1373,26 @@ function notifySurfaceReady(
         throw new Error("Expected a bound workspace surface.");
     }
     manager.notifySurfaceReady(webContents, binding);
+}
+
+async function finishActiveSurface(
+    manager: WorkspaceSurfaceManager,
+    hostWindowId: string,
+    scopeKey: string,
+): Promise<void> {
+    const webContents = manager.getSurfaceWebContents(hostWindowId, scopeKey);
+    if (!webContents) {
+        throw new Error(`Expected a resident surface for ${scopeKey}.`);
+    }
+    (webContents as unknown as { emit(event: string): void }).emit(
+        "did-finish-load",
+    );
+    notifySurfaceReady(manager, webContents);
+    await vi.waitFor(() =>
+        expect(
+            manager
+                .getSurfaceDiagnostics(hostWindowId)
+                .surfaces.find((surface) => surface.scopeKey === scopeKey)?.state,
+        ).toBe("active"),
+    );
 }

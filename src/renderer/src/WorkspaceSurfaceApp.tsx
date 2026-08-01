@@ -22,6 +22,10 @@ import {
 import { resolveProjectContextWorktreeId } from "./app/git/context-key";
 import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
 import { isWorkspaceSurfaceLifecycleCurrent } from "./app/workspace/surface-presentation-lifecycle";
+import {
+    collectWorkspaceSurfaceStateLeases,
+    workspaceSurfaceLeaseRegistry,
+} from "./app/workspace/surface-lease-registry";
 import { activateWorkspaceSurfaceLayoutRuntime } from "./app/workspace/workspace-surface-layout-runtime";
 import { SIDEBAR_AGENT_DRAG_EVENT } from "./components/sidebar/sidebarAgentDragEvents";
 import { SIDEBAR_GITHUB_DRAG_EVENT } from "./components/sidebar/sidebarGitHubDragEvents";
@@ -208,8 +212,11 @@ export function WorkspaceSurfaceApp() {
                     });
                     setSurfaceStatus("error");
                     if (runtimeBinding) {
-                        void window.comando.notifyWorkspaceSurfaceReady(
+                        void window.comando.notifyWorkspaceSurfaceRestoreFailed(
                             runtimeBinding,
+                            error instanceof Error && error.message
+                                ? error.message
+                                : "Could not restore the workspace surface.",
                         );
                     }
                 }
@@ -230,6 +237,45 @@ export function WorkspaceSurfaceApp() {
         resyncSurfaceRuntime,
         runtimeBinding,
     ]);
+
+    useEffect(() => {
+        if (!runtimeBinding) {
+            return;
+        }
+        let lastSignature = "";
+        const reportLeases = () => {
+            const leasesById = new Map(
+                [
+                    ...collectWorkspaceSurfaceStateLeases(
+                        useWorkspaceStore.getState(),
+                    ),
+                    ...workspaceSurfaceLeaseRegistry.list(),
+                ].map((lease) => [lease.id, lease]),
+            );
+            const leases = [...leasesById.values()].sort((left, right) =>
+                left.id.localeCompare(right.id),
+            );
+            const signature = JSON.stringify(
+                leases.map((lease) => [lease.id, lease.kind, lease.message]),
+            );
+            if (signature === lastSignature) {
+                return;
+            }
+            lastSignature = signature;
+            void window.comando.reportWorkspaceSurfaceLeases({
+                ...runtimeBinding,
+                leases,
+            });
+        };
+        reportLeases();
+        const unsubscribeStore = useWorkspaceStore.subscribe(reportLeases);
+        const unsubscribeRegistry =
+            workspaceSurfaceLeaseRegistry.subscribe(reportLeases);
+        return () => {
+            unsubscribeStore();
+            unsubscribeRegistry();
+        };
+    }, [runtimeBinding]);
 
     useEffect(() => {
         const api = window.comando;
@@ -529,12 +575,13 @@ export function WorkspaceSurfaceApp() {
     if (!descriptor) {
         return <SurfaceError message="The workspace surface binding is invalid." />;
     }
-    if (surfaceStatus !== "ready") {
+    if (surfaceStatus === "loading") {
+        return <SurfaceRestoreSkeleton />;
+    }
+    if (surfaceStatus === "error") {
         return (
             <SurfaceError
-                message={
-                    workspaceError ?? projectsError ?? "Restoring workspace…"
-                }
+                message={workspaceError ?? projectsError ?? "Could not restore workspace."}
             />
         );
     }
@@ -585,6 +632,27 @@ export function WorkspaceSurfaceApp() {
                 />
             </main>
         </div>
+    );
+}
+
+function SurfaceRestoreSkeleton() {
+    return (
+        <main
+            aria-busy="true"
+            aria-label="Restoring workspace"
+            className="flex h-screen min-h-0 flex-col bg-bg-primary p-4"
+        >
+            <div className="mb-4 h-7 w-52 animate-pulse rounded bg-bg-tertiary" />
+            <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_12rem] gap-4">
+                <div className="animate-pulse rounded-md border border-border bg-bg-secondary" />
+                <div className="flex animate-pulse flex-col gap-3 rounded-md border border-border bg-bg-secondary p-3">
+                    <div className="h-4 w-3/4 rounded bg-bg-tertiary" />
+                    <div className="h-4 w-full rounded bg-bg-tertiary" />
+                    <div className="h-4 w-5/6 rounded bg-bg-tertiary" />
+                </div>
+            </div>
+            <span className="sr-only">Restoring workspace…</span>
+        </main>
     );
 }
 

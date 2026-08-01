@@ -1,10 +1,16 @@
-import type { WorkspaceNavigationSnapshot } from "@shared/ipc";
+import type {
+    WorkspaceNavigationSnapshot,
+    WorkspaceSurfaceActivationResult,
+} from "@shared/ipc";
 import type { ActivateWorkspaceLocationInput } from "@shared/ipc";
 import { areWorkspaceScopesEquivalent } from "@shared/workspace-context";
 import type { WorkspaceLocation } from "@shared/workspace-context";
 
 interface WorkspaceLocationNavigationManager {
-    activate(hostWindowId: string, contextKey: string): boolean;
+    activate(
+        hostWindowId: string,
+        contextKey: string,
+    ): Promise<WorkspaceSurfaceActivationResult>;
     getHostSnapshotForWindow(
         hostWindowId: string,
     ): WorkspaceNavigationSnapshot | null;
@@ -34,7 +40,11 @@ export async function activateOpenWorkspaceLocation(input: {
     if (!location || !areWorkspaceScopesEquivalent(location, input.location)) {
         return false;
     }
-    if (!input.manager.activate(location.hostWindowId, location.contextKey)) {
+    const activation = await input.manager.activate(
+        location.hostWindowId,
+        location.contextKey,
+    );
+    if (activation.status !== "activated") {
         return false;
     }
     const snapshot = input.manager.getHostSnapshotForWindow(

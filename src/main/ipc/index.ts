@@ -183,6 +183,7 @@ import {
     type WorkspaceSurfaceActionCompletion,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceDragEvent,
+    type WorkspaceSurfaceLeaseReport,
     type WorkspaceSurfaceRuntimeBinding,
     type WorkspaceSurfaceRuntimeResync,
 } from "@shared/ipc";
@@ -407,12 +408,16 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
+    ipcMain.removeHandler(IPC_CHANNELS.closeWorkspaceSurface);
+    ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSurfaceDiagnostics);
     ipcMain.removeHandler(IPC_CHANNELS.listOpenWorkspaceLocations);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceLocation);
     ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceAction);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceReady);
+    ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceRestoreFailed);
+    ipcMain.removeHandler(IPC_CHANNELS.reportWorkspaceSurfaceLeases);
     ipcMain.removeHandler(IPC_CHANNELS.resyncWorkspaceSurfaceRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
@@ -2132,6 +2137,34 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         },
     );
     ipcMain.handle(
+        IPC_CHANNELS.notifyWorkspaceSurfaceRestoreFailed,
+        (
+            event,
+            binding: WorkspaceSurfaceRuntimeBinding,
+            message: unknown,
+        ) => {
+            workspaceSurfaceManager.notifySurfaceRestoreFailed(
+                event.sender,
+                binding,
+                typeof message === "string"
+                    ? message.slice(0, 1_000)
+                    : "Could not restore the workspace surface.",
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.reportWorkspaceSurfaceLeases,
+        (event, report) => {
+            if (!report || typeof report !== "object") {
+                return false;
+            }
+            return workspaceSurfaceManager.reportSurfaceLeases(
+                event.sender,
+                report as WorkspaceSurfaceLeaseReport,
+            );
+        },
+    );
+    ipcMain.handle(
         IPC_CHANNELS.resyncWorkspaceSurfaceRuntime,
         async (
             event,
@@ -2211,19 +2244,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     });
     ipcMain.handle(
         IPC_CHANNELS.activateWorkspaceSurface,
-        (event, contextKey: string) => {
+        async (event, contextKey: string) => {
             const context = requireWindowContext(event.sender, "main");
             if (workspaceSurfaceManager.isSurface(event.sender)) {
-                return;
+                throw new Error("A workspace surface cannot activate another surface.");
             }
-            if (
-                !activateWorkspaceSurfaceAndNotifyHost({
-                    contextKey,
-                    hostWindowId: context.windowId,
-                    manager: workspaceSurfaceManager,
-                })
-            ) {
-                return;
+            const result = await activateWorkspaceSurfaceAndNotifyHost({
+                contextKey,
+                hostWindowId: context.windowId,
+                manager: workspaceSurfaceManager,
+            });
+            if (result.status !== "activated") {
+                return result;
             }
             const activeContext = workspaceSurfaceManager.getActiveContext(
                 context.windowId,
@@ -2242,6 +2274,54 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     ),
                 );
             }
+            return result;
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.closeWorkspaceSurface,
+        async (event, contextKey: unknown) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (
+                workspaceSurfaceManager.isSurface(event.sender) ||
+                typeof contextKey !== "string" ||
+                !contextKey
+            ) {
+                throw new Error("A valid workspace scope is required.");
+            }
+            const result = await workspaceSurfaceManager.closeWorkspaceSurface(
+                context.windowId,
+                contextKey,
+            );
+            if (
+                result.status === "closed" &&
+                !workspaceSurfaceManager.getActiveContext(context.windowId)
+            ) {
+                options.persistenceService.saveActiveProjectId(
+                    context.windowId,
+                    null,
+                    null,
+                );
+                windowRegistry.updateMainWindowProjectId(
+                    context.windowId,
+                    null,
+                    null,
+                );
+                const hostWindow = BrowserWindow.fromWebContents(event.sender);
+                hostWindow?.setTitle(
+                    buildMainWindowTitle(options.projectService, null),
+                );
+            }
+            return result;
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getWorkspaceSurfaceDiagnostics,
+        (event) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error("Diagnostics are available only to the host.");
+            }
+            return workspaceSurfaceManager.getSurfaceDiagnostics(context.windowId);
         },
     );
     ipcMain.handle(IPC_CHANNELS.listOpenWorkspaceLocations, (event) => {

@@ -209,6 +209,8 @@ import {
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceContextRequest,
     type WorkspaceSurfaceLifecycleEvent,
+    type WorkspaceSurfaceLeaseReport,
+    type WorkspaceSurfacePoolDiagnostics,
     type WorkspaceSurfaceRuntimeBinding,
     type WorkspaceSurfaceRuntimeResync,
 } from "@shared/ipc";
@@ -1018,6 +1020,19 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfacePoolChanged: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            diagnostics: WorkspaceSurfacePoolDiagnostics,
+        ) => listener(diagnostics);
+        ipcRenderer.on(IPC_EVENTS.workspaceSurfacePoolChanged, handleEvent);
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfacePoolChanged,
+                handleEvent,
+            );
+        };
+    },
     onWorkspaceSurfaceDrag: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -1233,6 +1248,10 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
     activateWorkspaceSurface: (contextKey: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
+    closeWorkspaceSurface: (contextKey: string) =>
+        ipcRenderer.invoke(IPC_CHANNELS.closeWorkspaceSurface, contextKey),
+    getWorkspaceSurfaceDiagnostics: () =>
+        ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceSurfaceDiagnostics),
     listOpenWorkspaceLocations: async () =>
         assertIpcArray<OpenWorkspaceLocationSummary>(
             IPC_CHANNELS.listOpenWorkspaceLocations,
@@ -1261,6 +1280,17 @@ const comandoApi: ComandoApi = {
         ),
     notifyWorkspaceSurfaceReady: (binding: WorkspaceSurfaceRuntimeBinding) =>
         ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceReady, binding),
+    notifyWorkspaceSurfaceRestoreFailed: (
+        binding: WorkspaceSurfaceRuntimeBinding,
+        message: string,
+    ) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.notifyWorkspaceSurfaceRestoreFailed,
+            binding,
+            message,
+        ),
+    reportWorkspaceSurfaceLeases: (report: WorkspaceSurfaceLeaseReport) =>
+        ipcRenderer.invoke(IPC_CHANNELS.reportWorkspaceSurfaceLeases, report),
     resyncWorkspaceSurfaceRuntime: async (
         binding: WorkspaceSurfaceRuntimeBinding,
     ) =>

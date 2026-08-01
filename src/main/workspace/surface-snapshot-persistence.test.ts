@@ -10,7 +10,7 @@ import {
 } from "./surface-snapshot-persistence";
 
 describe("activateWorkspaceSurfaceAndNotifyHost", () => {
-    it("publishes the authoritative snapshot produced by main activation", () => {
+    it("publishes the authoritative snapshot produced by main activation", async () => {
         const contextB = "project-b::__primary__";
         const snapshotB = createSnapshot(contextB);
         const send = vi.fn();
@@ -18,19 +18,24 @@ describe("activateWorkspaceSurfaceAndNotifyHost", () => {
         const manager = {
             activate: vi.fn((_hostWindowId: string, contextKey: string) => {
                 activeSnapshot = createSnapshot(contextKey);
-                return true;
+                return Promise.resolve({
+                    generation: `surface:${contextKey}`,
+                    scopeKey: contextKey,
+                    status: "activated" as const,
+                    warm: true,
+                });
             }),
             getHostSnapshotForWindow: vi.fn(() => activeSnapshot),
             getHostWebContents: vi.fn(() => ({ send })),
         };
 
-        expect(
+        await expect(
             activateWorkspaceSurfaceAndNotifyHost({
                 contextKey: contextB,
                 hostWindowId: "host-1",
                 manager,
             }),
-        ).toBe(true);
+        ).resolves.toMatchObject({ status: "activated" });
         expect(send).toHaveBeenCalledWith(
             IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
             snapshotB,

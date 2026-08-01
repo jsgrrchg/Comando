@@ -347,6 +347,8 @@ if (!hasSingleInstanceLock) {
             });
             workspaceService = nativeAppDataClient.workspace;
             workspaceSurfaceManager.setLifecycleHandlers({
+                commitActiveScope: (_hostWindowId, scopeKey) =>
+                    commitDurableWorkspaceActiveScope(scopeKey),
                 onSurfaceCreated: (subscriber) => {
                     const previous = workspaceRuntimeOwnership.attach(subscriber);
                     if (previous) {
@@ -391,6 +393,27 @@ if (!hasSingleInstanceLock) {
                     } else {
                         detachAiSessionStream(subscriber.generation);
                     }
+                },
+                persistHostSnapshot: async (hostContext, snapshot) => {
+                    if (!workspaceService || !hostContext.workspaceId) {
+                        throw new Error("Workspace persistence is not available.");
+                    }
+                    await workspaceService.saveSnapshot(
+                        hostContext.workspaceId,
+                        snapshot,
+                    );
+                },
+                prepareSurfaceHibernate: async (subscriber) => {
+                    await requestWorkspaceFlush(subscriber.webContents);
+                    const snapshot = await requestWorkspaceSurfaceSnapshot(
+                        subscriber.webContents,
+                    );
+                    if (!snapshot) {
+                        throw new Error(
+                            "The workspace renderer did not provide a checkpoint.",
+                        );
+                    }
+                    return snapshot;
                 },
                 resolveRuntimeOwner: resolveWorkspaceSurfaceRuntimeOwner,
             });
@@ -777,6 +800,37 @@ async function resolveWorkspaceSurfaceRuntimeOwner(
     };
 }
 
+async function commitDurableWorkspaceActiveScope(
+    scopeKey: string | null,
+): Promise<void> {
+    const repository = nativePersistenceGateway;
+    if (!repository) {
+        throw new Error("Durable workspace persistence is not available.");
+    }
+
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        const navigation = await repository.getWorkspaceNavigation();
+        if (navigation.activeScopeKey === scopeKey) {
+            return;
+        }
+        try {
+            await repository.setActiveWorkspace({
+                activeScopeKey: scopeKey,
+                expectedRevision: navigation.revision,
+            });
+            return;
+        } catch (error) {
+            // Reloading the revision resolves a concurrent activation without
+            // allowing last-write-wins at the persistence boundary.
+            lastError = error;
+        }
+    }
+    throw lastError instanceof Error
+        ? lastError
+        : new Error("Could not commit durable workspace navigation.");
+}
+
 function summarizeNativeBackendCapabilities(capabilities: unknown): string {
     if (!isRecord(capabilities)) {
         return "Capabilities unavailable.";
@@ -973,10 +1027,13 @@ async function activateExistingWorkspaceScope(
         if (!window || context?.windowKind !== "main") {
             return null;
         }
-        workspaceSurfaceManager.activate(
+        const activation = await workspaceSurfaceManager.activate(
             location.hostWindowId,
             location.contextKey,
         );
+        if (activation.status !== "activated") {
+            return null;
+        }
         const snapshot = workspaceSurfaceManager.getHostSnapshotForWindow(
             location.hostWindowId,
         );
@@ -1319,19 +1376,32 @@ function attachMainWindowLifecycle(
 }
 
 async function requestWorkspaceFlush(webContents: WebContents): Promise<void> {
+    if (webContents.isDestroyed()) {
+        throw new Error("The workspace renderer closed before it could flush.");
+    }
     const requestId = `${webContents.id}:${++nextWorkspaceFlushRequestId}`;
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
         let settled = false;
-        const finish = () => {
+        const finish = (error?: Error) => {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
             pendingWorkspaceFlushes.delete(requestId);
-            resolve();
+            if (error) {
+                reject(error);
+            } else {
+                resolve();
+            }
         };
-        const timer = setTimeout(finish, 1_500);
+        const timer = setTimeout(
+            () =>
+                finish(
+                    new Error("The workspace renderer did not confirm its flush."),
+                ),
+            1_500,
+        );
         pendingWorkspaceFlushes.set(requestId, {
-            resolve: finish,
+            resolve: () => finish(),
             senderId: webContents.id,
         });
         webContents.send(

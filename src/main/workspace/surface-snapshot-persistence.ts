@@ -1,7 +1,10 @@
 import type { WebContents } from "electron";
 
 import { IPC_EVENTS } from "@shared/ipc";
-import type { WorkspaceNavigationSnapshot } from "@shared/ipc";
+import type {
+    WorkspaceNavigationSnapshot,
+    WorkspaceSurfaceActivationResult,
+} from "@shared/ipc";
 
 interface WorkspaceSurfaceHostSnapshotManager {
     getHostSnapshotForWindow: (
@@ -23,7 +26,7 @@ interface WorkspaceSurfaceSnapshotManager
     } | null;
 }
 
-export function activateWorkspaceSurfaceAndNotifyHost({
+export async function activateWorkspaceSurfaceAndNotifyHost({
     contextKey,
     hostWindowId,
     manager,
@@ -31,11 +34,15 @@ export function activateWorkspaceSurfaceAndNotifyHost({
     readonly contextKey: string;
     readonly hostWindowId: string;
     readonly manager: WorkspaceSurfaceHostSnapshotManager & {
-        activate: (hostWindowId: string, contextKey: string) => boolean;
+        activate: (
+            hostWindowId: string,
+            contextKey: string,
+        ) => Promise<WorkspaceSurfaceActivationResult>;
     };
-}): boolean {
-    if (!manager.activate(hostWindowId, contextKey)) {
-        return false;
+}): Promise<WorkspaceSurfaceActivationResult> {
+    const result = await manager.activate(hostWindowId, contextKey);
+    if (result.status !== "activated") {
+        return result;
     }
 
     const hostSnapshot = manager.getHostSnapshotForWindow(hostWindowId);
@@ -44,7 +51,7 @@ export function activateWorkspaceSurfaceAndNotifyHost({
             .getHostWebContents(hostWindowId)
             ?.send(IPC_EVENTS.workspaceSurfaceSnapshotUpdated, hostSnapshot);
     }
-    return true;
+    return result;
 }
 
 export async function persistWorkspaceSurfaceSnapshot({

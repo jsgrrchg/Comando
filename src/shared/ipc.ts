@@ -140,6 +140,8 @@ export const IPC_CHANNELS = {
     saveWorkspaceSnapshot: "workspace:save-snapshot",
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
+    closeWorkspaceSurface: "workspace:close-surface",
+    getWorkspaceSurfaceDiagnostics: "workspace:get-surface-diagnostics",
     listOpenWorkspaceLocations: "workspace:list-open-locations",
     activateWorkspaceLocation: "workspace:activate-location",
     captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
@@ -148,6 +150,9 @@ export const IPC_CHANNELS = {
     claimWorkspaceSurfaceAction: "workspace:claim-surface-action",
     completeWorkspaceSurfaceAction: "workspace:complete-surface-action",
     notifyWorkspaceSurfaceReady: "workspace:notify-surface-ready",
+    notifyWorkspaceSurfaceRestoreFailed:
+        "workspace:notify-surface-restore-failed",
+    reportWorkspaceSurfaceLeases: "workspace:report-surface-leases",
     resyncWorkspaceSurfaceRuntime: "workspace:resync-surface-runtime",
     revealWorkspaceSurfaceFileInHostTree:
         "workspace:reveal-surface-file-in-host-tree",
@@ -230,6 +235,7 @@ export const IPC_EVENTS = {
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
     workspaceSurfaceSnapshotRequested: "workspace:surface-snapshot-requested",
     workspaceSurfaceSnapshotCaptured: "workspace:surface-snapshot-captured",
+    workspaceSurfacePoolChanged: "workspace:surface-pool-changed",
     workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
     workspaceSurfaceFocused: "workspace:surface-focused",
     workspaceSurfaceContextRequested: "workspace:surface-context-requested",
@@ -2144,6 +2150,102 @@ export interface WorkspaceSurfaceRuntimeResync
     readonly terminals: readonly TerminalSession[];
 }
 
+export type WorkspaceSurfacePoolState =
+    | "active"
+    | "cold"
+    | "disposing"
+    | "error"
+    | "suspending"
+    | "warm"
+    | "warming";
+
+export type WorkspaceSurfaceHardLeaseKind =
+    | "active-drag"
+    | "ai-critical"
+    | "critical-modal"
+    | "dirty-file"
+    | "external-file-conflict"
+    | "failed-checkpoint"
+    | "failed-flush"
+    | "failed-save"
+    | "non-durable-composer"
+    | "pending-host-action"
+    | "pending-review"
+    | "saving-file"
+    | "terminal-busy";
+
+export interface WorkspaceSurfaceHardLease {
+    readonly acquiredAt: string;
+    readonly id: string;
+    readonly kind: WorkspaceSurfaceHardLeaseKind;
+    readonly message: string;
+}
+
+export interface WorkspaceSurfaceLeaseReport
+    extends WorkspaceSurfaceRuntimeBinding {
+    readonly leases: readonly WorkspaceSurfaceHardLease[];
+}
+
+export interface WorkspaceSurfaceDiagnostic {
+    readonly error: string | null;
+    readonly generation: string | null;
+    readonly lastActivatedAt: string | null;
+    readonly lastReadyDurationMs: number | null;
+    readonly lastTransitionAt: string;
+    readonly leases: readonly WorkspaceSurfaceHardLease[];
+    readonly scopeKey: string;
+    readonly state: WorkspaceSurfacePoolState;
+}
+
+export interface WorkspaceSurfacePoolDiagnostics {
+    readonly activeScopeKey: string | null;
+    readonly maxWarmSurfaces: number;
+    readonly recentOperations: readonly WorkspaceSurfaceOperationDiagnostic[];
+    readonly surfaces: readonly WorkspaceSurfaceDiagnostic[];
+    readonly updatedAt: string;
+}
+
+export interface WorkspaceSurfaceOperationDiagnostic {
+    readonly durationMs: number;
+    readonly finishedAt: string;
+    readonly kind: "activation" | "hibernate" | "preheat";
+    readonly outcome: "blocked" | "cold" | "failed" | "stale" | "warm";
+    readonly scopeKey: string;
+}
+
+export type WorkspaceSurfaceActivationResult =
+    | {
+          readonly generation: string;
+          readonly scopeKey: string;
+          readonly status: "activated";
+          readonly warm: boolean;
+      }
+    | {
+          readonly message: string;
+          readonly scopeKey: string;
+          readonly status: "failed";
+      }
+    | {
+          readonly scopeKey: string;
+          readonly status: "stale";
+      };
+
+export type WorkspaceSurfaceCloseResult =
+    | {
+          readonly scopeKey: string;
+          readonly status: "closed" | "not-resident";
+      }
+    | {
+          readonly leases: readonly WorkspaceSurfaceHardLease[];
+          readonly scopeKey: string;
+          readonly status: "blocked";
+      }
+    | {
+          readonly message: string;
+          readonly scopeKey: string;
+          readonly status: "failed";
+      };
+
 export interface TerminalDataEvent {
     readonly sessionId: string;
     readonly data: string;
@@ -3654,7 +3756,13 @@ export interface ComandoApi {
     initializeWorkspaceSurfaces: (
         snapshot: WorkspaceNavigationSnapshot,
     ) => Promise<void>;
-    activateWorkspaceSurface: (contextKey: string) => Promise<void>;
+    activateWorkspaceSurface: (
+        contextKey: string,
+    ) => Promise<WorkspaceSurfaceActivationResult>;
+    closeWorkspaceSurface: (
+        contextKey: string,
+    ) => Promise<WorkspaceSurfaceCloseResult>;
+    getWorkspaceSurfaceDiagnostics: () => Promise<WorkspaceSurfacePoolDiagnostics>;
     listOpenWorkspaceLocations: () => Promise<
         readonly OpenWorkspaceLocationSummary[]
     >;
@@ -3930,6 +4038,13 @@ export interface ComandoApi {
     notifyWorkspaceSurfaceReady: (
         binding: WorkspaceSurfaceRuntimeBinding,
     ) => Promise<void>;
+    notifyWorkspaceSurfaceRestoreFailed: (
+        binding: WorkspaceSurfaceRuntimeBinding,
+        message: string,
+    ) => Promise<void>;
+    reportWorkspaceSurfaceLeases: (
+        report: WorkspaceSurfaceLeaseReport,
+    ) => Promise<void>;
     resyncWorkspaceSurfaceRuntime: (
         binding: WorkspaceSurfaceRuntimeBinding,
     ) => Promise<WorkspaceSurfaceRuntimeResync>;
@@ -4092,6 +4207,9 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceSurfaceSnapshotUpdated: (
         listener: (snapshot: WorkspaceNavigationSnapshot) => void,
+    ) => () => void;
+    onWorkspaceSurfacePoolChanged: (
+        listener: (diagnostics: WorkspaceSurfacePoolDiagnostics) => void,
     ) => () => void;
     onWorkspaceSurfaceFocused: (listener: () => void) => () => void;
     onWorkspaceSurfaceContextRequested: (

@@ -14,7 +14,14 @@ describe("activateOpenWorkspaceLocation", () => {
         const targetSend = vi.fn();
         const sourceSend = vi.fn();
         const manager = {
-            activate: vi.fn(() => true),
+            activate: vi.fn(() =>
+                Promise.resolve({
+                    generation: "surface-b",
+                    scopeKey: "project-b::__primary__",
+                    status: "activated" as const,
+                    warm: true,
+                }),
+            ),
             getHostSnapshotForWindow: vi.fn(() => snapshot),
             getHostWebContents: vi.fn((hostWindowId: string) => ({
                 send: hostWindowId === "window-2" ? targetSend : sourceSend,
@@ -57,7 +64,14 @@ describe("activateOpenWorkspaceLocation", () => {
 
     it("rejects a stale location without changing any host", async () => {
         const manager = {
-            activate: vi.fn(() => true),
+            activate: vi.fn(() =>
+                Promise.resolve({
+                    generation: "surface-b",
+                    scopeKey: "project-b::__primary__",
+                    status: "activated" as const,
+                    warm: true,
+                }),
+            ),
             getHostSnapshotForWindow: vi.fn(),
             getHostWebContents: vi.fn(),
             listOpenWorkspaceLocations: vi.fn(() => createLocations()),
