@@ -158,6 +158,7 @@ export function WorkspaceNavigator({
         readonly projectId: string;
     } | null>(null);
     const activationAttemptRef = useRef(0);
+    const pendingActivationScopeKeysRef = useRef(new Set<string>());
     const itemRefs = useRef(new Map<string, HTMLElement>());
     const typeaheadRef = useRef({ query: "", updatedAt: 0 });
     const visibleItems = useMemo(
@@ -260,9 +261,15 @@ export function WorkspaceNavigator({
     const runWorkspaceActivation = async (
         workspace: WorkspaceNavigatorWorkspace,
     ) => {
-        if (workspace.deletionOperation) {
+        if (
+            workspace.deletionOperation ||
+            pendingActivationScopeKeysRef.current.has(workspace.scopeKey)
+        ) {
             return;
         }
+        // State updates are not visible until React renders again, so keep an
+        // imperative guard for repeated input events in the same frame.
+        pendingActivationScopeKeysRef.current.add(workspace.scopeKey);
         const activationAttempt = activationAttemptRef.current + 1;
         activationAttemptRef.current = activationAttempt;
         setPendingScopeKey(workspace.scopeKey);
@@ -280,6 +287,7 @@ export function WorkspaceNavigator({
                 [workspace.scopeKey]: message,
             }));
         } finally {
+            pendingActivationScopeKeysRef.current.delete(workspace.scopeKey);
             if (activationAttemptRef.current === activationAttempt) {
                 setPendingScopeKey(null);
             }

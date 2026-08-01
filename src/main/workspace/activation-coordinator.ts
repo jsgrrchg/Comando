@@ -71,6 +71,10 @@ export class WorkspaceActivationCoordinator {
         string,
         Promise<WorkspaceSurfaceCloseResult>
     >();
+    readonly #activationTransitions = new Map<
+        string,
+        Promise<WorkspaceSurfaceActivationResult>
+    >();
     #operation = 0;
     readonly #readinessTransitions = new Map<string, Promise<void>>();
 
@@ -89,9 +93,21 @@ export class WorkspaceActivationCoordinator {
     }
 
     async activate(scopeKey: string): Promise<WorkspaceSurfaceActivationResult> {
-        return this.#trackReadinessTransition(scopeKey, () =>
+        const existing = this.#activationTransitions.get(scopeKey);
+        if (existing) {
+            return existing;
+        }
+        const transition = this.#trackReadinessTransition(scopeKey, () =>
             this.#activate(scopeKey),
         );
+        this.#activationTransitions.set(scopeKey, transition);
+        try {
+            return await transition;
+        } finally {
+            if (this.#activationTransitions.get(scopeKey) === transition) {
+                this.#activationTransitions.delete(scopeKey);
+            }
+        }
     }
 
     async #activate(scopeKey: string): Promise<WorkspaceSurfaceActivationResult> {
@@ -360,7 +376,9 @@ export class WorkspaceActivationCoordinator {
         transition: () => Promise<T>,
     ): Promise<T> {
         const previous = this.#readinessTransitions.get(scopeKey);
-        const result = transition();
+        // A scope owns one renderer generation, so readiness work must not
+        // overlap even when it originates from different host actions.
+        const result = previous ? previous.then(transition) : transition();
         const settled = result.then(
             () => undefined,
             () => undefined,

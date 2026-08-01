@@ -368,6 +368,35 @@ describe("WorkspaceNavigator", () => {
         expect(rows?.[1]?.getAttribute("aria-label")).toContain("Comando");
     });
 
+    it("ignores repeated activation input for a workspace while it is opening", async () => {
+        vi.stubGlobal("comando", {
+            showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
+        });
+        let finishActivation: (() => void) | null = null;
+        const onActivate = vi.fn(
+            () =>
+                new Promise<void>((resolve) => {
+                    finishActivation = resolve;
+                }),
+        );
+        mount(<WorkspaceNavigator {...createProps({ onActivate })} />);
+        await act(async () => Promise.resolve());
+        const row = container?.querySelectorAll<HTMLElement>(
+            ".workspace-navigator-workspace-row",
+        )[1];
+
+        act(() => {
+            row?.click();
+            row?.click();
+        });
+
+        expect(onActivate).toHaveBeenCalledTimes(1);
+        await act(async () => {
+            finishActivation?.();
+            await Promise.resolve();
+        });
+    });
+
     it("tracks workspace activity without rendering an activity badge", async () => {
         vi.stubGlobal("comando", {
             showNativeContextMenu: vi.fn(() => Promise.resolve(null)),

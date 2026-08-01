@@ -52,6 +52,35 @@ describe("WorkspaceActivationCoordinator", () => {
         expect(harness.coordinator.committedScopeKey).toBe("scope-b");
     });
 
+    it("coalesces concurrent activations for the same cold workspace", async () => {
+        const harness = createHarness();
+        harness.blockRestore("scope-a");
+
+        const firstActivation = harness.coordinator.activate("scope-a");
+        await vi.waitFor(() =>
+            expect(harness.adapter.waitUntilReady).toHaveBeenCalledWith(
+                "scope-a",
+                expect.any(String),
+            ),
+        );
+        const secondActivation = harness.coordinator.activate("scope-a");
+
+        expect(harness.adapter.acquire).toHaveBeenCalledTimes(1);
+        expect(harness.adapter.waitUntilReady).toHaveBeenCalledTimes(1);
+        harness.finishRestore("scope-a");
+
+        await expect(firstActivation).resolves.toMatchObject({
+            scopeKey: "scope-a",
+            status: "activated",
+        });
+        await expect(secondActivation).resolves.toMatchObject({
+            scopeKey: "scope-a",
+            status: "activated",
+        });
+        expect(harness.adapter.destroy).not.toHaveBeenCalled();
+        expect(harness.pool.get("scope-a")?.state).toBe("active");
+    });
+
     it("rolls back create, ready and navigation failures without replacing the committed scope", async () => {
         const harness = createHarness();
         await harness.coordinator.activate("scope-a");
