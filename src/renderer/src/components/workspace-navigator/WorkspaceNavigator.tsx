@@ -588,9 +588,7 @@ export function WorkspaceNavigator({
                     role="treeitem"
                     tabIndex={focusedItemId === projectItem.id ? 0 : -1}
                 >
-                    <span aria-hidden="true" className="workspace-navigator-disclosure">
-                        {expanded ? "⌄" : "›"}
-                    </span>
+                    <ProjectAvatar name={project.name} />
                     <span className="min-w-0 flex-1 truncate">{project.name}</span>
                     {project.isMissing ? (
                         <span className="workspace-navigator-row-badge">Missing</span>
@@ -603,6 +601,21 @@ export function WorkspaceNavigator({
                             !
                         </span>
                     ) : null}
+                    {!project.isMissing ? (
+                        <button
+                            aria-label={`New worktree in ${project.name}`}
+                            className="workspace-navigator-project-add"
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                setDialog({ kind: "new-worktree", project });
+                            }}
+                            title="New worktree…"
+                            type="button"
+                        >
+                            <IconPlus />
+                        </button>
+                    ) : null}
+                    <IconChevron expanded={expanded} />
                 </div>
                 {expanded ? (
                     <div aria-label={`${project.name} workspaces`} role="group">
@@ -670,6 +683,9 @@ export function WorkspaceNavigator({
                                         opening={opening}
                                         status={workspace.status}
                                     />
+                                    <WorkspaceRowTimestamp
+                                        lastActivatedAt={workspace.catalogEntry.lastActivatedAt}
+                                    />
                                     {localError ? (
                                         <span className="sr-only" id={`workspace-error-${workspace.scopeKey}`}>
                                             {localError}. Press Enter to retry.
@@ -734,14 +750,30 @@ export function WorkspaceNavigator({
             ) : null}
 
             <div className="workspace-navigator-footer">
-                <button onClick={() => void onOpenFolder()} type="button">
-                    Open Folder
+                <button
+                    aria-label="Open Folder"
+                    onClick={() => void onOpenFolder()}
+                    title="Open Folder"
+                    type="button"
+                >
+                    <IconFolderPlus />
                 </button>
-                <button onClick={() => setDialog({ kind: "clone" })} type="button">
-                    Clone
+                <button
+                    aria-label="Clone Repository"
+                    onClick={() => setDialog({ kind: "clone" })}
+                    title="Clone Repository"
+                    type="button"
+                >
+                    <IconClone />
                 </button>
-                <button onClick={onOpenSettings} type="button">
-                    {settingsLabel ?? "Settings"}
+                <span className="workspace-navigator-footer-spacer" />
+                <button
+                    aria-label={settingsLabel ?? "Settings"}
+                    onClick={onOpenSettings}
+                    title={settingsLabel ?? "Settings"}
+                    type="button"
+                >
+                    <IconGear />
                 </button>
             </div>
 
@@ -1242,8 +1274,191 @@ function WorkspaceRowIcon({
 }) {
     return (
         <span aria-hidden="true" className="workspace-navigator-row-icon">
-            {active ? "✓" : isPrimary ? "◆" : "⑂"}
+            {active ? <IconCheck /> : isPrimary ? <IconStar /> : <IconBranch />}
         </span>
+    );
+}
+
+function WorkspaceRowTimestamp({
+    lastActivatedAt,
+}: {
+    readonly lastActivatedAt: string | null;
+}) {
+    const relative = formatRelativeTime(lastActivatedAt);
+    if (!relative) {
+        return null;
+    }
+    return <span className="workspace-navigator-row-timestamp">{relative}</span>;
+}
+
+function ProjectAvatar({ name }: { readonly name: string }) {
+    const hue = hashStringToHue(name);
+    const initial = name.trim().charAt(0).toUpperCase() || "?";
+    return (
+        <span
+            aria-hidden="true"
+            className="workspace-navigator-project-avatar"
+            style={{
+                background: `linear-gradient(135deg, hsl(${hue} 62% 44%), hsl(${(hue + 40) % 360} 62% 30%))`,
+            }}
+        >
+            {initial}
+        </span>
+    );
+}
+
+function hashStringToHue(value: string): number {
+    let hash = 0;
+    for (let index = 0; index < value.length; index += 1) {
+        hash = (hash << 5) - hash + value.charCodeAt(index);
+        hash |= 0;
+    }
+    return Math.abs(hash) % 360;
+}
+
+function formatRelativeTime(iso: string | null): string | null {
+    if (!iso) {
+        return null;
+    }
+    const timestamp = Date.parse(iso);
+    if (Number.isNaN(timestamp)) {
+        return null;
+    }
+    const diffMs = Date.now() - timestamp;
+    const minutes = Math.floor(diffMs / 60_000);
+    if (minutes < 1) {
+        return "now";
+    }
+    if (minutes < 60) {
+        return `${minutes}m ago`;
+    }
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) {
+        return `${hours}h ago`;
+    }
+    const days = Math.floor(hours / 24);
+    if (days < 30) {
+        return `${days}d ago`;
+    }
+    const months = Math.floor(days / 30);
+    if (months < 12) {
+        return `${months}mo ago`;
+    }
+    return `${Math.floor(months / 12)}y ago`;
+}
+
+function IconChevron({ expanded }: { readonly expanded: boolean }) {
+    return (
+        <svg
+            aria-hidden="true"
+            className="workspace-navigator-chevron"
+            data-expanded={expanded || undefined}
+            fill="none"
+            viewBox="0 0 16 16"
+        >
+            <path
+                d="M6 4l4 4-4 4"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.5"
+            />
+        </svg>
+    );
+}
+
+function IconBranch() {
+    return (
+        <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
+            <line stroke="currentColor" strokeLinecap="round" strokeWidth="1.3" x1="4" x2="4" y1="1.6" y2="10" />
+            <circle cx="12" cy="4" r="2" stroke="currentColor" strokeWidth="1.3" />
+            <circle cx="4" cy="12" r="2" stroke="currentColor" strokeWidth="1.3" />
+            <path
+                d="M12 6a6 6 0 0 1-6 6"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeWidth="1.3"
+            />
+        </svg>
+    );
+}
+
+function IconStar() {
+    return (
+        <svg aria-hidden="true" fill="currentColor" viewBox="0 0 16 16">
+            <path d="M8 1.5l1.9 4.2 4.6.5-3.4 3.1.9 4.6L8 11.8l-4 2.1.9-4.6-3.4-3.1 4.6-.5L8 1.5z" />
+        </svg>
+    );
+}
+
+function IconCheck() {
+    return (
+        <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
+            <path
+                d="M3.5 8.5l3 3 6-7"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.6"
+            />
+        </svg>
+    );
+}
+
+function IconPlus() {
+    return (
+        <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
+            <path d="M8 3.5v9M3.5 8h9" stroke="currentColor" strokeLinecap="round" strokeWidth="1.4" />
+        </svg>
+    );
+}
+
+function IconFolderPlus() {
+    return (
+        <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
+            <path
+                d="M2 4.5a1 1 0 0 1 1-1h3l1.2 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.5z"
+                stroke="currentColor"
+                strokeLinejoin="round"
+                strokeWidth="1.2"
+            />
+            <path d="M8 7v4M6 9h4" stroke="currentColor" strokeLinecap="round" strokeWidth="1.2" />
+        </svg>
+    );
+}
+
+function IconClone() {
+    return (
+        <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
+            <path
+                d="M8 2v7.5M8 9.5L5.2 6.7M8 9.5l2.8-2.8"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.2"
+            />
+            <path
+                d="M3 11v1.5a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V11"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.2"
+            />
+        </svg>
+    );
+}
+
+function IconGear() {
+    return (
+        <svg aria-hidden="true" fill="none" viewBox="0 0 16 16">
+            <circle cx="8" cy="8" r="2.1" stroke="currentColor" strokeWidth="1.2" />
+            <path
+                d="M8 1.6v1.3M8 13.1v1.3M14.4 8h-1.3M2.9 8H1.6M12.5 3.5l-.9.9M4.4 11.6l-.9.9M12.5 12.5l-.9-.9M4.4 4.4l-.9-.9"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeWidth="1.2"
+            />
+        </svg>
     );
 }
 
