@@ -124,7 +124,6 @@ export function WorkspaceNavigator({
     settingsLabel,
     status,
 }: WorkspaceNavigatorProps) {
-    const [query, setQuery] = useState("");
     const [focusedItemId, setFocusedItemId] = useState<string | null>(null);
     const [pendingScopeKey, setPendingScopeKey] = useState<string | null>(null);
     const [activationErrors, setActivationErrors] = useState<
@@ -140,37 +139,16 @@ export function WorkspaceNavigator({
         () => new Set(expandedProjectIds),
         [expandedProjectIds],
     );
-    const normalizedQuery = query.trim().toLowerCase();
-    const filteredProjects = useMemo(
-        () =>
-            model.projects.flatMap((project) => {
-                if (!normalizedQuery) {
-                    return [project];
-                }
-                const projectMatches = project.name
-                    .toLowerCase()
-                    .includes(normalizedQuery);
-                const workspaces = project.workspaces.filter(
-                    (workspace) =>
-                        projectMatches ||
-                        workspace.label.toLowerCase().includes(normalizedQuery) ||
-                        workspace.rootPath?.toLowerCase().includes(normalizedQuery),
-                );
-                return workspaces.length > 0 ? [{ ...project, workspaces }] : [];
-            }),
-        [model.projects, normalizedQuery],
-    );
     const visibleItems = useMemo(
         () =>
-            filteredProjects.flatMap((project): readonly VisibleTreeItem[] => {
+            model.projects.flatMap((project): readonly VisibleTreeItem[] => {
                 const projectItem: VisibleTreeItem = {
                     id: `project:${project.id}`,
                     kind: "project",
                     label: project.name,
                     project,
                 };
-                const expanded =
-                    Boolean(normalizedQuery) || expandedProjectIdSet.has(project.id);
+                const expanded = expandedProjectIdSet.has(project.id);
                 if (!expanded) {
                     return [projectItem];
                 }
@@ -187,7 +165,7 @@ export function WorkspaceNavigator({
                     ),
                 ];
             }),
-        [expandedProjectIdSet, filteredProjects, normalizedQuery],
+        [expandedProjectIdSet, model.projects],
     );
 
     useEffect(() => {
@@ -583,8 +561,7 @@ export function WorkspaceNavigator({
         if (!projectItem) {
             return null;
         }
-        const expanded =
-            Boolean(normalizedQuery) || expandedProjectIdSet.has(project.id);
+        const expanded = expandedProjectIdSet.has(project.id);
         return (
             <div className="workspace-navigator-project" key={project.id}>
                 <div
@@ -723,40 +700,7 @@ export function WorkspaceNavigator({
 
     return (
         <nav aria-label="Workspace navigator" className="workspace-navigator">
-            <div className="workspace-navigator-header">
-                <div className="workspace-navigator-title-row">
-                    <span>Workspaces</span>
-                    <span aria-label={`${model.workspaceCount} workspaces`}>
-                        {model.workspaceCount}
-                    </span>
-                </div>
-                <label className="workspace-navigator-search">
-                    <span aria-hidden="true">⌕</span>
-                    <input
-                        aria-label="Search projects and worktrees"
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        onChange={(event) => setQuery(event.target.value)}
-                        onKeyDown={(event) => {
-                            if (event.key === "Escape" && query) {
-                                event.preventDefault();
-                                setQuery("");
-                            } else if (event.key === "ArrowDown") {
-                                event.preventDefault();
-                                focusItem(visibleItems[0]?.id ?? null);
-                            }
-                        }}
-                        placeholder="Search workspaces…"
-                        spellCheck={false}
-                        value={query}
-                    />
-                    {query ? (
-                        <button aria-label="Clear workspace search" onClick={() => setQuery("")} type="button">
-                            ×
-                        </button>
-                    ) : null}
-                </label>
-            </div>
+            <div className="workspace-navigator-heading">Projects</div>
 
             <div className="workspace-navigator-tree-shell">
                 {(status === "loading" || status === "idle") &&
@@ -776,14 +720,9 @@ export function WorkspaceNavigator({
                         onAction={() => void onOpenFolder()}
                         title="No workspaces yet"
                     />
-                ) : filteredProjects.length === 0 ? (
-                    <WorkspaceNavigatorState
-                        message="No projects or worktrees match your search."
-                        title="No matches"
-                    />
                 ) : (
                     <div aria-label="Projects and workspaces" role="tree">
-                        {filteredProjects.map(renderProject)}
+                        {model.projects.map(renderProject)}
                     </div>
                 )}
             </div>

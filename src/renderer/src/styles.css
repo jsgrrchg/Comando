@@ -634,57 +634,14 @@ text-align: center;
     color: var(--color-text-primary);
 }
 
-.workspace-navigator-header {
-    display: grid;
-    gap: 7px;
-    padding: 10px 10px 8px;
-    border-bottom: 1px solid var(--color-border);
-}
-
-.workspace-navigator-title-row {
+.workspace-navigator-heading {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 0 2px;
+    min-height: 40px;
+    padding: 0 14px;
     color: var(--color-text-secondary);
     font-size: 10px;
-    font-weight: 650;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-}
-
-.workspace-navigator-search {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 6px;
-    border: 1px solid var(--color-border);
-    border-radius: 7px;
-    background: color-mix(in srgb, var(--color-bg-primary) 72%, transparent);
-    padding: 0 7px;
-    color: var(--color-text-secondary);
-}
-
-.workspace-navigator-search:focus-within {
-    border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
-}
-
-.workspace-navigator-search input {
-    min-width: 0;
-    flex: 1;
-    border: 0;
-    outline: 0;
-    background: transparent;
-    padding: 6px 0;
-    color: var(--color-text-primary);
-    font-size: 11px;
-}
-
-.workspace-navigator-search button {
-    border: 0;
-    background: transparent;
-    color: inherit;
-    cursor: pointer;
+    font-weight: 500;
 }
 
 .workspace-navigator-tree-shell {
