@@ -2209,22 +2209,28 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             ) {
                 throw new Error("The workspace surface binding is stale.");
             }
-            const [aiSessions, terminals] = await Promise.all([
-                Promise.resolve(
-                    options.aiService.resyncRuntimeSubscriber(
-                        binding.runtimeOwnerId,
-                        binding.generation,
+            try {
+                const [aiSessions, terminals] = await Promise.all([
+                    Promise.resolve(
+                        options.aiService.resyncRuntimeSubscriber(
+                            binding.runtimeOwnerId,
+                            binding.generation,
+                        ),
                     ),
-                ),
-                Promise.resolve(
-                    options.terminalService.resyncRuntimeSubscriber(
-                        binding.runtimeOwnerId,
-                        binding.generation,
+                    Promise.resolve(
+                        options.terminalService.resyncRuntimeSubscriber(
+                            binding.runtimeOwnerId,
+                            binding.generation,
+                        ),
                     ),
-                ),
-            ]);
-            workspaceRuntimeOwnership.consumeResyncRequirement(subscriber);
-            return { ...binding, aiSessions, terminals };
+                ]);
+                workspaceRuntimeOwnership.consumeResyncRequirement(subscriber);
+                workspaceSurfaceManager.recordRuntimeResync(event.sender, true);
+                return { ...binding, aiSessions, terminals };
+            } catch (error) {
+                workspaceSurfaceManager.recordRuntimeResync(event.sender, false);
+                throw error;
+            }
         },
     );
     ipcMain.handle(
@@ -2428,7 +2434,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             if (workspaceSurfaceManager.isSurface(event.sender)) {
                 throw new Error("Diagnostics are available only to the host.");
             }
-            return workspaceSurfaceManager.getSurfaceDiagnostics(context.windowId);
+            return workspaceSurfaceManager.sampleSurfaceMemory(context.windowId);
         },
     );
     ipcMain.handle(

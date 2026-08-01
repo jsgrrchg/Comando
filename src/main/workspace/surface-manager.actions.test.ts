@@ -4,6 +4,8 @@ import type { BrowserWindow, WebContents } from "electron";
 import { IPC_EVENTS } from "@shared/ipc";
 import type {
     WindowContextSnapshot,
+    WorkspaceLayoutSnapshot,
+    WorkspaceSurfaceBudgetDiagnostic,
     WorkspaceSurfaceRegistrySnapshot,
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceDragEvent,
@@ -29,6 +31,10 @@ const electronMocks = vi.hoisted(() => {
 
         isDestroyed(): boolean {
             return this.destroyed;
+        }
+
+        getOSProcessId(): number {
+            return this.id + 1_000;
         }
 
         on(event: string, listener: (...args: unknown[]) => void): this {
@@ -75,7 +81,24 @@ const electronMocks = vi.hoisted(() => {
 });
 
 vi.mock("electron", () => ({
+    app: {
+        getAppMetrics: () =>
+            electronMocks.views.map((view) => ({
+                cpu: { idleWakeupsPerSecond: 0, percentCPUUsage: 0 },
+                creationTime: 0,
+                memory: {
+                    peakWorkingSetSize: 96_000,
+                    privateBytes: 64_000,
+                    workingSetSize: 80_000,
+                },
+                pid: view.webContents.getOSProcessId(),
+                type: "Tab",
+            })),
+    },
     BrowserWindow: class {},
+    powerMonitor: {
+        isOnBatteryPower: () => false,
+    },
     WebContentsView: electronMocks.FakeView,
 }));
 
@@ -103,7 +126,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("binds only the cold-restored active renderer to one scope and generation", () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         manager.syncWorkspaceRegistry(
             createHostWindow().window,
             createHostContext(),
@@ -126,7 +149,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("temporarily hides the active surface while the host palette is visible", () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         manager.syncWorkspaceRegistry(
             createHostWindow().window,
             createHostContext(),
@@ -147,7 +170,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("delegates workspace shortcuts from the surface to singleton navigation", () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const host = createHostWindow();
         manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
         const surface = electronMocks.views[0];
@@ -178,7 +201,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("recreates a surface with the same runtime owner and a new subscriber", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const onSurfaceCreated = vi.fn();
         const onSurfaceDestroyed = vi.fn();
         manager.setLifecycleHandlers({
@@ -223,11 +246,17 @@ describe("WorkspaceSurfaceManager action routing", () => {
             ),
         ).resolves.toMatchObject({ status: "closed" });
         manager.syncWorkspaceRegistry(host.window, createHostContext(), activeSnapshot);
+        const recreation = manager.activate(
+            "host-1",
+            "project-a::__primary__",
+        );
         const secondSurface = electronMocks.views[1];
         if (!secondSurface) {
             throw new Error("Expected the recreated surface.");
         }
         secondSurface.webContents.emit("did-finish-load");
+        notifySurfaceReady(manager, secondSurface.webContents);
+        await recreation;
         const secondBinding = manager.getSurfaceRuntimeSubscriber(
             asWebContents(secondSurface.webContents),
         );
@@ -253,7 +282,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("does not create one renderer per catalog row", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const workspaces = Array.from({ length: 250 }, (_, index) =>
             createRegistryEntry(
                 `project-${index}::__primary__`,
@@ -276,8 +305,304 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
     });
 
+    it("indexes hundreds of dense layouts while restoring only the active renderer", async () => {
+        const manager = createTestManager();
+        const workspaces = Array.from({ length: 500 }, (_, index) =>
+            createDenseRegistryEntry(
+                `project-${index}::__primary__`,
+                `project-${index}`,
+                96,
+            ),
+        );
+        manager.syncWorkspaceRegistry(createHostWindow().window, createHostContext(), {
+            activeScopeKey: workspaces[0]?.scopeKey ?? null,
+            workspaces,
+        });
+
+        expect(electronMocks.views).toHaveLength(1);
+        expect(manager.getSurfaceDiagnostics("host-1").performance).toMatchObject({
+            catalogScopeCount: 500,
+            catalogSyncs: 1,
+            rendererCreates: 1,
+        });
+        await finishActiveSurface(manager, "host-1", workspaces[0].scopeKey);
+        expect(
+            manager
+                .getSurfaceDiagnostics("host-1")
+                .surfaces.filter((surface) => surface.generation !== null),
+        ).toHaveLength(1);
+    });
+
+    it("stabilizes eight heavy residents at the budget after explicit leases end", async () => {
+        const manager = new WorkspaceSurfaceManager({
+            resolveBudget: () => createBudget(2),
+        });
+        manager.setLifecycleHandlers({
+            prepareSurfaceHibernate: vi.fn(() => Promise.resolve()),
+        });
+        const workspaces = Array.from({ length: 8 }, (_, index) =>
+            createDenseRegistryEntry(
+                `project-${index}::__primary__`,
+                `project-${index}`,
+                120,
+            ),
+        );
+        manager.syncWorkspaceRegistry(createHostWindow().window, createHostContext(), {
+            activeScopeKey: workspaces[0].scopeKey,
+            workspaces,
+        });
+        await finishActiveSurface(manager, "host-1", workspaces[0].scopeKey);
+        const leaseKinds = [
+            "ai-critical",
+            "critical-modal",
+            "terminal-busy",
+            "dirty-file",
+        ] as const;
+
+        for (let index = 0; index < workspaces.length; index += 1) {
+            const workspace = workspaces[index];
+            if (index > 0) {
+                const activation = manager.activate("host-1", workspace.scopeKey);
+                notifySurfaceReady(
+                    manager,
+                    manager.getSurfaceWebContents("host-1", workspace.scopeKey),
+                );
+                await activation;
+            }
+            const webContents = manager.getSurfaceWebContents(
+                "host-1",
+                workspace.scopeKey,
+            )!;
+            const binding = manager.getSurfaceRuntimeSubscriber(webContents)!;
+            expect(
+                manager.reportSurfaceLeases(webContents, {
+                    ...binding,
+                    leases: [
+                        {
+                            acquiredAt: "2026-08-01T00:00:00.000Z",
+                            id: `lease-${index}`,
+                            kind: leaseKinds[index % leaseKinds.length],
+                            message: "Explicit activity keeps this renderer resident.",
+                        },
+                    ],
+                }),
+            ).toBe(true);
+        }
+
+        expect(
+            manager
+                .getSurfaceDiagnostics("host-1")
+                .surfaces.filter((surface) => surface.generation !== null),
+        ).toHaveLength(8);
+
+        for (const workspace of workspaces) {
+            const webContents = manager.getSurfaceWebContents(
+                "host-1",
+                workspace.scopeKey,
+            )!;
+            const binding = manager.getSurfaceRuntimeSubscriber(webContents)!;
+            manager.reportSurfaceLeases(webContents, { ...binding, leases: [] });
+        }
+        const activation = manager.activate("host-1", workspaces[0].scopeKey);
+        await activation;
+
+        const diagnostics = manager.getSurfaceDiagnostics("host-1");
+        expect(
+            diagnostics.surfaces.filter((surface) => surface.generation !== null),
+        ).toHaveLength(diagnostics.maxWarmSurfaces + 1);
+        expect(diagnostics.performance).toMatchObject({
+            hibernations: 5,
+            leaseReports: 16,
+            rendererCreates: 8,
+            rendererDestroys: 5,
+        });
+    });
+
+    it("recovers the same durable scope after a renderer crash", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        const crashed = electronMocks.views[0].webContents;
+        crashed.emit("render-process-gone");
+
+        expect(
+            manager
+                .getSurfaceDiagnostics("host-1")
+                .surfaces.find(
+                    (surface) => surface.scopeKey === "project-a::__primary__",
+                ),
+        ).toMatchObject({ generation: null, state: "cold" });
+        const restored = manager.activate("host-1", "project-a::__primary__");
+        const replacement = manager.getSurfaceWebContents(
+            "host-1",
+            "project-a::__primary__",
+        );
+        notifySurfaceReady(manager, replacement);
+
+        await expect(restored).resolves.toMatchObject({
+            scopeKey: "project-a::__primary__",
+            status: "activated",
+            warm: false,
+        });
+        expect(manager.getSurfaceDiagnostics("host-1").performance).toMatchObject({
+            failures: 1,
+            rendererCreates: 2,
+            rendererDestroys: 1,
+        });
+    });
+
+    it("blocks an immediate close while restore is in flight and records it", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+
+        const activation = manager.activate("host-1", "project-b::__primary__");
+        await expect(
+            manager.closeWorkspaceSurface(
+                "host-1",
+                "project-b::__primary__",
+            ),
+        ).resolves.toMatchObject({ status: "blocked" });
+        notifySurfaceReady(
+            manager,
+            manager.getSurfaceWebContents("host-1", "project-b::__primary__"),
+        );
+        await expect(activation).resolves.toMatchObject({ status: "activated" });
+
+        const diagnostics = manager.getSurfaceDiagnostics("host-1");
+        expect(diagnostics.performance.hibernationsAvoided).toBe(1);
+        expect(
+            diagnostics.surfaces.find(
+                (surface) => surface.scopeKey === "project-b::__primary__",
+            ),
+        ).toMatchObject({ state: "active" });
+    });
+
+    it("samples renderer memory on demand without a recurring observer", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        const webContents = manager.getSurfaceWebContents(
+            "host-1",
+            "project-a::__primary__",
+        )!;
+        manager.recordRuntimeResync(webContents, true);
+        manager.recordRuntimeResync(webContents, false);
+
+        const diagnostics = manager.sampleSurfaceMemory("host-1");
+
+        expect(diagnostics.performance.memorySamples).toEqual([
+            {
+                privateKb: 64_000,
+                residentSetKb: 80_000,
+                scopeKey: "project-a::__primary__",
+                sharedKb: null,
+            },
+        ]);
+        expect(diagnostics.performance.memorySampledAt).not.toBeNull();
+        expect(diagnostics.performance).toMatchObject({
+            resyncFailures: 1,
+            resyncs: 2,
+        });
+    });
+
+    it("reuses renderers through rapid switches and resize bursts", async () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        manager.syncWorkspaceRegistry(
+            host.window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        const coldActivation = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        notifySurfaceReady(
+            manager,
+            manager.getSurfaceWebContents("host-1", "project-b::__primary__"),
+        );
+        await coldActivation;
+
+        for (let index = 0; index < 100; index += 1) {
+            const scopeKey =
+                index % 2 === 0
+                    ? "project-a::__primary__"
+                    : "project-b::__primary__";
+            await manager.activate("host-1", scopeKey);
+            host.emit("resize");
+        }
+        host.getContentBounds.mockReturnValue({
+            height: 820,
+            width: 1_300,
+            x: 0,
+            y: 0,
+        });
+        host.emit("resize");
+        await vi.waitFor(() =>
+            expect(
+                manager.getSurfaceDiagnostics("host-1").performance.boundsUpdates,
+            ).toBeGreaterThan(2),
+        );
+
+        expect(manager.getSurfaceDiagnostics("host-1").performance).toMatchObject({
+            cacheHits: 100,
+            cacheMisses: 2,
+            rendererCreates: 2,
+            rendererDestroys: 0,
+        });
+        expect(electronMocks.views).toHaveLength(2);
+    });
+
+    it("does not let a delayed host registry sync revert committed navigation", async () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        manager.syncWorkspaceRegistry(
+            host.window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        const activation = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        notifySurfaceReady(
+            manager,
+            manager.getSurfaceWebContents("host-1", "project-b::__primary__"),
+        );
+        await activation;
+
+        manager.syncWorkspaceRegistry(
+            host.window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await Promise.resolve();
+
+        expect(manager.getActiveContext("host-1")?.scopeKey).toBe(
+            "project-b::__primary__",
+        );
+        expect(
+            manager.getSurfaceDiagnostics("host-1").activeScopeKey,
+        ).toBe("project-b::__primary__");
+    });
+
     it("keeps the committed surface visible when a cold restore fails", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const host = createHostWindow();
         manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
         await finishActiveSurface(
@@ -317,7 +642,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("blocks close on renderer leases and preserves the durable row", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         manager.setLifecycleHandlers({
             prepareSurfaceHibernate: () => Promise.resolve(),
         });
@@ -368,7 +693,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("recreates one host from active, warm and cold metadata without eager restore", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const firstHost = createHostWindow();
         const snapshot = createSnapshot();
         manager.syncWorkspaceRegistry(firstHost.window, createHostContext(), snapshot);
@@ -409,7 +734,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("applies top, left and right insets atomically only to the active surface", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const host = createHostWindow();
         manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
         await finishActiveSurface(
@@ -447,7 +772,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("keeps bounds aligned through drawer, zoom and fullscreen changes", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const host = createHostWindow();
         manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
         await finishActiveSurface(
@@ -517,7 +842,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("waits until a new host renderer registers its surface container", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const ready = manager.waitForHost("host-1", 100);
 
         manager.syncWorkspaceRegistry(
@@ -531,7 +856,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("delivers only to the active surface and rejects stale scopes", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const host = createHostWindow();
         const snapshot = createSnapshot();
         manager.syncWorkspaceRegistry(host.window, createHostContext(), snapshot);
@@ -645,7 +970,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("rejects a queued action when its context becomes inactive", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const host = createHostWindow();
         manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
         const [surfaceA] = electronMocks.views;
@@ -685,7 +1010,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("delivers inspector drags only to the committed contextual surface", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         manager.syncWorkspaceRegistry(
             createHostWindow().window,
             createHostContext(),
@@ -743,7 +1068,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("translates drags from either sidebar across persistent panels and drawers", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         manager.syncWorkspaceRegistry(
             createHostWindow().window,
             createHostContext(),
@@ -811,7 +1136,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
     });
 
     it("reveals a surface file only through its active host context", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const host = createHostWindow();
         manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
         const [surfaceA] = electronMocks.views;
@@ -867,6 +1192,15 @@ describe("WorkspaceSurfaceManager action routing", () => {
 
 
 });
+
+function createTestManager(): WorkspaceSurfaceManager {
+    return new WorkspaceSurfaceManager({
+        resolveBudget: () => ({
+            ...createBudget(4),
+            preheatEnabled: false,
+        }),
+    });
+}
 
 function createHostWindow(): {
     readonly emit: (event: string) => void;
@@ -960,6 +1294,84 @@ function createRegistryEntry(scopeKey: string, projectId: string) {
         projectId,
         scopeKey,
         worktreeId: null,
+    };
+}
+
+function createDenseRegistryEntry(
+    scopeKey: string,
+    projectId: string,
+    tabCount: number,
+): WorkspaceSurfaceRegistrySnapshot["workspaces"][number] {
+    const tabs: WorkspaceLayoutSnapshot["tabs"][number][] = Array.from(
+        { length: tabCount },
+        (_, index) => {
+            const common = {
+                createdAt: "2026-08-01T00:00:00.000Z",
+                id: `${scopeKey}:tab-${index}`,
+                projectId,
+                title: `Heavy tab ${index}`,
+                worktreeId: null,
+            };
+            switch (index % 5) {
+                case 0:
+                    return {
+                        ...common,
+                        draft: "x".repeat(4_096),
+                        kind: "chat",
+                        runtimeId: "codex",
+                        sessionId: `${scopeKey}:chat-${index}`,
+                    };
+                case 1:
+                    return {
+                        ...common,
+                        kind: "git_worktree_diff",
+                    };
+                case 2:
+                    return {
+                        ...common,
+                        kind: "git",
+                    };
+                case 3:
+                    return {
+                        ...common,
+                        kind: "terminal",
+                        sessionId: `${scopeKey}:terminal-${index}`,
+                    };
+                default:
+                    return {
+                        ...common,
+                        kind: "file",
+                        relativePath: `fixtures/tree-${index}/file-${index}.ts`,
+                    };
+            }
+        },
+    );
+    return {
+        initialLayout: {
+            activePaneId: `pane-${projectId}`,
+            rootNode: {
+                activeTabId: tabs[0]?.id ?? null,
+                id: `pane-${projectId}`,
+                tabIds: tabs.map((tab) => tab.id),
+                type: "pane",
+            },
+            tabs,
+        },
+        lastActivatedAt: "2026-07-19T00:00:00.000Z",
+        projectId,
+        scopeKey,
+        worktreeId: null,
+    };
+}
+
+function createBudget(maxWarmSurfaces: number): WorkspaceSurfaceBudgetDiagnostic {
+    return {
+        energySource: "external-power",
+        maxWarmSurfaces,
+        platform: "darwin",
+        preheatDelayMs: 750,
+        preheatEnabled: maxWarmSurfaces > 0,
+        totalMemoryMb: 32_768,
     };
 }
 

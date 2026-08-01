@@ -234,7 +234,10 @@ export class WorkspaceSurfacePool {
             .map((entry) => this.#toDiagnostic(entry));
     }
 
-    diagnostics(): WorkspaceSurfacePoolDiagnostics {
+    diagnostics(): Omit<
+        WorkspaceSurfacePoolDiagnostics,
+        "budget" | "performance"
+    > {
         return {
             activeScopeKey: this.getActiveScopeKey(),
             maxWarmSurfaces: this.#maxWarmSurfaces,

@@ -904,12 +904,34 @@ export function WorkspaceHostApp() {
         if (!isWorkspaceHostRenderer) {
             return;
         }
-        return getComandoApi()?.onWorkspaceScopeActivationRequested((input) => {
-            void useWorkspaceStore
-                .getState()
-                .requestWorkspaceNavigation(input.projectId, input.worktreeId, {
-                    emptyLayout: input.emptyLayout,
-                });
+        const api = getComandoApi();
+        return api?.onWorkspaceScopeActivationRequested((input) => {
+            void (async () => {
+                const store = useWorkspaceStore.getState();
+                const contextKey = await store.registerWorkspaceScope(
+                    input.projectId,
+                    input.worktreeId,
+                );
+                if (input.emptyLayout) {
+                    await store.requestWorkspaceNavigation(
+                        input.projectId,
+                        input.worktreeId,
+                        { emptyLayout: true },
+                    );
+                }
+                await api.initializeWorkspaceSurfaces(
+                    useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
+                );
+                const result = await api.activateWorkspaceSurface(contextKey);
+                if (result.status === "failed") {
+                    throw new Error(result.message);
+                }
+            })().catch((error) => {
+                console.error(
+                    "[workspace-host] requested activation failed",
+                    error,
+                );
+            });
         });
     }, []);
 

@@ -2291,10 +2291,51 @@ export interface WorkspaceSurfaceDiagnostic {
 
 export interface WorkspaceSurfacePoolDiagnostics {
     readonly activeScopeKey: string | null;
+    readonly budget: WorkspaceSurfaceBudgetDiagnostic;
     readonly maxWarmSurfaces: number;
+    readonly performance: WorkspaceSurfacePerformanceDiagnostic;
     readonly recentOperations: readonly WorkspaceSurfaceOperationDiagnostic[];
     readonly surfaces: readonly WorkspaceSurfaceDiagnostic[];
     readonly updatedAt: string;
+}
+
+export interface WorkspaceSurfaceBudgetDiagnostic {
+    readonly energySource: "battery" | "external-power";
+    readonly maxWarmSurfaces: number;
+    readonly platform: NodeJS.Platform;
+    readonly preheatDelayMs: number;
+    readonly preheatEnabled: boolean;
+    readonly totalMemoryMb: number;
+}
+
+export interface WorkspaceSurfaceMemorySampleDiagnostic {
+    readonly privateKb: number;
+    readonly residentSetKb: number | null;
+    readonly scopeKey: string;
+    readonly sharedKb: number | null;
+}
+
+export interface WorkspaceSurfacePerformanceDiagnostic {
+    readonly boundsUpdates: number;
+    readonly cacheHits: number;
+    readonly cacheMisses: number;
+    readonly catalogMaxSyncDurationMs: number;
+    readonly catalogPeakScopeCount: number;
+    readonly catalogScopeCount: number;
+    readonly catalogSyncDurationMs: number;
+    readonly catalogSyncs: number;
+    readonly failures: number;
+    readonly hibernations: number;
+    readonly hibernationsAvoided: number;
+    readonly leaseReports: number;
+    readonly lifecycleTransitions: number;
+    readonly memorySampledAt: string | null;
+    readonly memorySamples: readonly WorkspaceSurfaceMemorySampleDiagnostic[];
+    readonly preheatFailures: number;
+    readonly rendererCreates: number;
+    readonly rendererDestroys: number;
+    readonly resyncFailures: number;
+    readonly resyncs: number;
 }
 
 export interface WorkspaceCatalogSnapshot {

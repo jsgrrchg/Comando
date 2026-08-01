@@ -1,3 +1,5 @@
+import { performance } from "node:perf_hooks";
+
 import type {
     WorkspaceSurfaceActivationResult,
     WorkspaceSurfaceCloseResult,
@@ -45,6 +47,12 @@ export interface WorkspaceActivationAdapter {
 
 export interface WorkspaceActivationCoordinatorOptions {
     readonly adapter: WorkspaceActivationAdapter;
+    readonly onHibernateResult?: (
+        scopeKey: string,
+        reason: WorkspaceSurfaceHibernateReason,
+        result: WorkspaceSurfaceCloseResult,
+        durationMs: number,
+    ) => void;
     readonly pool: WorkspaceSurfacePool;
 }
 
@@ -55,12 +63,16 @@ export interface WorkspaceActivationCoordinatorOptions {
  */
 export class WorkspaceActivationCoordinator {
     readonly #adapter: WorkspaceActivationAdapter;
+    readonly #onHibernateResult: NonNullable<
+        WorkspaceActivationCoordinatorOptions["onHibernateResult"]
+    >;
     readonly #pool: WorkspaceSurfacePool;
     #committedScopeKey: string | null = null;
     #operation = 0;
 
     constructor(options: WorkspaceActivationCoordinatorOptions) {
         this.#adapter = options.adapter;
+        this.#onHibernateResult = options.onHibernateResult ?? (() => undefined);
         this.#pool = options.pool;
     }
 
@@ -213,12 +225,24 @@ export class WorkspaceActivationCoordinator {
         scopeKey: string,
         reason: WorkspaceSurfaceHibernateReason,
     ): Promise<WorkspaceSurfaceCloseResult> {
+        const startedAt = performance.now();
+        const finish = (
+            result: WorkspaceSurfaceCloseResult,
+        ): WorkspaceSurfaceCloseResult => {
+            this.#onHibernateResult(
+                scopeKey,
+                reason,
+                result,
+                performance.now() - startedAt,
+            );
+            return result;
+        };
         const entry = this.#pool.get(scopeKey);
         if (!entry?.generation || entry.state === "cold") {
-            return { scopeKey, status: "not-resident" };
+            return finish({ scopeKey, status: "not-resident" });
         }
         if (entry.state !== "active" && entry.state !== "warm") {
-            return {
+            return finish({
                 leases: [
                     createSyntheticLease(
                         "pending-host-action",
@@ -228,7 +252,7 @@ export class WorkspaceActivationCoordinator {
                 ],
                 scopeKey,
                 status: "blocked",
-            };
+            });
         }
 
         const generation = entry.generation;
@@ -268,7 +292,7 @@ export class WorkspaceActivationCoordinator {
             ]);
             if (leases.length > 0) {
                 this.#pool.abortHibernate(scopeKey, generation);
-                return { leases, scopeKey, status: "blocked" };
+                return finish({ leases, scopeKey, status: "blocked" });
             }
 
             if (wasActive) {
@@ -280,14 +304,14 @@ export class WorkspaceActivationCoordinator {
             if (wasActive) {
                 this.#committedScopeKey = null;
             }
-            return { scopeKey, status: "closed" };
+            return finish({ scopeKey, status: "closed" });
         } catch (error) {
             const message = formatError(error);
             const current = this.#pool.get(scopeKey);
             if (current?.state === "suspending") {
                 this.#pool.abortHibernate(scopeKey, generation, message);
             }
-            return { message, scopeKey, status: "failed" };
+            return finish({ message, scopeKey, status: "failed" });
         }
     }
 

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { WorkspaceSurfacePoolDiagnostics } from "@shared/ipc";
+
 import {
     appNavigationStore,
     resetAppNavigationStoreForTests,
@@ -80,6 +82,7 @@ describe("workspace host domain stores", () => {
             },
         ]);
         workspaceCatalogStore.getState().setSurfaceDiagnostics({
+            ...diagnosticMetadata(),
             activeScopeKey: "project-1::__primary__",
             maxWarmSurfaces: 4,
             recentOperations: [],
@@ -120,6 +123,7 @@ describe("workspace host domain stores", () => {
             ),
             getWorkspaceSurfaceDiagnostics: vi.fn(() =>
                 Promise.resolve({
+                    ...diagnosticMetadata(),
                     activeScopeKey: null,
                     maxWarmSurfaces: 4,
                     recentOperations: [],
@@ -170,3 +174,41 @@ describe("workspace host domain stores", () => {
         ).toEqual(["project-1::after"]);
     });
 });
+
+function diagnosticMetadata(): Pick<
+    WorkspaceSurfacePoolDiagnostics,
+    "budget" | "performance"
+> {
+    return {
+        budget: {
+            energySource: "external-power",
+            maxWarmSurfaces: 4,
+            platform: "darwin",
+            preheatDelayMs: 750,
+            preheatEnabled: true,
+            totalMemoryMb: 16_384,
+        },
+        performance: {
+            boundsUpdates: 0,
+            cacheHits: 0,
+            cacheMisses: 0,
+            catalogMaxSyncDurationMs: 0,
+            catalogPeakScopeCount: 0,
+            catalogScopeCount: 0,
+            catalogSyncDurationMs: 0,
+            catalogSyncs: 0,
+            failures: 0,
+            hibernations: 0,
+            hibernationsAvoided: 0,
+            leaseReports: 0,
+            lifecycleTransitions: 0,
+            memorySampledAt: null,
+            memorySamples: [],
+            preheatFailures: 0,
+            rendererCreates: 0,
+            rendererDestroys: 0,
+            resyncFailures: 0,
+            resyncs: 0,
+        },
+    };
+}

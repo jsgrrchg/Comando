@@ -77,6 +77,7 @@ describe("workspace navigator model", () => {
             worktreeFixture(project.id, "failed", false, "failed"),
         ];
         const diagnostics: WorkspaceSurfacePoolDiagnostics = {
+            ...diagnosticMetadata(),
             activeScopeKey: "project-a::__primary__",
             maxWarmSurfaces: 4,
             recentOperations: [],
@@ -191,6 +192,7 @@ describe("workspace navigator model", () => {
         const model = buildWorkspaceNavigatorModel({
             catalogEntries: {},
             diagnostics: {
+                ...diagnosticMetadata(),
                 activeScopeKey: null,
                 maxWarmSurfaces: 4,
                 recentOperations: [],
@@ -276,5 +278,43 @@ function diagnostic(
         leases: [],
         scopeKey,
         state,
+    };
+}
+
+function diagnosticMetadata(): Pick<
+    WorkspaceSurfacePoolDiagnostics,
+    "budget" | "performance"
+> {
+    return {
+        budget: {
+            energySource: "external-power",
+            maxWarmSurfaces: 4,
+            platform: "darwin",
+            preheatDelayMs: 750,
+            preheatEnabled: true,
+            totalMemoryMb: 16_384,
+        },
+        performance: {
+            boundsUpdates: 0,
+            cacheHits: 0,
+            cacheMisses: 0,
+            catalogMaxSyncDurationMs: 0,
+            catalogPeakScopeCount: 0,
+            catalogScopeCount: 0,
+            catalogSyncDurationMs: 0,
+            catalogSyncs: 0,
+            failures: 0,
+            hibernations: 0,
+            hibernationsAvoided: 0,
+            leaseReports: 0,
+            lifecycleTransitions: 0,
+            memorySampledAt: null,
+            memorySamples: [],
+            preheatFailures: 0,
+            rendererCreates: 0,
+            rendererDestroys: 0,
+            resyncFailures: 0,
+            resyncs: 0,
+        },
     };
 }
