@@ -61,6 +61,18 @@ struct MigrationCandidate {
     original_position: usize,
 }
 
+struct MigrationDiagnosticsContext<'a> {
+    input: &'a NativeWorkspaceMigrationRunInput,
+    source_checksum: &'a str,
+    source_backup_ref: &'a str,
+    started_at: &'a str,
+    completed_at: &'a str,
+    candidates: &'a [MigrationCandidate],
+    winners: &'a [MigrationCandidate],
+    recovery: &'a [MigrationCandidate],
+    active_winner: Option<&'a MigrationCandidate>,
+}
+
 impl SqlitePersistenceStore {
     pub fn run_workspace_migration(
         &mut self,
@@ -105,7 +117,7 @@ impl SqlitePersistenceStore {
         let mut recovery = Vec::new();
         for scope_candidates in grouped.values() {
             let mut ranked = scope_candidates.clone();
-            ranked.sort_by(|left, right| compare_layout_candidates(left, right));
+            ranked.sort_by(compare_layout_candidates);
             let Some(winner) = ranked.first().cloned() else {
                 continue;
             };
@@ -128,17 +140,17 @@ impl SqlitePersistenceStore {
         });
 
         let completed_at = crate::store::now_rfc3339();
-        let diagnostics = build_diagnostics(
-            &input,
-            &source_checksum,
-            &source_backup_ref,
-            &started_at,
-            &completed_at,
-            &candidates,
-            &winners,
-            &recovery,
-            active_winner.as_ref(),
-        );
+        let diagnostics = build_diagnostics(MigrationDiagnosticsContext {
+            input: &input,
+            source_checksum: &source_checksum,
+            source_backup_ref: &source_backup_ref,
+            started_at: &started_at,
+            completed_at: &completed_at,
+            candidates: &candidates,
+            winners: &winners,
+            recovery: &recovery,
+            active_winner: active_winner.as_ref(),
+        });
         let projection_template =
             select_projection_template(&input.windows, active_winner.as_ref());
         let shell_snapshot = select_shell_snapshot(&input.windows, active_winner.as_ref());
@@ -227,7 +239,7 @@ impl SqlitePersistenceStore {
         let mut recovery = Vec::new();
         for scope_candidates in grouped.values() {
             let mut ranked = scope_candidates.clone();
-            ranked.sort_by(|left, right| compare_layout_candidates(left, right));
+            ranked.sort_by(compare_layout_candidates);
             let Some(winner) = ranked.first().cloned() else {
                 continue;
             };
@@ -991,38 +1003,36 @@ fn insert_compatibility_state(
 }
 
 fn build_diagnostics(
-    input: &NativeWorkspaceMigrationRunInput,
-    source_checksum: &str,
-    source_backup_ref: &str,
-    started_at: &str,
-    completed_at: &str,
-    candidates: &[MigrationCandidate],
-    winners: &[MigrationCandidate],
-    recovery: &[MigrationCandidate],
-    active_winner: Option<&MigrationCandidate>,
+    context: MigrationDiagnosticsContext<'_>,
 ) -> NativeWorkspaceMigrationDiagnostics {
     NativeWorkspaceMigrationDiagnostics {
         migration_id: LEGACY_WORKSPACE_MIGRATION_ID.to_string(),
         status: "complete".to_string(),
-        source_checksum: source_checksum.to_string(),
-        source_backup_ref: source_backup_ref.to_string(),
-        application_version: input.application_version.clone(),
-        source_window_count: input.windows.len() as u64,
-        candidate_count: candidates.len() as u64,
-        workspace_count: winners.len() as u64,
-        recovery_layout_count: recovery.len() as u64,
-        normalization_dropped_context_count: input.normalization_dropped_context_count,
-        normalization_repaired_window_count: input.normalization_repaired_window_count,
-        active_scope_key: active_winner.map(|candidate| candidate.scope_key.clone()),
-        active_source_window_id: active_winner.map(|candidate| candidate.source_window_id.clone()),
-        layout_sources: winners
+        source_checksum: context.source_checksum.to_string(),
+        source_backup_ref: context.source_backup_ref.to_string(),
+        application_version: context.input.application_version.clone(),
+        source_window_count: context.input.windows.len() as u64,
+        candidate_count: context.candidates.len() as u64,
+        workspace_count: context.winners.len() as u64,
+        recovery_layout_count: context.recovery.len() as u64,
+        normalization_dropped_context_count: context.input.normalization_dropped_context_count,
+        normalization_repaired_window_count: context.input.normalization_repaired_window_count,
+        active_scope_key: context
+            .active_winner
+            .map(|candidate| candidate.scope_key.clone()),
+        active_source_window_id: context
+            .active_winner
+            .map(|candidate| candidate.source_window_id.clone()),
+        layout_sources: context
+            .winners
             .iter()
             .map(|candidate| NativeWorkspaceMigrationLayoutSource {
                 scope_key: candidate.scope_key.clone(),
                 source_window_id: candidate.source_window_id.clone(),
             })
             .collect(),
-        recovery_sources: recovery
+        recovery_sources: context
+            .recovery
             .iter()
             .map(|candidate| NativeWorkspaceMigrationRecoverySource {
                 scope_key: candidate.scope_key.clone(),
@@ -1030,11 +1040,11 @@ fn build_diagnostics(
                 snapshot_hash: candidate.snapshot_hash.clone(),
             })
             .collect(),
-        historical_layout_cap: input.historical_layout_cap,
-        pruned_layouts_possible: input.historical_layout_cap > 0,
+        historical_layout_cap: context.input.historical_layout_cap,
+        pruned_layouts_possible: context.input.historical_layout_cap > 0,
         limitation: PRUNED_LAYOUT_LIMITATION.to_string(),
-        started_at: started_at.to_string(),
-        completed_at: Some(completed_at.to_string()),
+        started_at: context.started_at.to_string(),
+        completed_at: Some(context.completed_at.to_string()),
         rollback_at: None,
     }
 }
