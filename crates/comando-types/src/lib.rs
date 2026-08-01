@@ -23,7 +23,8 @@ pub use capabilities::{
 pub use error::{NativeError, NativeErrorCode};
 pub use ids::{
     FilePath, MessageId, OperationId, ProjectId, RelativePath, RepositoryId, RequestId, RuntimeId,
-    RuntimeSessionId, SessionId, TerminalSessionId, ToolCallId, WindowId, WorkspaceId, WorktreeId,
+    RuntimeSessionId, SessionId, TerminalSessionId, ToolCallId, WindowId, WorkspaceId,
+    WorkspaceRuntimeOwnerId, WorkspaceScopeKey, WorktreeId,
 };
 pub use protocol::{
     JsonlWriter, NativeEventMeta, NativeRequestMeta, NativeResponseMeta, NativeRpcEvent,

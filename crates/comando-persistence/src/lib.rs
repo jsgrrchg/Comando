@@ -1,3 +1,4 @@
+pub mod durable_workspace;
 pub mod error;
 pub mod health;
 pub mod metadata;

@@ -39,10 +39,13 @@ use comando_types::capabilities::{
 use comando_types::commands::{
     APP_DATA_GET_JSON, APP_DATA_SET_JSON, APP_SECRET_DELETE, APP_SECRET_GET, APP_SECRET_SET,
     BACKEND_CAPABILITIES, BACKEND_EMIT_TEST_EVENT, BACKEND_HANDSHAKE, BACKEND_PING,
-    BACKEND_SHUTDOWN, PERSISTENCE_GET_SNAPSHOT, PERSISTENCE_GET_STORAGE_HEALTH,
+    BACKEND_SHUTDOWN, DURABLE_WORKSPACE_ARCHIVE, DURABLE_WORKSPACE_CREATE, DURABLE_WORKSPACE_LIST,
+    DURABLE_WORKSPACE_LOAD, DURABLE_WORKSPACE_PURGE, DURABLE_WORKSPACE_RESET,
+    DURABLE_WORKSPACE_SAVE, PERSISTENCE_GET_SNAPSHOT, PERSISTENCE_GET_STORAGE_HEALTH,
     PERSISTENCE_OPEN_STORE, PROJECT_ADD, PROJECT_CLEAR_APP_DATA, PROJECT_GET_APP_DATA_SUMMARY,
     PROJECT_LIST, PROJECT_RELOCATE, PROJECT_REMOVE, PROJECT_SYNC_WORKTREES, PROJECT_TOUCH,
     SETTINGS_GET_PROJECT, SETTINGS_GET_SNAPSHOT, SETTINGS_SAVE_PROJECT, SETTINGS_SAVE_SNAPSHOT,
+    WORKSPACE_NAVIGATION_GET, WORKSPACE_NAVIGATION_SAVE_SHELL, WORKSPACE_NAVIGATION_SET_ACTIVE,
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
@@ -53,7 +56,7 @@ use comando_types::persistence::{
 use comando_types::projects::{NativeProjectAddInput, NativeProjectState};
 use comando_types::{
     ai as native_ai, fs as native_fs, git as native_git, index as native_index,
-    projects as native_projects, terminal as native_terminal,
+    projects as native_projects, terminal as native_terminal, workspace as native_workspace,
 };
 use rusqlite::{OptionalExtension, params};
 use serde::{Serialize, de::DeserializeOwned};
@@ -279,6 +282,16 @@ impl NativeBackend {
             PERSISTENCE_OPEN_STORE => self.open_persistence_store(request),
             PERSISTENCE_GET_STORAGE_HEALTH => self.get_storage_health(request),
             PERSISTENCE_GET_SNAPSHOT => self.get_snapshot(request),
+            DURABLE_WORKSPACE_LOAD => self.load_durable_workspace(request),
+            DURABLE_WORKSPACE_LIST => self.list_durable_workspaces(request),
+            DURABLE_WORKSPACE_CREATE => self.create_durable_workspace(request),
+            DURABLE_WORKSPACE_SAVE => self.save_durable_workspace(request),
+            DURABLE_WORKSPACE_ARCHIVE => self.archive_durable_workspace(request),
+            DURABLE_WORKSPACE_RESET => self.reset_durable_workspace(request),
+            DURABLE_WORKSPACE_PURGE => self.purge_durable_workspace(request),
+            WORKSPACE_NAVIGATION_GET => self.get_workspace_navigation(request),
+            WORKSPACE_NAVIGATION_SET_ACTIVE => self.set_active_workspace(request),
+            WORKSPACE_NAVIGATION_SAVE_SHELL => self.save_workspace_shell(request),
             APP_DATA_GET_JSON => self.app_data_get_json(request),
             APP_DATA_SET_JSON => self.app_data_set_json(request),
             SETTINGS_GET_SNAPSHOT => self.settings_get_snapshot(request),
@@ -530,6 +543,121 @@ impl NativeBackend {
             })
             .expect("snapshot output serializes"),
         )
+    }
+
+    fn load_durable_workspace(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_workspace::NativeDurableWorkspaceScopeInput>(&request)
+        {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.load_durable_workspace(&input.scope_key))
+    }
+
+    fn list_durable_workspaces(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(
+            request.id,
+            store.list_durable_workspaces().map(|workspaces| {
+                native_workspace::NativeDurableWorkspaceListOutput { workspaces }
+            }),
+        )
+    }
+
+    fn create_durable_workspace(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeDurableWorkspaceCreateInput>(&request) {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.create_durable_workspace(input))
+    }
+
+    fn save_durable_workspace(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_workspace::NativeDurableWorkspaceSaveInput>(&request)
+        {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.save_durable_workspace(input))
+    }
+
+    fn archive_durable_workspace(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeDurableWorkspaceRevisionInput>(&request) {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.archive_durable_workspace(input))
+    }
+
+    fn reset_durable_workspace(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_workspace::NativeDurableWorkspaceResetInput>(&request)
+        {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.reset_durable_workspace(input))
+    }
+
+    fn purge_durable_workspace(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeDurableWorkspaceRevisionInput>(&request) {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.purge_durable_workspace(input))
+    }
+
+    fn get_workspace_navigation(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.load_workspace_navigation())
+    }
+
+    fn set_active_workspace(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_workspace::NativeAppWorkspaceSetActiveInput>(&request)
+        {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.set_active_workspace(input))
+    }
+
+    fn save_workspace_shell(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_workspace::NativeAppWorkspaceSaveShellInput>(&request)
+        {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.save_workspace_shell(input))
     }
 
     fn app_data_get_json(&mut self, request: RpcRequest) -> CommandResult {
@@ -4131,6 +4259,19 @@ fn response_only(id: RequestId, payload: Value) -> CommandResult {
     }
 }
 
+fn persistence_response<T: Serialize>(
+    id: RequestId,
+    result: Result<T, comando_persistence::PersistenceError>,
+) -> CommandResult {
+    match result {
+        Ok(value) => response_only(
+            id,
+            serde_json::to_value(value).expect("persistence output serializes"),
+        ),
+        Err(error) => error_only(id, error.to_native_error()),
+    }
+}
+
 fn send_prompt_outputs(
     request_id: RequestId,
     output: native_ai::NativeAiSendPromptOutput,
@@ -5221,6 +5362,101 @@ mod tests {
             Value::Null
         );
         assert_eq!(response.result.as_ref().unwrap()["workspace"], Value::Null);
+    }
+
+    #[test]
+    fn durable_workspace_commands_round_trip_without_using_v3_state() {
+        let (_temp_dir, mut backend) = backend_with_memory_runtime_setup();
+        let scope_key = "project-a::__primary__";
+
+        let create = backend.handle_request(request(
+            "durable_workspace_create",
+            json!({
+                "scopeKey": scope_key,
+                "projectId": "project-a",
+                "worktreeId": "project-a:primary",
+                "layoutSnapshot": { "tabs": ["chat-a"] },
+                "lifecycle": "active",
+            }),
+        ));
+        let created = only_response(&create);
+        assert!(created.ok);
+        assert_eq!(created.result.as_ref().unwrap()["scopeKey"], scope_key);
+        assert_eq!(created.result.as_ref().unwrap()["worktreeId"], Value::Null);
+        assert_eq!(created.result.as_ref().unwrap()["revision"], 0);
+        assert!(
+            created.result.as_ref().unwrap()["runtimeOwnerId"]
+                .as_str()
+                .is_some_and(|owner| !owner.is_empty())
+        );
+
+        let list = backend.handle_request(request("durable_workspace_list", json!({})));
+        let summaries = &only_response(&list).result.as_ref().unwrap()["workspaces"];
+        assert_eq!(summaries.as_array().unwrap().len(), 1);
+        assert!(summaries[0].get("layoutSnapshot").is_none());
+
+        let activate = backend.handle_request(request(
+            "workspace_navigation_set_active",
+            json!({
+                "activeScopeKey": scope_key,
+                "expectedRevision": 0,
+            }),
+        ));
+        let navigation = only_response(&activate).result.as_ref().unwrap();
+        assert_eq!(navigation["activeScopeKey"], scope_key);
+        assert_eq!(navigation["recentScopeKeys"], json!([scope_key]));
+        assert_eq!(navigation["revision"], 1);
+
+        let stale = backend.handle_request(request(
+            "workspace_navigation_set_active",
+            json!({
+                "activeScopeKey": null,
+                "expectedRevision": 0,
+            }),
+        ));
+        let stale_response = only_response(&stale);
+        assert!(!stale_response.ok);
+        assert_eq!(
+            stale_response.error.as_ref().unwrap().code.as_str(),
+            "conflict"
+        );
+        assert_eq!(
+            stale_response
+                .error
+                .as_ref()
+                .unwrap()
+                .details
+                .as_ref()
+                .unwrap()["actualRevision"],
+            1
+        );
+
+        assert_eq!(
+            backend
+                .persistence_store
+                .as_ref()
+                .unwrap()
+                .connection()
+                .query_row("SELECT COUNT(*) FROM workspace_sessions", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn durable_workspace_commands_require_an_open_store() {
+        let mut backend = NativeBackend::default();
+
+        let result = backend.handle_request(request("durable_workspace_list", json!({})));
+
+        let response = only_response(&result);
+        assert!(!response.ok);
+        assert_eq!(
+            response.error.as_ref().map(|error| error.code.as_str()),
+            Some("backend_not_ready")
+        );
     }
 
     #[test]

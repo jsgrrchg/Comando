@@ -123,6 +123,7 @@ fn reports_capabilities() {
             "versioned-protocol",
             "json-fixtures",
             "native-persistence",
+            "durable-workspaces-v4-repository",
             "native-project-registry",
             "native-fs",
             "native-watchers",

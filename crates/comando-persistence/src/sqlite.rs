@@ -8,8 +8,10 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::PersistenceError;
 
-pub const STORAGE_SCHEMA_VERSION: &str = "1";
+pub const STORAGE_SCHEMA_VERSION: &str = "2";
 pub const STORAGE_MODE_SQLITE_CURRENT: &str = "sqlite-current";
+
+const DURABLE_WORKSPACE_SCHEMA_MIGRATION_ID: &str = "2026-07-31-durable-workspaces-v4";
 
 const REQUIRED_TABLES: &[(&str, &[&str])] = &[
     (
@@ -47,6 +49,70 @@ const REQUIRED_TABLES: &[(&str, &[&str])] = &[
             "last_opened_at",
         ],
     ),
+    (
+        "durable_workspaces",
+        &[
+            "scope_key",
+            "project_id",
+            "worktree_id",
+            "runtime_owner_id",
+            "layout_snapshot_json",
+            "layout_revision",
+            "lifecycle",
+            "last_activated_at",
+            "created_at",
+            "updated_at",
+        ],
+    ),
+    (
+        "app_workspace_navigation",
+        &[
+            "singleton_id",
+            "active_scope_key",
+            "recent_scope_keys_json",
+            "shell_snapshot_json",
+            "revision",
+            "updated_at",
+        ],
+    ),
+    (
+        "workspace_layout_recovery",
+        &[
+            "id",
+            "scope_key",
+            "source_window_id",
+            "source_workspace_id",
+            "source_revision",
+            "source_updated_at",
+            "snapshot_hash",
+            "layout_snapshot_json",
+            "created_at",
+        ],
+    ),
+    (
+        "workspace_migrations",
+        &[
+            "migration_id",
+            "source_checksum",
+            "source_backup_ref",
+            "status",
+            "started_at",
+            "completed_at",
+        ],
+    ),
+    (
+        "workspace_deletion_journal",
+        &[
+            "operation_id",
+            "scope_key",
+            "checkout_path",
+            "status",
+            "force_approved",
+            "error_code",
+            "started_at",
+            "updated_at",
+        ],
+    ),
 ];
 
 #[derive(Debug, Clone)]
@@ -75,7 +141,7 @@ impl SqlitePersistenceStore {
             std::fs::create_dir_all(parent)?;
         }
 
-        let connection = Connection::open(&config.database_path).map_err(|source| {
+        let mut connection = Connection::open(&config.database_path).map_err(|source| {
             PersistenceError::OpenStorage {
                 path: config.database_path.clone(),
                 source,
@@ -83,6 +149,7 @@ impl SqlitePersistenceStore {
         })?;
         configure_connection(&connection)?;
         ensure_current_schema(&connection)?;
+        ensure_durable_workspace_schema(&mut connection)?;
         validate_schema(&connection)?;
         crate::metadata::ensure_metadata(&connection, STORAGE_SCHEMA_VERSION, &config.mode)?;
 
@@ -392,6 +459,141 @@ fn ensure_current_schema(connection: &Connection) -> Result<(), PersistenceError
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DurableSchemaFailpoint {
+    None,
+    AfterTables,
+    AfterSingletonSeed,
+}
+
+fn ensure_durable_workspace_schema(connection: &mut Connection) -> Result<(), PersistenceError> {
+    ensure_durable_workspace_schema_with_failpoint(connection, DurableSchemaFailpoint::None)
+}
+
+fn ensure_durable_workspace_schema_with_failpoint(
+    connection: &mut Connection,
+    failpoint: DurableSchemaFailpoint,
+) -> Result<(), PersistenceError> {
+    let already_applied = connection
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE id = ?1",
+            [DURABLE_WORKSPACE_SCHEMA_MIGRATION_ID],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if already_applied {
+        return Ok(());
+    }
+
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "
+        CREATE TABLE durable_workspaces (
+            scope_key TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            worktree_id TEXT,
+            runtime_owner_id TEXT NOT NULL UNIQUE,
+            layout_snapshot_json TEXT NOT NULL,
+            layout_revision INTEGER NOT NULL DEFAULT 0 CHECK(layout_revision >= 0),
+            lifecycle TEXT NOT NULL CHECK(lifecycle IN ('active', 'orphaned', 'archived')),
+            last_activated_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE app_workspace_navigation (
+            singleton_id TEXT PRIMARY KEY CHECK(singleton_id = 'main'),
+            active_scope_key TEXT REFERENCES durable_workspaces(scope_key) ON DELETE SET NULL,
+            recent_scope_keys_json TEXT NOT NULL DEFAULT '[]',
+            shell_snapshot_json TEXT NOT NULL DEFAULT '{}',
+            revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0),
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE workspace_layout_recovery (
+            id TEXT PRIMARY KEY,
+            scope_key TEXT NOT NULL REFERENCES durable_workspaces(scope_key) ON DELETE CASCADE,
+            source_window_id TEXT,
+            source_workspace_id TEXT,
+            source_revision INTEGER NOT NULL CHECK(source_revision >= 0),
+            source_updated_at TEXT NOT NULL,
+            snapshot_hash TEXT NOT NULL,
+            layout_snapshot_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE workspace_migrations (
+            migration_id TEXT PRIMARY KEY,
+            source_checksum TEXT NOT NULL,
+            source_backup_ref TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('not_started', 'running', 'complete', 'failed')),
+            started_at TEXT NOT NULL,
+            completed_at TEXT
+        );
+
+        CREATE TABLE workspace_deletion_journal (
+            operation_id TEXT PRIMARY KEY,
+            scope_key TEXT NOT NULL,
+            checkout_path TEXT,
+            status TEXT NOT NULL CHECK(status IN (
+                'pending', 'checkout_deleted', 'purging', 'completed', 'failed'
+            )),
+            force_approved INTEGER NOT NULL DEFAULT 0 CHECK(force_approved IN (0, 1)),
+            error_code TEXT,
+            started_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX idx_durable_workspaces_project_id
+            ON durable_workspaces(project_id);
+        CREATE INDEX idx_durable_workspaces_lifecycle_recency
+            ON durable_workspaces(lifecycle, last_activated_at DESC, updated_at DESC);
+        CREATE INDEX idx_workspace_layout_recovery_scope_key
+            ON workspace_layout_recovery(scope_key, created_at DESC);
+        CREATE INDEX idx_workspace_deletion_journal_scope_status
+            ON workspace_deletion_journal(scope_key, status);
+        ",
+    )?;
+
+    if failpoint == DurableSchemaFailpoint::AfterTables {
+        return Err(PersistenceError::MigrationInterrupted("after_tables"));
+    }
+
+    transaction.execute(
+        "
+        INSERT INTO app_workspace_navigation (
+            singleton_id,
+            active_scope_key,
+            recent_scope_keys_json,
+            shell_snapshot_json,
+            revision,
+            updated_at
+        ) VALUES (?1, NULL, '[]', '{}', 0, ?2)
+        ",
+        rusqlite::params![
+            comando_types::workspace::APP_WORKSPACE_NAVIGATION_SINGLETON_ID,
+            crate::store::now_rfc3339(),
+        ],
+    )?;
+
+    if failpoint == DurableSchemaFailpoint::AfterSingletonSeed {
+        return Err(PersistenceError::MigrationInterrupted(
+            "after_singleton_seed",
+        ));
+    }
+
+    transaction.execute(
+        "INSERT INTO schema_migrations (id, applied_at) VALUES (?1, ?2)",
+        rusqlite::params![
+            DURABLE_WORKSPACE_SCHEMA_MIGRATION_ID,
+            crate::store::now_rfc3339(),
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn ensure_column(
     connection: &Connection,
     table: &'static str,
@@ -508,7 +710,7 @@ mod tests {
         assert!(second_output.metadata_ready);
         assert_eq!(
             metadata_value(store.connection(), "native.schema_version"),
-            "1"
+            "2"
         );
         assert_eq!(
             metadata_value(store.connection(), "native.storage_mode"),
@@ -550,8 +752,103 @@ mod tests {
         assert_eq!(store.health().project_count, 0);
         assert_eq!(
             metadata_value(store.connection(), "native.schema_version"),
-            "1"
+            "2"
         );
+    }
+
+    #[test]
+    fn migrates_legacy_storage_without_mutating_v3_rows() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let database_path = temp_dir.path().join("legacy.sqlite3");
+        create_current_schema(&database_path);
+        let connection = Connection::open(&database_path).expect("db");
+        connection
+            .execute(
+                "
+                INSERT INTO workspace_sessions (
+                    id, active_project_id, active_worktree_id, last_opened_at
+                ) VALUES ('legacy-window', NULL, NULL, '2026-07-30T00:00:00Z')
+                ",
+                [],
+            )
+            .expect("legacy row");
+        drop(connection);
+
+        let (store, output) = SqlitePersistenceStore::open(NativeStorageConfig {
+            app_data_dir: temp_dir.path().to_path_buf(),
+            database_path,
+            mode: NativePersistenceMode::Write,
+        })
+        .expect("legacy database migrates");
+
+        assert_eq!(output.schema_version, "2");
+        let legacy_last_opened: String = store
+            .connection()
+            .query_row(
+                "SELECT last_opened_at FROM workspace_sessions WHERE id = 'legacy-window'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy row remains");
+        assert_eq!(legacy_last_opened, "2026-07-30T00:00:00Z");
+        assert!(table_exists(store.connection(), "durable_workspaces").unwrap());
+        assert_eq!(
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM durable_workspaces", [], |row| row
+                    .get::<_, i64>(0),)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM app_workspace_navigation", [], |row| {
+                    row.get::<_, i64>(0)
+                },)
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn durable_schema_failpoints_roll_back_the_entire_migration() {
+        for failpoint in [
+            DurableSchemaFailpoint::AfterTables,
+            DurableSchemaFailpoint::AfterSingletonSeed,
+        ] {
+            let mut connection = Connection::open_in_memory().expect("db");
+            configure_connection(&connection).expect("connection config");
+            ensure_current_schema(&connection).expect("legacy schema");
+
+            let error = ensure_durable_workspace_schema_with_failpoint(&mut connection, failpoint)
+                .expect_err("failpoint interrupts migration");
+
+            assert!(matches!(error, PersistenceError::MigrationInterrupted(_)));
+            assert!(!table_exists(&connection, "durable_workspaces").unwrap());
+            assert_eq!(
+                connection
+                    .query_row(
+                        "SELECT COUNT(*) FROM schema_migrations WHERE id = ?1",
+                        [DURABLE_WORKSPACE_SCHEMA_MIGRATION_ID],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                0
+            );
+
+            ensure_durable_workspace_schema(&mut connection)
+                .expect("migration retries after rollback");
+            assert!(table_exists(&connection, "durable_workspaces").unwrap());
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM app_workspace_navigation", [], |row| {
+                        row.get::<_, i64>(0)
+                    },)
+                    .unwrap(),
+                1
+            );
+        }
     }
 
     #[test]

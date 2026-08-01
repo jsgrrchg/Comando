@@ -6,6 +6,16 @@ pub const BACKEND_EMIT_TEST_EVENT: &str = "backend_emit_test_event";
 pub const PERSISTENCE_OPEN_STORE: &str = "persistence_open_store";
 pub const PERSISTENCE_GET_STORAGE_HEALTH: &str = "persistence_get_storage_health";
 pub const PERSISTENCE_GET_SNAPSHOT: &str = "persistence_get_snapshot";
+pub const DURABLE_WORKSPACE_LOAD: &str = "durable_workspace_load";
+pub const DURABLE_WORKSPACE_LIST: &str = "durable_workspace_list";
+pub const DURABLE_WORKSPACE_CREATE: &str = "durable_workspace_create";
+pub const DURABLE_WORKSPACE_SAVE: &str = "durable_workspace_save";
+pub const DURABLE_WORKSPACE_ARCHIVE: &str = "durable_workspace_archive";
+pub const DURABLE_WORKSPACE_RESET: &str = "durable_workspace_reset";
+pub const DURABLE_WORKSPACE_PURGE: &str = "durable_workspace_purge";
+pub const WORKSPACE_NAVIGATION_GET: &str = "workspace_navigation_get";
+pub const WORKSPACE_NAVIGATION_SET_ACTIVE: &str = "workspace_navigation_set_active";
+pub const WORKSPACE_NAVIGATION_SAVE_SHELL: &str = "workspace_navigation_save_shell";
 pub const APP_DATA_GET_JSON: &str = "app_data_get_json";
 pub const APP_DATA_SET_JSON: &str = "app_data_set_json";
 pub const APP_SECRET_GET: &str = "app_secret_get";
@@ -36,6 +46,16 @@ pub const PERSISTENCE_COMMANDS: &[&str] = &[
     PERSISTENCE_OPEN_STORE,
     PERSISTENCE_GET_STORAGE_HEALTH,
     PERSISTENCE_GET_SNAPSHOT,
+    DURABLE_WORKSPACE_LOAD,
+    DURABLE_WORKSPACE_LIST,
+    DURABLE_WORKSPACE_CREATE,
+    DURABLE_WORKSPACE_SAVE,
+    DURABLE_WORKSPACE_ARCHIVE,
+    DURABLE_WORKSPACE_RESET,
+    DURABLE_WORKSPACE_PURGE,
+    WORKSPACE_NAVIGATION_GET,
+    WORKSPACE_NAVIGATION_SET_ACTIVE,
+    WORKSPACE_NAVIGATION_SAVE_SHELL,
     APP_DATA_GET_JSON,
     APP_DATA_SET_JSON,
     APP_SECRET_GET,

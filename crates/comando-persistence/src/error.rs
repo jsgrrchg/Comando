@@ -24,6 +24,27 @@ pub enum PersistenceError {
     #[error("The native storage schema version is not supported: {0}")]
     UnsupportedSchemaVersion(String),
 
+    #[error("The durable workspace input is invalid: {0}")]
+    InvalidWorkspaceInput(String),
+
+    #[error("The durable workspace was not found: {0}")]
+    WorkspaceNotFound(String),
+
+    #[error("The durable workspace already exists: {0}")]
+    WorkspaceAlreadyExists(String),
+
+    #[error(
+        "The {entity} revision changed (expected {expected_revision}, actual {actual_revision})."
+    )]
+    RevisionConflict {
+        entity: &'static str,
+        expected_revision: u64,
+        actual_revision: u64,
+    },
+
+    #[error("The native schema migration was interrupted at {0}.")]
+    MigrationInterrupted(&'static str),
+
     #[error("Could not open native storage.")]
     OpenStorage {
         path: PathBuf,
@@ -41,14 +62,20 @@ pub enum PersistenceError {
 impl PersistenceError {
     pub fn native_code(&self) -> NativeErrorCode {
         match self {
-            Self::EmptyDatabasePath => NativeErrorCode::InvalidArgs,
-            Self::DatabaseNotFound(_) => NativeErrorCode::NotFound,
+            Self::EmptyDatabasePath | Self::InvalidWorkspaceInput(_) => {
+                NativeErrorCode::InvalidArgs
+            }
+            Self::DatabaseNotFound(_) | Self::WorkspaceNotFound(_) => NativeErrorCode::NotFound,
+            Self::WorkspaceAlreadyExists(_) | Self::RevisionConflict { .. } => {
+                NativeErrorCode::Conflict
+            }
             Self::MissingRequiredTable(_)
             | Self::MissingRequiredColumn { .. }
             | Self::UnsupportedSchemaVersion(_) => NativeErrorCode::UnsupportedSchemaVersion,
-            Self::OpenStorage { .. } | Self::Sqlite(_) | Self::Io(_) => {
-                NativeErrorCode::InternalError
-            }
+            Self::MigrationInterrupted(_)
+            | Self::OpenStorage { .. }
+            | Self::Sqlite(_)
+            | Self::Io(_) => NativeErrorCode::InternalError,
         }
     }
 
@@ -58,6 +85,17 @@ impl PersistenceError {
             Self::DatabaseNotFound(path) | Self::OpenStorage { path, .. } => {
                 error = error.with_details(json!({
                     "databasePath": crate::redaction::redact_path(path),
+                }));
+            }
+            Self::RevisionConflict {
+                entity,
+                expected_revision,
+                actual_revision,
+            } => {
+                error = error.with_details(json!({
+                    "entity": entity,
+                    "expectedRevision": expected_revision,
+                    "actualRevision": actual_revision,
                 }));
             }
             _ => {}
