@@ -400,7 +400,7 @@ export function SidebarGitScopePicker({
     const refreshGitHistory = useGitStore((state) => state.refreshHistory);
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const removeWorktree = useGitStore((state) => state.removeWorktree);
-    const openContext = useWorkspaceStore((state) => state.openContext);
+    const requestWorkspaceNavigation = useWorkspaceStore((state) => state.requestWorkspaceNavigation);
     const removeWorktreeTabs = useWorkspaceStore(
         (state) => state.removeWorktreeTabs,
     );
@@ -1225,7 +1225,7 @@ export function SidebarGitScopePicker({
             try {
                 await (onOpenWorkspace
                     ? onOpenWorkspace(projectId, normalizedWorktreeId)
-                    : openContext(projectId, normalizedWorktreeId));
+                    : requestWorkspaceNavigation(projectId, normalizedWorktreeId));
                 setIsOpen(false);
                 setQuery("");
             } catch (error) {
@@ -1243,7 +1243,7 @@ export function SidebarGitScopePicker({
             onOpenWorkspace,
             projectId,
             snapshot?.worktrees,
-            openContext,
+            requestWorkspaceNavigation,
             worktreeId,
         ],
     );
@@ -1382,7 +1382,7 @@ export function SidebarGitScopePicker({
                     ? onOpenWorkspace(projectId, createdWorktree.id, {
                           emptyLayout: true,
                       })
-                    : openContext(projectId, createdWorktree.id, {
+                    : requestWorkspaceNavigation(projectId, createdWorktree.id, {
                           emptyLayout: true,
                       }));
 
@@ -1403,7 +1403,7 @@ export function SidebarGitScopePicker({
             createWorktree,
             isBusy,
             onOpenWorkspace,
-            openContext,
+            requestWorkspaceNavigation,
             project,
             projectId,
             snapshot?.currentWorktreeId,

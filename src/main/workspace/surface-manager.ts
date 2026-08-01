@@ -7,17 +7,8 @@ import {
 } from "electron";
 
 import { IPC_EVENTS } from "@shared/ipc";
-import {
-    areWorkspaceScopesEquivalent,
-    areWorkspaceWorktreeIdsEquivalent,
-    hasOpenWorkspaceScope,
-    type WorkspaceLocation,
-    type WorkspaceScope,
-} from "@shared/workspace-context";
 import type {
     WindowContextSnapshot,
-    WorkspaceNavigationSnapshot,
-    WindowWorkspaceRestoreRecord,
     WorkspaceSurfaceActionCompletion,
     WorkspaceSurfaceActionContext,
     WorkspaceSurfaceActionDeliveryFailureReason,
@@ -37,6 +28,7 @@ import type {
     WorkspaceSurfaceOperationDiagnostic,
     WorkspaceSurfacePoolDiagnostics,
     WorkspaceSurfaceRuntimeBinding,
+    WorkspaceSurfaceRegistrySnapshot,
 } from "@shared/ipc";
 
 import {
@@ -73,7 +65,6 @@ interface WorkspaceSurfaceRecord {
     }>;
     restoreError: Error | null;
     runtimeOwnerId: string | null;
-    snapshot: WorkspaceNavigationSnapshot;
     readonly view: WebContentsView;
     readonly webContents: WebContents;
     readonly webContentsId: number;
@@ -88,7 +79,7 @@ interface WorkspaceSurfaceBounds {
 
 interface WorkspaceSurfaceHostRecord {
     readonly activationCoordinator: WorkspaceActivationCoordinator;
-    activeContextKey: string | null;
+    activeScopeKey: string | null;
     contentInsets: WorkspaceSurfaceContentInsets;
     disposalScheduled: boolean;
     readonly hostWindow: BrowserWindow;
@@ -100,7 +91,7 @@ interface WorkspaceSurfaceHostRecord {
     pendingPreheatTimer: NodeJS.Timeout | null;
     readonly recentOperations: WorkspaceSurfaceOperationDiagnostic[];
     readonly surfacePool: WorkspaceSurfacePool;
-    snapshot: WorkspaceNavigationSnapshot;
+    registry: WorkspaceSurfaceRegistrySnapshot;
     readonly surfaceIdsByContextKey: Map<string, string>;
     warmingContextKey: string | null;
 }
@@ -144,28 +135,13 @@ interface WorkspaceSurfaceLifecycleHandlers {
         subscriber: WorkspaceSurfaceRuntimeSubscriber,
         lifecycle: WorkspaceSurfaceLifecycleState,
     ) => void;
-    readonly persistHostSnapshot?: (
-        hostContext: WindowContextSnapshot,
-        snapshot: WorkspaceNavigationSnapshot,
-    ) => Promise<void>;
     readonly prepareSurfaceHibernate?: (
         subscriber: WorkspaceSurfaceRuntimeSubscriber,
         reason: WorkspaceSurfaceHibernateReason,
-    ) => Promise<WorkspaceNavigationSnapshot>;
+    ) => Promise<void>;
     readonly resolveRuntimeOwner?: (
         input: WorkspaceSurfaceRuntimeResolutionInput,
     ) => WorkspaceSurfaceRuntimeResolution | Promise<WorkspaceSurfaceRuntimeResolution>;
-}
-
-export interface OpenWorkspaceSurfaceLocation extends WorkspaceLocation {
-    readonly isActive: boolean;
-    readonly lastActivatedAt: string;
-}
-
-export interface WorkspaceSurfaceTransferResult {
-    readonly sourceSnapshot: WorkspaceNavigationSnapshot;
-    readonly surfaceId: string;
-    readonly targetSnapshot: WorkspaceNavigationSnapshot;
 }
 
 /**
@@ -178,10 +154,6 @@ export class WorkspaceSurfaceManager {
         string,
         Set<(ready: boolean) => void>
     >();
-    readonly #pendingTransfersByHost = new Map<
-        WorkspaceSurfaceHostRecord,
-        Set<Promise<void>>
-    >();
     readonly #surfaceIdsByWebContentsId = new Map<number, string>();
     readonly #surfacesById = new Map<string, WorkspaceSurfaceRecord>();
     readonly #actionsById = new Map<
@@ -190,15 +162,11 @@ export class WorkspaceSurfaceManager {
     >();
     #lifecycleHandlers: WorkspaceSurfaceLifecycleHandlers = {};
 
-    setLifecycleHandlers(handlers: WorkspaceSurfaceLifecycleHandlers): void {
-        this.#lifecycleHandlers = handlers;
-    }
-
-    syncHost(
+    syncWorkspaceRegistry(
         hostWindow: BrowserWindow,
         hostContext: WindowContextSnapshot,
-        snapshot: WorkspaceNavigationSnapshot,
-    ): WorkspaceNavigationSnapshot {
+        registry: WorkspaceSurfaceRegistrySnapshot,
+    ): WorkspaceSurfaceRegistrySnapshot {
         let host = this.#hostsByWindowId.get(hostContext.windowId);
         if (host && host.hostWindow !== hostWindow) {
             // Stable window ids can be reused by a newly opened BrowserWindow.
@@ -206,7 +174,7 @@ export class WorkspaceSurfaceManager {
             host = undefined;
         }
         if (!host) {
-            host = this.#createHostRecord(hostWindow, hostContext, snapshot);
+            host = this.#createHostRecord(hostWindow, hostContext);
             this.#hostsByWindowId.set(host.hostWindowId, host);
             this.#resolveHostReadyWaiters(host.hostWindowId, true);
             const createdHost = host;
@@ -225,41 +193,47 @@ export class WorkspaceSurfaceManager {
             hostWindow.on("unmaximize", scheduleLayout);
         }
         host.context = hostContext;
-        const isInitialSync = host.snapshot.contexts.length === 0;
-        const openContextKeys = new Set(snapshot.openContextKeys);
-        const nextActiveContextKey =
-            snapshot.activeContextKey && openContextKeys.has(snapshot.activeContextKey)
-                ? snapshot.activeContextKey
+        const isInitialSync = host.registry.workspaces.length === 0;
+        const knownScopeKeys = new Set(
+            registry.workspaces.map((workspace) => workspace.scopeKey),
+        );
+        const nextActiveScopeKey =
+            registry.activeScopeKey && knownScopeKeys.has(registry.activeScopeKey)
+                ? registry.activeScopeKey
                 : null;
         if (isInitialSync) {
             // Restored navigation is already durable, even while its renderer is cold.
-            host.activeContextKey = nextActiveContextKey;
+            host.activeScopeKey = nextActiveScopeKey;
             host.activationCoordinator.setCommittedScopeForRestore(
-                nextActiveContextKey,
+                nextActiveScopeKey,
             );
         }
-        host.snapshot = {
-            ...this.#mergeKnownSurfaceSnapshots(host, snapshot),
-            activeContextKey: host.activeContextKey,
+        host.registry = {
+            ...registry,
+            activeScopeKey: host.activeScopeKey,
         };
-        for (const context of snapshot.contexts) {
-            host.surfacePool.ensureCold(context.key);
+        for (const workspace of registry.workspaces) {
+            host.surfacePool.ensureCold(workspace.scopeKey);
         }
 
-        if (nextActiveContextKey) {
-            void this.activate(host.hostWindowId, nextActiveContextKey);
-        } else if (host.activeContextKey) {
-            void host.activationCoordinator.closeWorkspace(host.activeContextKey);
+        if (nextActiveScopeKey) {
+            void this.activate(host.hostWindowId, nextActiveScopeKey);
+        } else if (host.activeScopeKey) {
+            void host.activationCoordinator.closeWorkspace(host.activeScopeKey);
         }
 
-        for (const contextKey of host.surfaceIdsByContextKey.keys()) {
-            if (openContextKeys.has(contextKey) || contextKey === nextActiveContextKey) {
+        for (const scopeKey of host.surfaceIdsByContextKey.keys()) {
+            if (knownScopeKeys.has(scopeKey)) {
                 continue;
             }
-            void host.activationCoordinator.closeWorkspace(contextKey);
+            void host.activationCoordinator.closeWorkspace(scopeKey);
         }
         this.#scheduleRecentSurfacePreheat(host);
-        return host.snapshot;
+        return host.registry;
+    }
+
+    setLifecycleHandlers(handlers: WorkspaceSurfaceLifecycleHandlers): void {
+        this.#lifecycleHandlers = handlers;
     }
 
     waitForHost(hostWindowId: string, timeoutMs = 10_000): Promise<boolean> {
@@ -293,7 +267,9 @@ export class WorkspaceSurfaceManager {
         const host = this.#hostsByWindowId.get(hostWindowId);
         if (
             !host ||
-            !host.snapshot.contexts.some((context) => context.key === contextKey)
+            !host.registry.workspaces.some(
+                (workspace) => workspace.scopeKey === contextKey,
+            )
         ) {
             return {
                 message: "The workspace is not available in this host.",
@@ -316,7 +292,7 @@ export class WorkspaceSurfaceManager {
             scopeKey: contextKey,
         });
         if (result.status === "activated") {
-            this.#publishHostSnapshot(host);
+            this.#publishSurfaceNavigation(host);
             this.#scheduleRecentSurfacePreheat(host);
         }
         return result;
@@ -327,8 +303,8 @@ export class WorkspaceSurfaceManager {
         anchor: { readonly width: number; readonly x: number },
     ): void {
         const host = this.#hostsByWindowId.get(hostWindowId);
-        const surfaceId = host?.activeContextKey
-            ? host.surfaceIdsByContextKey.get(host.activeContextKey)
+        const surfaceId = host?.activeScopeKey
+            ? host.surfaceIdsByContextKey.get(host.activeScopeKey)
             : null;
         const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
         if (!surface || surface.webContents.isDestroyed()) {
@@ -338,21 +314,6 @@ export class WorkspaceSurfaceManager {
         surface.webContents.send(
             IPC_EVENTS.workspaceSurfaceGitScopeMenuRequested,
             anchor,
-        );
-    }
-
-    requestActiveProjectMenu(hostWindowId: string): void {
-        const host = this.#hostsByWindowId.get(hostWindowId);
-        const surfaceId = host?.activeContextKey
-            ? host.surfaceIdsByContextKey.get(host.activeContextKey)
-            : null;
-        const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
-        if (!surface || surface.webContents.isDestroyed()) {
-            return;
-        }
-
-        surface.webContents.send(
-            IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
         );
     }
 
@@ -485,7 +446,7 @@ export class WorkspaceSurfaceManager {
                       : result.status,
             scopeKey: contextKey,
         });
-        this.#publishHostSnapshot(host);
+        this.#publishSurfaceNavigation(host);
         return result;
     }
 
@@ -573,16 +534,20 @@ export class WorkspaceSurfaceManager {
         if (!surface || !host || surface.webContents.isDestroyed()) {
             return { delivered: false, reason: "missing-surface" };
         }
-        if (host.activeContextKey !== request.contextKey) {
+        if (host.activeScopeKey !== request.contextKey) {
             return { delivered: false, reason: "inactive-context" };
         }
-        const activeContext = host.snapshot.contexts.find(
-            (context) => context.key === host.activeContextKey,
+        const activeWorkspace = host.registry.workspaces.find(
+            (workspace) => workspace.scopeKey === host.activeScopeKey,
         );
         if (
             surface.contextKey !== request.contextKey ||
-            !activeContext ||
-            !doesWorkspaceSurfaceContextMatchContext(request, activeContext)
+            !activeWorkspace ||
+            !doesWorkspaceSurfaceContextMatchContext(request, {
+                key: activeWorkspace.scopeKey,
+                projectId: activeWorkspace.projectId,
+                worktreeId: activeWorkspace.worktreeId,
+            })
         ) {
             return { delivered: false, reason: "invalid-context" };
         }
@@ -688,12 +653,6 @@ export class WorkspaceSurfaceManager {
         }
     }
 
-    getSurfaceSnapshot(
-        webContents: WebContents,
-    ): WorkspaceNavigationSnapshot | null {
-        return this.#getSurfaceByWebContents(webContents)?.snapshot ?? null;
-    }
-
     getSurfaceContext(webContents: WebContents): WindowContextSnapshot | null {
         return this.#getSurfaceByWebContents(webContents)?.context ?? null;
     }
@@ -719,20 +678,6 @@ export class WorkspaceSurfaceManager {
         return Boolean(surface && this.#doesRuntimeBindingMatch(surface, binding));
     }
 
-    getHostSnapshot(webContents: WebContents): WorkspaceNavigationSnapshot | null {
-        const surface = this.#getSurfaceByWebContents(webContents);
-        if (!surface) {
-            return null;
-        }
-        return this.#hostsByWindowId.get(surface.hostWindowId)?.snapshot ?? null;
-    }
-
-    getHostSnapshotForWindow(
-        hostWindowId: string,
-    ): WorkspaceNavigationSnapshot | null {
-        return this.#hostsByWindowId.get(hostWindowId)?.snapshot ?? null;
-    }
-
     getSurfaceWebContents(
         hostWindowId: string,
         contextKey: string,
@@ -745,53 +690,20 @@ export class WorkspaceSurfaceManager {
             : null;
     }
 
-    mergeSurfaceSnapshot(
-        webContents: WebContents,
-        snapshot: WorkspaceNavigationSnapshot,
-    ): {
-        readonly hostWindowId: string;
-        readonly snapshot: WorkspaceNavigationSnapshot;
-    } | null {
-        const surface = this.#getSurfaceByWebContents(webContents);
-        if (!surface) {
-            return null;
-        }
-        const host = this.#hostsByWindowId.get(surface.hostWindowId);
-        if (!host) {
-            return null;
-        }
-
-        const context = snapshot.contexts.find(
-            (candidate) => candidate.key === surface.contextKey,
-        );
-        if (!context) {
-            return null;
-        }
-
-        surface.snapshot = toSurfaceSnapshot(snapshot, surface.contextKey);
-        host.snapshot = {
-            ...host.snapshot,
-            contexts: host.snapshot.contexts.map((candidate) =>
-                candidate.key === surface.contextKey ? context : candidate,
-            ),
-        };
-        return { hostWindowId: host.hostWindowId, snapshot: host.snapshot };
-    }
-
     isSurface(webContents: WebContents): boolean {
         return this.#surfaceIdsByWebContentsId.has(webContents.id);
     }
 
     getActiveContext(
         hostWindowId: string,
-    ): WorkspaceNavigationSnapshot["contexts"][number] | null {
+    ): WorkspaceSurfaceRegistrySnapshot["workspaces"][number] | null {
         const host = this.#hostsByWindowId.get(hostWindowId);
-        if (!host?.activeContextKey) {
+        if (!host?.activeScopeKey) {
             return null;
         }
         return (
-            host.snapshot.contexts.find(
-                (context) => context.key === host.activeContextKey,
+            host.registry.workspaces.find(
+                (workspace) => workspace.scopeKey === host.activeScopeKey,
             ) ?? null
         );
     }
@@ -822,278 +734,16 @@ export class WorkspaceSurfaceManager {
             ? host.hostWindow.webContents
             : null;
     }
-
-    listOpenWorkspaceLocations(): readonly OpenWorkspaceSurfaceLocation[] {
-        return [...this.#hostsByWindowId.values()].flatMap((host) =>
-            host.snapshot.openContextKeys.flatMap((contextKey) => {
-                const context = host.snapshot.contexts.find(
-                    (candidate) => candidate.key === contextKey,
-                );
-                if (!context) {
-                    return [];
-                }
-                return [
-                    {
-                        contextKey,
-                        hostWindowId: host.hostWindowId,
-                        isActive: host.activeContextKey === contextKey,
-                        lastActivatedAt: context.lastActivatedAt,
-                        projectId: context.projectId,
-                        worktreeId: context.worktreeId,
-                    },
-                ];
-            }),
-        );
-    }
-
-    findWorkspaceLocations(
-        scope: WorkspaceScope,
-    ): readonly OpenWorkspaceSurfaceLocation[] {
-        return this.listOpenWorkspaceLocations().filter((location) =>
-            areWorkspaceScopesEquivalent(location, scope),
-        );
-    }
-
-    findPreferredWorkspaceLocation(
-        scope: WorkspaceScope,
-        preferredHostWindowId = windowRegistry.getLastFocusedMainWindowId(),
-    ): OpenWorkspaceSurfaceLocation | null {
-        return (
-            [...this.findWorkspaceLocations(scope)].sort((left, right) => {
-                if (left.isActive !== right.isActive) {
-                    return left.isActive ? -1 : 1;
-                }
-                const leftIsPreferred =
-                    left.hostWindowId === preferredHostWindowId;
-                const rightIsPreferred =
-                    right.hostWindowId === preferredHostWindowId;
-                if (leftIsPreferred !== rightIsPreferred) {
-                    return leftIsPreferred ? -1 : 1;
-                }
-                const activationOrder =
-                    Date.parse(right.lastActivatedAt) -
-                    Date.parse(left.lastActivatedAt);
-                return activationOrder ||
-                    left.hostWindowId.localeCompare(right.hostWindowId);
-            })[0] ?? null
-        );
-    }
-
-    async transferSurface(input: {
-        readonly commit: () => Promise<{
-            readonly source: WindowWorkspaceRestoreRecord;
-            readonly target: WindowWorkspaceRestoreRecord;
-        }>;
-        readonly contextKey: string;
-        readonly onCommitted?: (
-            transfer: WorkspaceSurfaceTransferResult,
-        ) => void;
-        readonly sourceHostWindowId: string;
-        readonly targetHostWindowId: string;
-    }): Promise<WorkspaceSurfaceTransferResult> {
-        if (input.sourceHostWindowId === input.targetHostWindowId) {
-            throw new Error("The workspace is already in the target window.");
-        }
-        const reservation = this.#reserveTransfer(
-            input.sourceHostWindowId,
-            input.targetHostWindowId,
-        );
-        try {
-            return await this.#transferSurfaceNow(
-                input,
-                reservation.sourceHost,
-                reservation.targetHost,
-            );
-        } finally {
-            reservation.release();
-        }
-    }
-
-    async #transferSurfaceNow(
-        input: {
-            readonly commit: () => Promise<{
-                readonly source: WindowWorkspaceRestoreRecord;
-                readonly target: WindowWorkspaceRestoreRecord;
-            }>;
-            readonly contextKey: string;
-            readonly onCommitted?: (
-                transfer: WorkspaceSurfaceTransferResult,
-            ) => void;
-            readonly sourceHostWindowId: string;
-            readonly targetHostWindowId: string;
-        },
-        sourceHost: WorkspaceSurfaceHostRecord,
-        targetHost: WorkspaceSurfaceHostRecord,
-    ): Promise<WorkspaceSurfaceTransferResult> {
-        const surfaceId = sourceHost.surfaceIdsByContextKey.get(
-            input.contextKey,
-        );
-        const surface = surfaceId ? this.#surfacesById.get(surfaceId) : null;
-        if (!surface) {
-            throw new Error("The workspace surface is no longer available.");
-        }
-        if (
-            sourceHost.hostWindow.isDestroyed() ||
-            targetHost.hostWindow.isDestroyed()
-        ) {
-            throw new Error("A workspace transfer window is no longer available.");
-        }
-        const movingContext = sourceHost.snapshot.contexts.find(
-            (context) => context.key === input.contextKey,
-        );
-        if (!movingContext) {
-            throw new Error("The workspace context is no longer available.");
-        }
-        if (
-            hasOpenWorkspaceScope(targetHost.snapshot, movingContext) ||
-            targetHost.surfaceIdsByContextKey.has(input.contextKey)
-        ) {
-            throw new Error("The destination already contains this workspace.");
-        }
-
-        const previousContext = surface.context;
-        const previousActionHostIds = new Map<string, string>();
-        let attachedToTarget = false;
-        let committed:
-            | {
-                  readonly source: WindowWorkspaceRestoreRecord;
-                  readonly target: WindowWorkspaceRestoreRecord;
-              }
-            | undefined;
-        surface.view.setVisible(false);
-        surface.isVisible = false;
-        surface.bounds = null;
-        this.#publishLifecycle(surface, "suspended");
-        try {
-            sourceHost.hostWindow.contentView.removeChildView(surface.view);
-            targetHost.hostWindow.contentView.addChildView(surface.view);
-            attachedToTarget = true;
-            sourceHost.surfaceIdsByContextKey.delete(input.contextKey);
-            targetHost.surfaceIdsByContextKey.set(input.contextKey, surface.id);
-            surface.hostWindowId = targetHost.hostWindowId;
-            surface.context = {
-                ...surface.context,
-                hostWindowId: targetHost.hostWindowId,
-                workspaceId: targetHost.context.workspaceId,
-                workspaceSessionId: targetHost.context.workspaceSessionId,
-            };
-            windowRegistry.registerEmbeddedRenderer(
-                surface.webContents,
-                surface.context,
-            );
-            for (const [actionId, action] of this.#actionsById) {
-                if (action.surfaceId !== surface.id) {
-                    continue;
-                }
-                previousActionHostIds.set(actionId, action.hostWindowId);
-                action.hostWindowId = targetHost.hostWindowId;
-            }
-
-            committed = await input.commit();
-        } catch (error) {
-            if (attachedToTarget && !targetHost.hostWindow.isDestroyed()) {
-                targetHost.hostWindow.contentView.removeChildView(surface.view);
-            }
-            if (!sourceHost.hostWindow.isDestroyed()) {
-                sourceHost.hostWindow.contentView.addChildView(surface.view);
-            }
-            targetHost.surfaceIdsByContextKey.delete(input.contextKey);
-            sourceHost.surfaceIdsByContextKey.set(input.contextKey, surface.id);
-            surface.hostWindowId = sourceHost.hostWindowId;
-            surface.context = previousContext;
-            windowRegistry.registerEmbeddedRenderer(
-                surface.webContents,
-                previousContext,
-            );
-            for (const [actionId, previousHostWindowId] of previousActionHostIds) {
-                const action = this.#actionsById.get(actionId);
-                if (action) {
-                    action.hostWindowId = previousHostWindowId;
-                }
-            }
-            this.#applyVisibility(sourceHost, {
-                focusActive:
-                    sourceHost.activeContextKey === input.contextKey,
-            });
-            throw error;
-        }
-
-        // Persistence is now canonical. Never visually roll back beyond this point.
-        sourceHost.snapshot = committed.source.snapshot;
-        sourceHost.activeContextKey = committed.source.snapshot.activeContextKey;
-        targetHost.snapshot = committed.target.snapshot;
-        targetHost.activeContextKey = committed.target.snapshot.activeContextKey;
-        surface.snapshot = toSurfaceSnapshot(
-            committed.target.snapshot,
-            input.contextKey,
-        );
-        const result = {
-            sourceSnapshot: sourceHost.snapshot,
-            surfaceId: surface.id,
-            targetSnapshot: targetHost.snapshot,
-        };
-        try {
-            // Notify host renderers before a waiting window close can flush them.
-            input.onCommitted?.(result);
-        } catch (error) {
-            console.error(
-                "[workspace] Failed to notify hosts after a committed transfer",
-                error,
-            );
-        }
-        try {
-            this.#rejectInactiveActions(sourceHost);
-            this.#rejectInactiveActions(targetHost);
-            this.#applyVisibility(sourceHost);
-            this.#applyVisibility(targetHost, { focusActive: true });
-        } catch (error) {
-            // A later host sync can repair presentation; ownership must remain committed.
-            console.error(
-                "[workspace] Failed to refresh surfaces after a committed transfer",
-                error,
-            );
-        }
-        return result;
-    }
-
-    activateProject(
-        projectId: string,
-        worktreeId: string | null | undefined,
-    ): BrowserWindow | null {
-        for (const host of this.#hostsByWindowId.values()) {
-            const context = host.snapshot.contexts.find(
-                (candidate) =>
-                    candidate.projectId === projectId &&
-                    (worktreeId === undefined ||
-                        areWorkspaceWorktreeIdsEquivalent(
-                            projectId,
-                            candidate.worktreeId,
-                            worktreeId,
-                        )),
-            );
-            if (!context) {
-                continue;
-            }
-            void this.activate(host.hostWindowId, context.key);
-            return host.hostWindow.isDestroyed() ? null : host.hostWindow;
-        }
-        return null;
-    }
-
-    async prepareHostForClose(
+    prepareHostForClose(
         hostWindowId: string,
         hostWindow?: BrowserWindow,
     ): Promise<void> {
         const host = this.#hostsByWindowId.get(hostWindowId);
         if (!host || (hostWindow && host.hostWindow !== hostWindow)) {
-            return;
+            return Promise.resolve();
         }
-        // Mark this host generation before existing transfers drain.
         host.isClosing = true;
-        const pendingTransfers = this.#pendingTransfersByHost.get(host);
-        if (pendingTransfers) {
-            await Promise.allSettled([...pendingTransfers]);
-        }
+        return Promise.resolve();
     }
 
     disposeHost(hostWindowId: string, hostWindow?: BrowserWindow): void {
@@ -1114,14 +764,6 @@ export class WorkspaceSurfaceManager {
             return;
         }
         host.disposalScheduled = true;
-        const pendingTransfers = this.#pendingTransfersByHost.get(host);
-        if (pendingTransfers?.size) {
-            // Forced window destruction still waits for the atomic move boundary.
-            void Promise.allSettled([...pendingTransfers]).then(() => {
-                this.#disposeHostNow(host);
-            });
-            return;
-        }
         this.#disposeHostNow(host);
     }
 
@@ -1140,62 +782,9 @@ export class WorkspaceSurfaceManager {
         for (const surfaceId of [...host.surfaceIdsByContextKey.values()]) {
             this.#destroySurface(host, surfaceId);
         }
-        this.#pendingTransfersByHost.delete(host);
         if (isCurrentHost) {
             this.#hostsByWindowId.delete(host.hostWindowId);
         }
-    }
-
-    #reserveTransfer(
-        sourceHostWindowId: string,
-        targetHostWindowId: string,
-    ): {
-        readonly release: () => void;
-        readonly sourceHost: WorkspaceSurfaceHostRecord;
-        readonly targetHost: WorkspaceSurfaceHostRecord;
-    } {
-        const sourceHost = this.#hostsByWindowId.get(sourceHostWindowId);
-        const targetHost = this.#hostsByWindowId.get(targetHostWindowId);
-        if (!sourceHost || !targetHost) {
-            throw new Error("The workspace surface is no longer available.");
-        }
-        if (sourceHost.isClosing || targetHost.isClosing) {
-            throw new Error("A workspace transfer window is closing.");
-        }
-
-        let resolveTransfer: (() => void) | undefined;
-        const transfer = new Promise<void>((resolve) => {
-            resolveTransfer = resolve;
-        });
-        const hosts = [sourceHost, targetHost];
-        for (const host of hosts) {
-            const pendingTransfers =
-                this.#pendingTransfersByHost.get(host) ??
-                new Set<Promise<void>>();
-            pendingTransfers.add(transfer);
-            this.#pendingTransfersByHost.set(host, pendingTransfers);
-        }
-
-        let released = false;
-        return {
-            release: () => {
-                if (released) {
-                    return;
-                }
-                released = true;
-                for (const host of hosts) {
-                    const pendingTransfers =
-                        this.#pendingTransfersByHost.get(host);
-                    pendingTransfers?.delete(transfer);
-                    if (pendingTransfers?.size === 0) {
-                        this.#pendingTransfersByHost.delete(host);
-                    }
-                }
-                resolveTransfer?.();
-            },
-            sourceHost,
-            targetHost,
-        };
     }
 
     #resolveHostReadyWaiters(hostWindowId: string, ready: boolean): void {
@@ -1212,7 +801,6 @@ export class WorkspaceSurfaceManager {
     #createHostRecord(
         hostWindow: BrowserWindow,
         hostContext: WindowContextSnapshot,
-        snapshot: WorkspaceNavigationSnapshot,
     ): WorkspaceSurfaceHostRecord {
         // The adapters capture this stable object before its fields are assigned.
         const host = {} as WorkspaceSurfaceHostRecord;
@@ -1239,14 +827,14 @@ export class WorkspaceSurfaceManager {
                         host,
                         host.context,
                         scopeKey,
-                        host.snapshot,
+                        host.registry,
                     );
                     if (!surface) {
                         throw new Error("Could not create the workspace surface.");
                     }
                     if (
-                        !host.activeContextKey ||
-                        !host.surfaceIdsByContextKey.has(host.activeContextKey)
+                        !host.activeScopeKey ||
+                        !host.surfaceIdsByContextKey.has(host.activeScopeKey)
                     ) {
                         host.warmingContextKey = scopeKey;
                         this.#applyVisibility(host);
@@ -1275,15 +863,15 @@ export class WorkspaceSurfaceManager {
                         );
                     }
                     const activatedAt = new Date().toISOString();
-                    host.activeContextKey = scopeKey;
+                    host.activeScopeKey = scopeKey;
                     host.warmingContextKey = null;
-                    host.snapshot = {
-                        ...host.snapshot,
-                        activeContextKey: scopeKey,
-                        contexts: host.snapshot.contexts.map((context) =>
-                            context.key === scopeKey
-                                ? { ...context, lastActivatedAt: activatedAt }
-                                : context,
+                    host.registry = {
+                        ...host.registry,
+                        activeScopeKey: scopeKey,
+                        workspaces: host.registry.workspaces.map((workspace) =>
+                            workspace.scopeKey === scopeKey
+                                ? { ...workspace, lastActivatedAt: activatedAt }
+                                : workspace,
                         ),
                     };
                     this.#rejectInactiveActions(host);
@@ -1304,28 +892,14 @@ export class WorkspaceSurfaceManager {
                         throw new Error("The workspace surface is no longer available.");
                     }
                     try {
-                        const preparedSnapshot =
-                            await this.#lifecycleHandlers.prepareSurfaceHibernate?.(
-                                this.#toRuntimeSubscriber(surface),
-                                reason,
-                            );
-                        if (!preparedSnapshot) {
+                        if (!this.#lifecycleHandlers.prepareSurfaceHibernate) {
                             throw new Error(
-                                "The workspace surface did not return a checkpoint.",
+                                "Workspace surface checkpointing is unavailable.",
                             );
                         }
-                        const merged = this.mergeSurfaceSnapshot(
-                            surface.webContents,
-                            preparedSnapshot,
-                        );
-                        if (!merged) {
-                            throw new Error(
-                                "The workspace checkpoint no longer matches its scope.",
-                            );
-                        }
-                        await this.#lifecycleHandlers.persistHostSnapshot?.(
-                            host.context,
-                            merged.snapshot,
+                        await this.#lifecycleHandlers.prepareSurfaceHibernate(
+                            this.#toRuntimeSubscriber(surface),
+                            reason,
                         );
                         return {
                             checkpointSucceeded: true,
@@ -1351,7 +925,7 @@ export class WorkspaceSurfaceManager {
         });
         Object.assign(host, {
             activationCoordinator,
-            activeContextKey: null,
+            activeScopeKey: null,
             contentInsets: {
                 left: 0,
                 right: 0,
@@ -1366,11 +940,9 @@ export class WorkspaceSurfaceManager {
             pendingLayoutTimer: null,
             pendingPreheatTimer: null,
             recentOperations: [],
-            snapshot: {
-                activeContextKey: null,
-                contexts: [],
-                openContextKeys: [],
-                version: snapshot.version,
+            registry: {
+                activeScopeKey: null,
+                workspaces: [],
             },
             surfaceIdsByContextKey: new Map(),
             surfacePool,
@@ -1461,11 +1033,11 @@ export class WorkspaceSurfaceManager {
         return leases;
     }
 
-    #publishHostSnapshot(host: WorkspaceSurfaceHostRecord): void {
+    #publishSurfaceNavigation(host: WorkspaceSurfaceHostRecord): void {
         if (!host.hostWindow.webContents.isDestroyed()) {
             host.hostWindow.webContents.send(
-                IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
-                host.snapshot,
+                IPC_EVENTS.workspaceSurfaceNavigationChanged,
+                { activeScopeKey: host.activeScopeKey },
             );
         }
     }
@@ -1505,31 +1077,32 @@ export class WorkspaceSurfaceManager {
         if (host.isClosing || host.hostWindow.isDestroyed()) {
             return;
         }
-        const candidates = host.snapshot.contexts
+        const candidates = host.registry.workspaces
             .filter(
-                (context) =>
-                    context.key !== host.activeContextKey &&
-                    host.snapshot.openContextKeys.includes(context.key),
+                (workspace) =>
+                    workspace.scopeKey !== host.activeScopeKey,
             )
             .sort(
                 (left, right) =>
                     Date.parse(right.lastActivatedAt) -
                         Date.parse(left.lastActivatedAt) ||
-                    left.key.localeCompare(right.key),
+                    left.scopeKey.localeCompare(right.scopeKey),
             )
             .slice(0, host.surfacePool.maxWarmSurfaces);
-        for (const context of candidates) {
+        for (const workspace of candidates) {
             if (!host.surfacePool.canPreheat()) {
                 break;
             }
             const operationStartedAt = Date.now();
-            const warmed = await host.activationCoordinator.preheat(context.key);
+            const warmed = await host.activationCoordinator.preheat(
+                workspace.scopeKey,
+            );
             this.#recordSurfaceOperation(host, {
                 durationMs: Date.now() - operationStartedAt,
                 finishedAt: new Date().toISOString(),
                 kind: "preheat",
                 outcome: warmed ? "warm" : "failed",
-                scopeKey: context.key,
+                scopeKey: workspace.scopeKey,
             });
         }
         await host.activationCoordinator.enforceBudget();
@@ -1539,12 +1112,12 @@ export class WorkspaceSurfaceManager {
         host: WorkspaceSurfaceHostRecord,
         hostContext: WindowContextSnapshot,
         contextKey: string,
-        hostSnapshot: WorkspaceNavigationSnapshot,
+        registry: WorkspaceSurfaceRegistrySnapshot,
     ): WorkspaceSurfaceRecord | null {
-        const workspaceContext = hostSnapshot.contexts.find(
-            (context) => context.key === contextKey,
+        const workspace = registry.workspaces.find(
+            (candidate) => candidate.scopeKey === contextKey,
         );
-        if (!workspaceContext) {
+        if (!workspace) {
             return null;
         }
 
@@ -1574,12 +1147,12 @@ export class WorkspaceSurfaceManager {
 
         const context: WindowContextSnapshot = {
             hostWindowId: host.hostWindowId,
-            projectId: workspaceContext.projectId,
+            projectId: workspace.projectId,
             windowId: id,
             windowKind: "main",
             workspaceId: hostContext.workspaceId,
             workspaceSessionId: hostContext.workspaceSessionId,
-            worktreeId: workspaceContext.worktreeId,
+            worktreeId: workspace.worktreeId,
         };
         const surface: WorkspaceSurfaceRecord = {
             bounds: null,
@@ -1596,7 +1169,6 @@ export class WorkspaceSurfaceManager {
             readyWaiters: new Set(),
             restoreError: null,
             runtimeOwnerId: null,
-            snapshot: toSurfaceSnapshot(hostSnapshot, contextKey),
             view,
             webContents,
             webContentsId,
@@ -1673,12 +1245,12 @@ export class WorkspaceSurfaceManager {
             this.#surfaceIdsByWebContentsId.delete(webContentsId);
         });
         const resolution = this.#lifecycleHandlers.resolveRuntimeOwner?.({
-            layoutSnapshot: workspaceContext.workspace as unknown as Readonly<
+            layoutSnapshot: workspace.initialLayout as unknown as Readonly<
                 Record<string, unknown>
             >,
-            projectId: workspaceContext.projectId,
+            projectId: workspace.projectId,
             scopeKey: contextKey,
-            worktreeId: workspaceContext.worktreeId ?? null,
+            worktreeId: workspace.worktreeId ?? null,
         }) ?? {
             revision: 0,
             runtimeOwnerId: `workspace-runtime:${contextKey}`,
@@ -1686,14 +1258,14 @@ export class WorkspaceSurfaceManager {
         if (isPromiseLike(resolution)) {
             void resolution
                 .then((resolved) => {
-                    this.#loadResolvedSurface(surface, workspaceContext, resolved);
+                    this.#loadResolvedSurface(surface, workspace, resolved);
                 })
                 .catch((error: unknown) => {
                     this.#handleRuntimeResolutionFailure(surface, error);
                 });
         } else {
             try {
-                this.#loadResolvedSurface(surface, workspaceContext, resolution);
+                this.#loadResolvedSurface(surface, workspace, resolution);
             } catch (error) {
                 this.#handleRuntimeResolutionFailure(surface, error);
             }
@@ -1719,7 +1291,7 @@ export class WorkspaceSurfaceManager {
 
     #loadResolvedSurface(
         surface: WorkspaceSurfaceRecord,
-        workspaceContext: WorkspaceNavigationSnapshot["contexts"][number],
+        workspace: WorkspaceSurfaceRegistrySnapshot["workspaces"][number],
         resolution: WorkspaceSurfaceRuntimeResolution,
     ): void {
         if (
@@ -1734,15 +1306,15 @@ export class WorkspaceSurfaceManager {
 
         surface.runtimeOwnerId = resolution.runtimeOwnerId;
         const rendererSearch = new URLSearchParams({
-            project: workspaceContext.projectId,
+            project: workspace.projectId,
             revision: `${resolution.revision}`,
             "runtime-owner": resolution.runtimeOwnerId,
             scope: surface.contextKey,
             surface: surface.id,
             window: "workspace-surface",
         });
-        if (workspaceContext.worktreeId) {
-            rendererSearch.set("worktree", workspaceContext.worktreeId);
+        if (workspace.worktreeId) {
+            rendererSearch.set("worktree", workspace.worktreeId);
         }
         // Runtime owner and scope are immutable before renderer bootstrap.
         loadRendererContents(surface.webContents, rendererSearch.toString());
@@ -1750,8 +1322,8 @@ export class WorkspaceSurfaceManager {
 
     #getActiveSurface(hostWindowId: string): WorkspaceSurfaceRecord | null {
         const host = this.#hostsByWindowId.get(hostWindowId);
-        const surfaceId = host?.activeContextKey
-            ? host.surfaceIdsByContextKey.get(host.activeContextKey)
+        const surfaceId = host?.activeScopeKey
+            ? host.surfaceIdsByContextKey.get(host.activeScopeKey)
             : null;
         return surfaceId ? (this.#surfacesById.get(surfaceId) ?? null) : null;
     }
@@ -1810,16 +1382,20 @@ export class WorkspaceSurfaceManager {
         if (!host || !surface || surface.webContents.isDestroyed()) {
             return "missing-surface";
         }
-        if (host.activeContextKey !== request.contextKey) {
+        if (host.activeScopeKey !== request.contextKey) {
             return "inactive-context";
         }
-        const activeContext = host.snapshot.contexts.find(
-            (context) => context.key === host.activeContextKey,
+        const activeWorkspace = host.registry.workspaces.find(
+            (workspace) => workspace.scopeKey === host.activeScopeKey,
         );
         if (
             surface.contextKey !== request.contextKey ||
-            !activeContext ||
-            !doesWorkspaceSurfaceContextMatchContext(request, activeContext)
+            !activeWorkspace ||
+            !doesWorkspaceSurfaceContextMatchContext(request, {
+                key: activeWorkspace.scopeKey,
+                projectId: activeWorkspace.projectId,
+                worktreeId: activeWorkspace.worktreeId,
+            })
         ) {
             return "invalid-context";
         }
@@ -1933,8 +1509,8 @@ export class WorkspaceSurfaceManager {
             return;
         }
         const activeSurfaceId =
-            (host.activeContextKey
-                ? host.surfaceIdsByContextKey.get(host.activeContextKey)
+            (host.activeScopeKey
+                ? host.surfaceIdsByContextKey.get(host.activeScopeKey)
                 : null) ??
             (host.warmingContextKey
                 ? host.surfaceIdsByContextKey.get(host.warmingContextKey)
@@ -2074,25 +1650,6 @@ export class WorkspaceSurfaceManager {
         }, 16);
     }
 
-    #mergeKnownSurfaceSnapshots(
-        host: WorkspaceSurfaceHostRecord,
-        snapshot: WorkspaceNavigationSnapshot,
-    ): WorkspaceNavigationSnapshot {
-        return {
-            ...snapshot,
-            contexts: snapshot.contexts.map((context) => {
-                const surfaceId = host.surfaceIdsByContextKey.get(context.key);
-                const surface = surfaceId
-                    ? this.#surfacesById.get(surfaceId)
-                    : null;
-                const latest = surface?.snapshot.contexts.find(
-                    (candidate) => candidate.key === context.key,
-                );
-                return latest ?? context;
-            }),
-        };
-    }
-
     #getSurfaceByWebContents(
         webContents: WebContents,
     ): WorkspaceSurfaceRecord | null {
@@ -2158,29 +1715,6 @@ function resolveWorkspaceSurfaceSwitchDirection(
         return "previous";
     }
     return null;
-}
-
-function toSurfaceSnapshot(
-    snapshot: WorkspaceNavigationSnapshot,
-    contextKey: string,
-): WorkspaceNavigationSnapshot {
-    const context = snapshot.contexts.find(
-        (candidate) => candidate.key === contextKey,
-    );
-    if (!context) {
-        return {
-            activeContextKey: null,
-            contexts: [],
-            openContextKeys: [],
-            version: snapshot.version,
-        };
-    }
-    return {
-        activeContextKey: context.key,
-        contexts: [context],
-        openContextKeys: [context.key],
-        version: snapshot.version,
-    };
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {

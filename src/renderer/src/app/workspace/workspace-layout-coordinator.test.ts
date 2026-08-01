@@ -16,6 +16,7 @@ const binding = {
     generation: "surface-1",
     projectId: "project-1",
     revision: 4,
+    runtimeOwnerId: "runtime-1",
     scopeKey: "project-1::__primary__",
     worktreeId: null,
 };
@@ -67,7 +68,6 @@ describe("WorkspaceLayoutCoordinator", () => {
             status: "ready",
         });
         expect(store.getState()).not.toHaveProperty("contextsByKey");
-        expect(store.getState()).not.toHaveProperty("openContextKeys");
     });
 
     it("discards a hydration result after its generation is disposed", async () => {
@@ -77,6 +77,7 @@ describe("WorkspaceLayoutCoordinator", () => {
             layout: WorkspaceLayoutSnapshot;
             projectId: string;
             revision: number;
+            runtimeOwnerId: string;
             scopeKey: string;
             worktreeId: null;
         }>();

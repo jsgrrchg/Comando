@@ -5,7 +5,7 @@ import {
     type WorkspaceLayoutBinding,
     type WorkspaceLayoutRecord,
 } from "../store/workspace-layout-store";
-import { LegacyV3WorkspaceLayoutAdapter } from "./legacy-v3-workspace-layout-adapter";
+import { DurableWorkspaceLayoutAdapter } from "./durable-workspace-layout-adapter";
 import { WorkspaceLayoutCoordinator } from "./workspace-layout-coordinator";
 
 interface ActiveWorkspaceSurfaceLayoutRuntime {
@@ -14,12 +14,16 @@ interface ActiveWorkspaceSurfaceLayoutRuntime {
 }
 
 let activeRuntime: ActiveWorkspaceSurfaceLayoutRuntime | null = null;
+let testPersistence: ((input: {
+    readonly layout: WorkspaceLayoutSnapshot;
+    readonly scopeKey: string;
+}) => Promise<void>) | null = null;
 
 export function activateWorkspaceSurfaceLayoutRuntime(
     binding: WorkspaceLayoutBinding,
     api: Pick<
         ComandoApi,
-        "getWorkspaceSnapshot" | "saveWorkspaceSnapshot"
+        "loadWorkspaceSurfaceLayout" | "saveWorkspaceSurfaceLayout"
     >,
 ): {
     readonly dispose: () => void;
@@ -31,7 +35,7 @@ export function activateWorkspaceSurfaceLayoutRuntime(
         binding,
         coordinator: new WorkspaceLayoutCoordinator(
             store,
-            new LegacyV3WorkspaceLayoutAdapter(api),
+            new DurableWorkspaceLayoutAdapter(api),
         ),
     };
     activeRuntime = runtime;
@@ -56,6 +60,10 @@ export async function persistActiveWorkspaceSurfaceLayout(input: {
 }): Promise<boolean> {
     const runtime = activeRuntime;
     if (!runtime) {
+        if (testPersistence) {
+            await testPersistence(input);
+            return true;
+        }
         return false;
     }
     if (runtime.binding.scopeKey !== input.scopeKey) {
@@ -69,4 +77,14 @@ export async function persistActiveWorkspaceSurfaceLayout(input: {
 export function resetWorkspaceSurfaceLayoutRuntimeForTests(): void {
     activeRuntime?.coordinator.dispose();
     activeRuntime = null;
+    testPersistence = null;
+}
+
+export function setWorkspaceSurfaceLayoutPersistenceForTests(
+    persistence: (input: {
+        readonly layout: WorkspaceLayoutSnapshot;
+        readonly scopeKey: string;
+    }) => Promise<void>,
+): void {
+    testPersistence = persistence;
 }

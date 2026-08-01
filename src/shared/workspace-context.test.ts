@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
-    areWorkspaceScopesEquivalent,
+    areWorkspaceWorktreeIdsEquivalent,
     getWorkspaceContextKey,
     getWorkspaceScopeKey,
-    hasOpenWorkspaceScope,
     normalizeWorkspaceWorktreeId,
-    type WorkspaceLocation,
 } from "./workspace-context";
 
 describe("workspace context identity", () => {
@@ -28,57 +26,18 @@ describe("workspace context identity", () => {
 
     it("keeps distinct worktrees and projects isolated", () => {
         expect(
-            areWorkspaceScopesEquivalent(
-                { projectId: "project-1", worktreeId: "worktree-a" },
-                { projectId: "project-1", worktreeId: "worktree-b" },
+            areWorkspaceWorktreeIdsEquivalent(
+                "project-1",
+                "worktree-a",
+                "worktree-b",
             ),
         ).toBe(false);
         expect(
-            areWorkspaceScopesEquivalent(
-                { projectId: "project-1", worktreeId: "shared-id" },
-                { projectId: "project-2", worktreeId: "shared-id" },
+            areWorkspaceWorktreeIdsEquivalent(
+                "project-1",
+                "shared-id",
+                "project-2:primary",
             ),
         ).toBe(false);
-    });
-
-    it("requires a host and context to locate a workspace globally", () => {
-        const location: WorkspaceLocation = {
-            contextKey: "project-1::__primary__",
-            hostWindowId: "window-1",
-            projectId: "project-1",
-            worktreeId: null,
-        };
-
-        expect(location).toMatchObject({
-            contextKey: "project-1::__primary__",
-            hostWindowId: "window-1",
-        });
-    });
-
-    it("does not treat retained closed contexts as open scopes", () => {
-        const retainedContext = {
-            key: "project-1::__primary__",
-            projectId: "project-1",
-            worktreeId: null,
-        };
-
-        expect(
-            hasOpenWorkspaceScope(
-                {
-                    contexts: [retainedContext],
-                    openContextKeys: [],
-                },
-                retainedContext,
-            ),
-        ).toBe(false);
-        expect(
-            hasOpenWorkspaceScope(
-                {
-                    contexts: [retainedContext],
-                    openContextKeys: [retainedContext.key],
-                },
-                retainedContext,
-            ),
-        ).toBe(true);
     });
 });

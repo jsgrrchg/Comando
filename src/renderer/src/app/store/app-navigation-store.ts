@@ -1,13 +1,12 @@
 import { createStore } from "zustand/vanilla";
 
-import type { WorkspaceNavigationSnapshot } from "@shared/ipc";
 import type { NativeAppWorkspaceNavigation } from "@shared/native-backend";
 
 export interface AppNavigationSnapshot {
     readonly activeScopeKey: string | null;
     readonly recentScopeKeys: readonly string[];
     readonly revision: number | null;
-    readonly source: "durable" | "legacy-v3";
+    readonly source: "durable";
     readonly updatedAt: string | null;
 }
 
@@ -15,7 +14,6 @@ interface AppNavigationState extends AppNavigationSnapshot {
     readonly error: string | null;
     readonly status: "idle" | "loading" | "ready" | "error";
     replaceDurable: (navigation: NativeAppWorkspaceNavigation) => void;
-    replaceLegacy: (navigation: WorkspaceNavigationSnapshot) => void;
     setError: (error: string) => void;
     setLoading: () => void;
 }
@@ -24,7 +22,7 @@ const EMPTY_NAVIGATION: AppNavigationSnapshot = {
     activeScopeKey: null,
     recentScopeKeys: [],
     revision: null,
-    source: "legacy-v3",
+    source: "durable",
     updatedAt: null,
 };
 
@@ -41,26 +39,6 @@ export const appNavigationStore = createStore<AppNavigationState>((set) => ({
             source: "durable",
             status: "ready",
             updatedAt: navigation.updatedAt,
-        });
-    },
-    replaceLegacy: (navigation) => {
-        const recentScopeKeys = navigation.contexts
-            .toSorted((left, right) =>
-                right.lastActivatedAt.localeCompare(left.lastActivatedAt),
-            )
-            .map((context) => context.key);
-        set({
-            activeScopeKey: navigation.activeContextKey,
-            error: null,
-            recentScopeKeys,
-            revision: null,
-            source: "legacy-v3",
-            status: "ready",
-            updatedAt:
-                navigation.contexts
-                    .map((context) => context.lastActivatedAt)
-                    .toSorted()
-                    .at(-1) ?? null,
         });
     },
     setError: (error) => set({ error, status: "error" }),

@@ -2,7 +2,6 @@ import type { AppIdentity } from "@shared/app-identity";
 import type { AiReviewActionLogState } from "./ai-review-action-log";
 import type { AppTerminalSettings } from "./terminal-settings";
 import type { ChatFontFamily, EditorFontFamily } from "./typography";
-import type { WorkspaceLocation } from "./workspace-context";
 import type {
     NativeAppWorkspaceNavigation,
     NativeDurableWorkspace,
@@ -143,8 +142,6 @@ export const IPC_CHANNELS = {
     revealProjectEntry: "projects:reveal-entry",
     listProjectEntries: "projects:list-entries",
     searchProjectEntries: "projects:search-entries",
-    getWorkspaceSnapshot: "workspace:get-snapshot",
-    saveWorkspaceSnapshot: "workspace:save-snapshot",
     getWorkspaceCatalog: "workspace:get-catalog",
     resetWorkspaceLayout: "workspace:reset-layout",
     applyWorkspaceRecoveryLayout: "workspace:apply-recovery-layout",
@@ -155,9 +152,10 @@ export const IPC_CHANNELS = {
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
     closeWorkspaceSurface: "workspace:close-surface",
+    loadWorkspaceSurfaceLayout: "workspace:load-surface-layout",
+    saveWorkspaceSurfaceLayout: "workspace:save-surface-layout",
     getWorkspaceSurfaceDiagnostics: "workspace:get-surface-diagnostics",
     setWorkspaceHostOverlayVisible: "workspace:set-host-overlay-visible",
-    captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
     dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
     dispatchWorkspaceSurfaceAction: "workspace:dispatch-surface-action",
     claimWorkspaceSurfaceAction: "workspace:claim-surface-action",
@@ -170,10 +168,8 @@ export const IPC_CHANNELS = {
     revealWorkspaceSurfaceFileInHostTree:
         "workspace:reveal-surface-file-in-host-tree",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
-    requestWorkspaceSurfaceContext: "workspace:request-surface-context",
+    requestWorkspaceScopeActivation: "workspace:request-scope-activation",
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
-    openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
-    showWorkspaceContextMenu: "workspace:show-context-menu",
     showNativeContextMenu: "app:show-native-context-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
     setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
@@ -250,12 +246,10 @@ export const IPC_EVENTS = {
     workspaceNavigationRequested: "workspace:navigation-requested",
     workspaceFlushRequested: "workspace:flush-requested",
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
-    workspaceSurfaceSnapshotRequested: "workspace:surface-snapshot-requested",
-    workspaceSurfaceSnapshotCaptured: "workspace:surface-snapshot-captured",
     workspaceSurfacePoolChanged: "workspace:surface-pool-changed",
-    workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
+    workspaceSurfaceNavigationChanged: "workspace:surface-navigation-changed",
     workspaceSurfaceFocused: "workspace:surface-focused",
-    workspaceSurfaceContextRequested: "workspace:surface-context-requested",
+    workspaceScopeActivationRequested: "workspace:scope-activation-requested",
     workspaceSurfaceDrag: "workspace:surface-drag",
     workspaceSurfaceActionRequested: "workspace:surface-action-requested",
     workspaceSurfaceActionStatus: "workspace:surface-action-status",
@@ -263,7 +257,6 @@ export const IPC_EVENTS = {
         "workspace:surface-file-reveal-requested",
     workspaceSurfaceGitScopeMenuRequested:
         "workspace:surface-git-scope-menu-requested",
-    workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
     workspaceSurfaceLifecycleChanged: "workspace:surface-lifecycle-changed",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
@@ -2206,6 +2199,37 @@ export interface WorkspaceSurfaceRuntimeBinding {
     readonly scopeKey: string;
 }
 
+export interface WorkspaceSurfaceRegistrySnapshot {
+    readonly activeScopeKey: string | null;
+    readonly workspaces: readonly {
+        readonly initialLayout: WorkspaceLayoutSnapshot;
+        readonly lastActivatedAt: string;
+        readonly projectId: string;
+        readonly scopeKey: string;
+        readonly worktreeId: string | null;
+    }[];
+}
+
+export interface WorkspaceSurfaceNavigationState {
+    readonly activeScopeKey: string | null;
+}
+
+export interface WorkspaceSurfaceLayoutRecord
+    extends WorkspaceSurfaceRuntimeBinding {
+    readonly lastActivatedAt: string;
+    readonly layout: WorkspaceLayoutSnapshot;
+    readonly projectId: string;
+    readonly revision: number;
+    readonly worktreeId: string | null;
+}
+
+export interface SaveWorkspaceSurfaceLayoutInput
+    extends WorkspaceSurfaceRuntimeBinding {
+    readonly expectedRevision: number;
+    readonly lastActivatedAt: string;
+    readonly layout: WorkspaceLayoutSnapshot;
+}
+
 export interface WorkspaceSurfaceLifecycleEvent
     extends WorkspaceSurfaceRuntimeBinding {
     readonly state: WorkspaceSurfaceLifecycleState;
@@ -2564,6 +2588,7 @@ export interface PersistedWorkspaceContext {
     readonly worktreeId: string | null;
 }
 
+/** Legacy v3 DTO retained only for migration, rollback, and downgrade export. */
 export interface WorkspaceNavigationSnapshot {
     readonly activeContextKey: WorkspaceContextKey | null;
     readonly contexts: readonly PersistedWorkspaceContext[];
@@ -2571,16 +2596,7 @@ export interface WorkspaceNavigationSnapshot {
     readonly version: 3;
 }
 
-export interface OpenWorkspaceLocationSummary extends WorkspaceLocation {
-    readonly isActive: boolean;
-    readonly isCurrentWindow: boolean;
-    readonly lastActivatedAt: string;
-    readonly windowTitle: string;
-}
-
-export type ActivateWorkspaceLocationInput = WorkspaceLocation;
-
-export interface WorkspaceSurfaceContextRequest {
+export interface WorkspaceScopeActivationRequest {
     readonly emptyLayout?: boolean;
     readonly projectId: string;
     readonly worktreeId?: string | null;
@@ -2700,19 +2716,6 @@ export type WorkspaceSurfaceActionDispatchResult =
           readonly state: "queued" | "sent";
       }
     | Extract<WorkspaceSurfaceActionDeliveryResult, { readonly delivered: false }>;
-
-export interface WorkspaceContextMenuInput {
-    readonly canCopyFullPath: boolean;
-    readonly contextKey: string;
-    readonly projectId: string;
-    readonly worktreeId: string | null;
-    readonly x: number;
-    readonly y: number;
-}
-
-export type WorkspaceContextMenuAction =
-    | { readonly type: "copy_full_path" }
-    | { readonly type: "close" };
 
 export type NativeContextMenuEntry =
     | {
@@ -3892,7 +3895,7 @@ export interface ComandoApi {
         input: DeleteWorktreeInput,
     ) => Promise<DeleteWorktreeResult>;
     initializeWorkspaceSurfaces: (
-        snapshot: WorkspaceNavigationSnapshot,
+        snapshot: WorkspaceSurfaceRegistrySnapshot,
     ) => Promise<void>;
     activateWorkspaceSurface: (
         contextKey: string,
@@ -3900,19 +3903,21 @@ export interface ComandoApi {
     closeWorkspaceSurface: (
         contextKey: string,
     ) => Promise<WorkspaceSurfaceCloseResult>;
+    loadWorkspaceSurfaceLayout: (
+        binding: WorkspaceSurfaceRuntimeBinding,
+    ) => Promise<WorkspaceSurfaceLayoutRecord>;
+    saveWorkspaceSurfaceLayout: (
+        input: SaveWorkspaceSurfaceLayoutInput,
+    ) => Promise<WorkspaceSurfaceLayoutRecord>;
     getWorkspaceSurfaceDiagnostics: () => Promise<WorkspaceSurfacePoolDiagnostics>;
     setWorkspaceHostOverlayVisible: (visible: boolean) => Promise<void>;
-    requestWorkspaceSurfaceContext: (
-        input: WorkspaceSurfaceContextRequest,
+    requestWorkspaceScopeActivation: (
+        input: WorkspaceScopeActivationRequest,
     ) => Promise<void>;
     openWorkspaceSurfaceGitScopeMenu: (anchor: {
         readonly width: number;
         readonly x: number;
     }) => Promise<void>;
-    openWorkspaceSurfaceProjectMenu: () => Promise<void>;
-    showWorkspaceContextMenu: (
-        input: WorkspaceContextMenuInput,
-    ) => Promise<WorkspaceContextMenuAction | null>;
     showNativeContextMenu: (
         input: NativeContextMenuInput,
     ) => Promise<string | null>;
@@ -4153,13 +4158,6 @@ export interface ComandoApi {
         input: OpenProjectEntryExternallyInput,
     ) => Promise<void>;
     revealProjectEntry: (input: RevealProjectEntryInput) => Promise<void>;
-    getWorkspaceSnapshot: () => Promise<PersistedWorkspaceSnapshot>;
-    saveWorkspaceSnapshot: (
-        snapshot: WorkspaceNavigationSnapshot,
-    ) => Promise<void>;
-    captureWorkspaceSurfaceContext: (
-        contextKey: WorkspaceContextKey,
-    ) => Promise<WorkspaceNavigationSnapshot | null>;
     dispatchWorkspaceSurfaceDrag: (
         event: WorkspaceSurfaceDragEvent,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
@@ -4187,9 +4185,6 @@ export interface ComandoApi {
         request: WorkspaceSurfaceFileRevealRequest,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
     notifyWorkspaceSurfaceFocused: () => Promise<void>;
-    onWorkspaceSurfaceSnapshotRequested: (
-        listener: () => WorkspaceNavigationSnapshot,
-    ) => () => void;
     notifyFileBuffer: (input: FileBufferNotificationInput) => Promise<void>;
     getChatSessionState: (
         sessionId: string,
@@ -4350,15 +4345,15 @@ export interface ComandoApi {
     onWorkspaceFlushRequested: (
         listener: () => Promise<void> | void,
     ) => () => void;
-    onWorkspaceSurfaceSnapshotUpdated: (
-        listener: (snapshot: WorkspaceNavigationSnapshot) => void,
+    onWorkspaceSurfaceNavigationChanged: (
+        listener: (navigation: WorkspaceSurfaceNavigationState) => void,
     ) => () => void;
     onWorkspaceSurfacePoolChanged: (
         listener: (diagnostics: WorkspaceSurfacePoolDiagnostics) => void,
     ) => () => void;
     onWorkspaceSurfaceFocused: (listener: () => void) => () => void;
-    onWorkspaceSurfaceContextRequested: (
-        listener: (input: WorkspaceSurfaceContextRequest) => void,
+    onWorkspaceScopeActivationRequested: (
+        listener: (input: WorkspaceScopeActivationRequest) => void,
     ) => () => void;
     onWorkspaceSurfaceDrag: (
         listener: (event: WorkspaceSurfaceDragEvent) => void,
@@ -4375,7 +4370,6 @@ export interface ComandoApi {
     onWorkspaceSurfaceGitScopeMenuRequested: (
         listener: (anchor: { readonly width: number; readonly x: number }) => void,
     ) => () => void;
-    onWorkspaceSurfaceProjectMenuRequested: (listener: () => void) => () => void;
     onWorkspaceSurfaceLifecycleChanged: (
         listener: (event: WorkspaceSurfaceLifecycleEvent) => void,
     ) => () => void;

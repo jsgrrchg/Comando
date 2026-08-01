@@ -18,7 +18,6 @@ import type {
     AppUpdateState,
     ComandoApi,
     GitRepositorySnapshot,
-    GitWorktreeSummary,
     PersistenceSnapshot,
     ProjectSummary,
     ProjectTreeNode,
@@ -92,7 +91,6 @@ import {
     isPrimaryPointerButton,
 } from "./app/pointerGuards";
 import { useAppStore } from "./app/store/app-store";
-import { appNavigationStore } from "./app/store/app-navigation-store";
 import { useAiStore } from "./app/store/ai-store";
 import { useGitStore } from "./app/store/git-store";
 import { useGitHubStore } from "./app/store/github-store";
@@ -160,13 +158,9 @@ import type { WorkspacePaneRecentProject } from "./components/workspace/Workspac
 import {
     closeWorkspaceTabsWithConfirmation,
 } from "./components/workspace/workspaceCloseGuard";
-import {
-    type ProjectContextMenuProject,
-} from "./components/ProjectContextMenu";
 import { DesktopWindowChrome } from "./components/DesktopWindowChrome";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
 import { SidebarGitScopePicker } from "./components/sidebar/SidebarGitScopePicker";
-import { WorkspaceSurfaceProjectContextMenu } from "./components/ProjectContextMenu";
 import { WorkspaceNavigatorPanel } from "./components/workspace-navigator/WorkspaceNavigatorPanel";
 import {
     FileExplorerPanel,
@@ -206,15 +200,6 @@ const legacySurfaceRuntimeBinding = (() => {
         ? { generation, runtimeOwnerId, scopeKey }
         : null;
 })();
-
-function getWorktreeDisplayLabel(worktree: GitWorktreeSummary): string {
-    if (worktree.branchName) {
-        return worktree.branchName;
-    }
-
-    const pathParts = worktree.rootPath.split(/[\\/]/).filter(Boolean);
-    return pathParts.at(-1) ?? "Detached worktree";
-}
 
 type FileTreeContextMenuPayload =
     | {
@@ -302,22 +287,20 @@ export function WorkspaceHostApp() {
     const workspaceContextsByKey = useWorkspaceStore(
         (state) => state.contextsByKey,
     );
-    const openWorkspaceContextKeys = useWorkspaceStore(
-        (state) => state.openContextKeys,
-    );
     const workspaceSurfaceTopologyKey = useMemo(
         () =>
             JSON.stringify(
-                openWorkspaceContextKeys.map((contextKey) => {
-                    const context = workspaceContextsByKey[contextKey];
-                    return [
-                        contextKey,
-                        context?.projectId ?? null,
-                        context?.worktreeId ?? null,
-                    ];
-                }),
+                Object.values(workspaceContextsByKey)
+                    .map((context) => [
+                        context.key,
+                        context.projectId,
+                        context.worktreeId,
+                    ])
+                    .sort(([left], [right]) =>
+                        String(left).localeCompare(String(right)),
+                    ),
             ),
-        [openWorkspaceContextKeys, workspaceContextsByKey],
+        [workspaceContextsByKey],
     );
     const activeWorkspaceContext = useWorkspaceStore((state) =>
         state.activeContextKey
@@ -377,7 +360,6 @@ export function WorkspaceHostApp() {
         [dispatchWorkspaceSurfaceAction, reportWorkspaceSurfaceActionError],
     );
     const addProjects = useProjectsStore((state) => state.addProjects);
-    const cloneRepository = useProjectsStore((state) => state.cloneRepository);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
     const loadingNodeKeys = useProjectsStore((state) => state.loadingNodeKeys);
     const projects = useProjectsStore((state) => state.projects);
@@ -451,19 +433,14 @@ export function WorkspaceHostApp() {
                 if (cancelled) {
                     return;
                 }
-                // Compatibility keeps navigation usable if v4 catalog loading
-                // fails, without making legacy open state the row source.
-                const snapshot = useWorkspaceStore
-                    .getState()
-                    .getNavigationSnapshot();
-                workspaceCatalogStore.getState().replaceLegacy(snapshot);
+                // Registered projects remain navigable while durable catalog
+                // recovery is retried independently.
                 workspaceCatalogStore
                     .getState()
                     .mergeRegistry(
                         useProjectsStore.getState().projects,
                         useGitStore.getState().worktreesByProject,
                     );
-                appNavigationStore.getState().replaceLegacy(snapshot);
             });
         const unsubscribe = api.onWorkspaceSurfacePoolChanged(
             (diagnostics) => {
@@ -619,9 +596,9 @@ export function WorkspaceHostApp() {
             }
             const contextKey = await useWorkspaceStore
                 .getState()
-                .ensureContext(workspace.projectId, workspace.worktreeId);
+                .registerWorkspaceScope(workspace.projectId, workspace.worktreeId);
             await comandoApi.initializeWorkspaceSurfaces(
-                useWorkspaceStore.getState().getNavigationSnapshot(),
+                useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
             );
             const result = await comandoApi.activateWorkspaceSurface(contextKey);
             if (result.status === "failed") {
@@ -698,8 +675,6 @@ export function WorkspaceHostApp() {
     const [fileTreeMovePickerSelectedIndex, setFileTreeMovePickerSelectedIndex] =
         useState(0);
     const [persistenceReady, setPersistenceReady] = useState(false);
-    const [workspaceSurfaceProjectMenuRequest, setWorkspaceSurfaceProjectMenuRequest] =
-        useState<{ readonly id: number } | null>(null);
     const [workspaceSwitcherOpen, setWorkspaceSwitcherOpen] = useState(false);
     const [settingsView, setSettingsView] = useState<{
         readonly initialCategory?: SettingsWindowCategory;
@@ -870,10 +845,7 @@ export function WorkspaceHostApp() {
                         resolvedWorktreeId,
                     );
                 }
-                await workspaceHydrate({
-                    activeProjectId: persistedProjectId,
-                    activeWorktreeId: persistedWorktreeId,
-                });
+                await workspaceHydrate();
             } finally {
                 if (!isDisposed) {
                     setPersistenceReady(true);
@@ -905,7 +877,7 @@ export function WorkspaceHostApp() {
             return;
         }
         void comandoApi.initializeWorkspaceSurfaces(
-            useWorkspaceStore.getState().getNavigationSnapshot(),
+            useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
         );
     }, [
         workspaceActiveContextKey,
@@ -921,10 +893,10 @@ export function WorkspaceHostApp() {
         if (!comandoApi) {
             return;
         }
-        return comandoApi.onWorkspaceSurfaceSnapshotUpdated((snapshot) => {
+        return comandoApi.onWorkspaceSurfaceNavigationChanged((navigation) => {
             useWorkspaceStore
                 .getState()
-                .applySurfaceNavigationSnapshot(snapshot);
+                .applyWorkspaceSurfaceNavigation(navigation.activeScopeKey);
         });
     }, []);
 
@@ -932,22 +904,13 @@ export function WorkspaceHostApp() {
         if (!isWorkspaceHostRenderer) {
             return;
         }
-        return getComandoApi()?.onWorkspaceSurfaceContextRequested((input) => {
+        return getComandoApi()?.onWorkspaceScopeActivationRequested((input) => {
             void useWorkspaceStore
                 .getState()
-                .openContext(input.projectId, input.worktreeId, {
+                .requestWorkspaceNavigation(input.projectId, input.worktreeId, {
                     emptyLayout: input.emptyLayout,
                 });
         });
-    }, []);
-
-    useEffect(() => {
-        if (!isWorkspaceSurfaceRenderer) {
-            return;
-        }
-        return getComandoApi()?.onWorkspaceSurfaceSnapshotRequested(() =>
-            useWorkspaceStore.getState().getNavigationSnapshot(),
-        );
     }, []);
 
     useEffect(() => {
@@ -1010,17 +973,6 @@ export function WorkspaceHostApp() {
             );
         });
     }, [reportWorkspaceSurfaceActionError]);
-
-    useEffect(() => {
-        if (!isWorkspaceSurfaceRenderer) {
-            return;
-        }
-        return getComandoApi()?.onWorkspaceSurfaceSnapshotUpdated((snapshot) => {
-            useWorkspaceStore
-                .getState()
-                .applySurfaceNavigationSnapshot(snapshot);
-        });
-    }, []);
 
     useEffect(() => {
         if (!isWorkspaceSurfaceRenderer) {
@@ -1104,16 +1056,6 @@ export function WorkspaceHostApp() {
         };
     }, []);
 
-    useEffect(() => {
-        if (!isWorkspaceSurfaceRenderer) {
-            return;
-        }
-        return getComandoApi()?.onWorkspaceSurfaceProjectMenuRequested(() => {
-            setWorkspaceSurfaceProjectMenuRequest((current) => ({
-                id: (current?.id ?? 0) + 1,
-            }));
-        });
-    }, []);
 
     useLayoutEffect(() => {
         if (!isWorkspaceHostRenderer) {
@@ -1251,9 +1193,9 @@ export function WorkspaceHostApp() {
 
                 const contextKey = await useWorkspaceStore
                     .getState()
-                    .ensureContext(payload.projectId, requestedWorktreeId);
+                    .registerWorkspaceScope(payload.projectId, requestedWorktreeId);
                 await comandoApi.initializeWorkspaceSurfaces(
-                    useWorkspaceStore.getState().getNavigationSnapshot(),
+                    useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
                 );
                 await comandoApi.activateWorkspaceSurface(contextKey);
 
@@ -1994,77 +1936,6 @@ export function WorkspaceHostApp() {
             .slice(0, WORKSPACE_RECENT_PROJECTS_LIMIT)
             .map((project) => ({ id: project.id, name: project.name }));
     }, [activeProjectId, projects]);
-    const projectContextMenuProjects = useMemo<
-        readonly ProjectContextMenuProject[]
-    >(() => {
-        const openContextIdentities = openWorkspaceContextKeys.flatMap(
-            (contextKey) => {
-                const context = workspaceContextsByKey[contextKey];
-                return context
-                    ? [
-                          {
-                              projectId: context.projectId,
-                              worktreeId: context.worktreeId,
-                          },
-                      ]
-                    : [];
-            },
-        );
-
-        return projects.map((project) => {
-            const primaryIsOpen = openContextIdentities.some(
-                (context) =>
-                    context.projectId === project.id &&
-                    areGitWorktreeIdsEquivalent(
-                        project.id,
-                        context.worktreeId,
-                        null,
-                    ),
-            );
-            const worktrees = (gitWorktreesByProject[project.id] ?? [])
-                .filter((worktree) => !worktree.isPrimary)
-                .map((worktree) => ({
-                    id: worktree.id,
-                    isActive:
-                        activeWorkspaceContext?.projectId === project.id &&
-                        areGitWorktreeIdsEquivalent(
-                            project.id,
-                            activeWorkspaceContext.worktreeId,
-                            worktree.id,
-                        ),
-                    isOpen: openContextIdentities.some(
-                        (context) =>
-                            context.projectId === project.id &&
-                            areGitWorktreeIdsEquivalent(
-                                project.id,
-                                context.worktreeId,
-                                worktree.id,
-                            ),
-                    ),
-                    label: getWorktreeDisplayLabel(worktree),
-                }));
-
-            return {
-                id: project.id,
-                mainIsActive:
-                    activeWorkspaceContext?.projectId === project.id &&
-                    areGitWorktreeIdsEquivalent(
-                        project.id,
-                        activeWorkspaceContext.worktreeId,
-                        null,
-                    ),
-                mainIsOpen: primaryIsOpen,
-                name: project.name,
-                worktrees,
-            };
-        });
-    }, [
-        activeWorkspaceContext,
-        gitWorktreesByProject,
-        openWorkspaceContextKeys,
-        projects,
-        workspaceContextsByKey,
-    ]);
     const activeTreeNodesByParent = useMemo(
         () => treeNodes[activeProjectContextKey] ?? {},
         [activeProjectContextKey, treeNodes],
@@ -4095,9 +3966,9 @@ export function WorkspaceHostApp() {
             }
             const contextKey = await useWorkspaceStore
                 .getState()
-                .ensureContext(projectId, worktreeId);
+                .registerWorkspaceScope(projectId, worktreeId);
             await api.initializeWorkspaceSurfaces(
-                useWorkspaceStore.getState().getNavigationSnapshot(),
+                useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
             );
             const result = await api.activateWorkspaceSurface(contextKey);
             if (result.status === "failed") {
@@ -4674,14 +4545,14 @@ export function WorkspaceHostApp() {
     );
 
     const handleOpenProject = (projectId: string) => {
-        void useWorkspaceStore.getState().openContext(projectId);
+        void useWorkspaceStore.getState().requestWorkspaceNavigation(projectId);
     };
 
     const handleOpenProjects = () => {
         void (async () => {
             const projectIds = await addProjects();
             for (const projectId of projectIds) {
-                await useWorkspaceStore.getState().openContext(projectId);
+                await useWorkspaceStore.getState().requestWorkspaceNavigation(projectId);
             }
         })();
     };
@@ -4982,30 +4853,6 @@ export function WorkspaceHostApp() {
                 className="h-screen min-h-0 text-text-primary"
                 data-platform={bootstrap?.platform ?? undefined}
             >
-                <WorkspaceSurfaceProjectContextMenu
-                    externalMenuRequest={workspaceSurfaceProjectMenuRequest}
-                    onCloneRepository={async (repositoryUrl) => {
-                        const projectIds = await cloneRepository(repositoryUrl);
-                        for (const projectId of projectIds) {
-                            await useWorkspaceStore
-                                .getState()
-                                .openContext(projectId);
-                        }
-                        return projectIds.length > 0;
-                    }}
-                    onOpenProject={handleOpenProject}
-                    onOpenProjects={handleOpenProjects}
-                    onOpenSettings={(initialCategory) =>
-                        openSettingsWindow(initialCategory)
-                    }
-                    onOpenWorktree={(projectId, worktreeId) => {
-                        void useWorkspaceStore
-                            .getState()
-                            .openContext(projectId, worktreeId);
-                    }}
-                    projects={projectContextMenuProjects}
-                    settingsLabel={getSettingsUpdateMenuLabel(appUpdateState)}
-                />
                 <main
                     className="surface-focus h-full min-h-0 bg-bg-primary"
                     data-active={activeSurface === "workspace"}

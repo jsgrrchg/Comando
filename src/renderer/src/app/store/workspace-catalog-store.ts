@@ -3,7 +3,6 @@ import { createStore } from "zustand/vanilla";
 import type {
     GitWorktreeSummary,
     ProjectSummary,
-    WorkspaceNavigationSnapshot,
     WorkspaceSurfacePoolDiagnostics,
     WorkspaceCatalogSnapshot,
 } from "@shared/ipc";
@@ -26,7 +25,7 @@ export interface WorkspaceCatalogEntry {
     readonly revision: number | null;
     readonly runtimeOwnerId: string | null;
     readonly scopeKey: string;
-    readonly source: "durable" | "legacy-v3" | "registry";
+    readonly source: "durable" | "registry";
     readonly worktreeId: string | null;
 }
 
@@ -44,7 +43,6 @@ interface WorkspaceCatalogState {
     replaceDurable: (
         entries: readonly NativeDurableWorkspaceSummary[],
     ) => void;
-    replaceLegacy: (snapshot: WorkspaceNavigationSnapshot) => void;
     mergeRegistry: (
         projects: readonly ProjectSummary[],
         worktreesByProject: Readonly<
@@ -96,37 +94,6 @@ export const workspaceCatalogStore = createStore<WorkspaceCatalogState>(
                     error: null,
                     status: "ready",
                 };
-            });
-        },
-        replaceLegacy: (snapshot) => {
-            set({
-                entriesByScopeKey: Object.fromEntries(
-                    snapshot.contexts.map((context) => {
-                        const worktreeId = normalizeWorkspaceWorktreeId(
-                            context.projectId,
-                            context.worktreeId,
-                        );
-                        const scopeKey = getWorkspaceScopeKey(
-                            context.projectId,
-                            worktreeId,
-                        );
-                        return [
-                            scopeKey,
-                            {
-                                lastActivatedAt: context.lastActivatedAt,
-                                lifecycle: "active",
-                                projectId: context.projectId,
-                                revision: null,
-                                runtimeOwnerId: null,
-                                scopeKey,
-                                source: "legacy-v3",
-                                worktreeId,
-                            } satisfies WorkspaceCatalogEntry,
-                        ];
-                    }),
-                ),
-                error: null,
-                status: "ready",
             });
         },
         mergeRegistry: (projects, worktreesByProject) => {

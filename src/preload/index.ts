@@ -198,20 +198,20 @@ import {
     type TrashProjectEntryInput,
     type TsconfigResolutionSnapshot,
     type WriteTerminalInput,
-    type PersistedWorkspaceSnapshot,
-    type WorkspaceNavigationSnapshot,
     type WorkspaceSurfaceActionCompletion,
     type WorkspaceSurfaceActionEnvelope,
     type WorkspaceSurfaceFileRevealRequest,
     type WorkspaceSurfaceActionStatus,
     type WorkspaceSurfaceContentInsets,
     type WorkspaceSurfaceDragEvent,
-    type WorkspaceSurfaceContextRequest,
+    type WorkspaceScopeActivationRequest,
     type WorkspaceSurfaceLifecycleEvent,
     type WorkspaceSurfaceLeaseReport,
     type WorkspaceSurfacePoolDiagnostics,
     type WorkspaceSurfaceRuntimeBinding,
     type WorkspaceSurfaceRuntimeResync,
+    type WorkspaceSurfaceRegistrySnapshot,
+    type WorkspaceSurfaceNavigationState,
 } from "@shared/ipc";
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -654,11 +654,6 @@ const comandoApi: ComandoApi = {
             IPC_CHANNELS.getSystemTheme,
             await ipcRenderer.invoke(IPC_CHANNELS.getSystemTheme),
         ),
-    getWorkspaceSnapshot: async () =>
-        assertIpcObject<PersistedWorkspaceSnapshot>(
-            IPC_CHANNELS.getWorkspaceSnapshot,
-            await ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceSnapshot),
-        ),
     createTerminalSession: (input: CreateTerminalSessionInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.createTerminalSession, input),
     addProjectPaths: async (paths: string[]) =>
@@ -1037,37 +1032,6 @@ const comandoApi: ComandoApi = {
             );
         };
     },
-    onWorkspaceSurfaceSnapshotRequested: (listener) => {
-        const handleEvent = (
-            _event: Electron.IpcRendererEvent,
-            requestId: string,
-        ) => {
-            try {
-                ipcRenderer.send(
-                    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
-                    requestId,
-                    listener(),
-                );
-            } catch {
-                ipcRenderer.send(
-                    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
-                    requestId,
-                    null,
-                );
-            }
-        };
-
-        ipcRenderer.on(
-            IPC_EVENTS.workspaceSurfaceSnapshotRequested,
-            handleEvent,
-        );
-        return () => {
-            ipcRenderer.removeListener(
-                IPC_EVENTS.workspaceSurfaceSnapshotRequested,
-                handleEvent,
-            );
-        };
-    },
     onWorkspaceSurfacePoolChanged: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -1133,15 +1097,18 @@ const comandoApi: ComandoApi = {
             );
         };
     },
-    onWorkspaceSurfaceSnapshotUpdated: (listener) => {
+    onWorkspaceSurfaceNavigationChanged: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
-            snapshot: WorkspaceNavigationSnapshot,
-        ) => listener(snapshot);
-        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceSnapshotUpdated, handleEvent);
+            navigation: WorkspaceSurfaceNavigationState,
+        ) => listener(navigation);
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceNavigationChanged,
+            handleEvent,
+        );
         return () => {
             ipcRenderer.removeListener(
-                IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
+                IPC_EVENTS.workspaceSurfaceNavigationChanged,
                 handleEvent,
             );
         };
@@ -1156,15 +1123,15 @@ const comandoApi: ComandoApi = {
             );
         };
     },
-    onWorkspaceSurfaceContextRequested: (listener) => {
+    onWorkspaceScopeActivationRequested: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
-            input: WorkspaceSurfaceContextRequest,
+            input: WorkspaceScopeActivationRequest,
         ) => listener(input);
-        ipcRenderer.on(IPC_EVENTS.workspaceSurfaceContextRequested, handleEvent);
+        ipcRenderer.on(IPC_EVENTS.workspaceScopeActivationRequested, handleEvent);
         return () => {
             ipcRenderer.removeListener(
-                IPC_EVENTS.workspaceSurfaceContextRequested,
+                IPC_EVENTS.workspaceScopeActivationRequested,
                 handleEvent,
             );
         };
@@ -1181,19 +1148,6 @@ const comandoApi: ComandoApi = {
         return () => {
             ipcRenderer.removeListener(
                 IPC_EVENTS.workspaceSurfaceGitScopeMenuRequested,
-                handleEvent,
-            );
-        };
-    },
-    onWorkspaceSurfaceProjectMenuRequested: (listener) => {
-        const handleEvent = () => listener();
-        ipcRenderer.on(
-            IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
-            handleEvent,
-        );
-        return () => {
-            ipcRenderer.removeListener(
-                IPC_EVENTS.workspaceSurfaceProjectMenuRequested,
                 handleEvent,
             );
         };
@@ -1306,23 +1260,22 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.preflightDeleteWorktree, input),
     deleteWorktree: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.deleteWorktree, input),
-    initializeWorkspaceSurfaces: (snapshot: WorkspaceNavigationSnapshot) =>
+    initializeWorkspaceSurfaces: (snapshot: WorkspaceSurfaceRegistrySnapshot) =>
         ipcRenderer.invoke(IPC_CHANNELS.initializeWorkspaceSurfaces, snapshot),
     activateWorkspaceSurface: (contextKey: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.activateWorkspaceSurface, contextKey),
     closeWorkspaceSurface: (contextKey: string) =>
         ipcRenderer.invoke(IPC_CHANNELS.closeWorkspaceSurface, contextKey),
+    loadWorkspaceSurfaceLayout: (binding: WorkspaceSurfaceRuntimeBinding) =>
+        ipcRenderer.invoke(IPC_CHANNELS.loadWorkspaceSurfaceLayout, binding),
+    saveWorkspaceSurfaceLayout: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.saveWorkspaceSurfaceLayout, input),
     getWorkspaceSurfaceDiagnostics: () =>
         ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceSurfaceDiagnostics),
     setWorkspaceHostOverlayVisible: (visible: boolean) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.setWorkspaceHostOverlayVisible,
             visible,
-        ),
-    captureWorkspaceSurfaceContext: (contextKey: string) =>
-        ipcRenderer.invoke(
-            IPC_CHANNELS.captureWorkspaceSurfaceContext,
-            contextKey,
         ),
     dispatchWorkspaceSurfaceDrag: (event) =>
         ipcRenderer.invoke(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag, event),
@@ -1368,14 +1321,10 @@ const comandoApi: ComandoApi = {
         ),
     notifyWorkspaceSurfaceFocused: () =>
         ipcRenderer.invoke(IPC_CHANNELS.notifyWorkspaceSurfaceFocused),
-    requestWorkspaceSurfaceContext: (input) =>
-        ipcRenderer.invoke(IPC_CHANNELS.requestWorkspaceSurfaceContext, input),
+    requestWorkspaceScopeActivation: (input) =>
+        ipcRenderer.invoke(IPC_CHANNELS.requestWorkspaceScopeActivation, input),
     openWorkspaceSurfaceGitScopeMenu: (anchor) =>
         ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu, anchor),
-    openWorkspaceSurfaceProjectMenu: () =>
-        ipcRenderer.invoke(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu),
-    showWorkspaceContextMenu: (input) =>
-        ipcRenderer.invoke(IPC_CHANNELS.showWorkspaceContextMenu, input),
     showNativeContextMenu: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.showNativeContextMenu, input),
     setWorkspaceSurfaceContentInset: (height: number) =>
@@ -1770,8 +1719,6 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.removeProject, projectId),
     resizeTerminalSession: (input: ResizeTerminalSessionInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.resizeTerminalSession, input),
-    saveWorkspaceSnapshot: (snapshot: WorkspaceNavigationSnapshot) =>
-        ipcRenderer.invoke(IPC_CHANNELS.saveWorkspaceSnapshot, snapshot),
     notifyFileBuffer: (input: FileBufferNotificationInput) =>
         ipcRenderer.invoke(IPC_CHANNELS.notifyFileBuffer, input),
     getChatSessionState: (sessionId: string) =>

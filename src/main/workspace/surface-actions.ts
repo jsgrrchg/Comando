@@ -125,7 +125,10 @@ export function doesWorkspaceSurfaceActionMatchContext(
 
 export function doesWorkspaceSurfaceContextMatchContext(
     request: WorkspaceSurfaceActionContext,
-    context: PersistedWorkspaceContext,
+    context: Pick<
+        PersistedWorkspaceContext,
+        "key" | "projectId" | "worktreeId"
+    >,
 ): boolean {
     return (
         request.contextKey === context.key &&

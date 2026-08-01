@@ -27,7 +27,6 @@ import {
     type TerminalDataEvent,
     type TerminalExitEvent,
     type WindowContextSnapshot,
-    type WorkspaceNavigationSnapshot,
 } from "@shared/ipc";
 import {
     normalizeWorkspaceWorktreeId,
@@ -146,13 +145,6 @@ const pendingWorkspaceFlushes = new Map<
     string,
     { readonly senderId: number; readonly resolve: () => void }
 >();
-const pendingWorkspaceSurfaceCaptures = new Map<
-    string,
-    {
-        readonly resolve: (snapshot: WorkspaceNavigationSnapshot | null) => void;
-        readonly senderId: number;
-    }
->();
 const pendingInternalNavigationUrls: string[] = [];
 
 ipcMain.on(
@@ -167,25 +159,6 @@ ipcMain.on(
         }
         pendingWorkspaceFlushes.delete(requestId);
         pending.resolve();
-    },
-);
-
-ipcMain.on(
-    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
-    (event, requestId: unknown, snapshot: unknown) => {
-        if (typeof requestId !== "string") {
-            return;
-        }
-        const pending = pendingWorkspaceSurfaceCaptures.get(requestId);
-        if (!pending || pending.senderId !== event.sender.id) {
-            return;
-        }
-        pendingWorkspaceSurfaceCaptures.delete(requestId);
-        pending.resolve(
-            snapshot && typeof snapshot === "object"
-                ? (snapshot as WorkspaceNavigationSnapshot)
-                : null,
-        );
     },
 );
 
@@ -396,26 +369,8 @@ if (!hasSingleInstanceLock) {
                         detachAiSessionStream(subscriber.generation);
                     }
                 },
-                persistHostSnapshot: async (hostContext, snapshot) => {
-                    if (!workspaceService || !hostContext.workspaceId) {
-                        throw new Error("Workspace persistence is not available.");
-                    }
-                    await workspaceService.saveSnapshot(
-                        hostContext.workspaceId,
-                        snapshot,
-                    );
-                },
                 prepareSurfaceHibernate: async (subscriber) => {
                     await requestWorkspaceFlush(subscriber.webContents);
-                    const snapshot = await requestWorkspaceSurfaceSnapshot(
-                        subscriber.webContents,
-                    );
-                    if (!snapshot) {
-                        throw new Error(
-                            "The workspace renderer did not provide a checkpoint.",
-                        );
-                    }
-                    return snapshot;
                 },
                 resolveRuntimeOwner: resolveWorkspaceSurfaceRuntimeOwner,
             });
@@ -440,8 +395,6 @@ if (!hasSingleInstanceLock) {
 
             registerIpcHandlers({
                 aiService,
-                captureWorkspaceSurfaceContext:
-                    requestWorkspaceSurfaceContextCapture,
                 durableWorkspaceRepository: nativePersistenceGateway,
                 focusMainWindow: () => {
                     singleWindowCoordinator.focusMainWindow();
@@ -920,12 +873,7 @@ async function activateProjectWorkspace(
         throw new Error("The persistence service is unavailable.");
     }
 
-    const mainWindow = await ensureMainWindow(input.projectId);
-    const activatedWindow = await activateExistingWorkspaceScope(
-        input.projectId,
-        input.worktreeId ?? null,
-    );
-    const targetWindow = activatedWindow ?? mainWindow;
+    const targetWindow = await ensureMainWindow(input.projectId);
     const context = windowRegistry.getContextByBrowserWindow(targetWindow);
     if (!context || context.windowKind !== "main") {
         focusExistingWindow(targetWindow);
@@ -947,13 +895,11 @@ async function activateProjectWorkspace(
 
     focusExistingWindow(targetWindow);
 
-    if (!activatedWindow || input.branchName !== undefined) {
-        sendWhenMainWindowReady(
-            targetWindow,
-            IPC_EVENTS.projectWorkspaceRequested,
-            input,
-        );
-    }
+    sendWhenMainWindowReady(
+        targetWindow,
+        IPC_EVENTS.projectWorkspaceRequested,
+        input,
+    );
 }
 
 async function ensureMainWindow(projectId: string | null): Promise<BrowserWindow> {
@@ -979,63 +925,6 @@ async function ensureMainWindow(projectId: string | null): Promise<BrowserWindow
         { projectId, worktreeId: null },
     );
     return createTrackedMainWindow(snapshot);
-}
-
-async function activateExistingWorkspaceScope(
-    projectId: string,
-    worktreeId: string | null,
-): Promise<BrowserWindow | null> {
-    const location = workspaceSurfaceManager.findPreferredWorkspaceLocation({
-        projectId,
-        worktreeId,
-    });
-    if (location) {
-        const window = windowRegistry.getWindowByStableId(
-            location.hostWindowId,
-        );
-        const context = window
-            ? windowRegistry.getContextByBrowserWindow(window)
-            : null;
-        if (!window || context?.windowKind !== "main") {
-            return null;
-        }
-        const activation = await workspaceSurfaceManager.activate(
-            location.hostWindowId,
-            location.contextKey,
-        );
-        if (activation.status !== "activated") {
-            return null;
-        }
-        const snapshot = workspaceSurfaceManager.getHostSnapshotForWindow(
-            location.hostWindowId,
-        );
-        if (snapshot) {
-            workspaceSurfaceManager
-                .getHostWebContents(location.hostWindowId)
-                ?.send(IPC_EVENTS.workspaceSurfaceSnapshotUpdated, snapshot);
-            if (workspaceService && context.workspaceId) {
-                await workspaceService.saveSnapshot(
-                    context.workspaceId,
-                    snapshot,
-                );
-            }
-        }
-        persistenceService?.saveActiveProjectId(
-            location.hostWindowId,
-            location.projectId,
-            location.worktreeId,
-        );
-        windowRegistry.updateMainWindowProjectId(
-            location.hostWindowId,
-            location.projectId,
-            location.worktreeId,
-        );
-        updateMainWindowTitle(window);
-        focusExistingWindow(window);
-        return window;
-    }
-
-    return null;
 }
 
 function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
@@ -1127,7 +1016,7 @@ async function closeActiveWorkspace(): Promise<void> {
     }
     const result = await workspaceSurfaceManager.closeWorkspaceSurface(
         context.windowId,
-        activeContext.key,
+        activeContext.scopeKey,
     );
     if (result.status !== "closed") {
         return;
@@ -1369,47 +1258,6 @@ async function prepareWorkspaceHostForClose(
 ): Promise<void> {
     await workspaceSurfaceManager.prepareHostForClose(hostWindowId, window);
     await requestWorkspaceFlushesForHost(window, hostWindowId);
-}
-
-async function requestWorkspaceSurfaceContextCapture(
-    hostWindowId: string,
-    contextKey: string,
-): Promise<WorkspaceNavigationSnapshot | null> {
-    const surface = workspaceSurfaceManager.getSurfaceWebContents(
-        hostWindowId,
-        contextKey,
-    );
-    if (!surface) {
-        return workspaceSurfaceManager.getHostSnapshotForWindow(hostWindowId);
-    }
-    const snapshot = await requestWorkspaceSurfaceSnapshot(surface);
-    if (!snapshot) {
-        return null;
-    }
-    return workspaceSurfaceManager.mergeSurfaceSnapshot(surface, snapshot)?.snapshot ?? null;
-}
-
-async function requestWorkspaceSurfaceSnapshot(
-    webContents: WebContents,
-): Promise<WorkspaceNavigationSnapshot | null> {
-    const requestId = `snapshot:${webContents.id}:${++nextWorkspaceFlushRequestId}`;
-    return await new Promise<WorkspaceNavigationSnapshot | null>((resolve) => {
-        const timer = setTimeout(() => {
-            pendingWorkspaceSurfaceCaptures.delete(requestId);
-            resolve(null);
-        }, 500);
-        pendingWorkspaceSurfaceCaptures.set(requestId, {
-            resolve: (snapshot) => {
-                clearTimeout(timer);
-                resolve(snapshot);
-            },
-            senderId: webContents.id,
-        });
-        webContents.send(
-            IPC_EVENTS.workspaceSurfaceSnapshotRequested,
-            requestId,
-        );
-    });
 }
 
 async function flushAllWorkspaceWindowsForQuit(): Promise<void> {

@@ -5,7 +5,6 @@ import type {
     AiImageAttachment,
     AiRuntimeId,
     GitHubRepositoryRef,
-    PersistedWorkspaceSnapshot,
     ProjectFileDocument,
     WorkspaceChatHistoryTab,
     WorkspaceChatTab,
@@ -17,14 +16,13 @@ import type {
     WorkspaceGitHubPullRequestsTab,
     WorkspaceGitTab,
     WorkspaceLayoutSnapshot,
-    WorkspaceNavigationSnapshot,
     WorkspaceReviewTab,
+    WorkspaceSurfaceRegistrySnapshot,
 } from "@shared/ipc";
 import {
     getAiRuntimeDisplayName,
     resolveAvailableAiRuntimeId,
 } from "@shared/ai-runtimes";
-import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
 import {
     areWorkspaceWorktreeIdsEquivalent,
     normalizeWorkspaceWorktreeId,
@@ -135,7 +133,7 @@ export type WorkspaceOpenTarget =
           readonly type: "split";
       };
 
-export interface RuntimeWorkspaceContext {
+export interface RuntimeWorkspaceLayout {
     readonly key: string;
     readonly lastActivatedAt: string;
     readonly projectId: string;
@@ -145,16 +143,10 @@ export interface RuntimeWorkspaceContext {
 
 interface WorkspaceStore extends WorkspaceTreeState {
     readonly activeContextKey: string | null;
-    readonly contextsByKey: Record<string, RuntimeWorkspaceContext>;
+    readonly contextsByKey: Record<string, RuntimeWorkspaceLayout>;
     readonly deferredPaneIds: ReadonlySet<string>;
-    getContextNavigationSnapshot: (
-        contextKey: string,
-    ) => WorkspaceNavigationSnapshot | null;
-    getNavigationSnapshot: () => WorkspaceNavigationSnapshot;
-    applySurfaceNavigationSnapshot: (
-        snapshot: WorkspaceNavigationSnapshot,
-    ) => void;
-    readonly openContextKeys: readonly string[];
+    getWorkspaceSurfaceRegistry: () => WorkspaceSurfaceRegistrySnapshot;
+    applyWorkspaceSurfaceNavigation: (activeScopeKey: string | null) => void;
     readonly scopeEpoch: number;
     hydrateSurfaceLayout: (input: {
         readonly generation: string;
@@ -165,8 +157,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly scopeKey: string;
         readonly worktreeId: string | null;
     }) => Promise<void>;
-    activateContext: (contextKey: string) => Promise<void>;
-    closeContext: (contextKey: string) => Promise<void>;
+    activateWorkspaceLayout: (contextKey: string) => Promise<void>;
     closeOtherTabs: (tabId: string) => Promise<void>;
     readonly error: string | null;
     readonly hydrated: boolean;
@@ -282,10 +273,7 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly target: WorkspaceOpenTarget;
         readonly worktreeId?: string | null;
     }) => Promise<string | null>;
-    hydrate: (input?: {
-        readonly activeProjectId?: string | null;
-        readonly activeWorktreeId?: string | null;
-    }) => Promise<void>;
+    hydrate: () => Promise<void>;
     moveActiveTab: (paneId: string, direction: MoveDirection) => Promise<void>;
     moveTab: (tabId: string, direction: MoveDirection) => Promise<void>;
     moveTabToPane: (
@@ -323,11 +311,11 @@ interface WorkspaceStore extends WorkspaceTreeState {
         readonly title: string;
         readonly worktreeId?: string | null;
     }) => Promise<void>;
-    ensureContext: (
+    registerWorkspaceScope: (
         projectId: string,
         worktreeId?: string | null,
     ) => Promise<string>;
-    openContext: (
+    requestWorkspaceNavigation: (
         projectId: string,
         worktreeId?: string | null,
         options?: { readonly emptyLayout?: boolean },
@@ -347,7 +335,6 @@ interface WorkspaceStore extends WorkspaceTreeState {
         tabId: string,
         targetIndex: number,
     ) => Promise<void>;
-    reorderContext: (contextKey: string, targetIndex: number) => Promise<void>;
     closeTabsForProjectPath: (
         projectId: string,
         worktreeId: string | null,
@@ -443,74 +430,22 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     recentActiveTabIds: [],
     recentClosedTabs: [],
     recentFocusedChatTabIds: [],
-    openContextKeys: [],
     scopeEpoch: 0,
 
-    getContextNavigationSnapshot: (contextKey) => {
-        const context = captureVisibleWorkspaceContext(get())[contextKey];
-        if (!context) {
-            return null;
-        }
+    getWorkspaceSurfaceRegistry: () => workspaceStoreToSurfaceRegistry(get()),
 
-        return {
-            activeContextKey: context.key,
-            contexts: [
-                {
-                    key: context.key,
-                    lastActivatedAt: context.lastActivatedAt,
-                    projectId: context.projectId,
-                    workspace: workspaceStateToSnapshot(context.workspace),
-                    worktreeId: context.worktreeId,
-                },
-            ],
-            openContextKeys: [context.key],
-            version: 3,
-        };
-    },
-
-    getNavigationSnapshot: () => workspaceStoreToNavigationSnapshot(get()),
-
-    applySurfaceNavigationSnapshot: (snapshot) => {
-        // A persistent surface already owns the live runtime tabs for its
-        // workspace. Host snapshot notifications are bookkeeping updates, not
-        // a request to reconstruct that mounted workspace on every switch.
-        if (isWorkspaceSurfaceRenderer && get().hydrated) {
+    applyWorkspaceSurfaceNavigation: (activeScopeKey) => {
+        if (activeScopeKey) {
+            void get().activateWorkspaceLayout(activeScopeKey);
             return;
         }
-        const navigation = normalizeWorkspaceNavigationSnapshot(snapshot).snapshot;
-        const contextsByKey = Object.fromEntries(
-            navigation.contexts.map((context) => [
-                context.key,
-                {
-                    ...context,
-                    workspace: deserializeWorkspaceForRenderer(
-                        context.workspace,
-                        isWorkspaceSurfaceHost ? "host" : "surface",
-                    ),
-                } satisfies RuntimeWorkspaceContext,
-            ]),
-        );
-        const openContextKeys = navigation.openContextKeys.filter((key) =>
-            Boolean(contextsByKey[key]),
-        );
-        const activeContextKey =
-            navigation.activeContextKey &&
-            openContextKeys.includes(navigation.activeContextKey)
-                ? navigation.activeContextKey
-                : isWorkspaceSurfaceHost
-                  ? null
-                  : (openContextKeys[0] ?? null);
-        const activeContext = activeContextKey
-            ? contextsByKey[activeContextKey]
-            : null;
-        const workspace = activeContext?.workspace ?? createDefaultWorkspaceState();
-
+        const contextsByKey = captureVisibleWorkspaceContext(get());
+        const workspace = createDefaultWorkspaceState();
         set((state) => ({
             ...workspace,
-            activeContextKey,
+            activeContextKey: null,
             contextsByKey,
-            deferredPaneIds: getDeferredWorkspacePaneIds(workspace),
-            openContextKeys,
+            deferredPaneIds: new Set(),
             scopeEpoch: state.scopeEpoch + 1,
         }));
     },
@@ -521,7 +456,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             "surface",
         );
         const scopeEpoch = get().scopeEpoch + 1;
-        const context: RuntimeWorkspaceContext = {
+        const context: RuntimeWorkspaceLayout = {
             key: input.scopeKey,
             lastActivatedAt: input.lastActivatedAt,
             projectId: input.projectId,
@@ -541,7 +476,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ),
             lastFocusedRuntimeId:
                 getPaneRuntimeId(workspace, workspace.activePaneId) ?? "codex",
-            openContextKeys: [input.scopeKey],
             recentActiveTabIds: recordRecentTabActivation(
                 [],
                 getPaneActiveTabId(workspace, workspace.activePaneId),
@@ -559,7 +493,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         });
     },
 
-    activateContext: async (contextKey) => {
+    activateWorkspaceLayout: async (contextKey) => {
         const currentState = get();
         if (currentState.activeContextKey === contextKey) {
             return;
@@ -618,86 +552,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 get,
                 set,
                 { contextKey, scopeEpoch },
-            );
-        }
-        await persistWorkspaceState(get);
-    },
-
-    closeContext: async (contextKey) => {
-        const state = get();
-        const contextsByKey = captureVisibleWorkspaceContext(state);
-        const targetContext = contextsByKey[contextKey];
-        if (!targetContext) {
-            return;
-        }
-
-        await Promise.all(
-            Object.values(targetContext.workspace.tabsById).map(
-                closeTabSideEffects,
-            ),
-        );
-
-        const nextContextsByKey = pruneClosedWorkspaceContexts(
-            contextsByKey,
-            state.openContextKeys.filter((key) => key !== contextKey),
-        );
-        const closedIndex = state.openContextKeys.indexOf(contextKey);
-        const openContextKeys = state.openContextKeys.filter((key) => key !== contextKey);
-
-        if (state.activeContextKey !== contextKey) {
-            set({ contextsByKey: nextContextsByKey, openContextKeys });
-            await persistWorkspaceState(get);
-            return;
-        }
-
-        const nextContextKey =
-            openContextKeys[Math.min(closedIndex, openContextKeys.length - 1)] ??
-            null;
-        const nextContext = nextContextKey
-            ? nextContextsByKey[nextContextKey]
-            : null;
-        const nextWorkspace =
-            nextContext?.workspace ?? createDefaultWorkspaceState();
-        set({
-            ...nextWorkspace,
-            activeContextKey: nextContextKey,
-            contextsByKey: nextContextsByKey,
-            deferredPaneIds: getDeferredWorkspacePaneIds(nextWorkspace),
-            error: null,
-            lastFocusedChatTabId: getPaneChatTabId(
-                nextWorkspace,
-                nextWorkspace.activePaneId,
-            ),
-            lastFocusedRuntimeId:
-                getPaneRuntimeId(
-                    nextWorkspace,
-                    nextWorkspace.activePaneId,
-                ) ?? "codex",
-            openContextKeys,
-            recentActiveTabIds: recordRecentTabActivation(
-                [],
-                getPaneActiveTabId(
-                    nextWorkspace,
-                    nextWorkspace.activePaneId,
-                ),
-            ),
-            recentClosedTabs: [],
-            recentFocusedChatTabIds: recordRecentChatFocus(
-                [],
-                getPaneChatTabId(
-                    nextWorkspace,
-                    nextWorkspace.activePaneId,
-                ),
-            ),
-            scopeEpoch: state.scopeEpoch + 1,
-        });
-
-        if (nextContextKey && !isWorkspaceSurfaceHost) {
-            void activateWorkspaceRuntimePanes(
-                nextWorkspace,
-                get,
-                set,
-                { contextKey: nextContextKey, scopeEpoch: get().scopeEpoch },
             );
         }
         await persistWorkspaceState(get);
@@ -1385,7 +1239,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             input.target,
         ),
 
-    ensureContext: async (projectId, worktreeId = null) => {
+    registerWorkspaceScope: async (projectId, worktreeId = null) => {
         const normalizedWorktreeId = normalizeWorkspaceWorktreeId(
             projectId,
             worktreeId,
@@ -1397,14 +1251,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         const currentState = get();
         const contextsByKey = captureVisibleWorkspaceContext(currentState);
         const existingContext = contextsByKey[contextKey];
-        if (
-            existingContext &&
-            currentState.openContextKeys.includes(contextKey)
-        ) {
+        if (existingContext) {
             return contextKey;
         }
 
-        const context: RuntimeWorkspaceContext =
+        const context: RuntimeWorkspaceLayout =
             existingContext ?? {
                 key: contextKey,
                 lastActivatedAt: new Date().toISOString(),
@@ -1412,21 +1263,16 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 workspace: createDefaultWorkspaceState(),
                 worktreeId: normalizedWorktreeId,
             };
-        set({
-            contextsByKey: { ...contextsByKey, [contextKey]: context },
-            openContextKeys: currentState.openContextKeys.includes(contextKey)
-                ? currentState.openContextKeys
-                : [...currentState.openContextKeys, contextKey],
-        });
-        // Registration persists compatibility state without changing the
+        set({ contextsByKey: { ...contextsByKey, [contextKey]: context } });
+        // Registration makes the scope activatable without changing the
         // committed workspace shown by the host.
         await persistWorkspaceState(get);
         return contextKey;
     },
 
-    openContext: async (projectId, worktreeId = null, options = {}) => {
+    requestWorkspaceNavigation: async (projectId, worktreeId = null, options = {}) => {
         if (isWorkspaceSurfaceRenderer) {
-            await getComandoApi().requestWorkspaceSurfaceContext({
+            await getComandoApi().requestWorkspaceScopeActivation({
                 emptyLayout: options.emptyLayout,
                 projectId,
                 worktreeId,
@@ -1444,17 +1290,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         const currentState = get();
         const existingContext = captureVisibleWorkspaceContext(currentState)[contextKey];
         if (existingContext && !options.emptyLayout) {
-            if (!currentState.openContextKeys.includes(contextKey)) {
-                set((state) => ({
-                    contextsByKey: captureVisibleWorkspaceContext(state),
-                    openContextKeys: [...state.openContextKeys, contextKey],
-                }));
-            }
-            await get().activateContext(contextKey);
+            await get().activateWorkspaceLayout(contextKey);
             return;
         }
 
-        const context: RuntimeWorkspaceContext = {
+        const context: RuntimeWorkspaceLayout = {
             key: contextKey,
             lastActivatedAt: new Date().toISOString(),
             projectId,
@@ -1479,9 +1319,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 error: null,
                 lastFocusedChatTabId: null,
                 lastFocusedRuntimeId: "codex",
-                openContextKeys: state.openContextKeys.includes(contextKey)
-                    ? state.openContextKeys
-                    : [...state.openContextKeys, contextKey],
                 recentActiveTabIds: [],
                 recentClosedTabs: [],
                 recentFocusedChatTabIds: [],
@@ -1496,94 +1333,43 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                 ...captureVisibleWorkspaceContext(state),
                 [contextKey]: context,
             },
-            openContextKeys: state.openContextKeys.includes(contextKey)
-                ? state.openContextKeys
-                : [...state.openContextKeys, contextKey],
         }));
-        await get().activateContext(contextKey);
+        await get().activateWorkspaceLayout(contextKey);
     },
 
-    hydrate: async (input = {}) => {
+    hydrate: async () => {
         try {
-            const persistedSnapshot =
-                await getComandoApi().getWorkspaceSnapshot();
-            const navigation = resolveWorkspaceNavigationSnapshot(
-                persistedSnapshot,
-                input.activeProjectId ?? null,
-                input.activeWorktreeId ?? null,
-            );
+            const catalog = await getComandoApi().getWorkspaceCatalog();
             const contextsByKey = Object.fromEntries(
-                navigation.contexts.map((context) => [
-                    context.key,
-                    {
-                        ...context,
-                        workspace: deserializeWorkspaceForRenderer(
-                            context.workspace,
-                            isWorkspaceSurfaceHost ? "host" : "surface",
-                        ),
-                    } satisfies RuntimeWorkspaceContext,
-                ]),
-            );
-            const openContextKeys = navigation.openContextKeys.filter(
-                (key) => Boolean(contextsByKey[key]),
+                catalog.workspaces
+                    .filter((workspace) => workspace.lifecycle !== "archived")
+                    .map((workspace) => [
+                        workspace.scopeKey,
+                        {
+                            key: workspace.scopeKey,
+                            lastActivatedAt:
+                                workspace.lastActivatedAt ?? workspace.updatedAt,
+                            projectId: workspace.projectId,
+                            workspace: createDefaultWorkspaceState(),
+                            worktreeId: workspace.worktreeId,
+                        } satisfies RuntimeWorkspaceLayout,
+                    ]),
             );
             const activeContextKey =
-                navigation.activeContextKey &&
-                openContextKeys.includes(navigation.activeContextKey)
-                    ? navigation.activeContextKey
-                    : isWorkspaceSurfaceHost
-                      ? null
-                      : (openContextKeys[0] ?? null);
-            const activeContext = activeContextKey
-                ? contextsByKey[activeContextKey]
-                : null;
-            const hydratedState =
-                activeContext?.workspace ?? createDefaultWorkspaceState();
-            const scopeEpoch = get().scopeEpoch + 1;
+                catalog.navigation.activeScopeKey &&
+                contextsByKey[catalog.navigation.activeScopeKey]
+                    ? catalog.navigation.activeScopeKey
+                    : null;
+            const workspace = createDefaultWorkspaceState();
             set({
-                ...hydratedState,
+                ...workspace,
                 activeContextKey,
                 contextsByKey,
-                deferredPaneIds: getDeferredWorkspacePaneIds(hydratedState),
+                deferredPaneIds: new Set(),
                 error: null,
                 hydrated: true,
-                openContextKeys,
-                lastFocusedChatTabId: getPaneChatTabId(
-                    hydratedState,
-                    hydratedState.activePaneId,
-                ),
-                lastFocusedRuntimeId:
-                    getPaneRuntimeId(
-                        hydratedState,
-                        hydratedState.activePaneId,
-                    ) ?? "codex",
-                recentActiveTabIds: recordRecentTabActivation(
-                    [],
-                    getPaneActiveTabId(
-                        hydratedState,
-                        hydratedState.activePaneId,
-                    ),
-                ),
-                recentFocusedChatTabIds: recordRecentChatFocus(
-                    [],
-                    getPaneChatTabId(
-                        hydratedState,
-                        hydratedState.activePaneId,
-                    ),
-                ),
-                scopeEpoch,
+                scopeEpoch: get().scopeEpoch + 1,
             });
-            if (activeContextKey && !isWorkspaceSurfaceHost) {
-                void activateWorkspaceRuntimePanes(
-                    hydratedState,
-                    get,
-                    set,
-                    { contextKey: activeContextKey, scopeEpoch },
-                );
-            }
-            if (!isWorkspaceNavigationSnapshot(persistedSnapshot)) {
-                await persistWorkspaceState(get);
-            }
         } catch (error) {
             set({
                 ...createDefaultWorkspaceState(),
@@ -1595,7 +1381,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
                         ? error.message
                         : "Could not restore the workspace layout.",
                 hydrated: true,
-                openContextKeys: [],
                 scopeEpoch: get().scopeEpoch + 1,
             });
         }
@@ -2240,36 +2025,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ...reorderTabInPane(state, paneId, tabId, targetIndex),
             error: null,
         }));
-        await persistWorkspaceState(get);
-    },
-
-    reorderContext: async (contextKey, targetIndex) => {
-        const state = get();
-        const sourceIndex = state.openContextKeys.indexOf(contextKey);
-        if (sourceIndex < 0 || state.openContextKeys.length < 2) {
-            return;
-        }
-
-        const normalizedTargetIndex = Math.max(
-            0,
-            Math.min(
-                state.openContextKeys.length - 1,
-                Number.isFinite(targetIndex)
-                    ? Math.trunc(targetIndex)
-                    : sourceIndex,
-            ),
-        );
-        if (normalizedTargetIndex === sourceIndex) {
-            return;
-        }
-
-        const openContextKeys = [...state.openContextKeys];
-        openContextKeys.splice(sourceIndex, 1);
-        openContextKeys.splice(normalizedTargetIndex, 0, contextKey);
-        set({
-            contextsByKey: captureVisibleWorkspaceContext(state),
-            openContextKeys,
-        });
         await persistWorkspaceState(get);
     },
 
@@ -3434,7 +3189,7 @@ function getExistingTabMoveTargetIndex(
 
 function captureVisibleWorkspaceContext(
     state: WorkspaceStore,
-): Record<string, RuntimeWorkspaceContext> {
+): Record<string, RuntimeWorkspaceLayout> {
     if (!state.activeContextKey) {
         return state.contextsByKey;
     }
@@ -3457,34 +3212,10 @@ function captureVisibleWorkspaceContext(
     };
 }
 
-const MAX_CLOSED_WORKSPACE_CONTEXTS = 30;
-
-export function pruneClosedWorkspaceContexts(
-    contextsByKey: Record<string, RuntimeWorkspaceContext>,
-    openContextKeys: readonly string[],
-): Record<string, RuntimeWorkspaceContext> {
-    const openContextKeySet = new Set(openContextKeys);
-    const retainedClosedContextKeys = new Set(
-        Object.values(contextsByKey)
-            .filter((context) => !openContextKeySet.has(context.key))
-            .sort((left, right) =>
-                Date.parse(right.lastActivatedAt) - Date.parse(left.lastActivatedAt),
-            )
-            .slice(0, MAX_CLOSED_WORKSPACE_CONTEXTS)
-            .map((context) => context.key),
-    );
-
-    return Object.fromEntries(
-        Object.entries(contextsByKey).filter(
-            ([key]) => openContextKeySet.has(key) || retainedClosedContextKeys.has(key),
-        ),
-    );
-}
-
 async function removeWorkspaceContexts(
     get: GetWorkspaceState,
     set: WorkspaceSetState,
-    shouldRemove: (context: RuntimeWorkspaceContext) => boolean,
+    shouldRemove: (context: RuntimeWorkspaceLayout) => boolean,
 ): Promise<void> {
     const state = get();
     const capturedContexts = captureVisibleWorkspaceContext(state);
@@ -3502,10 +3233,9 @@ async function removeWorkspaceContexts(
     const contextsByKey = Object.fromEntries(
         Object.entries(capturedContexts).filter(([, context]) => !shouldRemove(context)),
     );
-    const openContextKeys = state.openContextKeys.filter((key) => Boolean(contextsByKey[key]));
     const activeContextKey = state.activeContextKey && contextsByKey[state.activeContextKey]
         ? state.activeContextKey
-        : (openContextKeys[0] ?? null);
+        : (Object.keys(contextsByKey)[0] ?? null);
     const activeContext = activeContextKey ? contextsByKey[activeContextKey] : null;
     const workspace = activeContext?.workspace ?? createDefaultWorkspaceState();
     const scopeEpoch = state.scopeEpoch + 1;
@@ -3518,7 +3248,6 @@ async function removeWorkspaceContexts(
         error: null,
         lastFocusedChatTabId: getPaneChatTabId(workspace, workspace.activePaneId),
         lastFocusedRuntimeId: getPaneRuntimeId(workspace, workspace.activePaneId) ?? "codex",
-        openContextKeys,
         recentActiveTabIds: recordRecentTabActivation(
             [],
             getPaneActiveTabId(workspace, workspace.activePaneId),
@@ -3545,7 +3274,7 @@ function invalidateInactiveContextFileDocuments(
     projectId: string,
     worktreeId: string | null,
     invalidatedRelativePaths: readonly string[] | null,
-): Record<string, RuntimeWorkspaceContext> {
+): Record<string, RuntimeWorkspaceLayout> {
     let nextContextsByKey = state.contextsByKey;
 
     for (const [contextKey, context] of Object.entries(state.contextsByKey)) {
@@ -3605,44 +3334,22 @@ function invalidateInactiveContextFileDocuments(
     return nextContextsByKey;
 }
 
-function isWorkspaceNavigationSnapshot(
-    snapshot: PersistedWorkspaceSnapshot,
-): snapshot is WorkspaceNavigationSnapshot {
-    return "version" in snapshot && snapshot.version === 3;
-}
-
-function resolveWorkspaceNavigationSnapshot(
-    snapshot: PersistedWorkspaceSnapshot,
-    activeProjectId: string | null,
-    activeWorktreeId: string | null,
-): WorkspaceNavigationSnapshot {
-    return normalizeWorkspaceNavigationSnapshot(snapshot, {
-        projectId: activeProjectId,
-        worktreeId: activeWorktreeId,
-    }).snapshot;
-}
-
-function workspaceStoreToNavigationSnapshot(
+function workspaceStoreToSurfaceRegistry(
     state: WorkspaceStore,
-): WorkspaceNavigationSnapshot {
-    const contextsByKey = captureVisibleWorkspaceContext(state);
-    const contexts = Object.values(contextsByKey).map((context) => ({
-        key: context.key,
-        lastActivatedAt: context.lastActivatedAt,
-        projectId: context.projectId,
-        workspace: workspaceStateToSnapshot(context.workspace),
-        worktreeId: context.worktreeId,
-    }));
-    const openContextKeys = state.openContextKeys.filter((key) => Boolean(contextsByKey[key]));
-
+): WorkspaceSurfaceRegistrySnapshot {
+    const workspaceLayoutsByScope = captureVisibleWorkspaceContext(state);
     return {
-        activeContextKey:
-            state.activeContextKey && contextsByKey[state.activeContextKey]
+        activeScopeKey:
+            state.activeContextKey && workspaceLayoutsByScope[state.activeContextKey]
                 ? state.activeContextKey
                 : null,
-        contexts,
-        openContextKeys,
-        version: 3,
+        workspaces: Object.values(workspaceLayoutsByScope).map((workspace) => ({
+            initialLayout: workspaceStateToSnapshot(workspace.workspace),
+            lastActivatedAt: workspace.lastActivatedAt,
+            projectId: workspace.projectId,
+            scopeKey: workspace.key,
+            worktreeId: workspace.worktreeId,
+        })),
     };
 }
 
@@ -4039,8 +3746,13 @@ async function flushWorkspacePersistence(
 
 async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
     try {
+        if (isWorkspaceSurfaceHost) {
+            // Host state is catalog/navigation metadata. Layout writes belong
+            // exclusively to the bound workspace surface.
+            workspacePersistFailureCount = 0;
+            return;
+        }
         const state = get();
-        const navigation = workspaceStoreToNavigationSnapshot(state);
         const persistedBySurfaceCoordinator = state.activeContextKey
             ? await persistActiveWorkspaceSurfaceLayout({
                   layout: workspaceStateToSnapshot(state),
@@ -4048,14 +3760,16 @@ async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
               })
             : false;
         if (!persistedBySurfaceCoordinator) {
-            await getComandoApi().saveWorkspaceSnapshot(navigation);
+            throw new Error(
+                "The durable workspace layout binding is unavailable.",
+            );
         }
         workspacePersistFailureCount = 0;
     } catch (error) {
         // Workspace persistence failure silently loses layout/tabs on restart;
         // surface it at error level so diagnostics don't start from scratch.
         console.error(
-            "[workspace-store] saveWorkspaceSnapshot failed",
+            "[workspace-store] durable layout save failed",
             error,
         );
         workspacePersistDirty = true;

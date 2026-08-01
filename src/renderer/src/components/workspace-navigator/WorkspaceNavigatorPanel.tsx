@@ -68,11 +68,11 @@ export function WorkspaceNavigatorPanel({
             }
             const contextKey = await useWorkspaceStore
                 .getState()
-                .ensureContext(workspace.projectId, workspace.worktreeId);
+                .registerWorkspaceScope(workspace.projectId, workspace.worktreeId);
             // Main receives the compatibility context before activation, while
             // selection remains committed to the previous surface until ready.
             await api.initializeWorkspaceSurfaces(
-                useWorkspaceStore.getState().getNavigationSnapshot(),
+                useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
             );
             const result = await api.activateWorkspaceSurface(contextKey);
             if (result.status === "failed") {

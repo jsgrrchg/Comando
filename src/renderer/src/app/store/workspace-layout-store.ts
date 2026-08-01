@@ -6,6 +6,7 @@ export interface WorkspaceLayoutBinding {
     readonly generation: string;
     readonly projectId: string;
     readonly revision: number;
+    readonly runtimeOwnerId: string;
     readonly scopeKey: string;
     readonly worktreeId: string | null;
 }

@@ -3,7 +3,6 @@ import type { editor as MonacoEditor } from "monaco-editor";
 
 import type {
     ProjectFileDocument,
-    WorkspaceNavigationSnapshot,
     WorkspacePaneNode,
     WorkspaceSnapshot,
 } from "@shared/ipc";
@@ -26,14 +25,20 @@ import {
     getPaneRuntimeId,
     getWorkspaceChatTabId,
     getWorkspaceTabRuntimeId,
-    pruneClosedWorkspaceContexts,
     resetWorkspacePersistenceForTests,
     useWorkspaceStore,
 } from "./workspace-store";
+import {
+    resetWorkspaceSurfaceLayoutRuntimeForTests,
+    setWorkspaceSurfaceLayoutPersistenceForTests,
+} from "../workspace/workspace-surface-layout-runtime";
 
-const saveWorkspaceSnapshotMock = vi.fn<
-    (snapshot: WorkspaceNavigationSnapshot) => Promise<void>
->(async () => {});
+const persistWorkspaceLayoutMock = vi.fn<
+    (input: {
+        readonly layout: WorkspaceSnapshot;
+        readonly scopeKey: string;
+    }) => Promise<void>
+>(() => Promise.resolve());
 const closeAiSessionMock = vi.fn(async () => {});
 const closeTerminalSessionMock = vi.fn(async () => {});
 const ensureSessionMock = vi.fn(async () => {});
@@ -154,10 +159,10 @@ function findWorkspacePane(
     return null;
 }
 
-function getActivePersistedLayout(snapshot: WorkspaceNavigationSnapshot) {
-    return snapshot.contexts.find(
-        (context) => context.key === snapshot.activeContextKey,
-    )?.workspace;
+function getActivePersistedLayout(input: {
+    readonly layout: WorkspaceSnapshot;
+}) {
+    return input.layout;
 }
 
 function createDeferred<T>() {
@@ -187,11 +192,20 @@ function installActivationFrameQueue(): FrameRequestCallback[] {
     return activationFrames;
 }
 
+beforeEach(() => {
+    persistWorkspaceLayoutMock.mockClear();
+    setWorkspaceSurfaceLayoutPersistenceForTests(persistWorkspaceLayoutMock);
+});
+
+afterEach(() => {
+    resetWorkspaceSurfaceLayoutRuntimeForTests();
+});
+
 describe("workspace file opening", () => {
     beforeEach(() => {
         resetWorkspacePersistenceForTests();
         resetSettingsStoreForTests();
-        saveWorkspaceSnapshotMock.mockClear();
+        persistWorkspaceLayoutMock.mockClear();
         closeAiSessionMock.mockClear();
         closeTerminalSessionMock.mockClear();
         ensureSessionMock.mockClear();
@@ -246,7 +260,6 @@ describe("workspace file opening", () => {
                     notifyFileBuffer: notifyFileBufferMock,
                     openProjectFile: openProjectFileMock,
                     saveProjectFile: saveProjectFileMock,
-                    saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
                 },
             },
             writable: true,
@@ -296,7 +309,6 @@ describe("workspace file opening", () => {
             lastFocusedChatTabId: null,
             lastFocusedRuntimeId: "codex",
             lastQuickCreateAction: "codex",
-            openContextKeys: [contextKey],
             recentActiveTabIds: [],
             recentClosedTabs: [],
             recentFocusedChatTabIds: [],
@@ -320,7 +332,7 @@ describe("workspace file opening", () => {
         vi.unstubAllGlobals();
     });
 
-    it("restores a closed project context layout without reopening other contexts", async () => {
+    it("restores a durable scope layout after switching away", async () => {
         const firstTab = createWorkspaceFileTab("file-project-1", "README.md");
         useWorkspaceStore.setState((state) => ({
             ...state,
@@ -334,7 +346,7 @@ describe("workspace file opening", () => {
             tabsById: { [firstTab.id]: firstTab },
         }));
 
-        await useWorkspaceStore.getState().openContext("project-2", null, {
+        await useWorkspaceStore.getState().requestWorkspaceNavigation("project-2", null, {
             emptyLayout: true,
         });
         expect(useWorkspaceStore.getState().tabsById).toEqual({});
@@ -358,15 +370,15 @@ describe("workspace file opening", () => {
 
         await useWorkspaceStore
             .getState()
-            .activateContext("project-1::__primary__");
+            .activateWorkspaceLayout("project-1::__primary__");
         expect(useWorkspaceStore.getState().tabsById[firstTab.id]).toBeTruthy();
         expect(
             useWorkspaceStore.getState().tabsById[secondTab.id],
         ).toBeUndefined();
 
-        await useWorkspaceStore.getState().openContext("project-2");
-        await useWorkspaceStore.getState().openContext("project-2");
-        expect(useWorkspaceStore.getState().openContextKeys).toEqual([
+        await useWorkspaceStore.getState().requestWorkspaceNavigation("project-2");
+        await useWorkspaceStore.getState().requestWorkspaceNavigation("project-2");
+        expect(Object.keys(useWorkspaceStore.getState().contextsByKey)).toEqual([
             "project-1::__primary__",
             "project-2::__primary__",
         ]);
@@ -374,30 +386,23 @@ describe("workspace file opening", () => {
 
         await useWorkspaceStore
             .getState()
-            .closeContext("project-2::__primary__");
+            .activateWorkspaceLayout("project-1::__primary__");
         expect(useWorkspaceStore.getState().activeContextKey).toBe(
             "project-1::__primary__",
         );
 
         await flushWorkspacePersistenceForTests();
         const persistedSnapshot =
-            saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0];
+            persistWorkspaceLayoutMock.mock.calls.at(-1)?.[0];
         expect(persistedSnapshot).toMatchObject({
-            activeContextKey: "project-1::__primary__",
-            openContextKeys: ["project-1::__primary__"],
-            version: 3,
+            scopeKey: "project-1::__primary__",
         });
-        expect(persistedSnapshot?.contexts).toHaveLength(2);
-        expect(
-            persistedSnapshot?.contexts.find(
-                (context) => context.key === "project-1::__primary__",
-            )?.workspace.tabs,
-        ).toEqual([
+        expect(persistedSnapshot?.layout.tabs).toEqual([
             expect.objectContaining({ id: firstTab.id }),
         ]);
 
-        await useWorkspaceStore.getState().openContext("project-2");
-        expect(useWorkspaceStore.getState().openContextKeys).toEqual([
+        await useWorkspaceStore.getState().requestWorkspaceNavigation("project-2");
+        expect(Object.keys(useWorkspaceStore.getState().contextsByKey)).toEqual([
             "project-1::__primary__",
             "project-2::__primary__",
         ]);
@@ -406,7 +411,7 @@ describe("workspace file opening", () => {
 
     it("registers a catalog context without changing the committed host selection", async () => {
         const before = useWorkspaceStore.getState();
-        const contextKey = await before.ensureContext(
+        const contextKey = await before.registerWorkspaceScope(
             "project-2",
             "worktree-feature",
         );
@@ -414,10 +419,9 @@ describe("workspace file opening", () => {
 
         expect(contextKey).toBe("project-2::worktree-feature");
         expect(after.activeContextKey).toBe("project-1::__primary__");
-        expect(after.openContextKeys).toEqual([
-            "project-1::__primary__",
+        expect(Object.keys(after.contextsByKey)).toContain(
             "project-2::worktree-feature",
-        ]);
+        );
         expect(after.contextsByKey[contextKey]).toMatchObject({
             projectId: "project-2",
             worktreeId: "worktree-feature",
@@ -425,7 +429,7 @@ describe("workspace file opening", () => {
         expect(after.tabsById).toEqual(before.tabsById);
     });
 
-    it("exports one context as a self-contained navigation snapshot", () => {
+    it("exports every durable scope through the surface registry", () => {
         const tab = createWorkspaceFileTab("file-project-1", "README.md");
         useWorkspaceStore.setState((state) => ({
             ...state,
@@ -439,24 +443,22 @@ describe("workspace file opening", () => {
             tabsById: { [tab.id]: tab },
         }));
 
-        const snapshot = useWorkspaceStore
+        const registry = useWorkspaceStore
             .getState()
-            .getContextNavigationSnapshot("project-1::__primary__");
+            .getWorkspaceSurfaceRegistry();
 
-        expect(snapshot).toMatchObject({
-            activeContextKey: "project-1::__primary__",
-            openContextKeys: ["project-1::__primary__"],
-            version: 3,
+        expect(registry).toMatchObject({
+            activeScopeKey: "project-1::__primary__",
         });
-        expect(snapshot?.contexts).toHaveLength(1);
-        expect(snapshot?.contexts[0]).toMatchObject({
-            key: "project-1::__primary__",
+        expect(registry.workspaces).toHaveLength(1);
+        expect(registry.workspaces[0]).toMatchObject({
             projectId: "project-1",
+            scopeKey: "project-1::__primary__",
             worktreeId: null,
         });
-        expect(snapshot?.contexts[0]?.workspace).toMatchObject({
+        expect(registry.workspaces[0]?.initialLayout).toMatchObject({
             activePaneId: "pane-root",
-                tabs: [
+            tabs: [
                 expect.objectContaining({
                     id: tab.id,
                     relativePath: "README.md",
@@ -465,7 +467,7 @@ describe("workspace file opening", () => {
         });
     });
 
-    it("keeps open contexts while expiring the oldest closed layout", () => {
+    it("retains every durable context without a closed-layout quota", () => {
         const workspace = createDefaultWorkspaceState();
         const contextsByKey = Object.fromEntries(
             Array.from({ length: 31 }, (_, index) => [
@@ -487,11 +489,11 @@ describe("workspace file opening", () => {
             worktreeId: null,
         };
 
-        const pruned = pruneClosedWorkspaceContexts(contextsByKey, ["open"]);
+        useWorkspaceStore.setState({ contextsByKey });
 
-        expect(pruned.open).toBeTruthy();
-        expect(pruned["closed-0"]).toBeUndefined();
-        expect(Object.keys(pruned)).toHaveLength(31);
+        expect(
+            useWorkspaceStore.getState().getWorkspaceSurfaceRegistry().workspaces,
+        ).toHaveLength(32);
     });
 
     it("removes cached layouts when a project is removed", async () => {
@@ -516,7 +518,6 @@ describe("workspace file opening", () => {
                     worktreeId: "worktree-1",
                 },
             },
-            openContextKeys: ["project-1::__primary__", remainingContext.key],
         }));
 
         await useWorkspaceStore.getState().removeProjectTabs("project-1");
@@ -527,41 +528,7 @@ describe("workspace file opening", () => {
         expect(useWorkspaceStore.getState().activeContextKey).toBe(remainingContext.key);
     });
 
-    it("reorders workspace contexts without changing the active context", async () => {
-        await useWorkspaceStore
-            .getState()
-            .openContext("project-2", null, { emptyLayout: true });
-        await useWorkspaceStore
-            .getState()
-            .openContext("project-3", null, { emptyLayout: true });
-        await useWorkspaceStore
-            .getState()
-            .activateContext("project-1::__primary__");
-
-        await useWorkspaceStore
-            .getState()
-            .reorderContext("project-3::__primary__", 0);
-
-        expect(useWorkspaceStore.getState().activeContextKey).toBe(
-            "project-1::__primary__",
-        );
-        expect(useWorkspaceStore.getState().openContextKeys).toEqual([
-            "project-3::__primary__",
-            "project-1::__primary__",
-            "project-2::__primary__",
-        ]);
-
-        await flushWorkspacePersistenceForTests();
-        expect(saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0]).toMatchObject({
-            openContextKeys: [
-                "project-3::__primary__",
-                "project-1::__primary__",
-                "project-2::__primary__",
-            ],
-        });
-    });
-
-    it("hydrates and prewarms each active restored chat session", async () => {
+    it("hydrates and prewarms each active durable chat session", async () => {
         const snapshot: WorkspaceSnapshot = {
             activePaneId: "pane-left",
             rootNode: {
@@ -594,11 +561,15 @@ describe("workspace file opening", () => {
                 createWorkspaceChatTab("chat-right", "session-right", "grok"),
             ],
         };
-        Object.assign(window.comando, {
-            getWorkspaceSnapshot: vi.fn().mockResolvedValue(snapshot),
+        await useWorkspaceStore.getState().hydrateSurfaceLayout({
+            generation: "surface-1",
+            lastActivatedAt: "2026-08-01T00:00:00.000Z",
+            layout: snapshot,
+            projectId: "project-1",
+            revision: 1,
+            scopeKey: "project-1::__primary__",
+            worktreeId: null,
         });
-
-        await useWorkspaceStore.getState().hydrate();
 
         await vi.waitFor(() => {
             expect(ensureSessionMock).toHaveBeenCalledTimes(2);
@@ -656,10 +627,9 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [...state.openContextKeys, targetContextKey],
         }));
 
-        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(targetContextKey);
 
         await vi.waitFor(() => {
             expect(openProjectFileMock).toHaveBeenCalledTimes(1);
@@ -753,10 +723,9 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [...state.openContextKeys, targetContextKey],
         }));
 
-        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(targetContextKey);
 
         expect(openProjectFileMock).toHaveBeenCalledTimes(1);
         expect(openProjectFileMock).toHaveBeenCalledWith({
@@ -843,10 +812,9 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [...state.openContextKeys, targetContextKey],
         }));
 
-        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(targetContextKey);
 
         expect(openProjectFileMock).not.toHaveBeenCalled();
         expect(useWorkspaceStore.getState().deferredPaneIds).toEqual(
@@ -918,10 +886,9 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [...state.openContextKeys, targetContextKey],
         }));
 
-        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(targetContextKey);
         await useWorkspaceStore
             .getState()
             .selectTab("pane-right", currentFile.id);
@@ -988,10 +955,9 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [...state.openContextKeys, targetContextKey],
         }));
 
-        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(targetContextKey);
         await useWorkspaceStore.getState().setActivePane("pane-background");
 
         expect(useWorkspaceStore.getState().deferredPaneIds.size).toBe(0);
@@ -1064,10 +1030,9 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [...state.openContextKeys, targetContextKey],
         }));
 
-        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(targetContextKey);
         await useWorkspaceStore.getState().closePane("pane-empty");
 
         expect(useWorkspaceStore.getState().activePaneId).toBe("pane-fallback");
@@ -1135,13 +1100,12 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [...state.openContextKeys, targetContextKey],
         }));
 
-        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(targetContextKey);
         await useWorkspaceStore
             .getState()
-            .activateContext("project-1::__primary__");
+            .activateWorkspaceLayout("project-1::__primary__");
         activationFrames.shift()?.(performance.now());
         await Promise.resolve();
 
@@ -1188,7 +1152,6 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [sourceContextKey, targetContextKey],
         }));
 
         await useWorkspaceStore.getState().selectTab("pane-root", fileTab.id);
@@ -1196,7 +1159,7 @@ describe("workspace file opening", () => {
             expect(openProjectFileMock).toHaveBeenCalledTimes(1);
         });
 
-        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(targetContextKey);
         initialLoad.resolve({
             absolutePath: "/tmp/src/app.ts",
             content: "export const value = 1;\n",
@@ -1221,7 +1184,7 @@ describe("workspace file opening", () => {
             expect(storedTab).toMatchObject({ isLoading: false });
         });
 
-        await useWorkspaceStore.getState().activateContext(sourceContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(sourceContextKey);
         await vi.waitFor(() => {
             expect(openProjectFileMock).toHaveBeenCalledTimes(2);
         });
@@ -1261,7 +1224,6 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [sourceContextKey, targetContextKey],
         }));
 
         await useWorkspaceStore.getState().selectTab("pane-root", fileTab.id);
@@ -1269,8 +1231,8 @@ describe("workspace file opening", () => {
             expect(openProjectFileMock).toHaveBeenCalledTimes(1);
         });
 
-        await useWorkspaceStore.getState().activateContext(targetContextKey);
-        await useWorkspaceStore.getState().activateContext(sourceContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(targetContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(sourceContextKey);
         initialLoad.resolve({
             absolutePath: "/tmp/src/app.ts",
             content: "export const value = 1;\n",
@@ -1347,10 +1309,9 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [...state.openContextKeys, targetContextKey],
         }));
 
-        await useWorkspaceStore.getState().activateContext(targetContextKey);
+        await useWorkspaceStore.getState().activateWorkspaceLayout(targetContextKey);
         await vi.waitFor(() => {
             expect(openProjectFileMock).toHaveBeenCalledTimes(1);
         });
@@ -1389,34 +1350,38 @@ describe("workspace file opening", () => {
         });
     });
 
-    it("hydrates legacy restored chat tabs in history mode", async () => {
-        const legacyTab = createWorkspaceChatTab(
-            "legacy-chat",
-            "legacy-session",
+    it("hydrates durable restored chat tabs in history mode", async () => {
+        const restoredTab = createWorkspaceChatTab(
+            "restored-chat",
+            "restored-session",
             "codex",
         );
         const snapshot = {
             activePaneId: "pane-root",
             rootNode: {
-                activeTabId: legacyTab.id,
+                activeTabId: restoredTab.id,
                 id: "pane-root",
-                tabIds: [legacyTab.id],
+                tabIds: [restoredTab.id],
                 type: "pane" as const,
             },
-            tabs: [legacyTab],
+            tabs: [restoredTab],
         };
-        Object.assign(window.comando, {
-            getWorkspaceSnapshot: vi.fn().mockResolvedValue(snapshot),
+        await useWorkspaceStore.getState().hydrateSurfaceLayout({
+            generation: "surface-1",
+            lastActivatedAt: "2026-08-01T00:00:00.000Z",
+            layout: snapshot,
+            projectId: "project-1",
+            revision: 1,
+            scopeKey: "project-1::__primary__",
+            worktreeId: null,
         });
 
-        await useWorkspaceStore.getState().hydrate();
-
         expect(
-            useWorkspaceStore.getState().tabsById[legacyTab.id],
+            useWorkspaceStore.getState().tabsById[restoredTab.id],
         ).toMatchObject({ sessionOpenMode: "history" });
         expect(ensureSessionMock).toHaveBeenCalledWith(
             expect.objectContaining({
-                sessionId: legacyTab.sessionId,
+                sessionId: restoredTab.sessionId,
                 sessionOpenMode: "history",
             }),
         );
@@ -1607,7 +1572,7 @@ describe("workspace file opening", () => {
             worktreeId: "worktree-1",
         });
         await flushWorkspacePersistenceForTests();
-        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+        expect(persistWorkspaceLayoutMock).toHaveBeenCalled();
     });
 
     it("stores file open locations as runtime-only tab intent", async () => {
@@ -1639,7 +1604,7 @@ describe("workspace file opening", () => {
 
         await flushWorkspacePersistenceForTests();
         const persistedSnapshot =
-            saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0];
+            persistWorkspaceLayoutMock.mock.calls.at(-1)?.[0];
         if (!persistedSnapshot) {
             throw new Error("Expected workspace snapshot to be persisted.");
         }
@@ -1789,8 +1754,8 @@ describe("workspace file opening", () => {
         });
 
         await flushWorkspacePersistenceForTests();
-        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
-        const snapshot = saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0];
+        expect(persistWorkspaceLayoutMock).toHaveBeenCalled();
+        const snapshot = persistWorkspaceLayoutMock.mock.calls.at(-1)?.[0];
         expect(snapshot ? getActivePersistedLayout(snapshot)?.tabs : null).toEqual(
             expect.arrayContaining([
                 expect.objectContaining({
@@ -1845,7 +1810,7 @@ describe("workspace file opening", () => {
         });
 
         await flushWorkspacePersistenceForTests();
-        expect(saveWorkspaceSnapshotMock).not.toHaveBeenCalled();
+        expect(persistWorkspaceLayoutMock).not.toHaveBeenCalled();
     });
 
     it("does not keep Markdown preview mode on non-Markdown file tabs", () => {
@@ -2122,9 +2087,9 @@ describe("workspace file opening", () => {
         );
 
         await flushWorkspacePersistenceForTests();
-        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+        expect(persistWorkspaceLayoutMock).toHaveBeenCalled();
         const persistedSnapshot =
-            saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0];
+            persistWorkspaceLayoutMock.mock.calls.at(-1)?.[0];
         if (!persistedSnapshot) {
             throw new Error("Expected workspace snapshot to be persisted.");
         }
@@ -2462,7 +2427,7 @@ describe("workspace file opening", () => {
         expect(rightPane.activeTabId).toBe(rightPane.tabIds[0]);
         expect(openProjectFileMock).not.toHaveBeenCalled();
         await flushWorkspacePersistenceForTests();
-        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+        expect(persistWorkspaceLayoutMock).toHaveBeenCalled();
 
         const duplicatedTabId = rightPane.tabIds[0];
         expect(duplicatedTabId).toBeTruthy();
@@ -2534,7 +2499,7 @@ describe("workspace file opening", () => {
         await flushWorkspacePersistenceForTests();
 
         const persistedSnapshot =
-            saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0];
+            persistWorkspaceLayoutMock.mock.calls.at(-1)?.[0];
         expect(persistedSnapshot).toBeTruthy();
         expect(
             persistedSnapshot
@@ -2626,26 +2591,26 @@ describe("workspace file opening", () => {
         await useWorkspaceStore.getState().selectTab("pane-b", "chat-2");
         await useWorkspaceStore.getState().setActivePane("pane-b");
 
-        expect(saveWorkspaceSnapshotMock).not.toHaveBeenCalled();
+        expect(persistWorkspaceLayoutMock).not.toHaveBeenCalled();
 
         await flushWorkspacePersistenceForTests();
 
-        expect(saveWorkspaceSnapshotMock).toHaveBeenCalledTimes(1);
+        expect(persistWorkspaceLayoutMock).toHaveBeenCalledTimes(1);
     });
 
     it("does not report a successful close flush when persistence keeps failing", async () => {
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-        saveWorkspaceSnapshotMock.mockRejectedValue(
+        persistWorkspaceLayoutMock.mockRejectedValue(
             new Error("persistence unavailable"),
         );
-        await useWorkspaceStore.getState().openContext("project-failure");
+        await useWorkspaceStore.getState().requestWorkspaceNavigation("project-failure");
 
         await expect(flushWorkspacePersistenceNow()).rejects.toThrow(
             "Could not persist the workspace before closing.",
         );
-        expect(saveWorkspaceSnapshotMock).toHaveBeenCalledTimes(3);
+        expect(persistWorkspaceLayoutMock).toHaveBeenCalledTimes(3);
 
-        saveWorkspaceSnapshotMock.mockResolvedValue(undefined);
+        persistWorkspaceLayoutMock.mockResolvedValue(undefined);
         errorSpy.mockRestore();
     });
 
@@ -2680,9 +2645,9 @@ describe("workspace file opening", () => {
             .getState()
             .resizeSplit("split-root", [0.68, 0.32]);
 
-        expect(saveWorkspaceSnapshotMock).toHaveBeenCalledTimes(1);
+        expect(persistWorkspaceLayoutMock).toHaveBeenCalledTimes(1);
         const persistedSnapshot =
-            saveWorkspaceSnapshotMock.mock.calls.at(-1)?.[0];
+            persistWorkspaceLayoutMock.mock.calls.at(-1)?.[0];
         expect(persistedSnapshot).toBeTruthy();
         expect(
             persistedSnapshot
@@ -3374,10 +3339,6 @@ describe("workspace file opening", () => {
                     worktreeId: null,
                 },
             },
-            openContextKeys: [
-                "project-1::__primary__",
-                "project-2::__primary__",
-            ],
         }));
 
         await useWorkspaceStore
@@ -3393,7 +3354,7 @@ describe("workspace file opening", () => {
 
         await useWorkspaceStore
             .getState()
-            .activateContext("project-2::__primary__");
+            .activateWorkspaceLayout("project-2::__primary__");
         await vi.waitFor(() => {
             expect(openProjectFileMock).toHaveBeenCalledWith({
                 projectId: "project-2",
@@ -3554,7 +3515,7 @@ describe("workspace file opening", () => {
             worktreeId: "worktree-2",
         });
         await flushWorkspacePersistenceForTests();
-        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+        expect(persistWorkspaceLayoutMock).toHaveBeenCalled();
     });
 
     it("reuses an existing chat tab when opening a persisted session by session id", async () => {
@@ -3635,7 +3596,7 @@ describe("workspace file opening", () => {
             }),
         );
         await flushWorkspacePersistenceForTests();
-        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+        expect(persistWorkspaceLayoutMock).toHaveBeenCalled();
     });
 
     it("focuses the requested child chat tab without selecting the parent", async () => {
@@ -3837,14 +3798,14 @@ describe("workspace file opening", () => {
             }),
         );
         await flushWorkspacePersistenceForTests();
-        expect(saveWorkspaceSnapshotMock).toHaveBeenCalled();
+        expect(persistWorkspaceLayoutMock).toHaveBeenCalled();
     });
 });
 
 describe("workspace terminal tabs", () => {
     beforeEach(() => {
         resetWorkspacePersistenceForTests();
-        saveWorkspaceSnapshotMock.mockClear();
+        persistWorkspaceLayoutMock.mockClear();
         Object.defineProperty(globalThis, "window", {
             configurable: true,
             value: {
@@ -3854,7 +3815,6 @@ describe("workspace terminal tabs", () => {
                     notifyFileBuffer: notifyFileBufferMock,
                     openProjectFile: openProjectFileMock,
                     saveProjectFile: saveProjectFileMock,
-                    saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
                 },
             },
             writable: true,
@@ -4880,14 +4840,13 @@ describe("workspace runtime focus helpers", () => {
     it("closes the live terminal session when a terminal tab is closed", async () => {
         resetWorkspacePersistenceForTests();
         closeTerminalSessionMock.mockClear();
-        saveWorkspaceSnapshotMock.mockClear();
+        persistWorkspaceLayoutMock.mockClear();
 
         Object.defineProperty(globalThis, "window", {
             configurable: true,
             value: {
                 comando: {
                     closeTerminalSession: closeTerminalSessionMock,
-                    saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
                 },
             },
             writable: true,

@@ -168,6 +168,7 @@ import {
     type RemoveSavedWorkspaceInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
+    type SaveWorkspaceSurfaceLayoutInput,
     type SaveImageAsInput,
     type AiQueuedPromptMutationInput,
     type UpdateAiQueuedPromptInput,
@@ -178,21 +179,21 @@ import {
     type TsconfigResolutionSnapshot,
     type WindowContextSnapshot,
     type WriteTerminalInput,
-    type WorkspaceNavigationSnapshot,
-    type WorkspaceContextMenuAction,
-    type WorkspaceContextMenuInput,
     type WorkspaceSurfaceActionRequest,
     type WorkspaceSurfaceActionCompletion,
     type WorkspaceSurfaceContentInsets,
     type WorkspaceSurfaceCloseResult,
-    type WorkspaceSurfaceContextRequest,
+    type WorkspaceScopeActivationRequest,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceLeaseReport,
     type WorkspaceSurfaceRuntimeBinding,
     type WorkspaceSurfaceRuntimeResync,
+    type WorkspaceSurfaceRegistrySnapshot,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
-import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
+import {
+    normalizeWorkspaceLayoutSnapshot,
+} from "@shared/workspace-restore";
 
 import {
     BrowserWindow,
@@ -259,10 +260,6 @@ import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
 import { workspaceRuntimeOwnership } from "@main/workspace/runtime-ownership-coordinator";
 import {
-    activateWorkspaceSurfaceAndNotifyHost,
-    persistWorkspaceSurfaceSnapshot,
-} from "@main/workspace/surface-snapshot-persistence";
-import {
     isWorkspaceSurfaceActionRequest,
     isWorkspaceSurfaceActionCompletion,
     isWorkspaceSurfaceFileRevealRequest,
@@ -274,10 +271,6 @@ interface RegisterIpcHandlersOptions {
     readonly gitService: GitGateway;
     readonly githubService: GitHubGateway;
     readonly getSnapshot: () => AppBootstrapSnapshot;
-    readonly captureWorkspaceSurfaceContext: (
-        hostWindowId: string,
-        contextKey: string,
-    ) => Promise<WorkspaceNavigationSnapshot | null>;
     readonly durableWorkspaceRepository: NativePersistenceGateway;
     readonly focusMainWindow: () => void;
     readonly activateProjectWorkspace: (
@@ -427,14 +420,13 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.revealProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.listProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.searchProjectEntries);
-    ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSnapshot);
-    ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
     ipcMain.removeHandler(IPC_CHANNELS.closeWorkspaceSurface);
+    ipcMain.removeHandler(IPC_CHANNELS.loadWorkspaceSurfaceLayout);
+    ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSurfaceLayout);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSurfaceDiagnostics);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceHostOverlayVisible);
-    ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceAction);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceReady);
@@ -443,10 +435,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.resyncWorkspaceSurfaceRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
-    ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
+    ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceScopeActivation);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
-    ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
-    ipcMain.removeHandler(IPC_CHANNELS.showWorkspaceContextMenu);
     ipcMain.removeHandler(IPC_CHANNELS.showNativeContextMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
@@ -1972,112 +1962,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             }
         },
     );
-    ipcMain.handle(IPC_CHANNELS.getWorkspaceSnapshot, (event) => {
-        const context = requireWindowContext(event.sender, "main");
-        const surfaceSnapshot = workspaceSurfaceManager.getSurfaceSnapshot(
-            event.sender,
-        );
-        if (surfaceSnapshot) {
-            return surfaceSnapshot;
-        }
-        return Promise.resolve(
-            options.workspaceService.loadSnapshot(context.workspaceId!),
-        )
-            .then((record) => record.snapshot);
-    });
-    ipcMain.handle(
-        IPC_CHANNELS.saveWorkspaceSnapshot,
-        async (event, snapshot: WorkspaceNavigationSnapshot) => {
-            const context = requireWindowContext(event.sender, "main");
-            const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
-                snapshot,
-            ).snapshot;
-            if (
-                await persistWorkspaceSurfaceSnapshot({
-                    manager: workspaceSurfaceManager,
-                    saveSnapshot: (workspaceId, nextSnapshot) =>
-                        Promise.resolve(
-                            options.workspaceService.saveSnapshot(
-                                workspaceId,
-                                nextSnapshot,
-                            ),
-                        ),
-                    sender: event.sender,
-                    snapshot: normalizedSnapshot,
-                    workspaceId: context.workspaceId!,
-                })
-            ) {
-                return;
-            }
-            if (workspaceSurfaceManager.isSurface(event.sender)) {
-                return;
-            }
-            const activeSurface = workspaceSurfaceManager.getActiveWebContents(
-                context.windowId,
-            );
-            const hostSnapshot =
-                workspaceSurfaceManager.getHostSnapshotForWindow(
-                    context.windowId,
-                );
-            const canUpdateActiveSurface =
-                activeSurface &&
-                hostSnapshot &&
-                hostSnapshot.activeContextKey === normalizedSnapshot.activeContextKey &&
-                hostSnapshot.openContextKeys.length ===
-                    normalizedSnapshot.openContextKeys.length &&
-                hostSnapshot.openContextKeys.every((key) =>
-                    normalizedSnapshot.openContextKeys.includes(key),
-                );
-            if (canUpdateActiveSurface) {
-                const surfaceUpdate = workspaceSurfaceManager.mergeSurfaceSnapshot(
-                    activeSurface,
-                    normalizedSnapshot,
-                );
-                if (surfaceUpdate) {
-                    await options.workspaceService.saveSnapshot(
-                        context.workspaceId!,
-                        surfaceUpdate.snapshot,
-                    );
-                    const surfaceSnapshot =
-                        workspaceSurfaceManager.getSurfaceSnapshot(activeSurface);
-                    if (surfaceSnapshot) {
-                        activeSurface.send(
-                            IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
-                            surfaceSnapshot,
-                        );
-                    }
-                    workspaceSurfaceManager
-                        .getHostWebContents(surfaceUpdate.hostWindowId)
-                        ?.send(
-                            IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
-                            surfaceUpdate.snapshot,
-                        );
-                    return;
-                }
-            }
-            await options.workspaceService.saveSnapshot(
-                context.workspaceId!,
-                normalizedSnapshot,
-            );
-            const activeContext = normalizedSnapshot.contexts.find(
-                (candidate) =>
-                    candidate.key === normalizedSnapshot.activeContextKey,
-            );
-            const projectId = activeContext?.projectId ?? null;
-            const worktreeId = activeContext?.worktreeId ?? null;
-            windowRegistry.updateMainWindowProjectId(
-                context.windowId,
-                projectId,
-                worktreeId,
-            );
-            const ownerWindow = BrowserWindow.fromWebContents(event.sender);
-            if (ownerWindow) {
-                ownerWindow.setTitle(
-                    buildMainWindowTitle(),
-                );
-            }
-        },
-    );
     ipcMain.handle(IPC_CHANNELS.getWorkspaceCatalog, async (event) => {
         requireWindowContext(event.sender, "main");
         if (workspaceSurfaceManager.isSurface(event.sender)) {
@@ -2208,7 +2092,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.initializeWorkspaceSurfaces,
-        async (event, snapshot: WorkspaceNavigationSnapshot) => {
+        (event, snapshot: WorkspaceSurfaceRegistrySnapshot) => {
             const context = requireWindowContext(event.sender, "main");
             if (workspaceSurfaceManager.isSurface(event.sender)) {
                 return;
@@ -2217,41 +2101,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             if (!hostWindow) {
                 throw new Error("The workspace host window is unavailable.");
             }
-            const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
-                snapshot,
-            ).snapshot;
-            const mergedSnapshot = workspaceSurfaceManager.syncHost(
+            workspaceSurfaceManager.syncWorkspaceRegistry(
                 hostWindow,
                 context,
-                normalizedSnapshot,
+                snapshot,
             );
-            await options.workspaceService.saveSnapshot(
-                context.workspaceId!,
-                mergedSnapshot,
-            );
-        },
-    );
-    ipcMain.handle(
-        IPC_CHANNELS.captureWorkspaceSurfaceContext,
-        async (event, contextKey: unknown) => {
-            const context = requireWindowContext(event.sender, "main");
-            if (workspaceSurfaceManager.isSurface(event.sender)) {
-                return null;
-            }
-            if (typeof contextKey !== "string" || contextKey.length === 0) {
-                throw new Error("A workspace context key is required.");
-            }
-            const snapshot = await options.captureWorkspaceSurfaceContext(
-                context.windowId,
-                contextKey,
-            );
-            if (snapshot) {
-                await options.workspaceService.saveSnapshot(
-                    context.workspaceId!,
-                    snapshot,
-                );
-            }
-            return snapshot;
         },
     );
     ipcMain.handle(
@@ -2421,11 +2275,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             if (workspaceSurfaceManager.isSurface(event.sender)) {
                 throw new Error("A workspace surface cannot activate another surface.");
             }
-            const result = await activateWorkspaceSurfaceAndNotifyHost({
+            const result = await workspaceSurfaceManager.activate(
+                context.windowId,
                 contextKey,
-                hostWindowId: context.windowId,
-                manager: workspaceSurfaceManager,
-            });
+            );
             if (result.status !== "activated") {
                 return result;
             }
@@ -2484,6 +2337,91 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         },
     );
     ipcMain.handle(
+        IPC_CHANNELS.loadWorkspaceSurfaceLayout,
+        async (event, binding: WorkspaceSurfaceRuntimeBinding) => {
+            if (
+                !workspaceSurfaceManager.matchesSurfaceRuntimeBinding(
+                    event.sender,
+                    binding,
+                )
+            ) {
+                throw new Error("The workspace surface binding is stale.");
+            }
+            const workspace =
+                await options.durableWorkspaceRepository.loadDurableWorkspace(
+                    binding.scopeKey,
+                );
+            if (
+                !workspace ||
+                workspace.runtimeOwnerId !== binding.runtimeOwnerId
+            ) {
+                throw new Error("The durable workspace is unavailable.");
+            }
+            const layout = normalizeWorkspaceLayoutSnapshot(
+                workspace.layoutSnapshot,
+            );
+            if (!layout) {
+                throw new Error("The durable workspace layout is invalid.");
+            }
+            return {
+                ...binding,
+                lastActivatedAt:
+                    workspace.lastActivatedAt ?? workspace.updatedAt,
+                layout,
+                projectId: workspace.projectId,
+                revision: workspace.revision,
+                worktreeId: workspace.worktreeId,
+            };
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.saveWorkspaceSurfaceLayout,
+        async (event, input: SaveWorkspaceSurfaceLayoutInput) => {
+            if (
+                !input ||
+                typeof input !== "object" ||
+                !Number.isInteger(input.expectedRevision) ||
+                input.expectedRevision < 0 ||
+                !workspaceSurfaceManager.matchesSurfaceRuntimeBinding(
+                    event.sender,
+                    input,
+                )
+            ) {
+                throw new Error("A current workspace surface layout is required.");
+            }
+            const layout = normalizeWorkspaceLayoutSnapshot(input.layout);
+            if (!layout) {
+                throw new Error("The workspace surface layout is invalid.");
+            }
+            const current =
+                await options.durableWorkspaceRepository.loadDurableWorkspace(
+                    input.scopeKey,
+                );
+            if (!current || current.runtimeOwnerId !== input.runtimeOwnerId) {
+                throw new Error("The durable workspace is unavailable.");
+            }
+            const workspace =
+                await options.durableWorkspaceRepository.saveDurableWorkspace({
+                    expectedRevision: input.expectedRevision,
+                    layoutSnapshot: layout as unknown as Readonly<
+                        Record<string, unknown>
+                    >,
+                    scopeKey: input.scopeKey,
+                });
+            return {
+                generation: input.generation,
+                lastActivatedAt:
+                    workspace.lastActivatedAt ?? input.lastActivatedAt,
+                layout,
+                projectId: workspace.projectId,
+                revision: workspace.revision,
+                runtimeOwnerId: input.runtimeOwnerId,
+                scopeKey: input.scopeKey,
+                worktreeId: workspace.worktreeId,
+            };
+        },
+    );
+    ipcMain.handle(
         IPC_CHANNELS.getWorkspaceSurfaceDiagnostics,
         (event) => {
             const context = requireWindowContext(event.sender, "main");
@@ -2510,8 +2448,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         },
     );
     ipcMain.handle(
-        IPC_CHANNELS.requestWorkspaceSurfaceContext,
-        (event, input: WorkspaceSurfaceContextRequest) => {
+        IPC_CHANNELS.requestWorkspaceScopeActivation,
+        (event, input: WorkspaceScopeActivationRequest) => {
             requireWindowContext(event.sender, "main");
             const surfaceContext = workspaceSurfaceManager.getSurfaceContext(
                 event.sender,
@@ -2532,7 +2470,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             }
             workspaceSurfaceManager
                 .getHostWebContents(surfaceContext.hostWindowId)
-                ?.send(IPC_EVENTS.workspaceSurfaceContextRequested, input);
+                ?.send(IPC_EVENTS.workspaceScopeActivationRequested, input);
         },
     );
     ipcMain.handle(
@@ -2549,51 +2487,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     x: Math.max(0, Math.round(anchor.x)),
                 },
             );
-        },
-    );
-    ipcMain.handle(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu, (event) => {
-        const context = requireWindowContext(event.sender, "main");
-        if (workspaceSurfaceManager.isSurface(event.sender)) {
-            return;
-        }
-        workspaceSurfaceManager.requestActiveProjectMenu(context.windowId);
-    });
-    ipcMain.handle(
-        IPC_CHANNELS.showWorkspaceContextMenu,
-        (event, input: WorkspaceContextMenuInput) => {
-            requireWindowContext(event.sender, "main");
-            const window = BrowserWindow.fromWebContents(event.sender);
-            if (!window || workspaceSurfaceManager.isSurface(event.sender)) {
-                return null;
-            }
-
-            return new Promise<WorkspaceContextMenuAction | null>((resolve) => {
-                let selected = false;
-                const select = (action: WorkspaceContextMenuAction) => {
-                    selected = true;
-                    resolve(action);
-                };
-                const menu = Menu.buildFromTemplate([
-                    {
-                        click: () => select({ type: "copy_full_path" }),
-                        enabled: input.canCopyFullPath,
-                        label: "Copy Full Path",
-                    },
-                    { type: "separator" },
-                    {
-                        click: () => select({ type: "close" }),
-                        label: "Close Workspace",
-                    },
-                ]);
-                menu.popup({
-                    callback: () => {
-                        if (!selected) resolve(null);
-                    },
-                    window,
-                    x: Math.max(0, Math.round(input.x)),
-                    y: Math.max(0, Math.round(input.y)),
-                });
-            });
         },
     );
     ipcMain.handle(
