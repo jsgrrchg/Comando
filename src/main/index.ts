@@ -231,6 +231,9 @@ if (!hasSingleInstanceLock) {
                 applicationVersion: app.getVersion(),
                 client: nativeClient,
                 databaseFile,
+                onWorkspaceMigrationTelemetry: (telemetry) => {
+                    console.info("[workspace-migration]", telemetry);
+                },
             });
             persistenceService = nativeAppDataClient.persistence;
             secretStore = nativeAppDataClient.secretStore;

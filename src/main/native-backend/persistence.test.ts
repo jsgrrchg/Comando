@@ -221,6 +221,9 @@ describe("NativePersistenceGateway", () => {
                 if (command === "workspace_recovery_list") {
                     return Promise.resolve({ layouts: [recovery] });
                 }
+                if (command === "workspace_recovery_discard") {
+                    return Promise.resolve({ discarded: true });
+                }
                 if (command === "workspace_deletion_list_incomplete") {
                     return Promise.resolve({ operations: [operation] });
                 }
@@ -247,6 +250,12 @@ describe("NativePersistenceGateway", () => {
                 scopeKey: "project-a::worktree-a",
             }),
         ).resolves.toEqual(workspace);
+        await expect(
+            gateway.discardWorkspaceRecoveryLayout({
+                recoveryId: "recovery-a",
+                scopeKey: "project-a::worktree-a",
+            }),
+        ).resolves.toBeUndefined();
         await expect(
             gateway.reassociateWorkspace({
                 expectedRevision: 2,
@@ -332,6 +341,54 @@ describe("NativePersistenceGateway", () => {
             "workspace_migration_export_diagnostics",
         );
         expect(requestMock).toHaveBeenCalledWith("workspace_migration_rollback");
+    });
+
+    it("routes and validates durable workspace rollout policy", async () => {
+        const rollout = {
+            dualWriteEnabled: true,
+            legacyCleanupCompletedAt: null,
+            legacyRetentionUntil: "2026-11-01T00:00:00Z",
+            pendingRecoveryLayoutCount: 0,
+            rollbackAvailable: true,
+            sourceBackupRetained: true,
+            stableReleaseVerifiedAt: "2026-08-01T00:00:00Z",
+            stableReleaseVersion: "0.2.1",
+            stage: "stable_dual_write",
+            v4OnlySince: null,
+        };
+        const requestMock = vi.fn(
+            (command: string, args?: Record<string, unknown>) => {
+                void command;
+                void args;
+                return Promise.resolve(rollout);
+            },
+        );
+        const request: NativeBackendRequester["request"] = async (...args) =>
+            (await requestMock(...args)) as never;
+        const gateway = new NativePersistenceGateway({ request });
+
+        await expect(gateway.getWorkspaceRolloutStatus()).resolves.toEqual(rollout);
+        await gateway.markWorkspaceRolloutStable({
+            applicationVersion: "0.2.1",
+            retentionDays: 90,
+        });
+        await gateway.disableWorkspaceLegacyWrites({
+            applicationVersion: "0.3.0",
+        });
+        await gateway.cleanupWorkspaceLegacyCompatibility({ consent: true });
+
+        expect(requestMock).toHaveBeenCalledWith(
+            "workspace_rollout_mark_stable",
+            { applicationVersion: "0.2.1", retentionDays: 90 },
+        );
+        expect(requestMock).toHaveBeenCalledWith(
+            "workspace_rollout_disable_legacy_writes",
+            { applicationVersion: "0.3.0" },
+        );
+        expect(requestMock).toHaveBeenCalledWith(
+            "workspace_rollout_cleanup_legacy",
+            { consent: true },
+        );
     });
 });
 

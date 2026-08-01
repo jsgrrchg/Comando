@@ -145,6 +145,7 @@ export const IPC_CHANNELS = {
     getWorkspaceCatalog: "workspace:get-catalog",
     resetWorkspaceLayout: "workspace:reset-layout",
     applyWorkspaceRecoveryLayout: "workspace:apply-recovery-layout",
+    discardWorkspaceRecoveryLayout: "workspace:discard-recovery-layout",
     reassociateWorkspace: "workspace:reassociate",
     removeSavedWorkspace: "workspace:remove-saved",
     preflightDeleteWorktree: "workspace:preflight-delete-worktree",
@@ -2356,6 +2357,11 @@ export interface ApplyWorkspaceRecoveryLayoutInput {
     readonly scopeKey: string;
 }
 
+export interface DiscardWorkspaceRecoveryLayoutInput {
+    readonly recoveryId: string;
+    readonly scopeKey: string;
+}
+
 export interface ReassociateWorkspaceInput {
     readonly expectedRevision: number;
     readonly projectId: string;
@@ -3923,6 +3929,9 @@ export interface ComandoApi {
     applyWorkspaceRecoveryLayout: (
         input: ApplyWorkspaceRecoveryLayoutInput,
     ) => Promise<NativeDurableWorkspace>;
+    discardWorkspaceRecoveryLayout: (
+        input: DiscardWorkspaceRecoveryLayoutInput,
+    ) => Promise<void>;
     reassociateWorkspace: (
         input: ReassociateWorkspaceInput,
     ) => Promise<NativeDurableWorkspace>;

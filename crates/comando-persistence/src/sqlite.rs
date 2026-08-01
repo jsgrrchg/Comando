@@ -8,12 +8,13 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::PersistenceError;
 
-pub const STORAGE_SCHEMA_VERSION: &str = "4";
+pub const STORAGE_SCHEMA_VERSION: &str = "5";
 pub const STORAGE_MODE_SQLITE_CURRENT: &str = "sqlite-current";
 
 const DURABLE_WORKSPACE_SCHEMA_MIGRATION_ID: &str = "2026-07-31-durable-workspaces-v4";
 const WORKSPACE_COMPATIBILITY_SCHEMA_MIGRATION_ID: &str = "2026-07-31-workspace-v3-compatibility";
 const WORKSPACE_LIFECYCLE_SCHEMA_MIGRATION_ID: &str = "2026-08-01-workspace-lifecycle";
+const WORKSPACE_ROLLOUT_SCHEMA_MIGRATION_ID: &str = "2026-08-01-workspace-rollout";
 
 const REQUIRED_TABLES: &[(&str, &[&str])] = &[
     (
@@ -112,6 +113,12 @@ const REQUIRED_TABLES: &[(&str, &[&str])] = &[
             "projection_revision",
             "updated_at",
             "rollback_at",
+            "dual_write_enabled",
+            "stable_release_version",
+            "stable_release_verified_at",
+            "legacy_retention_until",
+            "v4_only_since",
+            "legacy_cleanup_completed_at",
         ],
     ),
     (
@@ -174,6 +181,7 @@ impl SqlitePersistenceStore {
         ensure_durable_workspace_schema(&mut connection)?;
         ensure_workspace_compatibility_schema(&mut connection)?;
         ensure_workspace_lifecycle_schema(&mut connection)?;
+        ensure_workspace_rollout_schema(&mut connection)?;
         validate_schema(&connection)?;
         crate::metadata::ensure_metadata(&connection, STORAGE_SCHEMA_VERSION, &config.mode)?;
 
@@ -217,6 +225,67 @@ impl SqlitePersistenceStore {
     pub fn mode(&self) -> &NativePersistenceMode {
         &self.mode
     }
+}
+
+fn ensure_workspace_rollout_schema(connection: &mut Connection) -> Result<(), PersistenceError> {
+    let already_applied = connection
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE id = ?1",
+            [WORKSPACE_ROLLOUT_SCHEMA_MIGRATION_ID],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if already_applied {
+        return Ok(());
+    }
+
+    let transaction = connection.transaction()?;
+    ensure_column(
+        &transaction,
+        "workspace_v3_compatibility",
+        "dual_write_enabled",
+        "INTEGER NOT NULL DEFAULT 1 CHECK(dual_write_enabled IN (0, 1))",
+    )?;
+    ensure_column(
+        &transaction,
+        "workspace_v3_compatibility",
+        "stable_release_version",
+        "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "workspace_v3_compatibility",
+        "stable_release_verified_at",
+        "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "workspace_v3_compatibility",
+        "legacy_retention_until",
+        "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "workspace_v3_compatibility",
+        "v4_only_since",
+        "TEXT",
+    )?;
+    ensure_column(
+        &transaction,
+        "workspace_v3_compatibility",
+        "legacy_cleanup_completed_at",
+        "TEXT",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations (id, applied_at) VALUES (?1, ?2)",
+        rusqlite::params![
+            WORKSPACE_ROLLOUT_SCHEMA_MIGRATION_ID,
+            crate::store::now_rfc3339(),
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(())
 }
 
 fn ensure_workspace_lifecycle_schema(connection: &mut Connection) -> Result<(), PersistenceError> {

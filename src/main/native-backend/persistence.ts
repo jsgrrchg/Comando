@@ -17,6 +17,11 @@ import type {
     NativeWorkspaceMigrationRollbackOutput,
     NativeWorkspaceMigrationRunInput,
     NativeWorkspaceMigrationRunOutput,
+    NativeWorkspaceCleanupLegacyInput,
+    NativeWorkspaceDisableLegacyWritesInput,
+    NativeWorkspaceMarkStableInput,
+    NativeWorkspaceRecoveryDiscardInput,
+    NativeWorkspaceRolloutStatus,
     NativeWorkspaceDeletionBeginInput,
     NativeWorkspaceDeletionJournalEntry,
     NativeWorkspaceDeletionUpdateInput,
@@ -136,6 +141,18 @@ export class NativePersistenceGateway {
         );
     }
 
+    async discardWorkspaceRecoveryLayout(
+        input: NativeWorkspaceRecoveryDiscardInput,
+    ): Promise<void> {
+        const output = requireRecord(
+            await this.#client.request("workspace_recovery_discard", { ...input }),
+            "Native workspace recovery discard output",
+        );
+        if (!requireBoolean(output.discarded, "discarded")) {
+            throw new Error("Native workspace recovery layout was not discarded.");
+        }
+    }
+
     async reassociateWorkspace(
         input: NativeWorkspaceReassociateInput,
     ): Promise<NativeDurableWorkspace> {
@@ -243,6 +260,40 @@ export class NativePersistenceGateway {
     async rollbackWorkspaceMigration(): Promise<NativeWorkspaceMigrationRollbackOutput> {
         return parseNativeWorkspaceMigrationRollbackOutput(
             await this.#client.request("workspace_migration_rollback"),
+        );
+    }
+
+    async getWorkspaceRolloutStatus(): Promise<NativeWorkspaceRolloutStatus> {
+        return parseNativeWorkspaceRolloutStatus(
+            await this.#client.request("workspace_rollout_get_status"),
+        );
+    }
+
+    async markWorkspaceRolloutStable(
+        input: NativeWorkspaceMarkStableInput,
+    ): Promise<NativeWorkspaceRolloutStatus> {
+        return parseNativeWorkspaceRolloutStatus(
+            await this.#client.request("workspace_rollout_mark_stable", { ...input }),
+        );
+    }
+
+    async disableWorkspaceLegacyWrites(
+        input: NativeWorkspaceDisableLegacyWritesInput,
+    ): Promise<NativeWorkspaceRolloutStatus> {
+        return parseNativeWorkspaceRolloutStatus(
+            await this.#client.request("workspace_rollout_disable_legacy_writes", {
+                ...input,
+            }),
+        );
+    }
+
+    async cleanupWorkspaceLegacyCompatibility(
+        input: NativeWorkspaceCleanupLegacyInput,
+    ): Promise<NativeWorkspaceRolloutStatus> {
+        return parseNativeWorkspaceRolloutStatus(
+            await this.#client.request("workspace_rollout_cleanup_legacy", {
+                ...input,
+            }),
         );
     }
 }
@@ -583,6 +634,57 @@ function parseNativeWorkspaceMigrationDiagnostics(
             record.workspaceCount,
             "workspaceCount",
         ),
+    };
+}
+
+function parseNativeWorkspaceRolloutStatus(
+    value: unknown,
+): NativeWorkspaceRolloutStatus {
+    const record = requireRecord(value, "Native workspace rollout status");
+    const stage = requireString(record.stage, "stage");
+    if (
+        stage !== "internal" &&
+        stage !== "stable_dual_write" &&
+        stage !== "v4_only" &&
+        stage !== "legacy_retired"
+    ) {
+        throw new Error(`Native workspace rollout stage is invalid: ${stage}`);
+    }
+    return {
+        dualWriteEnabled: requireBoolean(
+            record.dualWriteEnabled,
+            "dualWriteEnabled",
+        ),
+        legacyCleanupCompletedAt: requireNullableString(
+            record.legacyCleanupCompletedAt,
+            "legacyCleanupCompletedAt",
+        ),
+        legacyRetentionUntil: requireNullableString(
+            record.legacyRetentionUntil,
+            "legacyRetentionUntil",
+        ),
+        pendingRecoveryLayoutCount: requireRevision(
+            record.pendingRecoveryLayoutCount,
+            "pendingRecoveryLayoutCount",
+        ),
+        rollbackAvailable: requireBoolean(
+            record.rollbackAvailable,
+            "rollbackAvailable",
+        ),
+        sourceBackupRetained: requireBoolean(
+            record.sourceBackupRetained,
+            "sourceBackupRetained",
+        ),
+        stableReleaseVerifiedAt: requireNullableString(
+            record.stableReleaseVerifiedAt,
+            "stableReleaseVerifiedAt",
+        ),
+        stableReleaseVersion: requireNullableString(
+            record.stableReleaseVersion,
+            "stableReleaseVersion",
+        ),
+        stage,
+        v4OnlySince: requireNullableString(record.v4OnlySince, "v4OnlySince"),
     };
 }
 

@@ -44,6 +44,10 @@ export interface WorkspaceNavigatorProps {
         workspace: WorkspaceNavigatorWorkspace,
         recoveryId: string,
     ) => Promise<void>;
+    readonly onDiscardRecoveryLayout: (
+        workspace: WorkspaceNavigatorWorkspace,
+        recoveryId: string,
+    ) => Promise<void>;
     readonly onReassociateWorkspace: (
         workspace: WorkspaceNavigatorWorkspace,
         target: WorkspaceNavigatorWorkspace,
@@ -106,6 +110,7 @@ export function WorkspaceNavigator({
     onDeleteWorktree,
     onPreflightDeleteWorktree,
     onApplyRecoveryLayout,
+    onDiscardRecoveryLayout,
     onReassociateWorkspace,
     onRemoveSavedWorkspace,
     onOpenFolder,
@@ -869,6 +874,13 @@ export function WorkspaceNavigator({
                                 setDialog(null);
                             }}
                             onClose={() => setDialog(null)}
+                            onDiscard={async (recoveryId) => {
+                                await onDiscardRecoveryLayout(
+                                    dialog.workspace,
+                                    recoveryId,
+                                );
+                                setDialog(null);
+                            }}
                             workspace={dialog.workspace}
                         />
                     )}
@@ -1198,10 +1210,12 @@ function ReassociateDialog({
 function RecoveryDialog({
     onApply,
     onClose,
+    onDiscard,
     workspace,
 }: {
     readonly onApply: (recoveryId: string) => Promise<void>;
     readonly onClose: () => void;
+    readonly onDiscard: (recoveryId: string) => Promise<void>;
     readonly workspace: WorkspaceNavigatorWorkspace;
 }) {
     const [applyingId, setApplyingId] = useState<string | null>(null);
@@ -1213,6 +1227,24 @@ function RecoveryDialog({
             await onApply(recoveryId);
         } catch (cause) {
             setError(formatError(cause, "The recovery layout could not be applied."));
+        } finally {
+            setApplyingId(null);
+        }
+    };
+    const discard = async (recoveryId: string) => {
+        if (
+            !window.confirm(
+                "Discard this recovery layout permanently? This cannot be undone.",
+            )
+        ) {
+            return;
+        }
+        setApplyingId(recoveryId);
+        setError(null);
+        try {
+            await onDiscard(recoveryId);
+        } catch (cause) {
+            setError(formatError(cause, "The recovery layout could not be discarded."));
         } finally {
             setApplyingId(null);
         }
@@ -1232,6 +1264,13 @@ function RecoveryDialog({
                             type="button"
                         >
                             {applyingId === layout.id ? "Applying…" : "Apply"}
+                        </button>
+                        <button
+                            disabled={applyingId !== null}
+                            onClick={() => void discard(layout.id)}
+                            type="button"
+                        >
+                            Discard
                         </button>
                     </li>
                 ))}

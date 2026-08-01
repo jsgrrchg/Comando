@@ -49,7 +49,10 @@ use comando_types::commands::{
     WORKSPACE_DELETION_UPDATE, WORKSPACE_FORGET_SESSION, WORKSPACE_MIGRATION_EXPORT_DIAGNOSTICS,
     WORKSPACE_MIGRATION_ROLLBACK, WORKSPACE_MIGRATION_RUN, WORKSPACE_MIGRATION_SYNC_LEGACY,
     WORKSPACE_NAVIGATION_GET, WORKSPACE_NAVIGATION_SAVE_SHELL, WORKSPACE_NAVIGATION_SET_ACTIVE,
-    WORKSPACE_REASSOCIATE, WORKSPACE_RECOVERY_APPLY, WORKSPACE_RECOVERY_LIST,
+    WORKSPACE_REASSOCIATE, WORKSPACE_RECOVERY_APPLY, WORKSPACE_RECOVERY_DISCARD,
+    WORKSPACE_RECOVERY_LIST, WORKSPACE_ROLLOUT_CLEANUP_LEGACY,
+    WORKSPACE_ROLLOUT_DISABLE_LEGACY_WRITES, WORKSPACE_ROLLOUT_GET_STATUS,
+    WORKSPACE_ROLLOUT_MARK_STABLE,
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
@@ -295,6 +298,7 @@ impl NativeBackend {
             DURABLE_WORKSPACE_PURGE => self.purge_durable_workspace(request),
             WORKSPACE_RECOVERY_LIST => self.list_workspace_recovery_layouts(request),
             WORKSPACE_RECOVERY_APPLY => self.apply_workspace_recovery_layout(request),
+            WORKSPACE_RECOVERY_DISCARD => self.discard_workspace_recovery_layout(request),
             WORKSPACE_REASSOCIATE => self.reassociate_workspace(request),
             WORKSPACE_FORGET_SESSION => self.forget_workspace_session_references(request),
             WORKSPACE_DELETION_BEGIN => self.begin_workspace_deletion(request),
@@ -310,6 +314,14 @@ impl NativeBackend {
                 self.export_workspace_migration_diagnostics(request)
             }
             WORKSPACE_MIGRATION_ROLLBACK => self.rollback_workspace_migration(request),
+            WORKSPACE_ROLLOUT_GET_STATUS => self.get_workspace_rollout_status(request),
+            WORKSPACE_ROLLOUT_MARK_STABLE => self.mark_workspace_rollout_stable(request),
+            WORKSPACE_ROLLOUT_DISABLE_LEGACY_WRITES => {
+                self.disable_workspace_legacy_writes(request)
+            }
+            WORKSPACE_ROLLOUT_CLEANUP_LEGACY => {
+                self.cleanup_workspace_legacy_compatibility(request)
+            }
             APP_DATA_GET_JSON => self.app_data_get_json(request),
             APP_DATA_SET_JSON => self.app_data_set_json(request),
             SETTINGS_GET_SNAPSHOT => self.settings_get_snapshot(request),
@@ -671,6 +683,23 @@ impl NativeBackend {
         persistence_response(request.id, store.apply_workspace_recovery_layout(input))
     }
 
+    fn discard_workspace_recovery_layout(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeWorkspaceRecoveryDiscardInput>(&request) {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(
+            request.id,
+            store
+                .discard_workspace_recovery_layout(input)
+                .map(|()| json!({"discarded": true})),
+        )
+    }
+
     fn reassociate_workspace(&mut self, request: RpcRequest) -> CommandResult {
         let input = match parse_args::<native_workspace::NativeWorkspaceReassociateInput>(&request)
         {
@@ -836,6 +865,52 @@ impl NativeBackend {
             return backend_not_ready(request.id);
         };
         persistence_response(request.id, store.rollback_workspace_migration())
+    }
+
+    fn get_workspace_rollout_status(&self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.workspace_rollout_status())
+    }
+
+    fn mark_workspace_rollout_stable(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_workspace::NativeWorkspaceMarkStableInput>(&request) {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.mark_workspace_rollout_stable(input))
+    }
+
+    fn disable_workspace_legacy_writes(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeWorkspaceDisableLegacyWritesInput>(&request)
+            {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.disable_workspace_legacy_writes(input))
+    }
+
+    fn cleanup_workspace_legacy_compatibility(&mut self, request: RpcRequest) -> CommandResult {
+        let input =
+            match parse_args::<native_workspace::NativeWorkspaceCleanupLegacyInput>(&request) {
+                Ok(input) => input,
+                Err(error) => return error_only(request.id, error),
+            };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(
+            request.id,
+            store.cleanup_workspace_legacy_compatibility(input),
+        )
     }
 
     fn app_data_get_json(&mut self, request: RpcRequest) -> CommandResult {
@@ -5701,6 +5776,34 @@ mod tests {
         assert!(
             only_response(&rolled_back).result.as_ref().unwrap()["diagnostics"]["rollbackAt"]
                 .is_string()
+        );
+
+        let internal = backend.handle_request(request("workspace_rollout_get_status", json!({})));
+        assert_eq!(
+            only_response(&internal).result.as_ref().unwrap()["stage"],
+            "internal"
+        );
+        let stable = backend.handle_request(request(
+            "workspace_rollout_mark_stable",
+            json!({"applicationVersion": "0.2.1", "retentionDays": 90}),
+        ));
+        assert_eq!(
+            only_response(&stable).result.as_ref().unwrap()["stage"],
+            "stable_dual_write"
+        );
+        let v4_only = backend.handle_request(request(
+            "workspace_rollout_disable_legacy_writes",
+            json!({"applicationVersion": "0.3.0"}),
+        ));
+        assert_eq!(
+            only_response(&v4_only).result.as_ref().unwrap()["stage"],
+            "v4_only"
+        );
+        assert!(
+            !only_response(
+                &backend.handle_request(request("workspace_migration_rollback", json!({})))
+            )
+            .ok
         );
     }
 

@@ -1660,7 +1660,13 @@ mod tests {
                     singleton_id TEXT PRIMARY KEY,
                     projection_template_json TEXT NOT NULL,
                     projection_revision INTEGER NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    dual_write_enabled INTEGER NOT NULL DEFAULT 1,
+                    stable_release_version TEXT,
+                    stable_release_verified_at TEXT,
+                    legacy_retention_until TEXT,
+                    v4_only_since TEXT,
+                    legacy_cleanup_completed_at TEXT
                 );
                 CREATE TABLE app_workspace_navigation (
                     singleton_id TEXT PRIMARY KEY,

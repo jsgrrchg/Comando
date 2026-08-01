@@ -9,6 +9,7 @@ import {
     type AppBootstrapSnapshot,
     type AppWindowKind,
     type ApplyWorkspaceRecoveryLayoutInput,
+    type DiscardWorkspaceRecoveryLayoutInput,
     type AiPermissionResponseInput,
     type AiRuntimeAuthDisconnectInput,
     type AiRuntimeAuthLaunchInput,
@@ -332,6 +333,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceCatalog);
     ipcMain.removeHandler(IPC_CHANNELS.resetWorkspaceLayout);
     ipcMain.removeHandler(IPC_CHANNELS.applyWorkspaceRecoveryLayout);
+    ipcMain.removeHandler(IPC_CHANNELS.discardWorkspaceRecoveryLayout);
     ipcMain.removeHandler(IPC_CHANNELS.reassociateWorkspace);
     ipcMain.removeHandler(IPC_CHANNELS.removeSavedWorkspace);
     ipcMain.removeHandler(IPC_CHANNELS.preflightDeleteWorktree);
@@ -2028,6 +2030,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 ),
             );
             return options.durableWorkspaceRepository.applyWorkspaceRecoveryLayout(
+                input,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.discardWorkspaceRecoveryLayout,
+        async (event, input: DiscardWorkspaceRecoveryLayoutInput) => {
+            requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error("Recovery layouts are available only to the host.");
+            }
+            await options.durableWorkspaceRepository.discardWorkspaceRecoveryLayout(
                 input,
             );
         },

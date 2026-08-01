@@ -2,20 +2,25 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 
 use comando_types::ids::{ProjectId, WorkspaceRuntimeOwnerId, WorkspaceScopeKey, WorktreeId};
 use comando_types::workspace::{
     APP_WORKSPACE_NAVIGATION_SINGLETON_ID, LEGACY_WORKSPACE_MIGRATION_ID,
     NativeAppWorkspaceNavigation, NativeDurableWorkspaceLifecycle, NativeLegacyWorkspaceWindow,
-    NativeWorkspaceMigrationDiagnostics, NativeWorkspaceMigrationExportOutput,
-    NativeWorkspaceMigrationLayoutSource, NativeWorkspaceMigrationRecoverySource,
-    NativeWorkspaceMigrationRollbackOutput, NativeWorkspaceMigrationRunInput,
-    NativeWorkspaceMigrationRunOutput, canonical_workspace_scope_key,
+    NativeWorkspaceCleanupLegacyInput, NativeWorkspaceDisableLegacyWritesInput,
+    NativeWorkspaceMarkStableInput, NativeWorkspaceMigrationDiagnostics,
+    NativeWorkspaceMigrationExportOutput, NativeWorkspaceMigrationLayoutSource,
+    NativeWorkspaceMigrationRecoverySource, NativeWorkspaceMigrationRollbackOutput,
+    NativeWorkspaceMigrationRunInput, NativeWorkspaceMigrationRunOutput,
+    NativeWorkspaceRolloutStage, NativeWorkspaceRolloutStatus, canonical_workspace_scope_key,
     normalize_workspace_worktree_id,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+use time::format_description::well_known::Rfc3339;
+use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::SqlitePersistenceStore;
@@ -24,6 +29,7 @@ use crate::error::PersistenceError;
 const APP_DATA_WINDOWS_STORAGE_KEY: &str = "native.appData.persistence.windows";
 const BACKUP_DIRECTORY: &str = "workspace-migrations";
 const PRUNED_LAYOUT_LIMITATION: &str = "Legacy versions retained at most 30 closed layouts per window; layouts pruned before this migration cannot be recovered.";
+const MINIMUM_LEGACY_RETENTION_DAYS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MigrationFailpoint {
@@ -203,6 +209,11 @@ impl SqlitePersistenceStore {
         input: NativeWorkspaceMigrationRunInput,
     ) -> Result<NativeAppWorkspaceNavigation, PersistenceError> {
         required_diagnostics(self.connection())?;
+        if !self.workspace_rollout_status()?.dual_write_enabled {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "legacy workspace writes are disabled".to_string(),
+            ));
+        }
         validate_migration_input(&input)?;
         let candidates = flatten_candidates(&input.windows)?;
         let active_winner = candidates
@@ -250,6 +261,11 @@ impl SqlitePersistenceStore {
     pub fn rollback_workspace_migration(
         &mut self,
     ) -> Result<NativeWorkspaceMigrationRollbackOutput, PersistenceError> {
+        if !self.workspace_rollout_status()?.rollback_available {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "workspace rollback is no longer available".to_string(),
+            ));
+        }
         let transaction = self
             .connection_mut()
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -275,6 +291,267 @@ impl SqlitePersistenceStore {
             diagnostics,
             v3_projection,
         })
+    }
+
+    pub fn workspace_rollout_status(
+        &self,
+    ) -> Result<NativeWorkspaceRolloutStatus, PersistenceError> {
+        let state = self.connection().query_row(
+            "SELECT dual_write_enabled, stable_release_version, stable_release_verified_at, legacy_retention_until, v4_only_since, legacy_cleanup_completed_at FROM workspace_v3_compatibility WHERE singleton_id = ?1",
+            [APP_WORKSPACE_NAVIGATION_SINGLETON_ID],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)? != 0,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        ).optional()?.ok_or_else(|| {
+            PersistenceError::WorkspaceMigrationNotFound(
+                LEGACY_WORKSPACE_MIGRATION_ID.to_string(),
+            )
+        })?;
+        let pending_recovery_layout_count = self.connection().query_row(
+            "SELECT COUNT(*) FROM workspace_layout_recovery",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let source_backup_ref = self.connection().query_row(
+            "SELECT source_backup_ref FROM workspace_migrations WHERE migration_id = ?1",
+            [LEGACY_WORKSPACE_MIGRATION_ID],
+            |row| row.get::<_, String>(0),
+        )?;
+        let source_backup_retained = source_backup_ref != "retired"
+            && resolve_legacy_backup_path(self.app_data_dir(), &source_backup_ref)?.exists();
+        let stage = if state.5.is_some() {
+            NativeWorkspaceRolloutStage::LegacyRetired
+        } else if !state.0 {
+            NativeWorkspaceRolloutStage::V4Only
+        } else if state.2.is_some() {
+            NativeWorkspaceRolloutStage::StableDualWrite
+        } else {
+            NativeWorkspaceRolloutStage::Internal
+        };
+        Ok(NativeWorkspaceRolloutStatus {
+            stage,
+            dual_write_enabled: state.0,
+            stable_release_version: state.1,
+            stable_release_verified_at: state.2,
+            legacy_retention_until: state.3,
+            v4_only_since: state.4,
+            legacy_cleanup_completed_at: state.5,
+            pending_recovery_layout_count: u64::try_from(pending_recovery_layout_count).map_err(
+                |_| {
+                    PersistenceError::InvalidWorkspaceInput(
+                        "recovery layout count is invalid".to_string(),
+                    )
+                },
+            )?,
+            rollback_available: state.0 && source_backup_retained,
+            source_backup_retained,
+        })
+    }
+
+    pub fn mark_workspace_rollout_stable(
+        &mut self,
+        input: NativeWorkspaceMarkStableInput,
+    ) -> Result<NativeWorkspaceRolloutStatus, PersistenceError> {
+        if input.application_version.trim().is_empty() {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "applicationVersion must not be empty".to_string(),
+            ));
+        }
+        if input.retention_days < MINIMUM_LEGACY_RETENTION_DAYS || input.retention_days > 3_650 {
+            return Err(PersistenceError::InvalidWorkspaceInput(format!(
+                "retentionDays must be between {MINIMUM_LEGACY_RETENTION_DAYS} and 3650"
+            )));
+        }
+        let retention_days = i64::try_from(input.retention_days).map_err(|_| {
+            PersistenceError::InvalidWorkspaceInput("retentionDays is too large".to_string())
+        })?;
+        let now = OffsetDateTime::now_utc();
+        let verified_at = format_timestamp(now)?;
+        let retention_until = format_timestamp(now + Duration::days(retention_days))?;
+        let changed = self.connection_mut().execute(
+            "UPDATE workspace_v3_compatibility SET stable_release_version = COALESCE(stable_release_version, ?1), stable_release_verified_at = COALESCE(stable_release_verified_at, ?2), legacy_retention_until = COALESCE(legacy_retention_until, ?3), updated_at = ?2 WHERE singleton_id = ?4 AND dual_write_enabled = 1 AND legacy_cleanup_completed_at IS NULL",
+            params![
+                input.application_version,
+                verified_at,
+                retention_until,
+                APP_WORKSPACE_NAVIGATION_SINGLETON_ID,
+            ],
+        )?;
+        if changed == 0 {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "stable rollout can only be recorded while dual-write is active".to_string(),
+            ));
+        }
+        self.workspace_rollout_status()
+    }
+
+    pub fn disable_workspace_legacy_writes(
+        &mut self,
+        input: NativeWorkspaceDisableLegacyWritesInput,
+    ) -> Result<NativeWorkspaceRolloutStatus, PersistenceError> {
+        if input.application_version.trim().is_empty() {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "applicationVersion must not be empty".to_string(),
+            ));
+        }
+        let status = self.workspace_rollout_status()?;
+        let stable_version = status.stable_release_version.as_deref().ok_or_else(|| {
+            PersistenceError::InvalidWorkspaceInput(
+                "a stable dual-write release must be verified first".to_string(),
+            )
+        })?;
+        if stable_version == input.application_version {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "legacy writes can only stop in a later application version".to_string(),
+            ));
+        }
+        if status.pending_recovery_layout_count != 0 {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "all recovery layouts must be resolved explicitly first".to_string(),
+            ));
+        }
+        if !status.dual_write_enabled {
+            return Ok(status);
+        }
+        let now = crate::store::now_rfc3339();
+        self.connection_mut().execute(
+            "UPDATE workspace_v3_compatibility SET dual_write_enabled = 0, v4_only_since = ?1, updated_at = ?1 WHERE singleton_id = ?2",
+            params![now, APP_WORKSPACE_NAVIGATION_SINGLETON_ID],
+        )?;
+        self.workspace_rollout_status()
+    }
+
+    pub fn cleanup_workspace_legacy_compatibility(
+        &mut self,
+        input: NativeWorkspaceCleanupLegacyInput,
+    ) -> Result<NativeWorkspaceRolloutStatus, PersistenceError> {
+        if !input.consent {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "explicit consent is required to delete legacy workspace data".to_string(),
+            ));
+        }
+        let status = self.workspace_rollout_status()?;
+        if status.dual_write_enabled || status.v4_only_since.is_none() {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "legacy writes must be disabled before cleanup".to_string(),
+            ));
+        }
+        if status.pending_recovery_layout_count != 0 {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "all recovery layouts must be resolved explicitly before cleanup".to_string(),
+            ));
+        }
+        let retention_until = status.legacy_retention_until.as_deref().ok_or_else(|| {
+            PersistenceError::InvalidWorkspaceInput(
+                "legacy retention policy was not recorded".to_string(),
+            )
+        })?;
+        let retention_until = OffsetDateTime::parse(retention_until, &Rfc3339).map_err(|_| {
+            PersistenceError::InvalidWorkspaceInput(
+                "legacy retention deadline is invalid".to_string(),
+            )
+        })?;
+        if retention_until > OffsetDateTime::now_utc() {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "legacy retention period has not elapsed".to_string(),
+            ));
+        }
+        if status.legacy_cleanup_completed_at.is_some() {
+            return Ok(status);
+        }
+
+        let (source_backup_ref, source_checksum, projection_template) = self.connection().query_row(
+            "SELECT migrations.source_backup_ref, migrations.source_checksum, compatibility.projection_template_json FROM workspace_migrations AS migrations JOIN workspace_v3_compatibility AS compatibility ON compatibility.migration_id = migrations.migration_id WHERE migrations.migration_id = ?1",
+            [LEGACY_WORKSPACE_MIGRATION_ID],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        let legacy_projection = self
+            .connection()
+            .query_row(
+                "SELECT value FROM app_settings WHERE key = ?1",
+                [APP_DATA_WINDOWS_STORAGE_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let backup_path = resolve_legacy_backup_path(self.app_data_dir(), &source_backup_ref)?;
+        if !backup_path.exists() {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "legacy backup is unavailable for verified cleanup".to_string(),
+            ));
+        }
+        verify_existing_backup(&backup_path, &source_checksum)?;
+        let staged_backup =
+            backup_path.with_extension(format!("retiring-{}", Uuid::new_v4().simple()));
+        fs::rename(&backup_path, &staged_backup)?;
+        let now = crate::store::now_rfc3339();
+        let transaction_result = (|| -> Result<(), PersistenceError> {
+            let transaction = self
+                .connection_mut()
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute(
+                "DELETE FROM app_settings WHERE key = ?1",
+                [APP_DATA_WINDOWS_STORAGE_KEY],
+            )?;
+            transaction.execute(
+                "UPDATE workspace_v3_compatibility SET projection_template_json = '{}', legacy_cleanup_completed_at = ?1, updated_at = ?1 WHERE singleton_id = ?2",
+                params![now, APP_WORKSPACE_NAVIGATION_SINGLETON_ID],
+            )?;
+            transaction.execute(
+                "UPDATE workspace_migrations SET source_backup_ref = 'retired' WHERE migration_id = ?1",
+                [LEGACY_WORKSPACE_MIGRATION_ID],
+            )?;
+            transaction.commit()?;
+            Ok(())
+        })();
+        if let Err(error) = transaction_result {
+            if staged_backup.exists() {
+                let _ = fs::rename(&staged_backup, &backup_path);
+            }
+            return Err(error);
+        }
+        if staged_backup.exists()
+            && let Err(remove_error) = fs::remove_file(&staged_backup)
+        {
+            let _ = fs::rename(&staged_backup, &backup_path);
+            // Restore the compatibility marker if filesystem cleanup could not finish.
+            let transaction = self
+                .connection_mut()
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if let Some(projection) = legacy_projection {
+                transaction.execute(
+                    "INSERT INTO app_settings (key, value, updated_at) VALUES (?1, ?2, ?3) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                    params![APP_DATA_WINDOWS_STORAGE_KEY, projection, now],
+                )?;
+            }
+            transaction.execute(
+                "UPDATE workspace_v3_compatibility SET projection_template_json = ?1, legacy_cleanup_completed_at = NULL, updated_at = ?2 WHERE singleton_id = ?3",
+                params![
+                    projection_template,
+                    now,
+                    APP_WORKSPACE_NAVIGATION_SINGLETON_ID
+                ],
+            )?;
+            transaction.execute(
+                "UPDATE workspace_migrations SET source_backup_ref = ?1 WHERE migration_id = ?2",
+                params![source_backup_ref, LEGACY_WORKSPACE_MIGRATION_ID],
+            )?;
+            transaction.commit()?;
+            return Err(PersistenceError::Io(remove_error));
+        }
+        self.workspace_rollout_status()
     }
 }
 
@@ -867,17 +1144,52 @@ fn verify_existing_backup(
     Ok(())
 }
 
+fn resolve_legacy_backup_path(
+    app_data_dir: &Path,
+    relative_ref: &str,
+) -> Result<PathBuf, PersistenceError> {
+    let relative = Path::new(relative_ref);
+    if relative.as_os_str().is_empty()
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(PersistenceError::InvalidWorkspaceInput(
+            "legacy backup reference is invalid".to_string(),
+        ));
+    }
+    Ok(app_data_dir.join(relative))
+}
+
+fn format_timestamp(value: OffsetDateTime) -> Result<String, PersistenceError> {
+    value.format(&Rfc3339).map_err(|_| {
+        PersistenceError::InvalidWorkspaceInput(
+            "workspace rollout timestamp could not be formatted".to_string(),
+        )
+    })
+}
+
 pub fn refresh_v3_projection(connection: &Connection) -> Result<Option<Value>, PersistenceError> {
     let compatibility = connection
         .query_row(
-            "SELECT projection_template_json, projection_revision FROM workspace_v3_compatibility WHERE singleton_id = ?1",
+            "SELECT projection_template_json, projection_revision, dual_write_enabled FROM workspace_v3_compatibility WHERE singleton_id = ?1",
             [APP_WORKSPACE_NAVIGATION_SINGLETON_ID],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)? != 0,
+                ))
+            },
         )
         .optional()?;
-    let Some((template_json, current_revision)) = compatibility else {
+    let Some((template_json, current_revision, dual_write_enabled)) = compatibility else {
         return Ok(None);
     };
+    if !dual_write_enabled {
+        return Ok(None);
+    }
     let template: Value = serde_json::from_str(&template_json).map_err(invalid_json)?;
     let navigation = load_navigation(connection)?;
     let contexts = load_projection_contexts(connection)?;
@@ -1546,6 +1858,168 @@ mod tests {
                 .expect("workspace exists")
                 .revision,
             revision_before_recency_sync
+        );
+    }
+
+    #[test]
+    fn rollout_keeps_dual_write_for_stable_and_gates_the_v4_only_transition() {
+        let (_temp_dir, mut store) = open_store();
+        store
+            .run_workspace_migration(migration_input())
+            .expect("migration succeeds");
+
+        let stable = store
+            .mark_workspace_rollout_stable(NativeWorkspaceMarkStableInput {
+                application_version: "0.2.1".to_string(),
+                retention_days: 90,
+            })
+            .expect("stable release recorded");
+        assert_eq!(stable.stage, NativeWorkspaceRolloutStage::StableDualWrite);
+        assert!(stable.dual_write_enabled);
+        assert!(
+            store
+                .disable_workspace_legacy_writes(NativeWorkspaceDisableLegacyWritesInput {
+                    application_version: "0.2.1".to_string(),
+                })
+                .is_err(),
+            "the stable dual-write version cannot retire its own rollback path"
+        );
+        assert!(
+            store
+                .disable_workspace_legacy_writes(NativeWorkspaceDisableLegacyWritesInput {
+                    application_version: "0.3.0".to_string(),
+                })
+                .is_err(),
+            "unresolved recovery layouts must block compatibility retirement"
+        );
+
+        let recovery = store
+            .list_workspace_recovery_layouts()
+            .expect("recovery layouts list");
+        for layout in recovery {
+            store
+                .discard_workspace_recovery_layout(
+                    comando_types::workspace::NativeWorkspaceRecoveryDiscardInput {
+                        recovery_id: layout.id,
+                        scope_key: layout.scope_key,
+                    },
+                )
+                .expect("recovery layout explicitly discarded");
+        }
+        let projection_before = load_v3_projection(store.connection()).expect("v3 projection");
+        let v4_only = store
+            .disable_workspace_legacy_writes(NativeWorkspaceDisableLegacyWritesInput {
+                application_version: "0.3.0".to_string(),
+            })
+            .expect("later version disables legacy writes");
+        assert_eq!(v4_only.stage, NativeWorkspaceRolloutStage::V4Only);
+        assert!(!v4_only.rollback_available);
+
+        let scope_key = WorkspaceScopeKey("project-a::__primary__".to_string());
+        let workspace = store
+            .load_durable_workspace(&scope_key)
+            .expect("workspace loads")
+            .expect("workspace exists");
+        store
+            .save_durable_workspace(comando_types::workspace::NativeDurableWorkspaceSaveInput {
+                scope_key,
+                expected_revision: workspace.revision,
+                layout_snapshot: layout("v4-only write"),
+            })
+            .expect("v4-only save succeeds");
+        assert_eq!(
+            load_v3_projection(store.connection()).expect("last projection retained"),
+            projection_before,
+        );
+        assert!(store.rollback_workspace_migration().is_err());
+    }
+
+    #[test]
+    fn legacy_cleanup_requires_consent_retention_and_resolved_recovery() {
+        let (temp_dir, mut store) = open_store();
+        let migration = store
+            .run_workspace_migration(migration_input())
+            .expect("migration succeeds");
+        let backup_path = temp_dir
+            .path()
+            .join(&migration.diagnostics.source_backup_ref);
+        assert!(backup_path.exists());
+        for layout in store
+            .list_workspace_recovery_layouts()
+            .expect("recovery layouts list")
+        {
+            store
+                .discard_workspace_recovery_layout(
+                    comando_types::workspace::NativeWorkspaceRecoveryDiscardInput {
+                        recovery_id: layout.id,
+                        scope_key: layout.scope_key,
+                    },
+                )
+                .expect("recovery layout explicitly discarded");
+        }
+        store
+            .mark_workspace_rollout_stable(NativeWorkspaceMarkStableInput {
+                application_version: "0.2.1".to_string(),
+                retention_days: 90,
+            })
+            .expect("stable release recorded");
+        store
+            .disable_workspace_legacy_writes(NativeWorkspaceDisableLegacyWritesInput {
+                application_version: "0.3.0".to_string(),
+            })
+            .expect("legacy writes disabled");
+
+        assert!(
+            store
+                .cleanup_workspace_legacy_compatibility(NativeWorkspaceCleanupLegacyInput {
+                    consent: true,
+                })
+                .is_err(),
+            "retention must elapse"
+        );
+        store
+            .connection_mut()
+            .execute(
+                "UPDATE workspace_v3_compatibility SET legacy_retention_until = '2020-01-01T00:00:00Z'",
+                [],
+            )
+            .expect("test retention deadline moved to the past");
+        assert!(
+            store
+                .cleanup_workspace_legacy_compatibility(NativeWorkspaceCleanupLegacyInput {
+                    consent: false,
+                })
+                .is_err(),
+            "cleanup requires explicit consent"
+        );
+        let retired = store
+            .cleanup_workspace_legacy_compatibility(NativeWorkspaceCleanupLegacyInput {
+                consent: true,
+            })
+            .expect("legacy compatibility retired");
+        assert_eq!(retired.stage, NativeWorkspaceRolloutStage::LegacyRetired);
+        assert!(!retired.source_backup_retained);
+        assert!(!backup_path.exists());
+        assert!(
+            store
+                .connection()
+                .query_row(
+                    "SELECT value FROM app_settings WHERE key = ?1",
+                    [APP_DATA_WINDOWS_STORAGE_KEY],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .expect("legacy key query")
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .connection()
+                .query_row("SELECT COUNT(*) FROM durable_workspaces", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("durable workspace count"),
+            1,
         );
     }
 

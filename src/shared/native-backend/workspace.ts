@@ -141,6 +141,11 @@ export type NativeWorkspaceRecoveryApplyInput = {
     readonly expectedRevision: number;
 };
 
+export type NativeWorkspaceRecoveryDiscardInput = {
+    readonly recoveryId: string;
+    readonly scopeKey: NativeWorkspaceScopeKey;
+};
+
 export type NativeWorkspaceReassociateInput = {
     readonly sourceScopeKey: NativeWorkspaceScopeKey;
     readonly targetScopeKey: NativeWorkspaceScopeKey;
@@ -233,4 +238,36 @@ export type NativeWorkspaceMigrationExportOutput = {
 export type NativeWorkspaceMigrationRollbackOutput = {
     readonly diagnostics: NativeWorkspaceMigrationDiagnostics;
     readonly v3Projection: readonly unknown[];
+};
+
+export type NativeWorkspaceRolloutStage =
+    | "internal"
+    | "stable_dual_write"
+    | "v4_only"
+    | "legacy_retired";
+
+export type NativeWorkspaceRolloutStatus = {
+    readonly stage: NativeWorkspaceRolloutStage;
+    readonly dualWriteEnabled: boolean;
+    readonly stableReleaseVersion: string | null;
+    readonly stableReleaseVerifiedAt: string | null;
+    readonly legacyRetentionUntil: string | null;
+    readonly v4OnlySince: string | null;
+    readonly legacyCleanupCompletedAt: string | null;
+    readonly pendingRecoveryLayoutCount: number;
+    readonly rollbackAvailable: boolean;
+    readonly sourceBackupRetained: boolean;
+};
+
+export type NativeWorkspaceMarkStableInput = {
+    readonly applicationVersion: string;
+    readonly retentionDays: number;
+};
+
+export type NativeWorkspaceDisableLegacyWritesInput = {
+    readonly applicationVersion: string;
+};
+
+export type NativeWorkspaceCleanupLegacyInput = {
+    readonly consent: boolean;
 };

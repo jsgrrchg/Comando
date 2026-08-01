@@ -401,7 +401,7 @@ describe("createNativeAppDataClient", () => {
         expect(native.appData.get("legacy.secretsMigrated.v1")).toBe(true);
     });
 
-    it("runs v3 to v4 migration and shadow-syncs later v3 writes", async () => {
+    it("reconciles downgrade writes once at startup without keeping v3 authoritative", async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
         tempDirs.push(tempDir);
         const databaseFile = path.join(tempDir, "comando.sqlite");
@@ -422,6 +422,10 @@ describe("createNativeAppDataClient", () => {
             navigationWithDraft("draft before migration"),
         );
         await seed.close();
+        native.appData.set(
+            "persistence.windows",
+            structuredClone(native.appData.get("persistence.mainWindow")),
+        );
 
         const migrationRequests: {
             readonly args: Record<string, unknown>;
@@ -436,7 +440,7 @@ describe("createNativeAppDataClient", () => {
                     migrationRequests.push({ args, command });
                     if (command === "workspace_migration_run") {
                         return {
-                            applied: true,
+                            applied: false,
                             diagnostics: appDataMigrationDiagnostics(),
                             navigation: appDataMigrationNavigation(),
                         } as T;
@@ -446,16 +450,12 @@ describe("createNativeAppDataClient", () => {
                 return native.requester.request<T>(command, args);
             },
         };
+        const onWorkspaceMigrationTelemetry = vi.fn();
         const client = await createNativeAppDataClient({
             applicationVersion: "0.2.1",
             client: requester,
             databaseFile,
-            durableWorkspaceFeatureFlags: {
-                newChrome: false,
-                readV4: false,
-                singleWindowHost: false,
-                writeV4: true,
-            },
+            onWorkspaceMigrationTelemetry,
         });
         const runInput = migrationRequests.find(
             (request) => request.command === "workspace_migration_run",
@@ -481,12 +481,16 @@ describe("createNativeAppDataClient", () => {
                 },
             ],
         });
-
-        await client.workspace.saveSnapshot(
-            workspaceId!,
-            navigationWithDraft("draft after migration"),
+        expect(onWorkspaceMigrationTelemetry).toHaveBeenCalledWith(
+            expect.objectContaining({
+                applicationVersion: "0.2.1",
+                migrationApplied: false,
+                rolloutStage: "stable_dual_write",
+                schemaVersion: 1,
+            }),
         );
-        const syncInput = migrationRequests.findLast(
+
+        const syncInput = migrationRequests.find(
             (request) => request.command === "workspace_migration_sync_legacy",
         )?.args;
         expect(syncInput).toMatchObject({
@@ -497,7 +501,7 @@ describe("createNativeAppDataClient", () => {
                             layoutSnapshot: {
                                 tabs: [
                                     expect.objectContaining({
-                                        draft: "draft after migration",
+                                    draft: "draft before migration",
                                         sessionId: "session-1",
                                     }),
                                 ],
@@ -507,6 +511,18 @@ describe("createNativeAppDataClient", () => {
                 },
             ],
         });
+        const syncCountBeforeV3Write = migrationRequests.filter(
+            (request) => request.command === "workspace_migration_sync_legacy",
+        ).length;
+        await client.workspace.saveSnapshot(
+            workspaceId!,
+            navigationWithDraft("draft after migration"),
+        );
+        expect(
+            migrationRequests.filter(
+                (request) => request.command === "workspace_migration_sync_legacy",
+            ),
+        ).toHaveLength(syncCountBeforeV3Write);
         await client.close();
     });
 
@@ -824,12 +840,36 @@ function createFakeNativeRequester(): {
 } {
     const appData = new Map<string, unknown>();
     const secrets = new Map<string, string | null>();
+    let migrationReady = false;
+    let rollout = appDataRolloutStatus("internal");
     const request: NativeBackendRequester["request"] = <T = unknown>(
         command: string,
         args: Record<string, unknown> = {},
     ): Promise<T> => {
         let output: unknown;
         switch (command) {
+            case "workspace_migration_run": {
+                output = {
+                    applied: !migrationReady,
+                    diagnostics: appDataMigrationDiagnostics(),
+                    navigation: appDataMigrationNavigation(),
+                };
+                migrationReady = true;
+                break;
+            }
+            case "workspace_migration_sync_legacy": {
+                output = appDataMigrationNavigation();
+                break;
+            }
+            case "workspace_rollout_get_status": {
+                output = rollout;
+                break;
+            }
+            case "workspace_rollout_mark_stable": {
+                rollout = appDataRolloutStatus("stable_dual_write");
+                output = rollout;
+                break;
+            }
             case "app_data_get_json": {
                 const key = String(args.key);
                 output = {
@@ -872,6 +912,24 @@ function createFakeNativeRequester(): {
         appData,
         requester: { request },
         secrets,
+    };
+}
+
+function appDataRolloutStatus(
+    stage: "internal" | "stable_dual_write",
+): Record<string, unknown> {
+    const stable = stage === "stable_dual_write";
+    return {
+        dualWriteEnabled: true,
+        legacyCleanupCompletedAt: null,
+        legacyRetentionUntil: stable ? "2026-10-30T00:00:00Z" : null,
+        pendingRecoveryLayoutCount: 0,
+        rollbackAvailable: true,
+        sourceBackupRetained: true,
+        stableReleaseVerifiedAt: stable ? "2026-08-01T00:00:00Z" : null,
+        stableReleaseVersion: stable ? "0.2.1" : null,
+        stage,
+        v4OnlySince: null,
     };
 }
 

@@ -144,6 +144,77 @@ describe("WorkspaceNavigator", () => {
         expect(rows?.[1]?.getAttribute("aria-label")).toContain("Comando");
     });
 
+    it("requires explicit confirmation before discarding a pending recovery layout", async () => {
+        vi.stubGlobal("comando", {
+            showNativeContextMenu: vi.fn(() => Promise.resolve("recovery")),
+        });
+        vi.spyOn(window, "confirm").mockReturnValue(true);
+        const model = createModel();
+        const project = model.projects[0];
+        const target = project?.workspaces[1];
+        if (!project || !target) {
+            throw new Error("Expected recovery workspace fixture.");
+        }
+        const recoveryModel: WorkspaceNavigatorModel = {
+            ...model,
+            projects: [
+                {
+                    ...project,
+                    workspaces: [
+                        project.workspaces[0],
+                        {
+                            ...target,
+                            recoveryLayouts: [
+                                {
+                                    createdAt: "2026-08-01T00:00:00Z",
+                                    id: "recovery-a",
+                                    scopeKey: target.scopeKey,
+                                    snapshotHash: "hash-a",
+                                    sourceRevision: 1,
+                                    sourceUpdatedAt: "2026-07-31T00:00:00Z",
+                                    sourceWindowId: "legacy-window",
+                                    sourceWorkspaceId: null,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        };
+        const onDiscardRecoveryLayout = vi.fn(() => Promise.resolve());
+        mount(
+            <WorkspaceNavigator
+                {...createProps({
+                    model: recoveryModel,
+                    onDiscardRecoveryLayout,
+                })}
+            />,
+        );
+        await act(async () => Promise.resolve());
+        const rows = container?.querySelectorAll<HTMLElement>(
+            ".workspace-navigator-workspace-row",
+        );
+        await act(async () => {
+            rows?.[1]?.dispatchEvent(
+                new MouseEvent("contextmenu", { bubbles: true }),
+            );
+            await Promise.resolve();
+        });
+        const discard = [...(container?.querySelectorAll("button") ?? [])].find(
+            (button) => button.textContent === "Discard",
+        );
+        await act(async () => {
+            discard?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+            await Promise.resolve();
+        });
+
+        expect(window.confirm).toHaveBeenCalled();
+        expect(onDiscardRecoveryLayout).toHaveBeenCalledWith(
+            expect.objectContaining({ scopeKey: target.scopeKey }),
+            "recovery-a",
+        );
+    });
+
     it("retries deletion-pending cleanup without running checkout preflight again", async () => {
         vi.stubGlobal("comando", {
             showNativeContextMenu: vi.fn(() =>
@@ -250,6 +321,7 @@ function createProps(
             }),
         ),
         onApplyRecoveryLayout: vi.fn(() => Promise.resolve()),
+        onDiscardRecoveryLayout: vi.fn(() => Promise.resolve()),
         onReassociateWorkspace: vi.fn(() => Promise.resolve()),
         onRemoveSavedWorkspace: vi.fn(() => Promise.resolve()),
         onOpenFolder: vi.fn(() => Promise.resolve()),

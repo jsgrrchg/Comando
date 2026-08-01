@@ -5,7 +5,8 @@ use comando_types::workspace::{
     NativeWorkspaceDeletionKind, NativeWorkspaceDeletionOperationInput,
     NativeWorkspaceDeletionStatus, NativeWorkspaceDeletionUpdateInput,
     NativeWorkspaceForgetSessionInput, NativeWorkspaceReassociateInput,
-    NativeWorkspaceRecoveryApplyInput, NativeWorkspaceRecoveryLayoutSummary,
+    NativeWorkspaceRecoveryApplyInput, NativeWorkspaceRecoveryDiscardInput,
+    NativeWorkspaceRecoveryLayoutSummary,
 };
 use rusqlite::types::Type;
 use rusqlite::{OptionalExtension, Row, Transaction, TransactionBehavior, params};
@@ -99,6 +100,22 @@ impl SqlitePersistenceStore {
         crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(workspace)
+    }
+
+    pub fn discard_workspace_recovery_layout(
+        &mut self,
+        input: NativeWorkspaceRecoveryDiscardInput,
+    ) -> Result<(), PersistenceError> {
+        let changed = self.connection_mut().execute(
+            "DELETE FROM workspace_layout_recovery WHERE id = ?1 AND scope_key = ?2",
+            params![input.recovery_id, input.scope_key.0],
+        )?;
+        if changed == 0 {
+            return Err(PersistenceError::WorkspaceRecoveryNotFound(
+                input.recovery_id,
+            ));
+        }
+        Ok(())
     }
 
     pub fn reassociate_workspace(

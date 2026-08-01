@@ -66,11 +66,6 @@ import {
     createWindowWorkspaceRestoreRecord,
     normalizeWindowWorkspaceRestoreRecord,
 } from "@shared/workspace-restore";
-import {
-    resolveDurableWorkspaceFeatureFlags,
-    type DurableWorkspaceFeatureFlags,
-} from "@shared/durable-workspace-feature-flags";
-
 import type {
     AiPersistenceGateway,
     PersistedAiSessionRuntimeMapping,
@@ -91,6 +86,10 @@ import type { WorkspaceGateway } from "@main/workspace/service";
 
 import { debugBenignError } from "@main/observability/logging";
 import { prepareLegacyWorkspaceMigration } from "@main/workspace/migration";
+import {
+    createWorkspaceMigrationTelemetry,
+    type WorkspaceMigrationTelemetry,
+} from "@main/workspace/rollout";
 
 import {
     NativePersistenceGateway,
@@ -99,10 +98,12 @@ import {
 
 const SETTINGS_KEY = "settings.snapshot";
 const PROJECT_SETTINGS_KEY = "settings.projects";
-const PERSISTENCE_KEY = "persistence.windows";
+const LEGACY_PERSISTENCE_KEY = "persistence.windows";
+const HOST_PERSISTENCE_KEY = "persistence.mainWindow";
 const AI_CATALOGS_KEY = "ai.runtimeCatalogs";
 const AI_PREFERENCES_KEY = "ai.runtimePreferences";
 const AI_PROMPT_QUEUES_KEY = "ai.promptQueues";
+const LEGACY_WORKSPACE_RETENTION_DAYS = 90;
 const WORKSPACE_KEY_PREFIX = "workspace.";
 const AI_RUNTIME_IDS = [
     "claude",
@@ -153,7 +154,9 @@ interface NativeAppDataClientOptions {
     readonly applicationVersion?: string;
     readonly client: NativeBackendRequester;
     readonly databaseFile: string;
-    readonly durableWorkspaceFeatureFlags?: DurableWorkspaceFeatureFlags;
+    readonly onWorkspaceMigrationTelemetry?: (
+        telemetry: WorkspaceMigrationTelemetry,
+    ) => void;
 }
 
 export interface NativeAppDataClient {
@@ -294,9 +297,6 @@ class NativeJsonStore {
 }
 
 class NativePersistenceClient implements PersistenceGateway {
-    readonly #afterPersist?: (
-        records: readonly PersistedWindowRecord[],
-    ) => Promise<void>;
     readonly #store: NativeJsonStore;
     readonly #recordsByWindowId = new Map<string, PersistedWindowRecord>();
     readonly #windowOrder: string[] = [];
@@ -305,12 +305,8 @@ class NativePersistenceClient implements PersistenceGateway {
     constructor(
         store: NativeJsonStore,
         records: readonly PersistedWindowRecord[],
-        afterPersist?: (
-            records: readonly PersistedWindowRecord[],
-        ) => Promise<void>,
     ) {
         this.#store = store;
-        this.#afterPersist = afterPersist;
         this.#rehydrate(records);
     }
 
@@ -560,15 +556,12 @@ class NativePersistenceClient implements PersistenceGateway {
 
     #persistSoon(): void {
         const records = [...this.#recordsByWindowId.values()];
-        this.#store.save(PERSISTENCE_KEY, records, () =>
-            this.#afterPersist?.(records) ?? Promise.resolve(),
-        );
+        this.#store.save(HOST_PERSISTENCE_KEY, records);
     }
 
     async #persist(): Promise<void> {
         const records = [...this.#recordsByWindowId.values()];
-        await this.#store.saveNow(PERSISTENCE_KEY, records);
-        await this.#afterPersist?.(records);
+        await this.#store.saveNow(HOST_PERSISTENCE_KEY, records);
     }
 }
 
@@ -1243,12 +1236,12 @@ async function migrateLegacyAppData(input: {
         }
         if (
             (await input.store.loadNullable<readonly PersistedWindowRecord[]>(
-                PERSISTENCE_KEY,
+                LEGACY_PERSISTENCE_KEY,
             )) === null
         ) {
             const windows = readLegacyWindowRecords(database);
             if (windows.length > 0) {
-                await input.store.saveNow(PERSISTENCE_KEY, windows);
+                await input.store.saveNow(LEGACY_PERSISTENCE_KEY, windows);
             }
         }
         await migrateLegacyWorkspaces(database, input.store);
@@ -1971,30 +1964,43 @@ export async function createNativeAppDataClient(
         secretStore,
         store,
     });
-    const featureFlags =
-        options.durableWorkspaceFeatureFlags ??
-        resolveDurableWorkspaceFeatureFlags(process.env);
     const migrationGateway = new NativePersistenceGateway(options.client);
-    let workspaceMigrationReady = false;
-    if (featureFlags.readV4 || featureFlags.writeV4) {
-        const records = await store.load<readonly PersistedWindowRecord[]>(
-            PERSISTENCE_KEY,
-            [],
+    const records = await store.load<readonly PersistedWindowRecord[]>(
+        LEGACY_PERSISTENCE_KEY,
+        [],
+    );
+    const applicationVersion = options.applicationVersion ?? "unknown";
+    const migrationInput = await prepareLegacyWorkspaceMigration({
+        applicationVersion,
+        loadFallbackLayout: (workspaceId) =>
+            store.loadNullable(workspaceKey(workspaceId)),
+        records,
+    });
+    // Migration is a startup gate now that v4 is the only runtime authority.
+    const migration = await migrationGateway.runWorkspaceMigration(migrationInput);
+    let rollout = await migrationGateway.getWorkspaceRolloutStatus();
+    if (!migration.applied && rollout.dualWriteEnabled) {
+        // A downgraded binary may have changed the canonical v3 projection.
+        await migrationGateway.syncLegacyWorkspaceMigration(migrationInput);
+        rollout = await migrationGateway.getWorkspaceRolloutStatus();
+    }
+    if (rollout.stage === "internal") {
+        rollout = await migrationGateway.markWorkspaceRolloutStable({
+            applicationVersion,
+            retentionDays: LEGACY_WORKSPACE_RETENTION_DAYS,
+        });
+    }
+    try {
+        options.onWorkspaceMigrationTelemetry?.(
+            createWorkspaceMigrationTelemetry({
+                diagnostics: migration.diagnostics,
+                migrationApplied: migration.applied,
+                rollout,
+            }),
         );
-        try {
-            await migrationGateway.runWorkspaceMigration(
-                await prepareLegacyWorkspaceMigration({
-                    applicationVersion: options.applicationVersion ?? "unknown",
-                    loadFallbackLayout: (workspaceId) =>
-                        store.loadNullable(workspaceKey(workspaceId)),
-                    records,
-                }),
-            );
-            workspaceMigrationReady = true;
-        } catch (error) {
-            // The v3 path stays authoritative when migration cannot commit.
-            debugBenignError("nativeAppData.workspaceMigration", error);
-        }
+    } catch (error) {
+        // Local observability must never weaken the migration commit gate.
+        debugBenignError("nativeAppData.workspaceMigrationTelemetry", error);
     }
     await secretStore.hydrate(KNOWN_SECRET_KEYS);
 
@@ -2004,25 +2010,20 @@ export async function createNativeAppDataClient(
         await store.load(SETTINGS_KEY, createDefaultSettingsSnapshot()),
         await store.load(PROJECT_SETTINGS_KEY, {}),
     );
-    const syncLegacyProjection =
-        featureFlags.writeV4 && workspaceMigrationReady
-            ? async (records: readonly PersistedWindowRecord[]) => {
-                  await migrationGateway.syncLegacyWorkspaceMigration(
-                      await prepareLegacyWorkspaceMigration({
-                          applicationVersion:
-                              options.applicationVersion ?? "unknown",
-                          loadFallbackLayout: (workspaceId) =>
-                              store.loadNullable(workspaceKey(workspaceId)),
-                          records,
-                      }),
-                  );
-              }
-            : undefined;
-    const persistence = new NativePersistenceClient(
-        store,
-        await store.load(PERSISTENCE_KEY, []),
-        syncLegacyProjection,
+    let hostRecords = await store.load<readonly PersistedWindowRecord[]>(
+        HOST_PERSISTENCE_KEY,
+        [],
     );
+    if (hostRecords.length === 0 && records.length > 0) {
+        // Window state moves to a v4 host key so legacy projection cleanup cannot recreate it.
+        hostRecords = records.map((record) => ({
+            isOpen: record.isOpen,
+            lastOpenedAt: record.lastOpenedAt,
+            snapshot: record.snapshot,
+        }));
+        await store.saveNow(HOST_PERSISTENCE_KEY, hostRecords);
+    }
+    const persistence = new NativePersistenceClient(store, hostRecords);
     const aiPersistence = new NativeAiPersistenceClient(
         store,
         await store.load(AI_PREFERENCES_KEY, {}),

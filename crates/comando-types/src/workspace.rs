@@ -286,6 +286,13 @@ pub struct NativeWorkspaceRecoveryApplyInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeWorkspaceRecoveryDiscardInput {
+    pub recovery_id: String,
+    pub scope_key: WorkspaceScopeKey,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeWorkspaceReassociateInput {
     pub source_scope_key: WorkspaceScopeKey,
     pub target_scope_key: WorkspaceScopeKey,
@@ -398,6 +405,49 @@ pub struct NativeWorkspaceMigrationExportOutput {
 pub struct NativeWorkspaceMigrationRollbackOutput {
     pub diagnostics: NativeWorkspaceMigrationDiagnostics,
     pub v3_projection: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeWorkspaceRolloutStage {
+    Internal,
+    StableDualWrite,
+    V4Only,
+    LegacyRetired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeWorkspaceRolloutStatus {
+    pub stage: NativeWorkspaceRolloutStage,
+    pub dual_write_enabled: bool,
+    pub stable_release_version: Option<String>,
+    pub stable_release_verified_at: Option<String>,
+    pub legacy_retention_until: Option<String>,
+    pub v4_only_since: Option<String>,
+    pub legacy_cleanup_completed_at: Option<String>,
+    pub pending_recovery_layout_count: u64,
+    pub rollback_available: bool,
+    pub source_backup_retained: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeWorkspaceMarkStableInput {
+    pub application_version: String,
+    pub retention_days: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeWorkspaceDisableLegacyWritesInput {
+    pub application_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeWorkspaceCleanupLegacyInput {
+    pub consent: bool,
 }
 
 pub fn normalize_workspace_worktree_id(

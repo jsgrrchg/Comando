@@ -242,6 +242,16 @@ export function WorkspaceNavigatorPanel({
                 });
                 await refreshCatalog();
             }}
+            onDiscardRecoveryLayout={async (workspace, recoveryId) => {
+                if (!window.comando) {
+                    throw new Error("This recovery layout is unavailable.");
+                }
+                await window.comando.discardWorkspaceRecoveryLayout({
+                    recoveryId,
+                    scopeKey: workspace.scopeKey,
+                });
+                await refreshCatalog();
+            }}
             onReassociateWorkspace={async (workspace, target) => {
                 const revision = workspace.catalogEntry.revision;
                 if (!window.comando || revision === null || !target.worktreeId) {
