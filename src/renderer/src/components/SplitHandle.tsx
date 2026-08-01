@@ -3,6 +3,7 @@ import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import type { ShellPanelSide } from "../app/layout/shell-layout";
 
 interface SplitHandleProps {
+    readonly controlsId: string;
     readonly hidden?: boolean;
     readonly label: string;
     readonly max: number;
@@ -17,6 +18,7 @@ interface SplitHandleProps {
 }
 
 export function SplitHandle({
+    controlsId,
     hidden = false,
     label,
     max,
@@ -31,11 +33,13 @@ export function SplitHandle({
 }: SplitHandleProps) {
     return (
         <div
+            aria-controls={controlsId}
             aria-label={label}
             aria-orientation="vertical"
             aria-valuemax={Math.round(max)}
             aria-valuemin={Math.round(min)}
             aria-valuenow={Math.round(value)}
+            aria-valuetext={`${Math.round(value)} pixels`}
             className="group relative z-2 flex h-full cursor-col-resize items-center justify-center"
             hidden={hidden}
             onKeyDown={handleKeyDown}

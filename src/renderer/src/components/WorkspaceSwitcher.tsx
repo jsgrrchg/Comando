@@ -1,11 +1,14 @@
 import {
     useEffect,
+    useId,
     useMemo,
     useRef,
     useState,
     type KeyboardEvent,
 } from "react";
 import { createPortal } from "react-dom";
+
+import { useModalFocusScope } from "./accessibility/useModalFocusScope";
 
 export interface WorkspaceSwitcherEntry {
     readonly isMissing: boolean;
@@ -35,7 +38,18 @@ export function WorkspaceSwitcher({
     const [activatingScopeKey, setActivatingScopeKey] = useState<string | null>(
         null,
     );
+    const id = useId();
+    const backdropRef = useRef<HTMLDivElement | null>(null);
+    const dialogRef = useRef<HTMLDivElement | null>(null);
     const inputRef = useRef<HTMLInputElement | null>(null);
+    const listRef = useRef<HTMLDivElement | null>(null);
+    useModalFocusScope({
+        active: open,
+        containerRef: dialogRef,
+        initialFocusRef: inputRef,
+        modalRootRef: backdropRef,
+        onDismiss: onClose,
+    });
 
     useEffect(() => {
         if (!open) {
@@ -45,11 +59,6 @@ export function WorkspaceSwitcher({
         setSelectedIndex(0);
         setError(null);
         setActivatingScopeKey(null);
-        void window.comando?.setWorkspaceHostOverlayVisible(true);
-        requestAnimationFrame(() => inputRef.current?.focus());
-        return () => {
-            void window.comando?.setWorkspaceHostOverlayVisible(false);
-        };
     }, [open]);
 
     const normalizedQuery = query.trim().toLowerCase();
@@ -100,6 +109,18 @@ export function WorkspaceSwitcher({
         );
     }, [filteredEntries.length]);
 
+    useEffect(() => {
+        if (!open) {
+            return;
+        }
+        const selected = listRef.current?.querySelector<HTMLElement>(
+            "[data-selected='true']",
+        );
+        if (typeof selected?.scrollIntoView === "function") {
+            selected.scrollIntoView({ block: "nearest" });
+        }
+    }, [open, selectedIndex]);
+
     if (!open || typeof document === "undefined") {
         return null;
     }
@@ -142,6 +163,15 @@ export function WorkspaceSwitcher({
             );
             return;
         }
+        if (event.key === "Home" || event.key === "End") {
+            event.preventDefault();
+            if (filteredEntries.length > 0) {
+                setSelectedIndex(
+                    event.key === "Home" ? 0 : filteredEntries.length - 1,
+                );
+            }
+            return;
+        }
         if (event.key === "Enter") {
             const selected = filteredEntries[selectedIndex];
             if (selected) {
@@ -152,6 +182,10 @@ export function WorkspaceSwitcher({
     };
 
     let displayIndex = 0;
+    const listboxId = `${id}-listbox`;
+    const selectedOptionId = filteredEntries[selectedIndex]
+        ? `${id}-option-${selectedIndex}`
+        : undefined;
     return createPortal(
         <div
             className="project-context-menu-backdrop"
@@ -160,31 +194,46 @@ export function WorkspaceSwitcher({
                     onClose();
                 }
             }}
+            ref={backdropRef}
         >
             <div
                 aria-label="Switch workspace"
                 aria-modal="true"
                 className="project-context-menu workspace-switcher"
+                ref={dialogRef}
                 role="dialog"
+                tabIndex={-1}
             >
                 <label className="project-context-search-shell">
                     <span aria-hidden="true">⌕</span>
                     <input
+                        aria-activedescendant={selectedOptionId}
+                        aria-autocomplete="list"
+                        aria-controls={listboxId}
+                        aria-expanded="true"
                         aria-label="Search all workspaces"
                         onChange={(event) => setQuery(event.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder="Search projects and worktrees"
                         ref={inputRef}
+                        role="combobox"
                         value={query}
                     />
                     <span>{filteredEntries.length}</span>
                 </label>
-                <div className="workspace-switcher-list" role="listbox">
+                <div
+                    aria-label="Available workspaces"
+                    className="workspace-switcher-list"
+                    id={listboxId}
+                    ref={listRef}
+                    role="listbox"
+                >
                     {groupedEntries.map((group) => (
                         <section
                             aria-label={group.projectName}
                             className="workspace-switcher-group"
                             key={group.projectId}
+                            role="group"
                         >
                             <h2>{group.projectName}</h2>
                             {group.workspaces.map((entry) => {
@@ -196,6 +245,7 @@ export function WorkspaceSwitcher({
                                         aria-selected={selected}
                                         className="workspace-switcher-item"
                                         data-selected={selected || undefined}
+                                        id={`${id}-option-${itemIndex}`}
                                         key={entry.scopeKey}
                                         onClick={() => void activate(entry)}
                                         onMouseEnter={() =>
@@ -228,7 +278,11 @@ export function WorkspaceSwitcher({
                         </div>
                     ) : null}
                     {error ? (
-                        <div className="workspace-switcher-error" role="alert">
+                        <div
+                            aria-live="assertive"
+                            className="workspace-switcher-error"
+                            role="alert"
+                        >
                             {error}
                         </div>
                     ) : null}

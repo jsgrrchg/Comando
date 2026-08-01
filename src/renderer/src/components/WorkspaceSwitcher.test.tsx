@@ -21,8 +21,6 @@ afterEach(() => {
 
 describe("WorkspaceSwitcher", () => {
     it("groups, filters, and activates the complete catalog", async () => {
-        const setWorkspaceHostOverlayVisible = vi.fn(() => Promise.resolve());
-        vi.stubGlobal("comando", { setWorkspaceHostOverlayVisible });
         const onActivate = vi.fn(() => Promise.resolve());
         const onClose = vi.fn();
         container = document.createElement("div");
@@ -72,13 +70,9 @@ describe("WorkspaceSwitcher", () => {
         });
         expect(onActivate).toHaveBeenCalledWith("project-2::worktree-2");
         expect(onClose).toHaveBeenCalledOnce();
-        expect(setWorkspaceHostOverlayVisible).toHaveBeenCalledWith(true);
     });
 
     it("closes with Escape without activating", async () => {
-        vi.stubGlobal("comando", {
-            setWorkspaceHostOverlayVisible: vi.fn(() => Promise.resolve()),
-        });
         const onActivate = vi.fn();
         const onClose = vi.fn();
         container = document.createElement("div");
@@ -106,7 +100,79 @@ describe("WorkspaceSwitcher", () => {
         expect(onClose).toHaveBeenCalledOnce();
         expect(onActivate).not.toHaveBeenCalled();
     });
+
+    it("exposes combobox semantics, traps focus, and restores the invoker", async () => {
+        const onClose = vi.fn();
+        const trigger = document.createElement("button");
+        trigger.textContent = "Open switcher";
+        document.body.appendChild(trigger);
+        trigger.focus();
+        container = document.createElement("div");
+        document.body.appendChild(container);
+        root = createRoot(container);
+
+        act(() => {
+            root?.render(
+                <WorkspaceSwitcher
+                    entries={[
+                        createEntry("project-1", "Comando", "Primary"),
+                    ]}
+                    onActivate={() => Promise.resolve()}
+                    onClose={onClose}
+                    open={true}
+                />,
+            );
+        });
+        await act(async () => {
+            await nextFrame();
+        });
+
+        const input = document.body.querySelector<HTMLInputElement>(
+            '[role="combobox"]',
+        );
+        const option = document.body.querySelector<HTMLElement>(
+            '[role="option"]',
+        );
+        expect(input?.getAttribute("aria-controls")).toBe(
+            document.body.querySelector('[role="listbox"]')?.id,
+        );
+        expect(input?.getAttribute("aria-activedescendant")).toBe(option?.id);
+        expect(document.activeElement).toBe(input);
+
+        act(() => {
+            trigger.focus();
+            trigger.dispatchEvent(
+                new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }),
+            );
+        });
+        expect(
+            document.body
+                .querySelector<HTMLElement>('[role="dialog"]')
+                ?.contains(document.activeElement),
+        ).toBe(true);
+
+        act(() => {
+            root?.render(
+                <WorkspaceSwitcher
+                    entries={[]}
+                    onActivate={() => Promise.resolve()}
+                    onClose={onClose}
+                    open={false}
+                />,
+            );
+        });
+        await act(async () => {
+            await nextFrame();
+            await nextFrame();
+        });
+        expect(document.activeElement).toBe(trigger);
+        trigger.remove();
+    });
 });
+
+function nextFrame(): Promise<void> {
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
 
 function createEntry(
     projectId: string,

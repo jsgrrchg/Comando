@@ -17,6 +17,7 @@ import type {
     WorkspaceNavigatorProject,
     WorkspaceNavigatorWorkspace,
 } from "@renderer/app/workspace-navigator/model";
+import { useModalFocusScope } from "@renderer/components/accessibility/useModalFocusScope";
 
 export interface WorkspaceNavigatorProps {
     readonly error: string | null;
@@ -884,14 +885,13 @@ function WorkspaceNavigatorDialog({
     readonly children: ReactNode;
     readonly onClose: () => void;
 }) {
+    const backdropRef = useRef<HTMLDivElement | null>(null);
     const dialogRef = useRef<HTMLDivElement | null>(null);
-    useEffect(() => {
-        dialogRef.current
-            ?.querySelector<HTMLElement>(
-                'input, button:not(:disabled), [tabindex]:not([tabindex="-1"])',
-            )
-            ?.focus();
-    }, []);
+    useModalFocusScope({
+        containerRef: dialogRef,
+        modalRootRef: backdropRef,
+        onDismiss: onClose,
+    });
     return (
         <div
             className="workspace-navigator-dialog-backdrop"
@@ -900,39 +900,15 @@ function WorkspaceNavigatorDialog({
                     onClose();
                 }
             }}
+            ref={backdropRef}
         >
             <div
+                aria-label="Workspace action"
                 aria-modal="true"
                 className="workspace-navigator-dialog"
-                onKeyDown={(event) => {
-                    if (event.key === "Escape") {
-                        event.preventDefault();
-                        onClose();
-                        return;
-                    }
-                    if (event.key !== "Tab") {
-                        return;
-                    }
-                    const focusable = [
-                        ...(dialogRef.current?.querySelectorAll<HTMLElement>(
-                            'input:not(:disabled), button:not(:disabled), [tabindex]:not([tabindex="-1"])',
-                        ) ?? []),
-                    ];
-                    if (focusable.length === 0) {
-                        event.preventDefault();
-                        return;
-                    }
-                    const currentIndex = focusable.indexOf(
-                        document.activeElement as HTMLElement,
-                    );
-                    const nextIndex = event.shiftKey
-                        ? (currentIndex - 1 + focusable.length) % focusable.length
-                        : (currentIndex + 1) % focusable.length;
-                    event.preventDefault();
-                    focusable[nextIndex]?.focus();
-                }}
                 ref={dialogRef}
                 role="dialog"
+                tabIndex={-1}
             >
                 {children}
             </div>
@@ -1352,12 +1328,18 @@ function buildWorkspaceAccessibleLabel(
         ? "Opening"
         : error
           ? `Error: ${error}`
+          : workspace.status === "deletion-pending"
+            ? "App data cleanup pending"
+            : workspace.status === "error"
+              ? `Needs attention${workspace.statusMessage ? `: ${workspace.statusMessage}` : ""}`
           : workspace.status === "active"
             ? "Active workspace"
             : workspace.isMissing
               ? "Saved workspace path missing"
               : workspace.status === "activity"
                 ? "Background activity"
+                : workspace.status === "warming"
+                  ? "Opening"
                 : "Available workspace";
     return `${project.name}, ${workspace.label}. ${state}.`;
 }

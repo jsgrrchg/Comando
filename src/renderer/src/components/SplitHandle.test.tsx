@@ -29,6 +29,10 @@ describe("SplitHandle", () => {
         expect(separator.getAttribute("aria-valuemin")).toBe("220");
         expect(separator.getAttribute("aria-valuemax")).toBe("420");
         expect(separator.getAttribute("aria-valuenow")).toBe("280");
+        expect(separator.getAttribute("aria-valuetext")).toBe("280 pixels");
+        expect(separator.getAttribute("aria-controls")).toBe(
+            "workspace-navigator",
+        );
 
         pressKey(separator, "Home");
         pressKey(separator, "End");
@@ -61,6 +65,7 @@ function renderHandle(
     act(() => {
         root?.render(
             createElement(SplitHandle, {
+                controlsId: "workspace-navigator",
                 label: "Resize navigator",
                 max: 420,
                 min: 220,

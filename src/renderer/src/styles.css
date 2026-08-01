@@ -250,7 +250,7 @@
     --color-editor: #ffffff;
 
     --color-text-primary: #1c1c1c;
-    --color-text-secondary: #737373;
+    --color-text-secondary: #6f6f6f;
     --color-editor-text: #1c1c1c;
 
     --color-border: #e5e5e5;
@@ -258,9 +258,9 @@
     --color-border-subtle: rgba(229, 229, 229, 0.35);
     --color-tree-guide: rgba(0, 0, 0, 0.2);
 
-    --color-accent: #6366f1;
+    --color-accent: #5f62e8;
     --color-accent-soft: rgba(99, 102, 241, 0.12);
-    --color-accent-strong: #6366f1;
+    --color-accent-strong: #5f62e8;
     --color-selection: rgba(99, 102, 241, 0.12);
 
     --shadow-soft: 0 18px 48px rgba(15, 23, 42, 0.08);
@@ -316,7 +316,7 @@
     --color-bg-chrome: #252525;
     --color-editor: #1c1c1c;
     --color-text-primary: #e8e8e8;
-    --color-text-secondary: #8a8a8a;
+    --color-text-secondary: #909090;
     --color-editor-text: #e8e8e8;
     --color-border: #383838;
     --color-border-strong: #383838;
@@ -442,6 +442,81 @@
 .desktop-window-chrome__toggle:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: -2px;
+}
+
+.shell-responsive-grid {
+    transition: grid-template-columns 200ms ease;
+}
+
+.shell-responsive-grid[data-resizing="true"] {
+    transition: none;
+}
+
+.shell-drawer-layer {
+    position: absolute;
+    z-index: 40;
+    inset: 0;
+    pointer-events: none;
+}
+
+.shell-drawer-backdrop {
+    position: absolute;
+    inset: 0;
+    background: color-mix(
+        in srgb,
+        var(--color-bg-primary) 58%,
+        transparent
+    );
+    backdrop-filter: blur(7px);
+    animation: shell-drawer-backdrop-in 140ms ease-out;
+    pointer-events: auto;
+}
+
+.shell-drawer {
+    position: absolute;
+    z-index: 1;
+    top: 0;
+    bottom: 0;
+    max-width: min(88vw, 500px);
+    border-color: var(--color-border-strong);
+    pointer-events: auto;
+}
+
+.shell-drawer[data-shell-overlay="left"] {
+    left: 0;
+    border-right: 1px solid var(--color-border-strong);
+    animation: shell-drawer-left-in 160ms ease-out;
+}
+
+.shell-drawer[data-shell-overlay="right"] {
+    right: 0;
+    border-left: 1px solid var(--color-border-strong);
+    animation: shell-drawer-right-in 160ms ease-out;
+}
+
+.shell-drawer:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+}
+
+:root[data-transparency-enabled="false"] .shell-drawer-backdrop {
+    backdrop-filter: none;
+}
+
+:root[data-transparency-enabled="false"] .shell-modal-backdrop {
+    backdrop-filter: none !important;
+}
+
+@keyframes shell-drawer-backdrop-in {
+    from { opacity: 0; }
+}
+
+@keyframes shell-drawer-left-in {
+    from { transform: translateX(-100%); }
+}
+
+@keyframes shell-drawer-right-in {
+    from { transform: translateX(100%); }
 }
 
 .settings-inline-close {
@@ -4141,6 +4216,15 @@ button {
     .sidebar-git-scope-menu[data-animation-state="opening"],
     .sidebar-git-scope-menu[data-animation-state="closing"] {
         animation-duration: 1ms !important;
+    }
+
+    .shell-responsive-grid {
+        transition: none !important;
+    }
+
+    .shell-drawer,
+    .shell-drawer-backdrop {
+        animation: none !important;
     }
 }
 

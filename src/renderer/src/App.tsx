@@ -72,9 +72,11 @@ import {
 import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
 import {
     getShellGridTemplateColumns,
+    getOpenShellDrawerSide,
     getShellPanelWidthRange,
     getShellSurfaceSideInsets,
     scaleShellSurfaceInsets,
+    shouldHideWorkspaceSurfaceForHostOverlay,
     shellLayoutConstraints,
     type ShellPanelSide,
 } from "./app/layout/shell-layout";
@@ -148,6 +150,7 @@ import {
     type SidebarScrollPositionStore,
 } from "./components/sidebar/useRestorableSidebarScroll";
 import { SplitHandle } from "./components/SplitHandle";
+import { ShellDrawer } from "./components/ShellDrawer";
 import {
     createWorkspaceQuickDirectory,
     createWorkspaceQuickFile,
@@ -172,6 +175,7 @@ import {
 } from "./components/workspace-inspector";
 import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
+import { useModalFocusScope } from "./components/accessibility/useModalFocusScope";
 
 const EmbeddedSettingsApp = lazy(async () => {
     const module = await import("./SettingsApp");
@@ -553,9 +557,6 @@ export function WorkspaceHostApp() {
         (state) => state.expandedProjectIds,
     );
     const hydrateShell = useShellStore((state) => state.hydrate);
-    const leftCollapsed = useShellStore(
-        (state) => state.responsive.left.collapsed,
-    );
     const leftCollapsedPreference = useShellStore(
         (state) => state.leftCollapsed,
     );
@@ -574,6 +575,7 @@ export function WorkspaceHostApp() {
     const shellResponsive = useShellStore((state) => state.responsive);
     const shellViewportWidth = useShellStore((state) => state.viewportWidth);
     const setResizingPanel = useShellStore((state) => state.setResizingPanel);
+    const setLeftCollapsed = useShellStore((state) => state.setLeftCollapsed);
     const setRightCollapsed = useShellStore(
         (state) => state.setRightCollapsed,
     );
@@ -808,6 +810,17 @@ export function WorkspaceHostApp() {
         new Map(),
     );
     const workspaceHostTitleBarRef = useRef<HTMLDivElement | null>(null);
+    const navigatorToggleRef = useRef<HTMLButtonElement | null>(null);
+    const inspectorToggleRef = useRef<HTMLButtonElement | null>(null);
+    const openShellDrawerSide = getOpenShellDrawerSide(shellResponsive);
+    const presentedShellDrawerSide = workspaceSwitcherOpen
+        ? null
+        : openShellDrawerSide;
+    const hostOverlayVisible = shouldHideWorkspaceSurfaceForHostOverlay({
+        responsive: shellResponsive,
+        settingsOpen: settingsView !== null,
+        workspaceSwitcherOpen,
+    });
 
     useEffect(() => {
         let isDisposed = false;
@@ -1508,14 +1521,18 @@ export function WorkspaceHostApp() {
             return;
         }
         void getComandoApi()?.setWorkspaceHostOverlayVisible(
-            settingsView !== null,
+            hostOverlayVisible,
         );
+    }, [hostOverlayVisible]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
         return () => {
-            if (settingsView !== null) {
-                void getComandoApi()?.setWorkspaceHostOverlayVisible(false);
-            }
+            void getComandoApi()?.setWorkspaceHostOverlayVisible(false);
         };
-    }, [settingsView]);
+    }, []);
 
     useEffect(() => {
         const comandoApi = getComandoApi();
@@ -4708,6 +4725,8 @@ export function WorkspaceHostApp() {
             onToggleInspector={toggleRightCollapsed}
             onToggleNavigator={toggleLeftCollapsed}
             platform={bootstrap?.platform ?? null}
+            inspectorToggleRef={inspectorToggleRef}
+            navigatorToggleRef={navigatorToggleRef}
         />
     );
     const workspaceSwitcher = (
@@ -4717,6 +4736,54 @@ export function WorkspaceHostApp() {
             onClose={() => setWorkspaceSwitcherOpen(false)}
             open={workspaceSwitcherOpen}
         />
+    );
+    const shellDrawers = (
+        <>
+            {shellResponsive.left.overlay &&
+            presentedShellDrawerSide !== "left" ? (
+                <div hidden id="workspace-navigator-drawer" />
+            ) : null}
+            {presentedShellDrawerSide === "left" ? (
+                <ShellDrawer
+                    id="workspace-navigator-drawer"
+                    label="Workspace navigator"
+                    onDismiss={() => setLeftCollapsed(true)}
+                    restoreFocusRef={navigatorToggleRef}
+                    side="left"
+                    width={shellResponsive.left.width}
+                >
+                    <div
+                        className="flex min-h-0 flex-1 flex-col"
+                        onClick={() => focusSurface("navigator")}
+                        onFocus={() => focusSurface("navigator")}
+                    >
+                        {leftSidebarContent}
+                    </div>
+                </ShellDrawer>
+            ) : null}
+            {shellResponsive.right.overlay &&
+            presentedShellDrawerSide !== "right" ? (
+                <div hidden id="workspace-inspector-drawer" />
+            ) : null}
+            {presentedShellDrawerSide === "right" ? (
+                <ShellDrawer
+                    id="workspace-inspector-drawer"
+                    label="Workspace inspector"
+                    onDismiss={() => setRightCollapsed(true)}
+                    restoreFocusRef={inspectorToggleRef}
+                    side="right"
+                    width={shellResponsive.right.width}
+                >
+                    <div
+                        className="min-h-0 flex-1"
+                        onClick={() => focusSurface("inspector")}
+                        onFocus={() => focusSurface("inspector")}
+                    >
+                        {workspaceInspectorContent}
+                    </div>
+                </ShellDrawer>
+            ) : null}
+        </>
     );
 
     if (isWorkspaceHostRenderer) {
@@ -4747,7 +4814,8 @@ export function WorkspaceHostApp() {
                     </main>
                 ) : (
                 <div
-                    className="relative grid min-h-0 flex-1"
+                    className="shell-responsive-grid relative grid min-h-0 flex-1"
+                    data-resizing={dragState ? "true" : undefined}
                     style={{ gridTemplateColumns }}
                 >
                     <aside
@@ -4783,8 +4851,9 @@ export function WorkspaceHostApp() {
                         }
                     >
                         <SplitHandle
+                            controlsId="workspace-navigator"
                             hidden={!leftPanelPersistent}
-                            label="Resize project sidebar"
+                            label="Resize workspace navigator"
                             max={leftPanelWidthRange.max}
                             min={leftPanelWidthRange.min}
                             onDecrease={() =>
@@ -4842,6 +4911,7 @@ export function WorkspaceHostApp() {
                         }
                     >
                         <SplitHandle
+                            controlsId="workspace-inspector"
                             hidden={!rightPanelPersistent}
                             label="Resize workspace inspector"
                             max={rightPanelWidthRange.max}
@@ -4899,47 +4969,7 @@ export function WorkspaceHostApp() {
                         {rightPanelPersistent && workspaceInspectorContent}
                     </aside>
 
-                    {shellResponsive.left.overlay ? (
-                        <aside
-                            aria-label="Workspace navigator"
-                            aria-hidden={leftCollapsed}
-                            className="app-sidebar absolute inset-y-0 left-0 z-20 flex min-h-0 flex-col overflow-hidden shadow-xl"
-                            data-shell-overlay="left"
-                            id="workspace-navigator-drawer"
-                            onClick={() => focusSurface("navigator")}
-                            onFocus={() => focusSurface("navigator")}
-                            style={
-                                leftCollapsed
-                                    ? { display: "none" }
-                                    : { width: shellResponsive.left.width }
-                            }
-                            tabIndex={leftCollapsed ? -1 : 0}
-                        >
-                            {!leftCollapsed && leftSidebarContent}
-                        </aside>
-                    ) : null}
-                    {shellResponsive.right.overlay ? (
-                        <aside
-                            aria-label="Workspace inspector"
-                            aria-hidden={shellResponsive.right.collapsed}
-                            className="app-sidebar absolute inset-y-0 right-0 z-20 min-h-0 overflow-hidden shadow-xl"
-                            data-shell-overlay="right"
-                            id="workspace-inspector-drawer"
-                            onClick={() => focusSurface("inspector")}
-                            onFocus={() => focusSurface("inspector")}
-                            style={
-                                shellResponsive.right.collapsed
-                                    ? { display: "none" }
-                                    : { width: shellResponsive.right.width }
-                            }
-                            tabIndex={
-                                shellResponsive.right.collapsed ? -1 : 0
-                            }
-                        >
-                            {!shellResponsive.right.collapsed &&
-                                workspaceInspectorContent}
-                        </aside>
-                    ) : null}
+                    {shellDrawers}
                 </div>
                 )}
             </div>
@@ -5025,12 +5055,10 @@ export function WorkspaceHostApp() {
                     {desktopWindowChrome}
                     {workspaceSwitcher}
                     <div
-                        className="relative grid min-h-0 flex-1"
+                        className="shell-responsive-grid relative grid min-h-0 flex-1"
+                        data-resizing={dragState ? "true" : undefined}
                         style={{
                             gridTemplateColumns,
-                            transition: dragState
-                                ? undefined
-                                : "grid-template-columns 200ms ease",
                         }}
                     >
                         <aside
@@ -5066,8 +5094,9 @@ export function WorkspaceHostApp() {
                             }
                         >
                             <SplitHandle
+                                controlsId="workspace-navigator"
                                 hidden={!leftPanelPersistent}
-                                label="Resize project sidebar"
+                                label="Resize workspace navigator"
                                 max={leftPanelWidthRange.max}
                                 min={leftPanelWidthRange.min}
                                 onDecrease={() =>
@@ -5138,6 +5167,7 @@ export function WorkspaceHostApp() {
                             }
                         >
                             <SplitHandle
+                                controlsId="workspace-inspector"
                                 hidden={!rightPanelPersistent}
                                 label="Resize workspace inspector"
                                 max={rightPanelWidthRange.max}
@@ -5201,50 +5231,7 @@ export function WorkspaceHostApp() {
                             {rightPanelPersistent && workspaceInspectorContent}
                         </aside>
 
-                        {shellResponsive.left.overlay ? (
-                            <aside
-                                aria-label="Workspace navigator"
-                                aria-hidden={leftCollapsed}
-                                className="app-sidebar absolute inset-y-0 left-0 z-20 flex min-h-0 flex-col overflow-hidden shadow-xl"
-                                data-shell-overlay="left"
-                                id="workspace-navigator-drawer"
-                                onClick={() => focusSurface("navigator")}
-                                onFocus={() => focusSurface("navigator")}
-                                style={
-                                    leftCollapsed
-                                        ? { display: "none" }
-                                        : { width: shellResponsive.left.width }
-                                }
-                                tabIndex={leftCollapsed ? -1 : 0}
-                            >
-                                {!leftCollapsed && leftSidebarContent}
-                            </aside>
-                        ) : null}
-                        {shellResponsive.right.overlay ? (
-                            <aside
-                                aria-label="Workspace inspector"
-                                aria-hidden={shellResponsive.right.collapsed}
-                                className="app-sidebar absolute inset-y-0 right-0 z-20 min-h-0 overflow-hidden shadow-xl"
-                                data-shell-overlay="right"
-                                id="workspace-inspector-drawer"
-                                onClick={() => focusSurface("inspector")}
-                                onFocus={() => focusSurface("inspector")}
-                                style={
-                                    shellResponsive.right.collapsed
-                                        ? { display: "none" }
-                                        : {
-                                              width: shellResponsive.right
-                                                  .width,
-                                          }
-                                }
-                                tabIndex={
-                                    shellResponsive.right.collapsed ? -1 : 0
-                                }
-                            >
-                                {!shellResponsive.right.collapsed &&
-                                    workspaceInspectorContent}
-                            </aside>
-                        ) : null}
+                        {shellDrawers}
                     </div>
                 </div>
 
@@ -5318,21 +5305,17 @@ function FileTreeMoveDestinationPicker({
     readonly query: string;
     readonly selectedIndex: number;
 }) {
+    const backdropRef = useRef<HTMLDivElement | null>(null);
+    const dialogRef = useRef<HTMLDivElement | null>(null);
     const inputRef = useRef<HTMLInputElement | null>(null);
     const listRef = useRef<HTMLDivElement | null>(null);
-
-    useEffect(() => {
-        if (!open) {
-            return;
-        }
-
-        const frameId = window.requestAnimationFrame(() => {
-            inputRef.current?.focus();
-            inputRef.current?.select();
-        });
-
-        return () => window.cancelAnimationFrame(frameId);
-    }, [open]);
+    useModalFocusScope({
+        active: open,
+        containerRef: dialogRef,
+        initialFocusRef: inputRef,
+        modalRootRef: backdropRef,
+        onDismiss: onClose,
+    });
 
     useEffect(() => {
         if (!open) {
@@ -5415,7 +5398,7 @@ function FileTreeMoveDestinationPicker({
 
     return createPortal(
         <div
-            className="app-no-drag fixed inset-0 z-10030 flex items-start justify-center px-5 pt-[min(14vh,104px)]"
+            className="shell-modal-backdrop app-no-drag fixed inset-0 z-10030 flex items-start justify-center px-5 pt-[min(14vh,104px)]"
             onMouseDown={(event) => {
                 if (event.target === event.currentTarget) {
                     onClose();
@@ -5426,9 +5409,14 @@ function FileTreeMoveDestinationPicker({
                     "color-mix(in srgb, var(--color-bg-primary) 70%, transparent)",
                 backdropFilter: "blur(10px)",
             }}
+            ref={backdropRef}
         >
             <div
+                aria-label="Move files to folder"
+                aria-modal="true"
                 className="app-no-drag flex w-full max-w-[520px] flex-col overflow-hidden rounded-lg border"
+                ref={dialogRef}
+                role="dialog"
                 style={{
                     background: "var(--color-bg-elevated)",
                     borderColor:
@@ -5436,6 +5424,7 @@ function FileTreeMoveDestinationPicker({
                     boxShadow:
                         "0 24px 80px rgba(0, 0, 0, 0.22), 0 0 0 1px color-mix(in srgb, var(--color-border) 40%, transparent)",
                 }}
+                tabIndex={-1}
             >
                 <div
                     className="border-b px-3.5 py-2.5"
@@ -5455,6 +5444,7 @@ function FileTreeMoveDestinationPicker({
                         </div>
                     </div>
                     <input
+                        aria-label="Search destination folders"
                         autoCapitalize="off"
                         autoComplete="off"
                         autoCorrect="off"

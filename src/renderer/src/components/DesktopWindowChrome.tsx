@@ -1,3 +1,5 @@
+import type { RefObject } from "react";
+
 interface DesktopWindowChromeProps {
     readonly inspectorControlsId: string;
     readonly inspectorExpanded: boolean;
@@ -6,6 +8,8 @@ interface DesktopWindowChromeProps {
     readonly onToggleInspector: () => void;
     readonly onToggleNavigator: () => void;
     readonly platform: string | null;
+    readonly inspectorToggleRef?: RefObject<HTMLButtonElement | null>;
+    readonly navigatorToggleRef?: RefObject<HTMLButtonElement | null>;
 }
 
 export function DesktopWindowChrome({
@@ -16,6 +20,8 @@ export function DesktopWindowChrome({
     onToggleInspector,
     onToggleNavigator,
     platform,
+    inspectorToggleRef,
+    navigatorToggleRef,
 }: DesktopWindowChromeProps) {
     return (
         <header
@@ -35,6 +41,7 @@ export function DesktopWindowChrome({
                 expanded={navigatorExpanded}
                 label="navigator"
                 onToggle={onToggleNavigator}
+                toggleRef={navigatorToggleRef}
                 side="left"
             />
             {/* This draggable region is deliberately empty and reserved for future shell UI. */}
@@ -48,6 +55,7 @@ export function DesktopWindowChrome({
                 expanded={inspectorExpanded}
                 label="inspector"
                 onToggle={onToggleInspector}
+                toggleRef={inspectorToggleRef}
                 side="right"
             />
         </header>
@@ -60,12 +68,14 @@ function ChromePanelToggle({
     label,
     onToggle,
     side,
+    toggleRef,
 }: {
     readonly controlsId: string;
     readonly expanded: boolean;
     readonly label: "inspector" | "navigator";
     readonly onToggle: () => void;
     readonly side: "left" | "right";
+    readonly toggleRef?: RefObject<HTMLButtonElement | null>;
 }) {
     const action = expanded ? "Hide" : "Show";
     const accessibleLabel = `${action} workspace ${label}`;
@@ -77,6 +87,7 @@ function ChromePanelToggle({
             className="app-no-drag desktop-window-chrome__toggle"
             data-chrome-control={label}
             onClick={onToggle}
+            ref={toggleRef}
             title={accessibleLabel}
             type="button"
         >

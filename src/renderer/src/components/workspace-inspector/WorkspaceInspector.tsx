@@ -208,7 +208,7 @@ export function WorkspaceInspector({
 
                 {error ? (
                     <div
-                        className="mt-2 rounded-md bg-red-500/10 px-2.5 py-1.5 text-[11px] text-red-600"
+                        className="mt-2 rounded-md bg-red-500/10 px-2.5 py-1.5 text-[11px] text-[var(--diff-remove)]"
                         role="alert"
                     >
                         {error}

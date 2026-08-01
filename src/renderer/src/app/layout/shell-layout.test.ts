@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     createDefaultShellLayout,
     getShellGridTemplateColumns,
+    getOpenShellDrawerSide,
     getShellPanelWidthRange,
     getShellResponsiveMode,
     getShellSurfaceSideInsets,
@@ -11,6 +12,7 @@ import {
     resizeShellPanel,
     resolveShellResponsiveLayout,
     scaleShellSurfaceInsets,
+    shouldHideWorkspaceSurfaceForHostOverlay,
     shellLayoutConstraints,
 } from "./shell-layout";
 
@@ -95,6 +97,14 @@ describe("shell-layout", () => {
         expect(getShellGridTemplateColumns(responsive)).toBe(
             "0px 0px minmax(0, 1fr) 0px 0px",
         );
+        expect(getOpenShellDrawerSide(responsive)).toBe("right");
+        expect(
+            shouldHideWorkspaceSurfaceForHostOverlay({
+                responsive,
+                settingsOpen: false,
+                workspaceSwitcherOpen: false,
+            }),
+        ).toBe(true);
     });
 
     it("keeps navigator persistent and inspector overlaid at 980 px", () => {
@@ -131,6 +141,14 @@ describe("shell-layout", () => {
             left: 281,
             right: 341,
         });
+        expect(getOpenShellDrawerSide(responsive)).toBeNull();
+        expect(
+            shouldHideWorkspaceSurfaceForHostOverlay({
+                responsive,
+                settingsOpen: false,
+                workspaceSwitcherOpen: true,
+            }),
+        ).toBe(true);
     });
 
     it("scales all insets together for host zoom", () => {

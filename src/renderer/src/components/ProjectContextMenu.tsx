@@ -16,6 +16,7 @@ import {
     findProjectGitSnapshot,
     resolveWorktreeBaseBranch,
 } from "@renderer/app/workspace-navigator/project-actions";
+import { useModalFocusScope } from "@renderer/components/accessibility/useModalFocusScope";
 
 export interface ProjectContextMenuProject {
     readonly id: string;
@@ -610,6 +611,13 @@ function ProjectContextModal({
     readonly children: ReactNode;
     readonly onClose: () => void;
 }) {
+    const backdropRef = useRef<HTMLDivElement | null>(null);
+    const dialogRef = useRef<HTMLDivElement | null>(null);
+    useModalFocusScope({
+        containerRef: dialogRef,
+        modalRootRef: backdropRef,
+        onDismiss: onClose,
+    });
     const modal = (
         <div
             className="project-context-menu-backdrop"
@@ -619,12 +627,15 @@ function ProjectContextModal({
                     onClose();
                 }
             }}
+            ref={backdropRef}
         >
             <div
                 aria-label="Open workspace"
                 aria-modal="true"
                 className="project-context-menu"
+                ref={dialogRef}
                 role="dialog"
+                tabIndex={-1}
             >
                 {children}
             </div>

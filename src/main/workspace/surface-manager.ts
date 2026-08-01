@@ -214,6 +214,11 @@ export class WorkspaceSurfaceManager {
                 this.#scheduleActiveSurfaceLayout(createdHost);
             };
             hostWindow.on("resize", scheduleLayout);
+            // Moving between displays can change scale and usable content bounds
+            // without a regular resize event on every desktop environment.
+            hostWindow.on("move", scheduleLayout);
+            hostWindow.on("show", scheduleLayout);
+            hostWindow.on("restore", scheduleLayout);
             hostWindow.on("enter-full-screen", scheduleLayout);
             hostWindow.on("leave-full-screen", scheduleLayout);
             hostWindow.on("maximize", scheduleLayout);

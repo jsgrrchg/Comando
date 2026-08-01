@@ -225,6 +225,30 @@ export function getShellGridTemplateColumns(
     return `${leftWidth}px ${leftHandle}px minmax(0, 1fr) ${rightHandle}px ${rightWidth}px`;
 }
 
+export function getOpenShellDrawerSide(
+    responsive: ShellResponsiveLayout,
+): ShellPanelSide | null {
+    if (responsive.left.overlay && !responsive.left.collapsed) {
+        return "left";
+    }
+    if (responsive.right.overlay && !responsive.right.collapsed) {
+        return "right";
+    }
+    return null;
+}
+
+export function shouldHideWorkspaceSurfaceForHostOverlay(input: {
+    readonly responsive: ShellResponsiveLayout;
+    readonly settingsOpen: boolean;
+    readonly workspaceSwitcherOpen: boolean;
+}): boolean {
+    return (
+        input.settingsOpen ||
+        input.workspaceSwitcherOpen ||
+        getOpenShellDrawerSide(input.responsive) !== null
+    );
+}
+
 export function getShellSurfaceSideInsets(
     responsive: ShellResponsiveLayout,
 ): { readonly left: number; readonly right: number } {

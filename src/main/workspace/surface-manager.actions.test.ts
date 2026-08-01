@@ -6,6 +6,7 @@ import type {
     WindowContextSnapshot,
     WorkspaceNavigationSnapshot,
     WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceDragEvent,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 import { createWindowWorkspaceRestoreRecord } from "@shared/workspace-restore";
@@ -142,6 +143,8 @@ describe("WorkspaceSurfaceManager action routing", () => {
 
         manager.setHostOverlayVisible("host-1", false);
         expect(surface.setVisible).toHaveBeenLastCalledWith(true);
+        expect(surface.webContents.close).not.toHaveBeenCalled();
+        expect(electronMocks.views).toHaveLength(1);
     });
 
     it("delegates workspace shortcuts from the surface to singleton navigation", () => {
@@ -508,6 +511,22 @@ describe("WorkspaceSurfaceManager action routing", () => {
                 y: 65,
             }),
         );
+
+        host.getContentBounds.mockReturnValue({
+            height: 820,
+            width: 1_360,
+            x: 2_100,
+            y: 80,
+        });
+        host.emit("move");
+        await vi.waitFor(() =>
+            expect(surface?.setBounds).toHaveBeenLastCalledWith({
+                height: 755,
+                width: 1_360,
+                x: 0,
+                y: 65,
+            }),
+        );
     });
 
     it("waits until a new host renderer registers its surface container", async () => {
@@ -734,6 +753,74 @@ describe("WorkspaceSurfaceManager action routing", () => {
             IPC_EVENTS.workspaceSurfaceDrag,
             expect.anything(),
         );
+    });
+
+    it("translates drags from either sidebar across persistent panels and drawers", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        manager.syncHost(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        const surface = electronMocks.views[0];
+        if (!surface) {
+            throw new Error("Expected the active surface.");
+        }
+        manager.setContentInsets("host-1", {
+            left: 281,
+            right: 341,
+            top: 52,
+        });
+        await vi.waitFor(() =>
+            expect(surface.setBounds).toHaveBeenLastCalledWith({
+                height: 748,
+                width: 578,
+                x: 281,
+                y: 52,
+            }),
+        );
+
+        const drag = {
+            contextKey: "project-a::__primary__",
+            detail: { phase: "move", x: 700, y: 180 },
+            kind: "agent" as const,
+            projectId: "project-a",
+            worktreeId: null,
+        };
+        expect(manager.dispatchActiveSurfaceDrag("host-1", drag)).toEqual({
+            delivered: true,
+        });
+        const persistentPanelDrag = surface.webContents.send.mock.calls.at(
+            -1,
+        )?.[1] as WorkspaceSurfaceDragEvent | undefined;
+        expect(persistentPanelDrag).toMatchObject({
+            detail: { x: 419, y: 128 },
+        });
+
+        manager.setContentInsets("host-1", { left: 0, right: 0, top: 52 });
+        await vi.waitFor(() =>
+            expect(surface.setBounds).toHaveBeenLastCalledWith({
+                height: 748,
+                width: 1_200,
+                x: 0,
+                y: 52,
+            }),
+        );
+        manager.setHostOverlayVisible("host-1", true);
+        expect(
+            manager.dispatchActiveSurfaceDrag("host-1", {
+                ...drag,
+                detail: { phase: "end", x: 700, y: 180 },
+                kind: "github",
+            }),
+        ).toEqual({ delivered: true });
+        const drawerDrag = surface.webContents.send.mock.calls.at(-1)?.[1] as
+            | WorkspaceSurfaceDragEvent
+            | undefined;
+        expect(drawerDrag).toMatchObject({
+            detail: { x: 700, y: 128 },
+            kind: "github",
+        });
     });
 
     it("reveals a surface file only through its active host context", async () => {
