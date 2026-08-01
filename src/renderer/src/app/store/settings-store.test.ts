@@ -147,6 +147,17 @@ describe("settings-store", () => {
         });
     });
 
+    it("updates appearance eagerly so renderer scale changes do not wait for IPC", () => {
+        const appearance = createAppearanceSettings({
+            agentsSidebarScale: 1.25,
+            fileTreeScale: 1.15,
+        });
+
+        useSettingsStore.getState().setAppearance(appearance);
+
+        expect(useSettingsStore.getState().appearance).toEqual(appearance);
+    });
+
     it("refreshes the shared snapshot from a single settings event", async () => {
         const initialAiChat = createAiChatSettings({ chatFontSize: 14 });
         const nextAiChat = createAiChatSettings({ chatFontSize: 18 });

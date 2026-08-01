@@ -184,6 +184,7 @@ export function SettingsApp({
     const availableFontFamilyIds = useAvailableFontFamilyIds();
     const hydrateSettings = useSettingsStore((state) => state.hydrate);
     const settingsRevision = useSettingsStore((state) => state.revision);
+    const setStoreAppearance = useSettingsStore((state) => state.setAppearance);
     const storeAiChat = useSettingsStore((state) => state.aiChat);
     const storeAppAppearance = useSettingsStore((state) => state.appearance);
     const storeAppEditor = useSettingsStore((state) => state.editor);
@@ -473,14 +474,19 @@ export function SettingsApp({
         void loadEnvironmentDiagnostics();
     }, [loadEnvironmentDiagnostics, loadRuntimeStatuses, settingsRevision]);
 
+    const commitAppAppearance = (nextAppearance: AppAppearanceSettings) => {
+        setAppAppearance(nextAppearance);
+        setStoreAppearance(nextAppearance);
+        void saveAppAppearanceSettings(nextAppearance);
+    };
+
     const handleAppThemeModeChange = (themeMode: ThemeMode) => {
         const nextAppearance = {
             ...appAppearance,
             themeMode,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppFileTreeScaleChange = (fileTreeScale: number) => {
@@ -489,8 +495,7 @@ export function SettingsApp({
             fileTreeScale,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppAgentsSidebarScaleChange = (
@@ -501,8 +506,7 @@ export function SettingsApp({
             agentsSidebarScale,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppStickyFoldersEnabledChange = (
@@ -513,8 +517,7 @@ export function SettingsApp({
             stickyFoldersEnabled,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppThemePresetChange = (themePresetId: string) => {
@@ -523,8 +526,7 @@ export function SettingsApp({
             themePreset: themePresetId as ThemePreset,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppZoomFactorChange = (zoomFactor: number) => {
@@ -533,8 +535,7 @@ export function SettingsApp({
             zoomFactor,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppBoostCodeContrastChange = (boostCodeContrast: boolean) => {
@@ -543,8 +544,7 @@ export function SettingsApp({
             boostCodeContrast,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppChromeTransparencyChange = (
@@ -555,8 +555,7 @@ export function SettingsApp({
             chromeTransparency,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppTransparencyEnabledChange = (
@@ -567,8 +566,7 @@ export function SettingsApp({
             transparencyEnabled,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppEditorFontFamilyChange = (fontFamilyId: string) => {

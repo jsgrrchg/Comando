@@ -35,6 +35,7 @@ interface SettingsStore {
     readonly systemTheme: SystemTheme;
     readonly terminal: AppTerminalSettings;
     hydrate: () => Promise<void>;
+    setAppearance: (appearance: AppAppearanceSettings) => void;
 }
 
 const DEFAULT_SYSTEM_THEME: SystemTheme = { isDark: false };
@@ -78,6 +79,10 @@ export const useSettingsStore = create<SettingsStore>(() => ({
         });
 
         return hydratePromise;
+    },
+    setAppearance: (appearance) => {
+        // Renderers need the new scale before the persistence round trip completes.
+        useSettingsStore.setState({ appearance });
     },
 }));
 

@@ -2304,15 +2304,14 @@ button {
         calc(8px * var(--sidebar-list-scale, 1));
 }
 
-/* Tactile, uniformly sized buttons shared by the sidebar toolbars
-   (agents summary + git changes). One ownership boundary for all of them. */
+/* Keep sidebar toolbar controls stable while list content changes size. */
 .sidebar-toolbar-action {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    height: calc(24px * var(--sidebar-list-scale, 1));
-    padding: 0 calc(9px * var(--sidebar-list-scale, 1));
-    font-size: calc(11px * var(--sidebar-list-scale, 1));
+    height: 24px;
+    padding: 0 9px;
+    font-size: 11px;
     font-weight: 500;
     line-height: 1;
     border-radius: 6px;
@@ -2328,7 +2327,7 @@ button {
 
 /* Square variant for icon-only toolbar buttons */
 .sidebar-toolbar-action--icon {
-    width: calc(24px * var(--sidebar-list-scale, 1));
+    width: 24px;
     padding: 0;
 }
 
