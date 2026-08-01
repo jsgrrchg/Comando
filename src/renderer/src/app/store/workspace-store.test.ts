@@ -585,6 +585,50 @@ describe("workspace file opening", () => {
         );
     });
 
+    it("does not delay surface layout hydration on active file I/O", async () => {
+        const pendingFile = createDeferred<ProjectFileDocument>();
+        openProjectFileMock.mockReturnValueOnce(pendingFile.promise);
+        const activeFile = createWorkspaceFileTab(
+            "active-file",
+            "src/active.ts",
+        );
+        const snapshot: WorkspaceSnapshot = {
+            activePaneId: "pane-root",
+            rootNode: {
+                activeTabId: activeFile.id,
+                id: "pane-root",
+                tabIds: [activeFile.id],
+                type: "pane",
+            },
+            tabs: [activeFile],
+        };
+
+        await expect(
+            useWorkspaceStore.getState().hydrateSurfaceLayout({
+                generation: "surface-1",
+                lastActivatedAt: "2026-08-01T00:00:00.000Z",
+                layout: snapshot,
+                projectId: "project-1",
+                revision: 1,
+                scopeKey: "project-1::__primary__",
+                worktreeId: null,
+            }),
+        ).resolves.toBeUndefined();
+        expect(openProjectFileMock).toHaveBeenCalledOnce();
+        expect(
+            useWorkspaceStore.getState().tabsById[activeFile.id],
+        ).toMatchObject({ isLoading: true });
+
+        pendingFile.resolve(
+            createProjectFileDocument(activeFile.relativePath, "ready\n"),
+        );
+        await vi.waitFor(() =>
+            expect(
+                useWorkspaceStore.getState().tabsById[activeFile.id],
+            ).toMatchObject({ isLoading: false, savedContent: "ready\n" }),
+        );
+    });
+
     it("hydrates only active file tabs and loads inactive files on focus", async () => {
         const activeFile = createWorkspaceFileTab(
             "active-file",

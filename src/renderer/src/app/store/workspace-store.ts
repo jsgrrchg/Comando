@@ -450,7 +450,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         }));
     },
 
-    hydrateSurfaceLayout: async (input) => {
+    hydrateSurfaceLayout: (input) => {
         const workspace = deserializeWorkspaceForRenderer(
             input.layout,
             "surface",
@@ -487,10 +487,27 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             ),
             scopeEpoch,
         });
-        await activateWorkspaceRuntimePanes(workspace, get, set, {
+        // File and history I/O must not delay the renderer-ready handshake.
+        void activateWorkspaceRuntimePanes(workspace, get, set, {
             contextKey: input.scopeKey,
             scopeEpoch,
+        }).catch((error: unknown) => {
+            if (
+                !isWorkspaceScopeCurrent(get, {
+                    contextKey: input.scopeKey,
+                    scopeEpoch,
+                })
+            ) {
+                return;
+            }
+            set({
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Could not hydrate the workspace runtime panes.",
+            });
         });
+        return Promise.resolve();
     },
 
     activateWorkspaceLayout: async (contextKey) => {

@@ -242,32 +242,50 @@ export function WorkspaceSurfaceApp() {
 
         void (async () => {
             try {
-                const [record, settings] = await Promise.all([
-                    runtime.hydrate(),
-                    window.comando.getSettingsSnapshot(),
-                    hydrateBootstrap(),
-                    hydrateSettings(),
-                ]);
+                const record = await runtime.hydrate();
                 if (cancelled || !record) {
                     return;
                 }
-                setCachedAppEditorSettings(settings.editor);
-                hydrateAiSettings(settings.ai ?? null);
                 await hydrateSurfaceLayout(record);
-                await hydrateProjects(record.projectId);
-                await gitHydrate({
-                    activeProjectId: record.projectId,
-                    activeWorktreeId: record.worktreeId,
-                    projects: useProjectsStore.getState().projects,
-                });
                 if (!cancelled) {
-                    await resyncSurfaceRuntime();
+                    // The host can reveal the surface as soon as its durable
+                    // layout is installed; auxiliary stores hydrate afterward.
+                    setSurfaceStatus("ready");
                     if (runtimeBinding) {
                         await window.comando.notifyWorkspaceSurfaceReady(
                             runtimeBinding,
                         );
                     }
-                    setSurfaceStatus("ready");
+                    void (async () => {
+                        const [settingsResult] = await Promise.allSettled([
+                            window.comando.getSettingsSnapshot(),
+                            hydrateBootstrap(),
+                            hydrateSettings(),
+                            hydrateProjects(record.projectId),
+                        ]);
+                        if (cancelled) {
+                            return;
+                        }
+                        if (settingsResult.status === "fulfilled") {
+                            setCachedAppEditorSettings(
+                                settingsResult.value.editor,
+                            );
+                            hydrateAiSettings(settingsResult.value.ai ?? null);
+                        }
+                        await gitHydrate({
+                            activeProjectId: record.projectId,
+                            activeWorktreeId: record.worktreeId,
+                            projects: useProjectsStore.getState().projects,
+                        });
+                        if (!cancelled) {
+                            await resyncSurfaceRuntime();
+                        }
+                    })().catch((error: unknown) => {
+                        console.error(
+                            "[workspace] Supplemental surface hydration failed",
+                            error,
+                        );
+                    });
                 }
             } catch (error) {
                 if (!cancelled) {
