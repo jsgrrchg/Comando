@@ -19,6 +19,7 @@ import type {
     WorkspaceNavigationSnapshot,
     WindowWorkspaceRestoreRecord,
     WorkspaceSurfaceActionCompletion,
+    WorkspaceSurfaceActionContext,
     WorkspaceSurfaceActionDeliveryFailureReason,
     WorkspaceSurfaceActionDeliveryResult,
     WorkspaceSurfaceActionDispatchResult,
@@ -593,10 +594,19 @@ export class WorkspaceSurfaceManager {
     dispatchActiveSurfaceDrag(
         hostWindowId: string,
         event: WorkspaceSurfaceDragEvent,
-    ): void {
+    ): WorkspaceSurfaceActionDeliveryResult {
+        const host = this.#hostsByWindowId.get(hostWindowId);
         const surface = this.#getActiveSurface(hostWindowId);
-        if (!surface || surface.webContents.isDestroyed()) {
-            return;
+        const failureReason = this.#getActionDeliveryFailure(
+            host,
+            surface,
+            event,
+        );
+        if (failureReason || !surface) {
+            return {
+                delivered: false,
+                reason: failureReason ?? "missing-surface",
+            };
         }
 
         const bounds = surface.bounds;
@@ -611,6 +621,7 @@ export class WorkspaceSurfaceManager {
             ...event,
             detail: translatedDetail,
         } satisfies WorkspaceSurfaceDragEvent);
+        return { delivered: true };
     }
 
     setContentInset(hostWindowId: string, height: number): void {
@@ -1786,7 +1797,7 @@ export class WorkspaceSurfaceManager {
     #getActionDeliveryFailure(
         host: WorkspaceSurfaceHostRecord | undefined,
         surface: WorkspaceSurfaceRecord | null,
-        request: WorkspaceSurfaceActionRequest,
+        request: WorkspaceSurfaceActionContext,
     ): WorkspaceSurfaceActionDeliveryFailureReason | null {
         if (!host || !surface || surface.webContents.isDestroyed()) {
             return "missing-surface";

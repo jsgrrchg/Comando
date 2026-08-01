@@ -36,6 +36,9 @@ import {
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
 import {
+    requestNativeContextMenuAction,
+} from "@renderer/components/context-menu/nativeContextMenu";
+import {
     MeasuredVirtualList,
     type MeasuredVirtualListHandle,
 } from "@renderer/components/virtual/MeasuredVirtualList";
@@ -85,6 +88,15 @@ interface SidebarGitScopePickerProps {
     readonly onTitlebarKeyDown?: (
         event: ReactKeyboardEvent<HTMLButtonElement>,
     ) => void;
+    readonly onOpenWorkspace?: (
+        projectId: string,
+        worktreeId: string | null,
+        options?: { readonly emptyLayout?: boolean },
+    ) => Promise<void>;
+    readonly overlayBounds?: {
+        readonly left: number;
+        readonly width: number;
+    };
     readonly projectId: string | null;
     readonly titlebarContextKey?: string;
     readonly triggerVariant?: "sidebar" | "titlebar";
@@ -288,6 +300,8 @@ export function SidebarGitScopePicker({
     externalMenuRequest = null,
     onTitlebarKeyDown,
     onTitlebarMenuRequest,
+    onOpenWorkspace,
+    overlayBounds,
     projectId,
     title,
     titlebarContextKey,
@@ -314,6 +328,7 @@ export function SidebarGitScopePicker({
     const [itemContextMenu, setItemContextMenu] = useState<
         ContextMenuState<GitScopeContextMenuPayload> | null
     >(null);
+    const activeNativeContextMenuRef = useRef<object | null>(null);
     const [collapsedSections, setCollapsedSections] = useState<
         Record<string, boolean>
     >({});
@@ -805,25 +820,51 @@ export function SidebarGitScopePicker({
                   height: Math.max(measuredHeight, defaultHeight),
                   width: defaultWidth,
               };
-        const size = clampGitScopeMenuSize(
+        const unconstrainedSize = clampGitScopeMenuSize(
             baseSize,
             {
                 x: buttonRect.left,
                 y: buttonRect.bottom + 6,
             },
         );
+        // Host overlays must stay inside the inspector because the central
+        // WebContentsView is always above host-renderer DOM in its own bounds.
+        const size = overlayBounds
+            ? {
+                  ...unconstrainedSize,
+                  width: Math.min(
+                      unconstrainedSize.width,
+                      Math.max(200, overlayBounds.width - 16),
+                  ),
+              }
+            : unconstrainedSize;
         const spaceAbove = buttonRect.top - 8;
         const spaceBelow = window.innerHeight - buttonRect.bottom - 8;
         const openAbove = spaceAbove >= size.height || spaceAbove > spaceBelow;
         const preferredY = openAbove
             ? buttonRect.top - size.height - 6
             : buttonRect.bottom + 6;
-        const safePosition = getViewportSafeMenuPosition(
+        const viewportSafePosition = getViewportSafeMenuPosition(
             buttonRect.left,
             preferredY,
             size.width,
             size.height,
         );
+        const safePosition = overlayBounds
+            ? {
+                  ...viewportSafePosition,
+                  x: Math.min(
+                      Math.max(
+                          overlayBounds.left + 8,
+                          viewportSafePosition.x,
+                      ),
+                      overlayBounds.left +
+                          overlayBounds.width -
+                          size.width -
+                          8,
+                  ),
+              }
+            : viewportSafePosition;
 
         setMenuPosition({
             height: size.height,
@@ -837,6 +878,7 @@ export function SidebarGitScopePicker({
         hasBranchCreationForm,
         hasBranchCreationQueryOffer,
         listItems.length,
+        overlayBounds,
         userMenuSize,
     ]);
 
@@ -1181,7 +1223,9 @@ export function SidebarGitScopePicker({
             setIsBusy(true);
 
             try {
-                await openContext(projectId, normalizedWorktreeId);
+                await (onOpenWorkspace
+                    ? onOpenWorkspace(projectId, normalizedWorktreeId)
+                    : openContext(projectId, normalizedWorktreeId));
                 setIsOpen(false);
                 setQuery("");
             } catch (error) {
@@ -1196,6 +1240,7 @@ export function SidebarGitScopePicker({
         },
         [
             isBusy,
+            onOpenWorkspace,
             projectId,
             snapshot?.worktrees,
             openContext,
@@ -1333,9 +1378,13 @@ export function SidebarGitScopePicker({
                     worktreeId: worktreeId ?? snapshot?.currentWorktreeId ?? null,
                 });
 
-                await openContext(projectId, createdWorktree.id, {
-                    emptyLayout: true,
-                });
+                await (onOpenWorkspace
+                    ? onOpenWorkspace(projectId, createdWorktree.id, {
+                          emptyLayout: true,
+                      })
+                    : openContext(projectId, createdWorktree.id, {
+                          emptyLayout: true,
+                      }));
 
                 setIsOpen(false);
                 setQuery("");
@@ -1353,6 +1402,7 @@ export function SidebarGitScopePicker({
             branches,
             createWorktree,
             isBusy,
+            onOpenWorkspace,
             openContext,
             project,
             projectId,
@@ -1939,6 +1989,31 @@ export function SidebarGitScopePicker({
         worktreeId,
         worktreeRowById,
     ]);
+
+    useEffect(() => {
+        if (!overlayBounds || !itemContextMenu) {
+            activeNativeContextMenuRef.current = null;
+            return;
+        }
+        if (activeNativeContextMenuRef.current === itemContextMenu) {
+            return;
+        }
+        activeNativeContextMenuRef.current = itemContextMenu;
+        void (async () => {
+            let action: (() => void) | null = null;
+            try {
+                action = await requestNativeContextMenuAction(
+                    contextMenuEntries,
+                    itemContextMenu,
+                );
+            } catch {
+                // Native dismissal is also the fallback for menu IPC errors.
+            } finally {
+                setItemContextMenu(null);
+            }
+            if (action) queueMicrotask(action);
+        })();
+    }, [contextMenuEntries, itemContextMenu, overlayBounds]);
 
     const handleSelectFocused = useCallback(() => {
         const item = flatItems[focusIndex];
@@ -2570,7 +2645,7 @@ export function SidebarGitScopePicker({
                   )
                 : null}
 
-            {itemContextMenu ? (
+            {itemContextMenu && !overlayBounds ? (
                 <ContextMenu
                     entries={contextMenuEntries}
                     menu={itemContextMenu}

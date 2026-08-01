@@ -14,7 +14,6 @@ import {
     projectAvatarInitial,
 } from "./projectAvatar";
 import { writeClipboardText } from "../app/utils/clipboard";
-import { SidebarGitScopePicker } from "./sidebar/SidebarGitScopePicker";
 import { useProjectContextTabDrag } from "./useProjectContextTabDrag";
 import {
     WorkspaceSwitcher,
@@ -37,10 +36,6 @@ interface DesktopTopBarProps {
     readonly contexts: readonly ProjectContextTabItem[];
     readonly leftSidebarCollapsed: boolean;
     readonly menuProjects: readonly ProjectContextMenuProject[];
-    readonly onOpenGitScopeMenu?: (anchor: {
-        readonly width: number;
-        readonly x: number;
-    }) => void;
     readonly onOpenProjectMenu?: () => void;
     readonly onActivateContext: (contextKey: string) => void;
     readonly onActivateWorkspace: (scopeKey: string) => Promise<void>;
@@ -69,7 +64,6 @@ export function DesktopTopBar({
     contexts,
     leftSidebarCollapsed,
     menuProjects,
-    onOpenGitScopeMenu,
     onOpenProjectMenu,
     onActivateContext,
     onActivateWorkspace,
@@ -275,48 +269,34 @@ export function DesktopTopBar({
                             >
                                 {projectAvatarInitial(context.projectName)}
                             </span>
-                            {isActive ? (
-                                <SidebarGitScopePicker
-                                    onTitlebarKeyDown={(event) =>
-                                        handleTabKeyDown(event, index)
-                                    }
-                                    onTitlebarMenuRequest={onOpenGitScopeMenu}
-                                    projectId={context.projectId}
-                                    title={context.projectName}
-                                    titlebarContextKey={context.key}
-                                    triggerVariant="titlebar"
-                                    worktreeId={context.worktreeId}
-                                />
-                            ) : (
-                                <button
-                                    aria-selected={false}
-                                    className="project-context-tab"
-                                    data-project-context-key={context.key}
-                                    onClick={() => onActivateContext(context.key)}
-                                    onKeyDown={(event) =>
-                                        handleTabKeyDown(event, index)
-                                    }
-                                    role="tab"
-                                    tabIndex={-1}
-                                    title={
-                                        context.worktreeLabel
-                                            ? `${context.projectName} — ${context.worktreeLabel}`
-                                            : context.projectName
-                                    }
-                                    type="button"
-                                >
-                                    <span className="project-context-tab-copy">
-                                        <span className="project-context-tab-title">
-                                            {context.projectName}
-                                        </span>
-                                        {context.worktreeLabel && (
-                                            <span className="project-context-tab-subtitle">
-                                                {context.worktreeLabel}
-                                            </span>
-                                        )}
+                            <button
+                                aria-selected={isActive}
+                                className="project-context-tab"
+                                data-project-context-key={context.key}
+                                onClick={() => onActivateContext(context.key)}
+                                onKeyDown={(event) =>
+                                    handleTabKeyDown(event, index)
+                                }
+                                role="tab"
+                                tabIndex={isActive ? 0 : -1}
+                                title={
+                                    context.worktreeLabel
+                                        ? `${context.projectName} — ${context.worktreeLabel}`
+                                        : context.projectName
+                                }
+                                type="button"
+                            >
+                                <span className="project-context-tab-copy">
+                                    <span className="project-context-tab-title">
+                                        {context.projectName}
                                     </span>
-                                </button>
-                            )}
+                                    {context.worktreeLabel && (
+                                        <span className="project-context-tab-subtitle">
+                                            {context.worktreeLabel}
+                                        </span>
+                                    )}
+                                </span>
+                            </button>
                             <button
                                 aria-label={`Close ${context.projectName}`}
                                 className="project-context-tab-close"

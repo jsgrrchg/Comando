@@ -273,8 +273,11 @@ export const IPC_EVENTS = {
 } as const;
 
 export interface WorkspaceSurfaceDragEvent {
+    readonly contextKey: WorkspaceContextKey;
     readonly detail: object;
     readonly kind: "agent" | "github";
+    readonly projectId: string;
+    readonly worktreeId: string | null;
 }
 
 export interface SystemTheme {
@@ -2530,7 +2533,7 @@ export interface WorkspaceSurfaceActionContext {
     readonly worktreeId: string | null;
 }
 
-/** A request emitted by a workspace surface to reveal its active file in the host sidebar. */
+/** A contextual request emitted by a surface to reveal a file in the host inspector. */
 export interface WorkspaceSurfaceFileRevealRequest
     extends WorkspaceSurfaceActionContext {
     readonly relativePath: string;
@@ -4102,7 +4105,7 @@ export interface ComandoApi {
     ) => Promise<WorkspaceNavigationSnapshot | null>;
     dispatchWorkspaceSurfaceDrag: (
         event: WorkspaceSurfaceDragEvent,
-    ) => Promise<void>;
+    ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
     dispatchWorkspaceSurfaceAction: (
         request: WorkspaceSurfaceActionRequest,
     ) => Promise<WorkspaceSurfaceActionDispatchResult>;

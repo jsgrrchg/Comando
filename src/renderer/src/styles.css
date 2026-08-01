@@ -2345,6 +2345,56 @@ button {
     color: var(--color-text-primary);
 }
 
+.workspace-inspector-tab {
+    display: inline-flex;
+    min-width: 28px;
+    height: 28px;
+    flex: 1 1 0;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    border-radius: 6px;
+    color: var(--color-text-secondary);
+    transition:
+        background-color 120ms ease,
+        color 120ms ease;
+}
+
+.workspace-inspector-tab:hover {
+    background: color-mix(in srgb, var(--color-text-primary) 7%, transparent);
+    color: var(--color-text-primary);
+}
+
+.workspace-inspector-tab--active {
+    background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+    color: var(--color-text-primary);
+}
+
+.workspace-inspector-tab:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+    outline-offset: -1px;
+}
+
+.workspace-inspector-tab svg {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
+    stroke-width: 1.15;
+}
+
+.workspace-inspector-tab__label {
+    display: none;
+    min-width: 0;
+    overflow: hidden;
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.workspace-inspector-tab--active .workspace-inspector-tab__label {
+    display: inline;
+}
+
 .sidebar-tool-button {
     display: inline-flex;
     align-items: center;

@@ -50,7 +50,7 @@ describe("DesktopTopBar", () => {
         expect(markup).toContain('role="tab"');
         expect(markup).toContain('aria-selected="true"');
         expect(markup).toContain("feature/navigation");
-        expect(markup).toContain("sidebar-git-scope-trigger--titlebar");
+        expect(markup).not.toContain("sidebar-git-scope-trigger--titlebar");
         expect(markup).toContain("app-no-drag");
         expect(markup).toContain("data-project-context-tab-key");
         expect(markup).toContain("data-project-context-tab-action");

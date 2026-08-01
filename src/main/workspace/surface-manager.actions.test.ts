@@ -646,6 +646,64 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
     });
 
+    it("delivers inspector drags only to the committed contextual surface", async () => {
+        const manager = new WorkspaceSurfaceManager();
+        manager.syncHost(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        const surfaceA = electronMocks.views[0];
+        if (!surfaceA) {
+            throw new Error("Expected the active surface.");
+        }
+        const dragA = {
+            contextKey: "project-a::__primary__",
+            detail: { phase: "move", x: 320, y: 180 },
+            kind: "agent" as const,
+            projectId: "project-a",
+            worktreeId: null,
+        };
+
+        expect(manager.dispatchActiveSurfaceDrag("host-1", dragA)).toEqual({
+            delivered: true,
+        });
+        expect(surfaceA.webContents.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceDrag,
+            expect.objectContaining({
+                contextKey: "project-a::__primary__",
+                projectId: "project-a",
+            }),
+        );
+
+        const activationB = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const surfaceB = electronMocks.views[1];
+        if (!surfaceB) {
+            throw new Error("Expected the next surface.");
+        }
+        notifySurfaceReady(manager, surfaceB.webContents);
+        await activationB;
+
+        expect(manager.dispatchActiveSurfaceDrag("host-1", dragA)).toEqual({
+            delivered: false,
+            reason: "inactive-context",
+        });
+        expect(
+            manager.dispatchActiveSurfaceDrag("host-1", {
+                ...dragA,
+                contextKey: "project-b::__primary__",
+                projectId: "project-a",
+            }),
+        ).toEqual({ delivered: false, reason: "invalid-context" });
+        expect(surfaceB.webContents.send).not.toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceDrag,
+            expect.anything(),
+        );
+    });
+
     it("reveals a surface file only through its active host context", async () => {
         const manager = new WorkspaceSurfaceManager();
         const host = createHostWindow();

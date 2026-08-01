@@ -20,6 +20,10 @@ import {
     type GitChangeGroupId,
     type GitTreeNode,
 } from "@renderer/components/git";
+import {
+    useRestorableSidebarScroll,
+    type SidebarScrollPositionStoreRef,
+} from "./useRestorableSidebarScroll";
 
 const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "gu");
 
@@ -52,6 +56,8 @@ export function SidebarGitPanel({
     filter,
     onRequestWorkspaceAction,
     projectId,
+    scrollKey,
+    scrollPositionsRef,
     workspaceContextKey,
     worktreeId,
 }: {
@@ -60,10 +66,17 @@ export function SidebarGitPanel({
         request: WorkspaceSurfaceActionRequest,
     ) => void;
     readonly projectId: string;
+    readonly scrollKey?: string;
+    readonly scrollPositionsRef?: SidebarScrollPositionStoreRef;
     readonly workspaceContextKey?: string | null;
     readonly worktreeId: string | null;
 }) {
     const contextKey = getContextKey(projectId, worktreeId);
+    const localScrollPositionsRef = useRef(new Map<string, number>());
+    const { handleScroll, setScrollElement } = useRestorableSidebarScroll({
+        scrollKey: scrollKey ?? `git:${contextKey}`,
+        scrollPositionsRef: scrollPositionsRef ?? localScrollPositionsRef,
+    });
     const projects = useProjectsStore((s) => s.projects);
     const snapshot = useGitStore((s) => s.snapshots[contextKey] ?? null);
     const expandedGroupIds = useGitStore(
@@ -443,7 +456,11 @@ export function SidebarGitPanel({
                 </div>
             </div>
 
-            <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1">
+            <div
+                ref={setScrollElement}
+                className="shell-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1"
+                onScroll={handleScroll}
+            >
                 <GitChangesView
                     constrainWidth
                     expandedGroupIds={expandedGroupIds}

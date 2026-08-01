@@ -2156,12 +2156,21 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 typeof payload !== "object" ||
                 ((payload as { kind?: unknown }).kind !== "agent" &&
                     (payload as { kind?: unknown }).kind !== "github") ||
+                typeof (payload as { contextKey?: unknown }).contextKey !==
+                    "string" ||
+                typeof (payload as { projectId?: unknown }).projectId !==
+                    "string" ||
+                !(
+                    (payload as { worktreeId?: unknown }).worktreeId === null ||
+                    typeof (payload as { worktreeId?: unknown }).worktreeId ===
+                        "string"
+                ) ||
                 typeof (payload as { detail?: unknown }).detail !== "object" ||
                 (payload as { detail: object | null }).detail === null
             ) {
                 throw new Error("An agent or GitHub drag payload is required.");
             }
-            workspaceSurfaceManager.dispatchActiveSurfaceDrag(
+            return workspaceSurfaceManager.dispatchActiveSurfaceDrag(
                 context.windowId,
                 payload as WorkspaceSurfaceDragEvent,
             );
