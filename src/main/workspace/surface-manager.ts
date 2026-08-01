@@ -258,7 +258,6 @@ export class WorkspaceSurfaceManager {
             }
             void host.activationCoordinator.closeWorkspace(scopeKey);
         }
-        this.#scheduleRecentSurfacePreheat(host);
         return host.registry;
     }
 
@@ -323,7 +322,6 @@ export class WorkspaceSurfaceManager {
         });
         if (result.status === "activated") {
             this.#publishSurfaceNavigation(host);
-            this.#scheduleRecentSurfacePreheat(host);
         }
         return result;
     }
@@ -1230,56 +1228,6 @@ export class WorkspaceSurfaceManager {
         this.#publishSurfacePoolDiagnostics(host);
     }
 
-    #scheduleRecentSurfacePreheat(host: WorkspaceSurfaceHostRecord): void {
-        if (host.pendingPreheatTimer) {
-            clearTimeout(host.pendingPreheatTimer);
-        }
-        if (!host.budget.preheatEnabled) {
-            host.pendingPreheatTimer = null;
-            return;
-        }
-        host.pendingPreheatTimer = setTimeout(() => {
-            host.pendingPreheatTimer = null;
-            void this.#preheatRecentSurfaces(host);
-        }, host.budget.preheatDelayMs);
-        host.pendingPreheatTimer.unref();
-    }
-
-    async #preheatRecentSurfaces(host: WorkspaceSurfaceHostRecord): Promise<void> {
-        if (host.isClosing || host.hostWindow.isDestroyed()) {
-            return;
-        }
-        const candidates = host.registry.workspaces
-            .filter(
-                (workspace) =>
-                    workspace.scopeKey !== host.activeScopeKey,
-            )
-            .sort(
-                (left, right) =>
-                    Date.parse(right.lastActivatedAt) -
-                        Date.parse(left.lastActivatedAt) ||
-                    left.scopeKey.localeCompare(right.scopeKey),
-            )
-            .slice(0, host.surfacePool.maxWarmSurfaces);
-        for (const workspace of candidates) {
-            if (!host.surfacePool.canPreheat()) {
-                break;
-            }
-            const operationStartedAt = Date.now();
-            const warmed = await host.activationCoordinator.preheat(
-                workspace.scopeKey,
-            );
-            this.#recordSurfaceOperation(host, {
-                durationMs: Date.now() - operationStartedAt,
-                finishedAt: new Date().toISOString(),
-                kind: "preheat",
-                outcome: warmed ? "warm" : "failed",
-                scopeKey: workspace.scopeKey,
-            });
-        }
-        await host.activationCoordinator.enforceBudget();
-    }
-
     #createSurface(
         host: WorkspaceSurfaceHostRecord,
         hostContext: WindowContextSnapshot,
@@ -1734,7 +1682,8 @@ export class WorkspaceSurfaceManager {
                 surface.view.setVisible(false);
                 surface.isVisible = false;
             }
-            this.#publishLifecycle(surface, "suspended");
+            // Keep explicitly opened workspaces runtime-active so returning to
+            // them does not require a stream resync or view reactivation.
         }
 
         const activeSurface = activeSurfaceId

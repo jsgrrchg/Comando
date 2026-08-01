@@ -9,7 +9,6 @@ import type {
 import { deduplicateLeases, WorkspaceSurfacePool } from "./surface-pool";
 
 export type WorkspaceSurfaceHibernateReason =
-    | "budget"
     | "close-workspace"
     | "host-close";
 
@@ -139,7 +138,6 @@ export class WorkspaceActivationCoordinator {
             if (operation !== this.#operation) {
                 return { scopeKey, status: "stale" };
             }
-            await this.enforceBudget();
             return {
                 generation: acquired.generation,
                 scopeKey,
@@ -216,20 +214,6 @@ export class WorkspaceActivationCoordinator {
 
     async closeWorkspace(scopeKey: string): Promise<WorkspaceSurfaceCloseResult> {
         return this.#hibernate(scopeKey, "close-workspace");
-    }
-
-    async enforceBudget(): Promise<void> {
-        const attempted = new Set<string>();
-        while (this.#pool.getWarmCount() > this.#pool.maxWarmSurfaces) {
-            const candidate = this.#pool
-                .getEvictionCandidates()
-                .find((entry) => !attempted.has(entry.scopeKey));
-            if (!candidate) {
-                return;
-            }
-            attempted.add(candidate.scopeKey);
-            await this.#hibernate(candidate.scopeKey, "budget");
-        }
     }
 
     async hibernateForHostClose(

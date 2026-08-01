@@ -169,6 +169,28 @@ describe("WorkspaceSurfaceManager action routing", () => {
         expect(electronMocks.views).toHaveLength(1);
     });
 
+    it("keeps an opened background workspace runtime-active after switching", async () => {
+        const manager = createTestManager();
+        const onSurfaceLifecycleChanged = vi.fn();
+        manager.setLifecycleHandlers({ onSurfaceLifecycleChanged });
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        onSurfaceLifecycleChanged.mockClear();
+
+        const activation = manager.activate("host-1", "project-b::__primary__");
+        await finishActiveSurface(manager, "host-1", "project-b::__primary__");
+        await activation;
+
+        expect(onSurfaceLifecycleChanged).not.toHaveBeenCalledWith(
+            expect.objectContaining({ scopeKey: "project-a::__primary__" }),
+            "suspended",
+        );
+    });
+
     it("delegates workspace shortcuts from the surface to singleton navigation", () => {
         const manager = createTestManager();
         const host = createHostWindow();
@@ -333,7 +355,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
         ).toHaveLength(1);
     });
 
-    it("stabilizes eight heavy residents at the budget after explicit leases end", async () => {
+    it("keeps eight selected workspaces resident after their explicit leases end", async () => {
         const manager = new WorkspaceSurfaceManager({
             resolveBudget: () => createBudget(2),
         });
@@ -409,12 +431,12 @@ describe("WorkspaceSurfaceManager action routing", () => {
         const diagnostics = manager.getSurfaceDiagnostics("host-1");
         expect(
             diagnostics.surfaces.filter((surface) => surface.generation !== null),
-        ).toHaveLength(diagnostics.maxWarmSurfaces + 1);
+        ).toHaveLength(8);
         expect(diagnostics.performance).toMatchObject({
-            hibernations: 5,
+            hibernations: 0,
             leaseReports: 16,
             rendererCreates: 8,
-            rendererDestroys: 5,
+            rendererDestroys: 0,
         });
     });
 

@@ -339,7 +339,7 @@ describe("WorkspaceActivationCoordinator", () => {
         },
     );
 
-    it("uses a soft budget and never evicts a leased warm surface", async () => {
+    it("keeps a leased workspace resident after another workspace is activated", async () => {
         const harness = createHarness({ maxWarmSurfaces: 0 });
         const activation = await harness.coordinator.activate("scope-a");
         if (activation.status !== "activated") {
@@ -356,16 +356,16 @@ describe("WorkspaceActivationCoordinator", () => {
         expect(harness.liveSurfaces.has("scope-a")).toBe(true);
     });
 
-    it("evicts the least-recent lease-free warm surface when over budget", async () => {
+    it("keeps every activated workspace resident until it is explicitly closed", async () => {
         const harness = createHarness({ maxWarmSurfaces: 1 });
         await harness.coordinator.activate("scope-a");
         await harness.coordinator.activate("scope-b");
         await harness.coordinator.activate("scope-c");
 
-        expect(harness.pool.get("scope-a")?.state).toBe("cold");
+        expect(harness.pool.get("scope-a")?.state).toBe("warm");
         expect(harness.pool.get("scope-b")?.state).toBe("warm");
         expect(harness.pool.get("scope-c")?.state).toBe("active");
-        expect(harness.liveSurfaces.has("scope-a")).toBe(false);
+        expect(harness.liveSurfaces.has("scope-a")).toBe(true);
     });
 });
 
