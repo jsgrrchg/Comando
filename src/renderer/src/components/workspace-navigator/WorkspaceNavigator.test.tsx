@@ -69,7 +69,7 @@ describe("WorkspaceNavigator", () => {
         expect(document.activeElement).toBe(items?.[0]);
     });
 
-    it("keeps Delete Worktree absent for Primary and shows a destructive scoped confirmation for worktrees", async () => {
+    it("keeps Delete Worktree absent for the primary workspace and shows a destructive scoped confirmation for worktrees", async () => {
         const showNativeContextMenu = vi
             .fn<(input: NativeContextMenuInput) => Promise<string | null>>()
             .mockResolvedValueOnce(null)
@@ -435,7 +435,7 @@ function createModel(): WorkspaceNavigatorModel {
                 name: "Comando",
                 rootPath: "/projects/comando",
                 workspaces: [
-                    workspace("project-a::__primary__", null, "Primary", true),
+                    workspace("project-a::__primary__", null, "main", true),
                     workspace(
                         "project-a::worktree-feature",
                         "worktree-feature",

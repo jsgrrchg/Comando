@@ -169,7 +169,7 @@ export function buildWorkspaceNavigatorModel({
                                 diagnostic?.state === "active" ||
                                 diagnostic?.state === "warm",
                             label: isPrimary
-                                ? "Primary"
+                                ? inventoryWorktree?.branchName ?? "Primary"
                                 : inventoryWorktree
                                   ? getWorktreeDisplayLabel(inventoryWorktree)
                                   : worktreeId ?? "Missing worktree",

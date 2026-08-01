@@ -57,7 +57,7 @@ describe("workspace navigator model", () => {
 
         expect(model.projects).toHaveLength(1);
         expect(model.projects[0]?.workspaces.map((workspace) => workspace.label)).toEqual([
-            "Primary",
+            "main",
             "feature/navigation",
             "worktree-missing",
         ]);
@@ -134,6 +134,22 @@ describe("workspace navigator model", () => {
             workspaces: [expect.objectContaining({ isPrimary: true })],
         });
         expect(model.projects[1]?.inventoryError).toBeNull();
+    });
+
+    it("falls back to Primary when the original checkout has no branch", () => {
+        const project = projectFixture("project-a", "Comando");
+        const model = buildWorkspaceNavigatorModel({
+            catalogEntries: {},
+            diagnostics: null,
+            projects: [project],
+            worktreesByProject: {
+                [project.id]: [
+                    worktreeFixture(project.id, null, true, null),
+                ],
+            },
+        });
+
+        expect(model.projects[0]?.workspaces[0]?.label).toBe("Primary");
     });
 
     it("hides archived projects and exposes resumable deletion tombstones", () => {
@@ -228,7 +244,7 @@ function worktreeFixture(
     projectId: string,
     id: string | null,
     isPrimary: boolean,
-    branchName: string,
+    branchName: string | null,
 ): GitWorktreeSummary {
     return {
         branchName,
