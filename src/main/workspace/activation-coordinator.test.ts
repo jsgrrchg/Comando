@@ -173,31 +173,6 @@ describe("WorkspaceActivationCoordinator", () => {
         expect(harness.coordinator.committedScopeKey).toBeNull();
     });
 
-    it("waits for background preheating before closing a workspace", async () => {
-        const harness = createHarness();
-        harness.blockRestore("scope-a");
-
-        const preheat = harness.coordinator.preheat("scope-a");
-        await vi.waitFor(() =>
-            expect(harness.adapter.waitUntilReady).toHaveBeenCalledWith(
-                "scope-a",
-                expect.any(String),
-            ),
-        );
-
-        const close = harness.coordinator.closeWorkspace("scope-a");
-        expect(harness.adapter.prepareHibernate).not.toHaveBeenCalled();
-
-        harness.finishRestore("scope-a");
-
-        await expect(preheat).resolves.toBe(true);
-        await expect(close).resolves.toEqual({
-            scopeKey: "scope-a",
-            status: "closed",
-        });
-        expect(harness.pool.get("scope-a")?.state).toBe("cold");
-    });
-
     it("coalesces concurrent close requests for the same workspace", async () => {
         const preparation = deferred();
         const harness = createHarness({ preparationPromise: preparation.promise });
@@ -340,7 +315,7 @@ describe("WorkspaceActivationCoordinator", () => {
     );
 
     it("keeps a leased workspace resident after another workspace is activated", async () => {
-        const harness = createHarness({ maxWarmSurfaces: 0 });
+        const harness = createHarness();
         const activation = await harness.coordinator.activate("scope-a");
         if (activation.status !== "activated") {
             throw new Error("Expected activation to succeed.");
@@ -357,7 +332,7 @@ describe("WorkspaceActivationCoordinator", () => {
     });
 
     it("keeps every activated workspace resident until it is explicitly closed", async () => {
-        const harness = createHarness({ maxWarmSurfaces: 1 });
+        const harness = createHarness();
         await harness.coordinator.activate("scope-a");
         await harness.coordinator.activate("scope-b");
         await harness.coordinator.activate("scope-c");
@@ -370,7 +345,6 @@ describe("WorkspaceActivationCoordinator", () => {
 });
 
 function createHarness(options: {
-    readonly maxWarmSurfaces?: number;
     readonly preparation?: WorkspaceSurfaceHibernatePreparation;
     readonly preparationPromise?: Promise<void>;
 } = {}) {
@@ -385,9 +359,7 @@ function createHarness(options: {
     const blockedCommits = new Map<string, ReturnType<typeof deferred>>();
     const blockedDestroys = new Map<string, ReturnType<typeof deferred>>();
     const committedScopes: Array<string | null> = [];
-    const pool = new WorkspaceSurfacePool({
-        maxWarmSurfaces: options.maxWarmSurfaces,
-    });
+    const pool = new WorkspaceSurfacePool();
     const adapter = {
         acquire: vi.fn((scopeKey: string) => {
             const existing = liveSurfaces.get(scopeKey);

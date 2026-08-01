@@ -1,5 +1,5 @@
 import type {
-    WorkspaceSurfaceBudgetDiagnostic,
+    WorkspaceSurfaceEnvironmentDiagnostic,
     WorkspaceSurfaceMemorySampleDiagnostic,
     WorkspaceSurfaceOperationDiagnostic,
     WorkspaceSurfacePerformanceDiagnostic,
@@ -7,36 +7,20 @@ import type {
 
 const MIB = 1024 * 1024;
 
-export interface WorkspaceSurfaceBudgetInput {
+export interface WorkspaceSurfaceEnvironmentInput {
     readonly isOnBatteryPower: boolean;
     readonly platform: NodeJS.Platform;
     readonly totalMemoryBytes: number;
 }
 
-export function resolveWorkspaceSurfaceBudget(
-    input: WorkspaceSurfaceBudgetInput,
-): WorkspaceSurfaceBudgetDiagnostic {
+export function resolveWorkspaceSurfaceEnvironment(
+    input: WorkspaceSurfaceEnvironmentInput,
+): WorkspaceSurfaceEnvironmentDiagnostic {
     const totalMemoryMb = Math.max(0, Math.round(input.totalMemoryBytes / MIB));
-    const memoryLimited = totalMemoryMb > 0 && totalMemoryMb <= 8 * 1024;
-    const severelyMemoryLimited = totalMemoryMb > 0 && totalMemoryMb <= 4 * 1024;
-    const platformWarmBudget =
-        input.platform === "darwin" ? 4 : input.platform === "win32" ? 3 : 2;
-    const platformPreheatDelayMs =
-        input.platform === "darwin" ? 750 : input.platform === "win32" ? 1_000 : 1_250;
-    const maxWarmSurfaces = severelyMemoryLimited
-        ? 0
-        : input.isOnBatteryPower || memoryLimited
-          ? 1
-          : platformWarmBudget;
 
     return {
         energySource: input.isOnBatteryPower ? "battery" : "external-power",
-        maxWarmSurfaces,
         platform: input.platform,
-        preheatDelayMs: input.isOnBatteryPower
-            ? Math.max(2_500, platformPreheatDelayMs)
-            : platformPreheatDelayMs,
-        preheatEnabled: maxWarmSurfaces > 0,
         totalMemoryMb,
     };
 }
@@ -57,7 +41,6 @@ interface MutableWorkspaceSurfacePerformance {
     lifecycleTransitions: number;
     memorySampledAt: string | null;
     memorySamples: WorkspaceSurfaceMemorySampleDiagnostic[];
-    preheatFailures: number;
     rendererCreates: number;
     rendererDestroys: number;
     resyncFailures: number;
@@ -81,7 +64,6 @@ export class WorkspaceSurfacePerformanceMonitor {
         lifecycleTransitions: 0,
         memorySampledAt: null,
         memorySamples: [],
-        preheatFailures: 0,
         rendererCreates: 0,
         rendererDestroys: 0,
         resyncFailures: 0,
@@ -143,9 +125,6 @@ export class WorkspaceSurfacePerformanceMonitor {
             } else if (operation.outcome === "blocked") {
                 this.#metrics.hibernationsAvoided += 1;
             }
-        }
-        if (operation.kind === "preheat" && operation.outcome === "failed") {
-            this.#metrics.preheatFailures += 1;
         }
         if (operation.outcome === "failed") {
             this.#metrics.failures += 1;

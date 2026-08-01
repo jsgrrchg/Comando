@@ -5,7 +5,7 @@ import { IPC_EVENTS } from "@shared/ipc";
 import type {
     WindowContextSnapshot,
     WorkspaceLayoutSnapshot,
-    WorkspaceSurfaceBudgetDiagnostic,
+    WorkspaceSurfaceEnvironmentDiagnostic,
     WorkspaceSurfaceRegistrySnapshot,
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceDragEvent,
@@ -357,7 +357,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
 
     it("keeps eight selected workspaces resident after their explicit leases end", async () => {
         const manager = new WorkspaceSurfaceManager({
-            resolveBudget: () => createBudget(2),
+            resolveEnvironment: createEnvironment,
         });
         manager.setLifecycleHandlers({
             prepareSurfaceHibernate: vi.fn(() => Promise.resolve()),
@@ -1288,10 +1288,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
 
 function createTestManager(): WorkspaceSurfaceManager {
     return new WorkspaceSurfaceManager({
-        resolveBudget: () => ({
-            ...createBudget(4),
-            preheatEnabled: false,
-        }),
+        resolveEnvironment: createEnvironment,
     });
 }
 
@@ -1457,13 +1454,10 @@ function createDenseRegistryEntry(
     };
 }
 
-function createBudget(maxWarmSurfaces: number): WorkspaceSurfaceBudgetDiagnostic {
+function createEnvironment(): WorkspaceSurfaceEnvironmentDiagnostic {
     return {
         energySource: "external-power",
-        maxWarmSurfaces,
         platform: "darwin",
-        preheatDelayMs: 750,
-        preheatEnabled: maxWarmSurfaces > 0,
         totalMemoryMb: 32_768,
     };
 }

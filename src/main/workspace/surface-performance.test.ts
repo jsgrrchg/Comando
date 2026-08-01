@@ -1,31 +1,28 @@
 import { describe, expect, it } from "vitest";
 
 import {
-    resolveWorkspaceSurfaceBudget,
+    resolveWorkspaceSurfaceEnvironment,
     WorkspaceSurfacePerformanceMonitor,
 } from "./surface-performance";
 
 describe("workspace surface performance", () => {
     it.each([
-        ["darwin", false, 32, 4, 750],
-        ["win32", false, 32, 3, 1_000],
-        ["linux", false, 32, 2, 1_250],
-        ["darwin", true, 32, 1, 2_500],
-        ["darwin", false, 8, 1, 750],
-        ["win32", false, 4, 0, 1_000],
+        ["darwin", false, 32],
+        ["win32", true, 8],
+        ["linux", false, 4],
     ] as const)(
-        "calibrates %s with battery=%s and %s GiB",
-        (platform, isOnBatteryPower, memoryGiB, maxWarmSurfaces, preheatDelayMs) => {
+        "reports %s with battery=%s and %s GiB",
+        (platform, isOnBatteryPower, memoryGiB) => {
             expect(
-                resolveWorkspaceSurfaceBudget({
+                resolveWorkspaceSurfaceEnvironment({
                     isOnBatteryPower,
                     platform,
                     totalMemoryBytes: memoryGiB * 1024 ** 3,
                 }),
             ).toMatchObject({
-                maxWarmSurfaces,
-                preheatDelayMs,
-                preheatEnabled: maxWarmSurfaces > 0,
+                energySource: isOnBatteryPower ? "battery" : "external-power",
+                platform,
+                totalMemoryMb: memoryGiB * 1024,
             });
         },
     );

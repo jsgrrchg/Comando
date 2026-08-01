@@ -130,7 +130,7 @@ async function runWorkspaceSoak() {
             (scopeKey) => window.comando.activateWorkspaceSurface(scopeKey),
             warmScopeKeys[0],
         );
-        const budgetDiagnostics = await getWorkspaceDiagnostics(hostPage);
+        const residentDiagnostics = await getWorkspaceDiagnostics(hostPage);
         const coldScopeKey = warmScopeKeys[1];
         await crashSurface(electronApp, coldScopeKey);
         await waitForColdScope(hostPage, coldScopeKey);
@@ -191,12 +191,9 @@ async function runWorkspaceSoak() {
                 switchCount: SWITCH_COUNT,
             },
             gate: {
-                budgetExceptionCount: Math.max(
-                    0,
-                    residentCount(budgetDiagnostics) -
-                        (budgetDiagnostics.maxWarmSurfaces + 1),
+                residentCountAfterLeaseRelease: residentCount(
+                    residentDiagnostics,
                 ),
-                budgetResidentCount: residentCount(budgetDiagnostics),
                 catalogPeakScopeCount:
                     secondCheckpoint.diagnostics.performance
                         .catalogPeakScopeCount,
@@ -204,12 +201,11 @@ async function runWorkspaceSoak() {
                 restoredWorkspaceIdentityMatches:
                     JSON.stringify(restoredScopeKeys) ===
                     JSON.stringify(expectedRestoredScopeKeys),
-                maxAllowedResidents: budgetDiagnostics.maxWarmSurfaces + 1,
                 rendererGrowth:
                     secondCheckpoint.residentCount - firstCheckpoint.residentCount,
                 restoreMs,
                 safetyBlocks:
-                    budgetDiagnostics.performance.hibernationsAvoided,
+                    residentDiagnostics.performance.hibernationsAvoided,
                 startupMs,
             },
             metrics: secondCheckpoint.diagnostics.performance,
@@ -592,8 +588,8 @@ function percentile(sortedSamples, ratio) {
 
 function assertGate(result) {
     const failures = [];
-    if (result.gate.budgetExceptionCount > result.gate.safetyBlocks) {
-        failures.push("resident renderers exceed the calibrated warm budget");
+    if (result.gate.residentCountAfterLeaseRelease !== RESIDENT_SCOPE_COUNT) {
+        failures.push("opened workspace renderers were not retained after leases ended");
     }
     if (result.gate.catalogPeakScopeCount < CATALOG_SCOPE_COUNT) {
         failures.push("the large catalog scenario was not observed");

@@ -22,7 +22,7 @@ import type {
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceActionStatus,
     WorkspaceSurfaceActivationResult,
-    WorkspaceSurfaceBudgetDiagnostic,
+    WorkspaceSurfaceEnvironmentDiagnostic,
     WorkspaceSurfaceCloseResult,
     WorkspaceSurfaceContentInsets,
     WorkspaceSurfaceHardLease,
@@ -54,7 +54,7 @@ import {
 } from "./activation-coordinator";
 import { WorkspaceSurfacePool } from "./surface-pool";
 import {
-    resolveWorkspaceSurfaceBudget,
+    resolveWorkspaceSurfaceEnvironment,
     WorkspaceSurfacePerformanceMonitor,
 } from "./surface-performance";
 
@@ -91,7 +91,7 @@ interface WorkspaceSurfaceBounds {
 interface WorkspaceSurfaceHostRecord {
     readonly activationCoordinator: WorkspaceActivationCoordinator;
     activeScopeKey: string | null;
-    readonly budget: WorkspaceSurfaceBudgetDiagnostic;
+    readonly environment: WorkspaceSurfaceEnvironmentDiagnostic;
     contentInsets: WorkspaceSurfaceContentInsets;
     disposalScheduled: boolean;
     readonly hostWindow: BrowserWindow;
@@ -100,7 +100,6 @@ interface WorkspaceSurfaceHostRecord {
     isClosing: boolean;
     hostOverlayVisible: boolean;
     pendingLayoutTimer: NodeJS.Timeout | null;
-    pendingPreheatTimer: NodeJS.Timeout | null;
     readonly recentOperations: WorkspaceSurfaceOperationDiagnostic[];
     readonly performance: WorkspaceSurfacePerformanceMonitor;
     readonly surfacePool: WorkspaceSurfacePool;
@@ -158,7 +157,7 @@ interface WorkspaceSurfaceLifecycleHandlers {
 }
 
 export interface WorkspaceSurfaceManagerOptions {
-    readonly resolveBudget?: () => WorkspaceSurfaceBudgetDiagnostic;
+    readonly resolveEnvironment?: () => WorkspaceSurfaceEnvironmentDiagnostic;
 }
 
 /**
@@ -173,7 +172,7 @@ export class WorkspaceSurfaceManager {
     >();
     readonly #surfaceIdsByWebContentsId = new Map<number, string>();
     readonly #surfacesById = new Map<string, WorkspaceSurfaceRecord>();
-    readonly #resolveBudget: () => WorkspaceSurfaceBudgetDiagnostic;
+    readonly #resolveEnvironment: () => WorkspaceSurfaceEnvironmentDiagnostic;
     readonly #actionsById = new Map<
         string,
         DispatchedWorkspaceSurfaceAction
@@ -181,7 +180,8 @@ export class WorkspaceSurfaceManager {
     #lifecycleHandlers: WorkspaceSurfaceLifecycleHandlers = {};
 
     constructor(options: WorkspaceSurfaceManagerOptions = {}) {
-        this.#resolveBudget = options.resolveBudget ?? resolveCurrentBudget;
+        this.#resolveEnvironment =
+            options.resolveEnvironment ?? resolveCurrentSurfaceEnvironment;
     }
 
     syncWorkspaceRegistry(
@@ -498,11 +498,10 @@ export class WorkspaceSurfaceManager {
     getSurfaceDiagnostics(hostWindowId: string): WorkspaceSurfacePoolDiagnostics {
         const host = this.#hostsByWindowId.get(hostWindowId);
         if (!host) {
-            const budget = this.#resolveBudget();
+            const environment = this.#resolveEnvironment();
             return {
                 activeScopeKey: null,
-                budget,
-                maxWarmSurfaces: budget.maxWarmSurfaces,
+                environment,
                 performance: new WorkspaceSurfacePerformanceMonitor().snapshot(),
                 recentOperations: [],
                 surfaces: [],
@@ -511,7 +510,7 @@ export class WorkspaceSurfaceManager {
         }
         return {
             ...host.surfacePool.diagnostics(),
-            budget: host.budget,
+            environment: host.environment,
             performance: host.performance.snapshot(),
             recentOperations: [...host.recentOperations],
         };
@@ -899,9 +898,6 @@ export class WorkspaceSurfaceManager {
         if (host.pendingLayoutTimer) {
             clearTimeout(host.pendingLayoutTimer);
         }
-        if (host.pendingPreheatTimer) {
-            clearTimeout(host.pendingPreheatTimer);
-        }
         for (const surfaceId of [...host.surfaceIdsByContextKey.values()]) {
             this.#destroySurface(host, surfaceId);
         }
@@ -927,10 +923,9 @@ export class WorkspaceSurfaceManager {
     ): WorkspaceSurfaceHostRecord {
         // The adapters capture this stable object before its fields are assigned.
         const host = {} as WorkspaceSurfaceHostRecord;
-        const budget = this.#resolveBudget();
+        const environment = this.#resolveEnvironment();
         const surfacePerformance = new WorkspaceSurfacePerformanceMonitor();
         const surfacePool = new WorkspaceSurfacePool({
-            maxWarmSurfaces: budget.maxWarmSurfaces,
             onChanged: () => {
                 this.#publishSurfacePoolDiagnostics(host);
             },
@@ -1071,7 +1066,7 @@ export class WorkspaceSurfaceManager {
         Object.assign(host, {
             activationCoordinator,
             activeScopeKey: null,
-            budget,
+            environment,
             contentInsets: {
                 left: 0,
                 right: 0,
@@ -1084,7 +1079,6 @@ export class WorkspaceSurfaceManager {
             context: hostContext,
             isClosing: false,
             pendingLayoutTimer: null,
-            pendingPreheatTimer: null,
             performance: surfacePerformance,
             recentOperations: [],
             registry: {
@@ -1822,14 +1816,14 @@ export class WorkspaceSurfaceManager {
     }
 }
 
-function resolveCurrentBudget(): WorkspaceSurfaceBudgetDiagnostic {
+function resolveCurrentSurfaceEnvironment(): WorkspaceSurfaceEnvironmentDiagnostic {
     let isOnBatteryPower = false;
     try {
         isOnBatteryPower = powerMonitor.isOnBatteryPower();
     } catch {
         // Startup can create diagnostics before Electron has initialized powerMonitor.
     }
-    return resolveWorkspaceSurfaceBudget({
+    return resolveWorkspaceSurfaceEnvironment({
         isOnBatteryPower,
         platform: process.platform,
         totalMemoryBytes: totalmem(),

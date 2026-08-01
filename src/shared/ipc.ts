@@ -2295,20 +2295,16 @@ export interface WorkspaceSurfaceDiagnostic {
 
 export interface WorkspaceSurfacePoolDiagnostics {
     readonly activeScopeKey: string | null;
-    readonly budget: WorkspaceSurfaceBudgetDiagnostic;
-    readonly maxWarmSurfaces: number;
+    readonly environment: WorkspaceSurfaceEnvironmentDiagnostic;
     readonly performance: WorkspaceSurfacePerformanceDiagnostic;
     readonly recentOperations: readonly WorkspaceSurfaceOperationDiagnostic[];
     readonly surfaces: readonly WorkspaceSurfaceDiagnostic[];
     readonly updatedAt: string;
 }
 
-export interface WorkspaceSurfaceBudgetDiagnostic {
+export interface WorkspaceSurfaceEnvironmentDiagnostic {
     readonly energySource: "battery" | "external-power";
-    readonly maxWarmSurfaces: number;
     readonly platform: NodeJS.Platform;
-    readonly preheatDelayMs: number;
-    readonly preheatEnabled: boolean;
     readonly totalMemoryMb: number;
 }
 
@@ -2335,7 +2331,6 @@ export interface WorkspaceSurfacePerformanceDiagnostic {
     readonly lifecycleTransitions: number;
     readonly memorySampledAt: string | null;
     readonly memorySamples: readonly WorkspaceSurfaceMemorySampleDiagnostic[];
-    readonly preheatFailures: number;
     readonly rendererCreates: number;
     readonly rendererDestroys: number;
     readonly resyncFailures: number;
@@ -2411,7 +2406,7 @@ export interface DeleteWorktreeResult {
 export interface WorkspaceSurfaceOperationDiagnostic {
     readonly durationMs: number;
     readonly finishedAt: string;
-    readonly kind: "activation" | "hibernate" | "preheat";
+    readonly kind: "activation" | "hibernate";
     readonly outcome: "blocked" | "cold" | "failed" | "stale" | "warm";
     readonly scopeKey: string;
 }

@@ -161,57 +161,6 @@ export class WorkspaceActivationCoordinator {
         }
     }
 
-    async preheat(scopeKey: string): Promise<boolean> {
-        return this.#trackReadinessTransition(scopeKey, () =>
-            this.#preheat(scopeKey),
-        );
-    }
-
-    async #preheat(scopeKey: string): Promise<boolean> {
-        const existing = this.#pool.get(scopeKey);
-        if (
-            existing &&
-            (existing.state === "active" ||
-                existing.state === "warm" ||
-                existing.state === "warming")
-        ) {
-            return true;
-        }
-        if (!this.#pool.canPreheat()) {
-            return false;
-        }
-
-        let acquired: WorkspaceSurfaceAcquireResult | null = null;
-        try {
-            acquired = await this.#adapter.acquire(scopeKey);
-            if (!acquired.reused || existing?.state === "error") {
-                this.#pool.beginWarming(scopeKey, acquired.generation);
-            }
-            if (!acquired.ready) {
-                await this.#adapter.waitUntilReady(scopeKey, acquired.generation);
-            }
-            const current = this.#pool.get(scopeKey);
-            if (current?.state === "warming") {
-                this.#pool.markWarm(scopeKey, acquired.generation);
-            }
-            return true;
-        } catch (error) {
-            if (acquired) {
-                const message = formatError(error);
-                try {
-                    this.#pool.markError(scopeKey, acquired.generation, message);
-                    if (!acquired.reused) {
-                        await this.#adapter.destroy(scopeKey, acquired.generation);
-                        this.#pool.commitCold(scopeKey, acquired.generation);
-                    }
-                } catch {
-                    // The surface may already have been replaced by activation.
-                }
-            }
-            return false;
-        }
-    }
-
     async closeWorkspace(scopeKey: string): Promise<WorkspaceSurfaceCloseResult> {
         return this.#hibernate(scopeKey, "close-workspace");
     }
@@ -257,8 +206,8 @@ export class WorkspaceActivationCoordinator {
             );
             return result;
         };
-        // A close request can race the background preheater or an activation.
-        // Let readiness settle so the surface can be hibernated transactionally.
+        // A close request can race an activation. Let readiness settle so the
+        // surface can be hibernated transactionally.
         await this.#readinessTransitions.get(scopeKey);
         const entry = this.#pool.get(scopeKey);
         if (!entry?.generation || entry.state === "cold") {

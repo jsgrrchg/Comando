@@ -79,7 +79,6 @@ describe("workspace host domain stores", () => {
         workspaceCatalogStore.getState().setSurfaceDiagnostics({
             ...diagnosticMetadata(),
             activeScopeKey: "project-1::__primary__",
-            maxWarmSurfaces: 4,
             recentOperations: [],
             surfaces: [],
             updatedAt: "2026-08-01T00:00:00.000Z",
@@ -120,7 +119,6 @@ describe("workspace host domain stores", () => {
                 Promise.resolve({
                     ...diagnosticMetadata(),
                     activeScopeKey: null,
-                    maxWarmSurfaces: 4,
                     recentOperations: [],
                     surfaces: [],
                     updatedAt: "2026-08-01T00:00:00.000Z",
@@ -168,15 +166,12 @@ describe("workspace host domain stores", () => {
 
 function diagnosticMetadata(): Pick<
     WorkspaceSurfacePoolDiagnostics,
-    "budget" | "performance"
+    "environment" | "performance"
 > {
     return {
-        budget: {
+        environment: {
             energySource: "external-power",
-            maxWarmSurfaces: 4,
             platform: "darwin",
-            preheatDelayMs: 750,
-            preheatEnabled: true,
             totalMemoryMb: 16_384,
         },
         performance: {
@@ -195,7 +190,6 @@ function diagnosticMetadata(): Pick<
             lifecycleTransitions: 0,
             memorySampledAt: null,
             memorySamples: [],
-            preheatFailures: 0,
             rendererCreates: 0,
             rendererDestroys: 0,
             resyncFailures: 0,

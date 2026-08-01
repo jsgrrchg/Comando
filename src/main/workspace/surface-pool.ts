@@ -19,12 +19,9 @@ interface MutableSurfacePoolEntry {
 }
 
 export interface WorkspaceSurfacePoolOptions {
-    readonly maxWarmSurfaces?: number;
     readonly now?: () => number;
     readonly onChanged?: () => void;
 }
-
-const DEFAULT_MAX_WARM_SURFACES = 4;
 
 /**
  * Tracks renderer residency independently from the durable workspace catalog.
@@ -32,21 +29,12 @@ const DEFAULT_MAX_WARM_SURFACES = 4;
  */
 export class WorkspaceSurfacePool {
     readonly #entries = new Map<string, MutableSurfacePoolEntry>();
-    readonly #maxWarmSurfaces: number;
     readonly #now: () => number;
     readonly #onChanged: () => void;
 
     constructor(options: WorkspaceSurfacePoolOptions = {}) {
-        this.#maxWarmSurfaces = Math.max(
-            0,
-            Math.floor(options.maxWarmSurfaces ?? DEFAULT_MAX_WARM_SURFACES),
-        );
         this.#now = options.now ?? Date.now;
         this.#onChanged = options.onChanged ?? (() => undefined);
-    }
-
-    get maxWarmSurfaces(): number {
-        return this.#maxWarmSurfaces;
     }
 
     ensureCold(scopeKey: string): void {
@@ -231,35 +219,12 @@ export class WorkspaceSurfacePool {
         return count;
     }
 
-    canPreheat(): boolean {
-        let residentBackgroundCount = 0;
-        for (const entry of this.#entries.values()) {
-            if (entry.state === "warm" || entry.state === "warming") {
-                residentBackgroundCount += 1;
-            }
-        }
-        return residentBackgroundCount < this.#maxWarmSurfaces;
-    }
-
-    getEvictionCandidates(): readonly WorkspaceSurfaceDiagnostic[] {
-        return [...this.#entries.values()]
-            .filter((entry) => entry.state === "warm" && entry.leases.length === 0)
-            .sort(
-                (left, right) =>
-                    (left.lastActivatedAt ?? 0) - (right.lastActivatedAt ?? 0) ||
-                    left.lastTransitionAt - right.lastTransitionAt ||
-                    left.scopeKey.localeCompare(right.scopeKey),
-            )
-            .map((entry) => this.#toDiagnostic(entry));
-    }
-
     diagnostics(): Omit<
         WorkspaceSurfacePoolDiagnostics,
-        "budget" | "performance"
+        "environment" | "performance"
     > {
         return {
             activeScopeKey: this.getActiveScopeKey(),
-            maxWarmSurfaces: this.#maxWarmSurfaces,
             recentOperations: [],
             surfaces: [...this.#entries.values()]
                 .sort((left, right) => left.scopeKey.localeCompare(right.scopeKey))
