@@ -21,7 +21,6 @@ import { useModalFocusScope } from "@renderer/components/accessibility/useModalF
 
 export interface WorkspaceNavigatorProps {
     readonly error: string | null;
-    readonly expandedProjectIds: readonly string[];
     readonly model: WorkspaceNavigatorModel;
     readonly onActivate: (workspace: WorkspaceNavigatorWorkspace) => Promise<void>;
     readonly onCloneRepository: (repositoryUrl: string) => Promise<void>;
@@ -66,10 +65,6 @@ export interface WorkspaceNavigatorProps {
         project: WorkspaceNavigatorProject,
     ) => Promise<void>;
     readonly onRevealPath: (workspace: WorkspaceNavigatorWorkspace) => Promise<void>;
-    readonly onSetProjectExpanded: (
-        projectId: string,
-        expanded: boolean,
-    ) => void;
     readonly settingsLabel: string | null;
     readonly status: "idle" | "loading" | "ready" | "error";
 }
@@ -100,7 +95,6 @@ const TYPEAHEAD_RESET_MS = 650;
 
 export function WorkspaceNavigator({
     error,
-    expandedProjectIds,
     model,
     onActivate,
     onCloneRepository,
@@ -120,7 +114,6 @@ export function WorkspaceNavigator({
     onRetry,
     onRetryInventory,
     onRevealPath,
-    onSetProjectExpanded,
     settingsLabel,
     status,
 }: WorkspaceNavigatorProps) {
@@ -133,12 +126,7 @@ export function WorkspaceNavigator({
     const [dialog, setDialog] = useState<NavigatorDialog>(null);
     const activationAttemptRef = useRef(0);
     const itemRefs = useRef(new Map<string, HTMLElement>());
-    const initializedActiveProjectIdsRef = useRef(new Set<string>());
     const typeaheadRef = useRef({ query: "", updatedAt: 0 });
-    const expandedProjectIdSet = useMemo(
-        () => new Set(expandedProjectIds),
-        [expandedProjectIds],
-    );
     const visibleItems = useMemo(
         () =>
             model.projects.flatMap((project): readonly VisibleTreeItem[] => {
@@ -148,10 +136,6 @@ export function WorkspaceNavigator({
                     label: project.name,
                     project,
                 };
-                const expanded = expandedProjectIdSet.has(project.id);
-                if (!expanded) {
-                    return [projectItem];
-                }
                 return [
                     projectItem,
                     ...project.workspaces.map(
@@ -165,30 +149,8 @@ export function WorkspaceNavigator({
                     ),
                 ];
             }),
-        [expandedProjectIdSet, model.projects],
+        [model.projects],
     );
-
-    useEffect(() => {
-        const activeProject = model.projects.find((project) =>
-            project.workspaces.some(
-                (workspace) => workspace.scopeKey === model.activeScopeKey,
-            ),
-        );
-        if (
-            !activeProject ||
-            expandedProjectIdSet.has(activeProject.id) ||
-            initializedActiveProjectIdsRef.current.has(activeProject.id)
-        ) {
-            return;
-        }
-        initializedActiveProjectIdsRef.current.add(activeProject.id);
-        onSetProjectExpanded(activeProject.id, true);
-    }, [
-        expandedProjectIdSet,
-        model.activeScopeKey,
-        model.projects,
-        onSetProjectExpanded,
-    ]);
 
     useEffect(() => {
         if (
@@ -285,10 +247,6 @@ export function WorkspaceNavigator({
         }
         if (event.key === "ArrowRight" && item.kind === "project") {
             event.preventDefault();
-            if (!expandedProjectIdSet.has(item.project.id)) {
-                onSetProjectExpanded(item.project.id, true);
-                return;
-            }
             focusItem(
                 visibleItems.find(
                     (candidate) =>
@@ -299,22 +257,15 @@ export function WorkspaceNavigator({
             return;
         }
         if (event.key === "ArrowLeft") {
-            event.preventDefault();
             if (item.kind === "workspace") {
+                event.preventDefault();
                 focusItem(`project:${item.project.id}`);
-            } else if (expandedProjectIdSet.has(item.project.id)) {
-                onSetProjectExpanded(item.project.id, false);
             }
             return;
         }
         if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            if (item.kind === "project") {
-                onSetProjectExpanded(
-                    item.project.id,
-                    !expandedProjectIdSet.has(item.project.id),
-                );
-            } else {
+            if (item.kind === "workspace") {
                 void runWorkspaceActivation(item.workspace);
             }
             return;
@@ -561,17 +512,13 @@ export function WorkspaceNavigator({
         if (!projectItem) {
             return null;
         }
-        const expanded = expandedProjectIdSet.has(project.id);
         return (
             <div className="workspace-navigator-project" key={project.id}>
                 <div
-                    aria-expanded={expanded}
+                    aria-expanded="true"
                     aria-level={1}
                     className="workspace-navigator-project-row"
                     data-missing={project.isMissing || undefined}
-                    onClick={() =>
-                        onSetProjectExpanded(project.id, !expanded)
-                    }
                     onContextMenu={(event) => {
                         event.preventDefault();
                         void openNativeMenu(
@@ -615,22 +562,21 @@ export function WorkspaceNavigator({
                             <IconPlus />
                         </button>
                     ) : null}
-                    <IconChevron expanded={expanded} />
                 </div>
-                {expanded ? (
-                    <div aria-label={`${project.name} workspaces`} role="group">
-                        {project.workspaces.map((workspace) => {
-                            const item = visibleItems.find(
-                                (candidate) =>
-                                    candidate.id === `workspace:${workspace.scopeKey}`,
-                            );
-                            if (!item) {
-                                return null;
-                            }
-                            const localError = activationErrors[workspace.scopeKey];
-                            const opening = pendingScopeKey === workspace.scopeKey;
-                            const active = model.activeScopeKey === workspace.scopeKey;
-                            return (
+                <div aria-label={`${project.name} workspaces`} role="group">
+                    {project.workspaces.map((workspace) => {
+                        const item = visibleItems.find(
+                            (candidate) =>
+                                candidate.id ===
+                                `workspace:${workspace.scopeKey}`,
+                        );
+                        if (!item) {
+                            return null;
+                        }
+                        const localError = activationErrors[workspace.scopeKey];
+                        const opening = pendingScopeKey === workspace.scopeKey;
+                        const active = model.activeScopeKey === workspace.scopeKey;
+                        return (
                                 <div
                                     aria-current={active ? "page" : undefined}
                                     aria-disabled={
@@ -692,11 +638,10 @@ export function WorkspaceNavigator({
                                         </span>
                                     ) : null}
                                 </div>
-                            );
-                        })}
-                    </div>
-                ) : null}
-                {project.inventoryError && expanded ? (
+                        );
+                    })}
+                </div>
+                {project.inventoryError ? (
                     <button
                         className="workspace-navigator-inline-error"
                         onClick={() =>
@@ -1345,26 +1290,6 @@ function formatRelativeTime(iso: string | null): string | null {
         return `${months}mo ago`;
     }
     return `${Math.floor(months / 12)}y ago`;
-}
-
-function IconChevron({ expanded }: { readonly expanded: boolean }) {
-    return (
-        <svg
-            aria-hidden="true"
-            className="workspace-navigator-chevron"
-            data-expanded={expanded || undefined}
-            fill="none"
-            viewBox="0 0 16 16"
-        >
-            <path
-                d="M6 4l4 4-4 4"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="1.5"
-            />
-        </svg>
-    );
 }
 
 function IconBranch() {

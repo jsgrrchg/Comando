@@ -6,7 +6,6 @@ import { getWorkspaceScopeKey } from "@shared/workspace-context";
 
 import { useGitStore } from "@renderer/app/store/git-store";
 import { useProjectsStore } from "@renderer/app/store/projects-store";
-import { useShellStore } from "@renderer/app/store/shell-store";
 import {
     refreshDurableWorkspaceCatalog,
     workspaceCatalogStore,
@@ -37,12 +36,6 @@ export function WorkspaceNavigatorPanel({
     const catalogError = useStore(
         workspaceCatalogStore,
         (state) => state.error,
-    );
-    const expandedProjectIds = useShellStore(
-        (state) => state.expandedProjectIds,
-    );
-    const setProjectExpanded = useShellStore(
-        (state) => state.setProjectExpanded,
     );
     const projects = useProjectsStore((state) => state.projects);
     const projectsError = useProjectsStore((state) => state.error);
@@ -108,7 +101,6 @@ export function WorkspaceNavigatorPanel({
     return (
         <WorkspaceNavigator
             error={catalogError ?? projectsError}
-            expandedProjectIds={expandedProjectIds}
             model={model}
             onActivate={activate}
             onCloneRepository={async (repositoryUrl) => {
@@ -389,7 +381,6 @@ export function WorkspaceNavigatorPanel({
                     workspace.worktreeId,
                 );
             }}
-            onSetProjectExpanded={setProjectExpanded}
             settingsLabel={settingsLabel}
             status={catalogStatus}
         />

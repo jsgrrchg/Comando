@@ -746,23 +746,6 @@ text-align: center;
     white-space: nowrap;
 }
 
-.workspace-navigator-chevron {
-    flex: 0 0 13px;
-    width: 13px;
-    height: 13px;
-    color: var(--color-text-secondary);
-    opacity: 0.55;
-    transition: transform 120ms ease, opacity 120ms ease;
-}
-
-.workspace-navigator-chevron[data-expanded] {
-    transform: rotate(90deg);
-}
-
-.workspace-navigator-project-row:hover .workspace-navigator-chevron {
-    opacity: 0.9;
-}
-
 .workspace-navigator-project-add {
     display: none;
     flex: 0 0 auto;

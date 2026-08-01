@@ -23,6 +23,34 @@ afterEach(() => {
 });
 
 describe("WorkspaceNavigator", () => {
+    it("keeps every project's workspaces visible", async () => {
+        vi.stubGlobal("comando", {
+            showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
+        });
+        mount(<WorkspaceNavigator {...createProps()} />);
+        await act(async () => Promise.resolve());
+
+        const projectRow = container?.querySelector<HTMLElement>(
+            ".workspace-navigator-project-row",
+        );
+        act(() => {
+            projectRow?.click();
+            projectRow?.dispatchEvent(
+                new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }),
+            );
+        });
+
+        expect(
+            container?.querySelectorAll(".workspace-navigator-workspace-row"),
+        ).toHaveLength(2);
+        expect(
+            projectRow?.getAttribute("aria-expanded"),
+        ).toBe("true");
+        expect(
+            container?.querySelector(".workspace-navigator-chevron"),
+        ).toBeNull();
+    });
+
     it("renders an accessible tree and supports complete roving keyboard navigation", async () => {
         vi.stubGlobal("comando", {
             showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
@@ -383,7 +411,6 @@ function createProps(
 ): WorkspaceNavigatorProps {
     return {
         error: null,
-        expandedProjectIds: ["project-a"],
         model: createModel(),
         onActivate: vi.fn(() => Promise.resolve()),
         onCloneRepository: vi.fn(() => Promise.resolve()),
@@ -416,7 +443,6 @@ function createProps(
         onRetry: vi.fn(() => Promise.resolve()),
         onRetryInventory: vi.fn(() => Promise.resolve()),
         onRevealPath: vi.fn(() => Promise.resolve()),
-        onSetProjectExpanded: vi.fn(),
         settingsLabel: null,
         status: "ready",
         ...overrides,
