@@ -1579,9 +1579,7 @@ function WorkspaceRowBadge({
         ? "Opening"
         : error || status === "error"
           ? "Retry"
-          : status === "activity"
-            ? "Activity"
-            : status === "deletion-pending"
+          : status === "deletion-pending"
               ? "Cleanup pending"
             : isMissing
               ? "Missing"

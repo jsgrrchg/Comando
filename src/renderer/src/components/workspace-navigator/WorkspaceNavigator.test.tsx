@@ -368,6 +368,48 @@ describe("WorkspaceNavigator", () => {
         expect(rows?.[1]?.getAttribute("aria-label")).toContain("Comando");
     });
 
+    it("tracks workspace activity without rendering an activity badge", async () => {
+        vi.stubGlobal("comando", {
+            showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
+        });
+        const model = createModel();
+        const project = model.projects[0];
+        const activeWorkspace = project?.workspaces[0];
+        const activityWorkspace = project?.workspaces[1];
+        if (!project || !activeWorkspace || !activityWorkspace) {
+            throw new Error("Expected workspace fixtures.");
+        }
+        mount(
+            <WorkspaceNavigator
+                {...createProps({
+                    model: {
+                        ...model,
+                        projects: [
+                            {
+                                ...project,
+                                workspaces: [
+                                    activeWorkspace,
+                                    {
+                                        ...activityWorkspace,
+                                        isResident: true,
+                                        status: "activity",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                })}
+            />,
+        );
+        await act(async () => Promise.resolve());
+
+        const activityRow = container?.querySelectorAll<HTMLElement>(
+            ".workspace-navigator-workspace-row",
+        )[1];
+        expect(activityRow?.dataset.status).toBe("activity");
+        expect(activityRow?.textContent).not.toContain("Activity");
+    });
+
     it("lets the latest activation win while an earlier activation is pending", async () => {
         vi.stubGlobal("comando", {
             showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
