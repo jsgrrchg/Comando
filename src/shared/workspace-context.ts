@@ -7,6 +7,8 @@ export interface WorkspaceScope {
     readonly worktreeId: string | null;
 }
 
+export type WorkspaceScopeKey = string;
+
 export interface WorkspaceLocation extends WorkspaceScope {
     readonly contextKey: string;
     readonly hostWindowId: string;
@@ -31,7 +33,14 @@ export function normalizeWorkspaceWorktreeId(
 export function getWorkspaceContextKey(
     projectId: string | null,
     worktreeId: string | null | undefined,
-): string {
+): WorkspaceScopeKey {
+    return getWorkspaceScopeKey(projectId, worktreeId);
+}
+
+export function getWorkspaceScopeKey(
+    projectId: string | null,
+    worktreeId: string | null | undefined,
+): WorkspaceScopeKey {
     if (!projectId) {
         return `${NO_PROJECT_CONTEXT}::${worktreeId ?? WORKSPACE_PRIMARY_CONTEXT}`;
     }

@@ -1,0 +1,30 @@
+{
+    "activePaneId": "pane-main",
+    "rootNode": {
+        "activeTabId": "chat-v1",
+        "id": "pane-main",
+        "pinnedTabIds": ["file-v1"],
+        "tabIds": ["file-v1", "chat-v1"],
+        "type": "pane"
+    },
+    "tabs": [
+        {
+            "createdAt": "2026-01-10T08:00:00.000Z",
+            "id": "file-v1",
+            "kind": "file",
+            "projectId": "project-v1",
+            "relativePath": "src/legacy.ts",
+            "title": "legacy.ts"
+        },
+        {
+            "createdAt": "2026-01-10T08:01:00.000Z",
+            "draft": "preserve v1 draft byte-for-byte",
+            "id": "chat-v1",
+            "kind": "chat",
+            "projectId": "project-v1",
+            "runtimeId": "codex",
+            "sessionId": "session-v1",
+            "title": "Legacy chat"
+        }
+    ]
+}

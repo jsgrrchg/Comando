@@ -1,0 +1,75 @@
+{
+    "fixtureSchemaVersion": 1,
+    "scopes": [
+        {
+            "aiSessions": [
+                {
+                    "pendingPermission": true,
+                    "runtimeId": "codex",
+                    "sessionId": "session-alpha-stream",
+                    "status": "streaming"
+                }
+            ],
+            "fileBuffers": [],
+            "pendingActions": [
+                {
+                    "actionId": "action-alpha-reveal",
+                    "status": "claimed"
+                }
+            ],
+            "runtimeOwnerId": "runtime-owner-alpha",
+            "scopeKey": "project-alpha::__primary__",
+            "terminals": [
+                {
+                    "busy": true,
+                    "sessionId": "terminal-session-alpha",
+                    "status": "running"
+                }
+            ]
+        },
+        {
+            "aiSessions": [],
+            "fileBuffers": [],
+            "pendingActions": [],
+            "runtimeOwnerId": "runtime-owner-feature",
+            "scopeKey": "project-alpha::worktree-feature",
+            "terminals": [
+                {
+                    "busy": false,
+                    "sessionId": "terminal-session-feature",
+                    "status": "running"
+                }
+            ]
+        },
+        {
+            "aiSessions": [],
+            "fileBuffers": [
+                {
+                    "externalConflict": true,
+                    "path": "src/dirty.ts",
+                    "saveState": "saving",
+                    "status": "dirty"
+                }
+            ],
+            "pendingActions": [],
+            "runtimeOwnerId": "runtime-owner-gamma",
+            "scopeKey": "project-gamma::__primary__",
+            "terminals": []
+        }
+    ],
+    "expected": {
+        "hardLeaseKinds": [
+            "ai-streaming",
+            "file-conflict",
+            "file-dirty",
+            "file-saving",
+            "pending-action",
+            "terminal-running"
+        ],
+        "runtimeOwnerIds": [
+            "runtime-owner-alpha",
+            "runtime-owner-feature",
+            "runtime-owner-gamma"
+        ]
+    }
+}

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     areWorkspaceScopesEquivalent,
     getWorkspaceContextKey,
+    getWorkspaceScopeKey,
     hasOpenWorkspaceScope,
     normalizeWorkspaceWorktreeId,
     type WorkspaceLocation,
@@ -20,6 +21,9 @@ describe("workspace context identity", () => {
         expect(
             getWorkspaceContextKey("project-1", "project-1:primary"),
         ).toBe("project-1::__primary__");
+        expect(getWorkspaceScopeKey("project-1", null)).toBe(
+            "project-1::__primary__",
+        );
     });
 
     it("keeps distinct worktrees and projects isolated", () => {
