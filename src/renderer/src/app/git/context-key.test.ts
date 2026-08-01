@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveProjectContextWorktreeId } from "./context-key";
+import {
+    resolveCommittedProjectWorktreeId,
+    resolveProjectContextWorktreeId,
+} from "./context-key";
 
 describe("resolveProjectContextWorktreeId", () => {
     it("resolves the logical primary context to its canonical worktree id", () => {
@@ -24,5 +27,13 @@ describe("resolveProjectContextWorktreeId", () => {
                 "project-1:primary",
             ),
         ).toBe("worktree-feature");
+    });
+});
+
+describe("resolveCommittedProjectWorktreeId", () => {
+    it("never inherits a previously active feature for Primary", () => {
+        expect(resolveCommittedProjectWorktreeId("project-1", null)).toBe(
+            "project-1:primary",
+        );
     });
 });

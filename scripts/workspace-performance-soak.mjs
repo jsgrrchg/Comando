@@ -160,7 +160,7 @@ async function runWorkspaceSoak() {
             hostPage,
             coldScopeKey,
         );
-        await electronApp.close();
+        await closeElectronAppGracefully(electronApp);
         electronApp = undefined;
 
         const restoreStartedAt = performance.now();
@@ -172,6 +172,12 @@ async function runWorkspaceSoak() {
         const restoredCatalog = await hostPage.evaluate(() =>
             window.comando.getWorkspaceCatalog(),
         );
+        const expectedRestoredScopeKeys = residentWorkspaces
+            .map((workspace) => workspace.scopeKey)
+            .toSorted();
+        const restoredScopeKeys = restoredCatalog.workspaces
+            .map((workspace) => workspace.scopeKey)
+            .toSorted();
 
         return {
             capturedAt: new Date().toISOString(),
@@ -195,6 +201,9 @@ async function runWorkspaceSoak() {
                     secondCheckpoint.diagnostics.performance
                         .catalogPeakScopeCount,
                 durableWorkspaceCount: restoredCatalog.workspaces.length,
+                restoredWorkspaceIdentityMatches:
+                    JSON.stringify(restoredScopeKeys) ===
+                    JSON.stringify(expectedRestoredScopeKeys),
                 maxAllowedResidents: budgetDiagnostics.maxWarmSurfaces + 1,
                 rendererGrowth:
                     secondCheckpoint.residentCount - firstCheckpoint.residentCount,
@@ -206,6 +215,7 @@ async function runWorkspaceSoak() {
             metrics: secondCheckpoint.diagnostics.performance,
             process: {
                 hiddenCpuPercent: secondCheckpoint.hiddenCpuPercent,
+                initialWorkingSetKb: firstCheckpoint.totalWorkingSetKb,
                 totalWorkingSetKb: secondCheckpoint.totalWorkingSetKb,
                 workingSetGrowthKb:
                     secondCheckpoint.totalWorkingSetKb -
@@ -214,7 +224,14 @@ async function runWorkspaceSoak() {
             warmSwitch: summarize(switchSamples),
         };
     } finally {
-        await electronApp?.close().catch(() => undefined);
+        if (electronApp) {
+            try {
+                await closeElectronAppGracefully(electronApp);
+            } catch {
+                // A failed gate must not leave Electron or its sidecar alive.
+                electronApp.process().kill("SIGKILL");
+            }
+        }
         // The prefix guard keeps cleanup recoverable from future path refactors.
         if (!path.basename(temporaryRoot).startsWith("comando-workspace-soak-")) {
             throw new Error(`Refusing to clean unexpected path: ${temporaryRoot}`);
@@ -233,7 +250,7 @@ function createRegistry(projects) {
             createWorkspace(
                 projects[0].id,
                 index + residentWorkspaces.length,
-                DENSE_TAB_COUNT,
+                0,
                 `synthetic-${index}`,
             ),
     );
@@ -587,6 +604,16 @@ function assertGate(result) {
     if (result.gate.durableWorkspaceCount < RESIDENT_SCOPE_COUNT) {
         failures.push("durable workspaces were lost after restart");
     }
+    if (!result.gate.restoredWorkspaceIdentityMatches) {
+        failures.push("the restored durable workspace identities changed");
+    }
+    const allowedWorkingSetGrowthKb = Math.max(
+        128 * 1_024,
+        result.process.initialWorkingSetKb * 0.25,
+    );
+    if (result.process.workingSetGrowthKb > allowedWorkingSetGrowthKb) {
+        failures.push("working set growth exceeds the bounded soak budget");
+    }
     if (result.process.hiddenCpuPercent > 5) {
         failures.push("hidden renderer CPU exceeds 5 percent");
     }
@@ -619,4 +646,22 @@ function launchApp(userDataPath) {
         },
         timeout: 30_000,
     });
+}
+
+async function closeElectronAppGracefully(electronApp) {
+    const hostPage = electronApp.windows().find((page) => {
+        try {
+            return new URL(page.url()).searchParams.get("window") === "workspace-host";
+        } catch {
+            return false;
+        }
+    });
+    if (hostPage && !hostPage.isClosed()) {
+        const hostClosed = hostPage.waitForEvent("close", { timeout: 30_000 });
+        await electronApp.evaluate(({ BrowserWindow }) => {
+            BrowserWindow.getAllWindows()[0]?.close();
+        });
+        await hostClosed;
+    }
+    await electronApp.close();
 }

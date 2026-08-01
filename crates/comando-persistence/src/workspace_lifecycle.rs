@@ -97,6 +97,10 @@ impl SqlitePersistenceStore {
         }
         let workspace = load_workspace(&transaction, &input.scope_key)?
             .ok_or_else(|| PersistenceError::WorkspaceNotFound(input.scope_key.0.clone()))?;
+        transaction.execute(
+            "DELETE FROM workspace_layout_recovery WHERE id = ?1 AND scope_key = ?2",
+            params![input.recovery_id, input.scope_key.0],
+        )?;
         crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(workspace)
@@ -614,9 +618,10 @@ fn forget_session_references(
             PersistenceError::InvalidWorkspaceInput(format!("recovery JSON is invalid: {error}"))
         })?;
         if remove_session_tabs(&mut snapshot, &session_ids) {
+            let snapshot_hash = crate::workspace_migration::hash_json(&snapshot)?;
             transaction.execute(
-                "UPDATE workspace_layout_recovery SET layout_snapshot_json = ?1 WHERE id = ?2",
-                params![encode_json(&snapshot)?, id],
+                "UPDATE workspace_layout_recovery SET layout_snapshot_json = ?1, snapshot_hash = ?2 WHERE id = ?3",
+                params![encode_json(&snapshot)?, snapshot_hash, id],
             )?;
         }
     }
@@ -779,9 +784,11 @@ fn rewrite_recovery_scope(
         let snapshot: Value = serde_json::from_str(&snapshot).map_err(|error| {
             PersistenceError::InvalidWorkspaceInput(format!("recovery JSON is invalid: {error}"))
         })?;
+        let rewritten = rewrite_layout_scope(snapshot, project_id, worktree_id);
+        let snapshot_hash = crate::workspace_migration::hash_json(&rewritten)?;
         transaction.execute(
-            "UPDATE workspace_layout_recovery SET scope_key = ?1, layout_snapshot_json = ?2 WHERE id = ?3",
-            params![target.0, encode_json(&rewrite_layout_scope(snapshot, project_id, worktree_id))?, id],
+            "UPDATE workspace_layout_recovery SET scope_key = ?1, layout_snapshot_json = ?2, snapshot_hash = ?3 WHERE id = ?4",
+            params![target.0, encode_json(&rewritten)?, snapshot_hash, id],
         )?;
     }
     Ok(())
@@ -877,6 +884,18 @@ fn validate_deletion_begin(
         return Err(PersistenceError::InvalidWorkspaceInput(
             "Delete Worktree requires worktreeId and checkoutPath".to_string(),
         ));
+    }
+    if input.kind == NativeWorkspaceDeletionKind::DeleteWorktree {
+        let worktree_id = input.worktree_id.as_ref().expect("validated above");
+        let expected = comando_types::workspace::canonical_workspace_scope_key(
+            &input.project_id.0,
+            Some(&worktree_id.0),
+        );
+        if input.scope_key != expected {
+            return Err(PersistenceError::InvalidWorkspaceInput(
+                "scopeKey does not match projectId and worktreeId".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1066,6 +1085,26 @@ mod tests {
     use crate::{NativeStorageConfig, SqlitePersistenceStore};
 
     #[test]
+    fn delete_worktree_journal_rejects_a_non_canonical_scope() {
+        let temp = TempDir::new().expect("temp dir");
+        let mut store = open_store(&temp);
+        seed_project(&mut store);
+
+        let result = store.begin_workspace_deletion(NativeWorkspaceDeletionBeginInput {
+            operation_id: "delete-invalid".to_string(),
+            kind: NativeWorkspaceDeletionKind::DeleteWorktree,
+            scope_key: canonical_workspace_scope_key("project-a", Some("worktree-b")),
+            project_id: ProjectId("project-a".to_string()),
+            worktree_id: Some(WorktreeId("worktree-a".to_string())),
+            checkout_path: Some("/tmp/worktree-a".to_string()),
+            force_approved: false,
+            session_ids: vec![],
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn failed_pre_checkout_delete_preserves_data_and_resume_purges_only_the_scope() {
         let temp = TempDir::new().expect("temp dir");
         let mut store = open_store(&temp);
@@ -1245,6 +1284,7 @@ mod tests {
 
         assert_eq!(applied.layout_snapshot["tabs"][0]["draft"], "keep");
         assert_eq!(chat_count(&store, "session-a"), 1);
+        assert!(store.list_workspace_recovery_layouts().unwrap().is_empty());
     }
 
     #[test]
@@ -1319,6 +1359,18 @@ mod tests {
         ).expect("recovery snapshot");
         let recovery: Value = serde_json::from_str(&recovery_json).unwrap();
         assert_eq!(recovery["tabs"].as_array().unwrap().len(), 1);
+        let recovery_hash: String = store
+            .connection()
+            .query_row(
+                "SELECT snapshot_hash FROM workspace_layout_recovery WHERE id = 'recovery-a'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("recovery hash");
+        assert_eq!(
+            recovery_hash,
+            crate::workspace_migration::hash_json(&recovery).unwrap()
+        );
     }
 
     #[test]
@@ -1385,6 +1437,16 @@ mod tests {
         assert_eq!(
             store.list_workspace_recovery_layouts().unwrap()[0].scope_key,
             target.scope_key,
+        );
+        let (recovery_json, recovery_hash): (String, String) = store.connection().query_row(
+            "SELECT layout_snapshot_json, snapshot_hash FROM workspace_layout_recovery WHERE id = 'recovery-a'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).expect("rewritten recovery");
+        let recovery: Value = serde_json::from_str(&recovery_json).unwrap();
+        assert_eq!(
+            recovery_hash,
+            crate::workspace_migration::hash_json(&recovery).unwrap()
         );
     }
 

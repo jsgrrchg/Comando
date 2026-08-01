@@ -33,6 +33,6 @@ describe("durable workspace rollout retirement", () => {
         expect(durableAdapter).not.toContain("workspaceRestore");
         expect(surfaceRuntime).not.toContain("workspaceRestore");
         expect(appData).toContain("syncLegacyWorkspaceMigration(migrationInput)");
-        expect(appData).toContain('rollout.stage === "internal"');
+        expect(appData).toContain('options.publishWorkspaceRollout === true');
     });
 });

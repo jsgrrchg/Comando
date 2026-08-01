@@ -77,7 +77,7 @@ export interface AiPersistenceGateway {
     ): void;
     savePromptQueueSnapshots?(
         snapshots: readonly AiPromptQueueSnapshot[],
-    ): void;
+    ): Awaitable<void>;
     setSessionPinned(sessionId: string, pinned: boolean): Awaitable<void>;
     saveSessionSnapshot(snapshot: AiSessionSnapshot, draft?: string): void;
 }

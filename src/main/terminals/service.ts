@@ -16,6 +16,9 @@ export interface TerminalGateway {
         runtimeOwnerId: string,
         subscriberId: string,
     ): Promise<readonly TerminalSession[]> | readonly TerminalSession[];
+    listOwnedSessions?(
+        runtimeOwnerId: string,
+    ): Promise<readonly TerminalSession[]> | readonly TerminalSession[];
     createSession(
         input: CreateTerminalSessionInput,
         runtimeOwnerId: string,

@@ -121,13 +121,13 @@ export class WorkspaceActivationCoordinator {
 
             this.#pool.markWarm(scopeKey, acquired.generation);
             await this.#adapter.commitActiveScope(scopeKey, acquired.generation);
-            if (operation !== this.#operation) {
-                // A newer activation owns the visual commit and will repair the
-                // durable active scope without flashing this stale destination.
-                return { scopeKey, status: "stale" };
-            }
+            // The adapter commit is already durable and visible. Finalize the
+            // local state even if a newer request arrived while it was in flight.
             this.#pool.activate(scopeKey, acquired.generation);
             this.#committedScopeKey = scopeKey;
+            if (operation !== this.#operation) {
+                return { scopeKey, status: "stale" };
+            }
             await this.enforceBudget();
             return {
                 generation: acquired.generation,
@@ -257,9 +257,8 @@ export class WorkspaceActivationCoordinator {
 
         const generation = entry.generation;
         const wasActive = entry.state === "active";
-        if (wasActive) {
-            ++this.#operation;
-        }
+        let navigationCleared = false;
+        const operation = ++this.#operation;
         this.#pool.beginHibernate(scopeKey, generation);
         try {
             const preparation = await this.#adapter.prepareHibernate(
@@ -295,21 +294,50 @@ export class WorkspaceActivationCoordinator {
                 return finish({ leases, scopeKey, status: "blocked" });
             }
 
+            if (operation !== this.#operation) {
+                this.#pool.abortHibernate(
+                    scopeKey,
+                    generation,
+                    undefined,
+                    this.#committedScopeKey === scopeKey ? "active" : "warm",
+                );
+                return finish({
+                    message: "A newer workspace operation replaced the close request.",
+                    scopeKey,
+                    status: "failed",
+                });
+            }
+
             if (wasActive) {
                 await this.#adapter.commitActiveScope(null, null);
+                navigationCleared = true;
+                this.#committedScopeKey = null;
             }
             this.#pool.beginDisposing(scopeKey, generation);
             await this.#adapter.destroy(scopeKey, generation);
             this.#pool.commitCold(scopeKey, generation);
-            if (wasActive) {
-                this.#committedScopeKey = null;
-            }
             return finish({ scopeKey, status: "closed" });
         } catch (error) {
             const message = formatError(error);
             const current = this.#pool.get(scopeKey);
+            const replacedByNewerOperation = operation !== this.#operation;
             if (current?.state === "suspending") {
                 this.#pool.abortHibernate(scopeKey, generation, message);
+            } else if (current?.state === "disposing") {
+                this.#pool.restoreAfterFailedDisposal(
+                    scopeKey,
+                    generation,
+                    wasActive && !replacedByNewerOperation ? "active" : "warm",
+                    message,
+                );
+            }
+            if (wasActive && navigationCleared && !replacedByNewerOperation) {
+                try {
+                    await this.#adapter.commitActiveScope(scopeKey, generation);
+                    this.#committedScopeKey = scopeKey;
+                } catch {
+                    // Preserve the disposal failure; a subsequent activation can repair navigation.
+                }
             }
             return finish({ message, scopeKey, status: "failed" });
         }

@@ -4393,7 +4393,10 @@ export interface ComandoApi {
         listener: (direction: "next" | "previous") => void,
     ) => () => void;
     onWorkspaceFlushRequested: (
-        listener: () => Promise<void> | void,
+        listener: () =>
+            | Promise<readonly WorkspaceSurfaceHardLease[] | void>
+            | readonly WorkspaceSurfaceHardLease[]
+            | void,
     ) => () => void;
     onWorkspaceSurfaceNavigationChanged: (
         listener: (navigation: WorkspaceSurfaceNavigationState) => void,

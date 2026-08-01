@@ -132,6 +132,7 @@ export function WorkspaceNavigator({
     >({});
     const [operationError, setOperationError] = useState<string | null>(null);
     const [dialog, setDialog] = useState<NavigatorDialog>(null);
+    const activationAttemptRef = useRef(0);
     const itemRefs = useRef(new Map<string, HTMLElement>());
     const initializedActiveProjectIdsRef = useRef(new Set<string>());
     const typeaheadRef = useRef({ query: "", updatedAt: 0 });
@@ -240,22 +241,29 @@ export function WorkspaceNavigator({
     const runWorkspaceActivation = async (
         workspace: WorkspaceNavigatorWorkspace,
     ) => {
-        if (pendingScopeKey || workspace.deletionOperation) {
+        if (workspace.deletionOperation) {
             return;
         }
+        const activationAttempt = activationAttemptRef.current + 1;
+        activationAttemptRef.current = activationAttempt;
         setPendingScopeKey(workspace.scopeKey);
         setOperationError(null);
         setActivationErrors((current) => omitKey(current, workspace.scopeKey));
         try {
             await onActivate(workspace);
         } catch (cause) {
+            if (activationAttemptRef.current !== activationAttempt) {
+                return;
+            }
             const message = formatError(cause, "Could not open this workspace.");
             setActivationErrors((current) => ({
                 ...current,
                 [workspace.scopeKey]: message,
             }));
         } finally {
-            setPendingScopeKey(null);
+            if (activationAttemptRef.current === activationAttempt) {
+                setPendingScopeKey(null);
+            }
         }
     };
 
@@ -607,6 +615,9 @@ export function WorkspaceNavigator({
                         {expanded ? "⌄" : "›"}
                     </span>
                     <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                    {project.isMissing ? (
+                        <span className="workspace-navigator-row-badge">Missing</span>
+                    ) : null}
                     {project.inventoryLoading ? (
                         <span className="workspace-navigator-spinner" title="Loading worktrees" />
                     ) : null}

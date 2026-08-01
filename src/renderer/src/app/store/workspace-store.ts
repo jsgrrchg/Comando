@@ -3700,12 +3700,14 @@ async function flushWorkspacePersistence(
         workspacePersistGet = get;
     }
 
-    if (options.force) {
-        workspacePersistDirty = true;
+    if (!workspacePersistGet) {
+        // A freshly hydrated surface is already durable until its first mutation.
+        workspacePersistDirty = false;
+        return;
     }
 
-    if (!workspacePersistGet) {
-        return;
+    if (options.force) {
+        workspacePersistDirty = true;
     }
 
     if (pendingWorkspacePersistTimer !== null) {

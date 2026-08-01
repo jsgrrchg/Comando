@@ -157,6 +157,7 @@ interface NativeAppDataClientOptions {
     readonly onWorkspaceMigrationTelemetry?: (
         telemetry: WorkspaceMigrationTelemetry,
     ) => void;
+    readonly publishWorkspaceRollout?: boolean;
 }
 
 export interface NativeAppDataClient {
@@ -645,6 +646,16 @@ class NativeSettingsClient implements SettingsGateway {
     saveProjectSettings(snapshot: ProjectSettingsSnapshot): void {
         this.#projectSettingsById.set(snapshot.projectId, structuredClone(snapshot));
         this.#store.save(
+            PROJECT_SETTINGS_KEY,
+            Object.fromEntries(this.#projectSettingsById),
+        );
+    }
+
+    async clearProjectSettings(projectId: string): Promise<void> {
+        if (!this.#projectSettingsById.delete(projectId)) {
+            return;
+        }
+        await this.#store.saveNow(
             PROJECT_SETTINGS_KEY,
             Object.fromEntries(this.#projectSettingsById),
         );
@@ -1204,10 +1215,10 @@ class NativeAiPersistenceClient implements AiPersistenceGateway {
         this.#store.save(AI_CATALOGS_KEY, Object.fromEntries(this.#catalogs));
     }
 
-    savePromptQueueSnapshots(
+    async savePromptQueueSnapshots(
         snapshots: readonly AiPromptQueueSnapshot[],
-    ): void {
-        this.#store.save(AI_PROMPT_QUEUES_KEY, snapshots);
+    ): Promise<void> {
+        await this.#store.saveNow(AI_PROMPT_QUEUES_KEY, snapshots);
     }
 }
 
@@ -1965,10 +1976,13 @@ export async function createNativeAppDataClient(
         store,
     });
     const migrationGateway = new NativePersistenceGateway(options.client);
-    const records = await store.load<readonly PersistedWindowRecord[]>(
+    const storedLegacyRecords = await store.load<unknown>(
         LEGACY_PERSISTENCE_KEY,
         [],
     );
+    const records = Array.isArray(storedLegacyRecords)
+        ? (storedLegacyRecords as readonly PersistedWindowRecord[])
+        : [];
     const applicationVersion = options.applicationVersion ?? "unknown";
     const migrationInput = await prepareLegacyWorkspaceMigration({
         applicationVersion,
@@ -1979,12 +1993,16 @@ export async function createNativeAppDataClient(
     // Migration is a startup gate now that v4 is the only runtime authority.
     const migration = await migrationGateway.runWorkspaceMigration(migrationInput);
     let rollout = await migrationGateway.getWorkspaceRolloutStatus();
-    if (!migration.applied && rollout.dualWriteEnabled) {
+    if (
+        !migration.applied &&
+        rollout.dualWriteEnabled &&
+        records.length > 0
+    ) {
         // A downgraded binary may have changed the canonical v3 projection.
         await migrationGateway.syncLegacyWorkspaceMigration(migrationInput);
         rollout = await migrationGateway.getWorkspaceRolloutStatus();
     }
-    if (rollout.stage === "internal") {
+    if (rollout.stage === "internal" && options.publishWorkspaceRollout === true) {
         rollout = await migrationGateway.markWorkspaceRolloutStable({
             applicationVersion,
             retentionDays: LEGACY_WORKSPACE_RETENTION_DAYS,

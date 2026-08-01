@@ -1015,10 +1015,11 @@ const comandoApi: ComandoApi = {
         ) => {
             void Promise.resolve()
                 .then(listener)
-                .then(() => {
+                .then((leases) => {
                     ipcRenderer.send(
                         IPC_EVENTS.workspaceFlushAcknowledged,
                         requestId,
+                        Array.isArray(leases) ? leases : [],
                     );
                 })
                 .catch(() => undefined);

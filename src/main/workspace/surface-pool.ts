@@ -153,10 +153,15 @@ export class WorkspaceSurfacePool {
         this.#transition(entry, "suspending", { stateBeforeSuspending });
     }
 
-    abortHibernate(scopeKey: string, generation: string, error?: string): void {
+    abortHibernate(
+        scopeKey: string,
+        generation: string,
+        error?: string,
+        state?: "active" | "warm",
+    ): void {
         const entry = this.#matchingEntry(scopeKey, generation);
         this.#assertState(entry, ["suspending"]);
-        this.#transition(entry, entry.stateBeforeSuspending ?? "warm", {
+        this.#transition(entry, state ?? entry.stateBeforeSuspending ?? "warm", {
             error: error ?? entry.error,
             stateBeforeSuspending: null,
         });
@@ -166,6 +171,20 @@ export class WorkspaceSurfacePool {
         const entry = this.#matchingEntry(scopeKey, generation);
         this.#assertState(entry, ["active", "error", "suspending", "warm", "warming"]);
         this.#transition(entry, "disposing", { stateBeforeSuspending: null });
+    }
+
+    restoreAfterFailedDisposal(
+        scopeKey: string,
+        generation: string,
+        state: "active" | "warm",
+        error: string,
+    ): void {
+        const entry = this.#matchingEntry(scopeKey, generation);
+        this.#assertState(entry, ["disposing"]);
+        this.#transition(entry, state, {
+            error,
+            stateBeforeSuspending: null,
+        });
     }
 
     commitCold(scopeKey: string, generation: string): void {

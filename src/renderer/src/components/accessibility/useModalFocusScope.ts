@@ -4,6 +4,8 @@ import {
     type RefObject,
 } from "react";
 
+import { workspaceSurfaceLeaseRegistry } from "@renderer/app/workspace/surface-lease-registry";
+
 const FOCUSABLE_SELECTOR = [
     "a[href]",
     "button:not(:disabled)",
@@ -16,6 +18,7 @@ const modalFocusScopes: Array<{
     readonly root: HTMLElement;
     readonly token: symbol;
 }> = [];
+let nextModalLeaseId = 0;
 
 interface ModalFocusScopeOptions {
     readonly active?: boolean;
@@ -58,6 +61,13 @@ export function useModalFocusScope({
         const fallbackRestoreFocus = restoreFocusRef?.current ?? null;
         const scopeToken = Symbol("modal-focus-scope");
         modalFocusScopes.push({ root: modalRoot, token: scopeToken });
+        const releaseModalLease = isWorkspaceSurfaceRenderer()
+            ? workspaceSurfaceLeaseRegistry.acquire({
+                  id: `critical-modal:${++nextModalLeaseId}`,
+                  kind: "critical-modal",
+                  message: "A modal dialog requires a decision.",
+              })
+            : null;
         const inertSiblings = setSiblingElementsInert(modalRoot);
         const focusFrame = window.requestAnimationFrame(() => {
             if (!isTopmostModalFocusScope(scopeToken)) {
@@ -122,6 +132,7 @@ export function useModalFocusScope({
                 modalFocusScopes.splice(stackIndex, 1);
             }
             restoreSiblingInertState(inertSiblings);
+            releaseModalLease?.();
 
             // Electron may return focus from a hidden WebContentsView after the
             // React cleanup. Two frames make the modal invoker authoritative.
@@ -144,6 +155,13 @@ export function useModalFocusScope({
         modalRootRef,
         restoreFocusRef,
     ]);
+}
+
+function isWorkspaceSurfaceRenderer(): boolean {
+    return (
+        new URLSearchParams(window.location.search).get("window") ===
+        "workspace-surface"
+    );
 }
 
 function isTopmostModalFocusScope(token: symbol): boolean {

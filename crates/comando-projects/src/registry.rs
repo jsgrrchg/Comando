@@ -107,7 +107,7 @@ impl<'a> ProjectRegistry<'a> {
         )?;
         let archived_scope_keys = project_scope_keys(&transaction, &project_id.0)?;
         transaction.execute(
-            "UPDATE durable_workspaces SET lifecycle = 'archived', layout_revision = layout_revision + 1, updated_at = ?1 WHERE project_id = ?2 AND lifecycle <> 'archived'",
+            "UPDATE durable_workspaces SET lifecycle = 'archived', updated_at = ?1 WHERE project_id = ?2 AND lifecycle <> 'archived'",
             params![comando_persistence::store::now_rfc3339(), project_id.0],
         )?;
         remove_navigation_scopes(&transaction, &archived_scope_keys)?;
@@ -452,7 +452,7 @@ impl<'a> ProjectRegistry<'a> {
                 params![project_id.0, now, existing.id],
             )?;
             transaction.execute(
-                "UPDATE durable_workspaces SET lifecycle = 'orphaned', layout_revision = layout_revision + 1, updated_at = ?1 WHERE project_id = ?2 AND worktree_id = ?3 AND lifecycle <> 'orphaned'",
+                "UPDATE durable_workspaces SET lifecycle = 'orphaned', updated_at = ?1 WHERE project_id = ?2 AND worktree_id = ?3 AND lifecycle <> 'orphaned'",
                 params![now, project_id.0, existing.id],
             )?;
             transaction.execute(
@@ -507,7 +507,7 @@ impl<'a> ProjectRegistry<'a> {
                 ],
             )?;
             transaction.execute(
-                "UPDATE durable_workspaces SET lifecycle = 'active', layout_revision = layout_revision + 1, updated_at = ?1 WHERE project_id = ?2 AND worktree_id = ?3 AND lifecycle = 'orphaned'",
+                "UPDATE durable_workspaces SET lifecycle = 'active', updated_at = ?1 WHERE project_id = ?2 AND worktree_id = ?3 AND lifecycle = 'orphaned'",
                 params![now, project_id.0, worktree_id],
             )?;
         }
@@ -628,7 +628,7 @@ fn add_project_path(
     };
 
     transaction.execute(
-        "UPDATE durable_workspaces SET lifecycle = 'active', layout_revision = layout_revision + 1, updated_at = ?1 WHERE project_id = ?2 AND lifecycle = 'archived'",
+        "UPDATE durable_workspaces SET lifecycle = 'active', updated_at = ?1 WHERE project_id = ?2 AND lifecycle = 'archived'",
         params![now, project_id],
     )?;
     comando_persistence::refresh_v3_projection(transaction)
@@ -1538,6 +1538,13 @@ mod tests {
             .clone();
         let scope_key = format!("{}::{removed_id}", project_id.0);
         seed_durable_workspace(&connection, &scope_key, &project_id.0, &removed_id);
+        let revision_before: i64 = connection
+            .query_row(
+                "SELECT layout_revision FROM durable_workspaces WHERE scope_key = ?1",
+                [&scope_key],
+                |row| row.get(0),
+            )
+            .expect("workspace revision");
         connection.execute(
             "INSERT INTO chat_sessions (id, project_id, worktree_id) VALUES ('session-external', ?1, ?2)",
             params![project_id.0, removed_id],
@@ -1555,6 +1562,14 @@ mod tests {
             .expect("external removal synced");
         assert_eq!(workspace_lifecycle(&connection, &scope_key), "orphaned");
         assert_eq!(tombstone_session_count(&connection, &scope_key), 1);
+        let revision_after: i64 = connection
+            .query_row(
+                "SELECT layout_revision FROM durable_workspaces WHERE scope_key = ?1",
+                [&scope_key],
+                |row| row.get(0),
+            )
+            .expect("workspace revision");
+        assert_eq!(revision_after, revision_before);
 
         let recreated = ProjectRegistry::new(&mut connection)
             .sync_project_worktrees(

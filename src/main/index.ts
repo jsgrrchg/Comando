@@ -1,6 +1,7 @@
 import {
     app,
     BrowserWindow,
+    dialog,
     ipcMain,
     MessageChannelMain,
     type MessagePortMain,
@@ -27,6 +28,7 @@ import {
     type TerminalDataEvent,
     type TerminalExitEvent,
     type WindowContextSnapshot,
+    type WorkspaceSurfaceHardLease,
 } from "@shared/ipc";
 import {
     normalizeWorkspaceWorktreeId,
@@ -83,6 +85,7 @@ import {
 } from "./native-backend/projects";
 import type { NativeBackendEvent } from "./native-backend/protocol";
 import { debugBenignError } from "./observability/logging";
+import { collectInitialInternalNavigationUrls } from "./internal-navigation";
 import type { PersistenceGateway } from "./persistence/service";
 import {
     createProjectInvalidationCoordinator,
@@ -143,13 +146,18 @@ let pendingShutdown: Promise<void> | null = null;
 let nextWorkspaceFlushRequestId = 0;
 const pendingWorkspaceFlushes = new Map<
     string,
-    { readonly senderId: number; readonly resolve: () => void }
+    {
+        readonly senderId: number;
+        readonly resolve: (leases: readonly WorkspaceSurfaceHardLease[]) => void;
+    }
 >();
-const pendingInternalNavigationUrls: string[] = [];
+const pendingInternalNavigationUrls = collectInitialInternalNavigationUrls(
+    process.argv,
+);
 
 ipcMain.on(
     IPC_EVENTS.workspaceFlushAcknowledged,
-    (event, requestId: unknown) => {
+    (event, requestId: unknown, rawLeases: unknown) => {
         if (typeof requestId !== "string") {
             return;
         }
@@ -158,7 +166,7 @@ ipcMain.on(
             return;
         }
         pendingWorkspaceFlushes.delete(requestId);
-        pending.resolve();
+        pending.resolve(parseWorkspaceFlushLeases(rawLeases));
     },
 );
 
@@ -234,6 +242,7 @@ if (!hasSingleInstanceLock) {
                 onWorkspaceMigrationTelemetry: (telemetry) => {
                     console.info("[workspace-migration]", telemetry);
                 },
+                publishWorkspaceRollout: appChannel === "release",
             });
             persistenceService = nativeAppDataClient.persistence;
             secretStore = nativeAppDataClient.secretStore;
@@ -372,9 +381,8 @@ if (!hasSingleInstanceLock) {
                         detachAiSessionStream(subscriber.generation);
                     }
                 },
-                prepareSurfaceHibernate: async (subscriber) => {
-                    await requestWorkspaceFlush(subscriber.webContents);
-                },
+                prepareSurfaceHibernate: (subscriber) =>
+                    requestWorkspaceFlush(subscriber.webContents),
                 resolveRuntimeOwner: resolveWorkspaceSurfaceRuntimeOwner,
             });
 
@@ -532,11 +540,19 @@ app.on("before-quit", (event) => {
     }
     event.preventDefault();
     if (!pendingWorkspaceQuit) {
-        pendingWorkspaceQuit = flushAllWorkspaceWindowsForQuit().finally(() => {
-            pendingWorkspaceQuit = null;
-            isWorkspaceQuitReady = true;
-            app.quit();
-        });
+        pendingWorkspaceQuit = flushAllWorkspaceWindowsForQuit()
+            .then(() => {
+                isWorkspaceQuitReady = true;
+                app.quit();
+            })
+            .catch((error) => {
+                isQuitting = false;
+                cancelWorkspaceHostCloseForLiveWindows();
+                showWorkspaceCloseFailure(error);
+            })
+            .finally(() => {
+                pendingWorkspaceQuit = null;
+            });
     }
 });
 
@@ -1157,16 +1173,23 @@ function attachMainWindowLifecycle(
             event.preventDefault();
             if (!closeFlushInFlight) {
                 closeFlushInFlight = true;
-                void prepareWorkspaceHostForClose(
-                    window,
-                    context.windowId,
-                ).finally(() => {
-                    closeFlushComplete = true;
-                    closeFlushInFlight = false;
-                    if (!window.isDestroyed()) {
-                        window.close();
-                    }
-                });
+                void prepareWorkspaceHostForClose(window, context.windowId)
+                    .then(() => {
+                        closeFlushComplete = true;
+                        if (!window.isDestroyed()) {
+                            window.close();
+                        }
+                    })
+                    .catch((error) => {
+                        workspaceSurfaceManager.cancelHostClose(
+                            context.windowId,
+                            window,
+                        );
+                        showWorkspaceCloseFailure(error, window);
+                    })
+                    .finally(() => {
+                        closeFlushInFlight = false;
+                    });
             }
             return;
         }
@@ -1208,12 +1231,15 @@ function attachMainWindowLifecycle(
     persistWindowState();
 }
 
-async function requestWorkspaceFlush(webContents: WebContents): Promise<void> {
+async function requestWorkspaceFlush(
+    webContents: WebContents,
+): Promise<readonly WorkspaceSurfaceHardLease[]> {
     if (webContents.isDestroyed()) {
         throw new Error("The workspace renderer closed before it could flush.");
     }
     const requestId = `${webContents.id}:${++nextWorkspaceFlushRequestId}`;
-    await new Promise<void>((resolve, reject) => {
+    return await new Promise<readonly WorkspaceSurfaceHardLease[]>(
+        (resolve, reject) => {
         let settled = false;
         const finish = (error?: Error) => {
             if (settled) return;
@@ -1222,8 +1248,6 @@ async function requestWorkspaceFlush(webContents: WebContents): Promise<void> {
             pendingWorkspaceFlushes.delete(requestId);
             if (error) {
                 reject(error);
-            } else {
-                resolve();
             }
         };
         const timer = setTimeout(
@@ -1234,14 +1258,18 @@ async function requestWorkspaceFlush(webContents: WebContents): Promise<void> {
             1_500,
         );
         pendingWorkspaceFlushes.set(requestId, {
-            resolve: () => finish(),
+            resolve: (leases) => {
+                finish();
+                resolve(leases);
+            },
             senderId: webContents.id,
         });
         webContents.send(
             IPC_EVENTS.workspaceFlushRequested,
             requestId,
         );
-    });
+        },
+    );
 }
 
 async function requestWorkspaceFlushesForHost(
@@ -1249,10 +1277,39 @@ async function requestWorkspaceFlushesForHost(
     hostWindowId: string,
 ): Promise<void> {
     const surfaces = workspaceSurfaceManager.getWebContentsForHost(hostWindowId);
-    await Promise.all([
+    const leases = (
+        await Promise.all([
         requestWorkspaceFlush(window.webContents),
         ...surfaces.map((webContents) => requestWorkspaceFlush(webContents)),
-    ]);
+        ])
+    ).flat();
+    if (leases.length > 0) {
+        throw new Error(
+            leases.map((lease) => lease.message).filter(Boolean).join(" ") ||
+                "Workspace resources are not ready to close.",
+        );
+    }
+}
+
+function parseWorkspaceFlushLeases(
+    value: unknown,
+): readonly WorkspaceSurfaceHardLease[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return (value as readonly unknown[]).flatMap((candidate) => {
+        const record = candidate as Record<string, unknown> | null;
+        if (
+            !record ||
+            typeof record.acquiredAt !== "string" ||
+            typeof record.id !== "string" ||
+            typeof record.kind !== "string" ||
+            typeof record.message !== "string"
+        ) {
+            return [];
+        }
+        return [record as unknown as WorkspaceSurfaceHardLease];
+    });
 }
 
 async function prepareWorkspaceHostForClose(
@@ -1288,6 +1345,41 @@ async function flushAllWorkspaceWindowsForQuit(): Promise<void> {
             );
         }),
     );
+}
+
+function cancelWorkspaceHostCloseForLiveWindows(): void {
+    for (const window of BrowserWindow.getAllWindows()) {
+        const context = windowRegistry.getContextByBrowserWindow(window);
+        if (context?.windowKind === "main") {
+            workspaceSurfaceManager.cancelHostClose(context.windowId, window);
+        }
+    }
+}
+
+function showWorkspaceCloseFailure(
+    error: unknown,
+    preferredWindow?: BrowserWindow,
+): void {
+    const detail =
+        error instanceof Error && error.message
+            ? error.message
+            : "Workspace persistence did not confirm the close operation.";
+    const options = {
+        detail,
+        message: "The workspace could not be saved, so the app remains open.",
+        title: "Workspace not closed",
+        type: "error" as const,
+    };
+    const owner =
+        preferredWindow && !preferredWindow.isDestroyed()
+            ? preferredWindow
+            : singleWindowCoordinator.getMainWindow();
+    void (owner
+        ? dialog.showMessageBox(owner, options)
+        : dialog.showMessageBox(options)
+    ).catch((dialogError) => {
+        debugBenignError("workspace.closeFailureDialog", dialogError);
+    });
 }
 
 function isClosingLastAppWindow(): boolean {

@@ -290,7 +290,25 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         aiService: options.aiService,
         durableWorkspaceRepository: options.durableWorkspaceRepository,
         gitService: options.gitService,
+        onWorkspaceClosed: (hostWindowId) => {
+            if (workspaceSurfaceManager.getActiveContext(hostWindowId)) {
+                return;
+            }
+            options.persistenceService.saveActiveProjectId(
+                hostWindowId,
+                null,
+                null,
+            );
+            windowRegistry.updateMainWindowProjectId(hostWindowId, null, null);
+            const hostWebContents =
+                workspaceSurfaceManager.getHostWebContents(hostWindowId);
+            const hostWindow = hostWebContents
+                ? BrowserWindow.fromWebContents(hostWebContents)
+                : null;
+            hostWindow?.setTitle(buildMainWindowTitle());
+        },
         projectService: options.projectService,
+        settingsService: options.settingsService,
         surfaceManager: workspaceSurfaceManager,
         terminalService: options.terminalService,
     });
@@ -1740,8 +1758,16 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     });
     ipcMain.handle(
         IPC_CHANNELS.getProjectAppDataSummary,
-        (_event, projectId: string) =>
-            options.projectService.getProjectAppDataSummary(projectId),
+        async (_event, projectId: string) => {
+            const summary =
+                await options.projectService.getProjectAppDataSummary(projectId);
+            return options.settingsService.loadProjectSettings(projectId)
+                ? {
+                      ...summary,
+                      projectSettingsCount: summary.projectSettingsCount + 1,
+                  }
+                : summary;
+        },
     );
     ipcMain.handle(
         IPC_CHANNELS.clearProjectAppData,

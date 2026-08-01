@@ -13,6 +13,28 @@ import type { WorkspaceSurfaceManager } from "./surface-manager";
 import { WorkspaceDestructiveCoordinator } from "./destructive-coordinator";
 
 describe("WorkspaceDestructiveCoordinator", () => {
+    it("rejects a non-canonical scope before deleting a checkout", async () => {
+        const removeWorktree = vi.fn();
+        const beginWorkspaceDeletion = vi.fn();
+        const coordinator = createCoordinator({
+            gitService: { removeWorktree },
+            persistence: { beginWorkspaceDeletion },
+        });
+
+        await expect(
+            coordinator.deleteWorktree("host-1", {
+                forceApproved: false,
+                projectId: "project-a",
+                scopeKey: "project-a::different-worktree",
+                worktreeId: "worktree-a",
+            }),
+        ).rejects.toThrow(
+            "The durable workspace identity does not match this worktree.",
+        );
+        expect(removeWorktree).not.toHaveBeenCalled();
+        expect(beginWorkspaceDeletion).not.toHaveBeenCalled();
+    });
+
     it("allows deleting a registry-only worktree with no saved layout", async () => {
         const coordinator = createCoordinator({
             persistence: {
@@ -26,6 +48,25 @@ describe("WorkspaceDestructiveCoordinator", () => {
             blockers: [],
             inventory: { workspaceLayoutCount: 0 },
         });
+    });
+
+    it("counts main-owned runtimes when the workspace renderer is cold", async () => {
+        const coordinator = createCoordinator({
+            aiService: {
+                getLiveSessionSnapshotsForWindow: vi
+                    .fn()
+                    .mockReturnValue([{ sessionId: "session-live" }]),
+            },
+            terminalService: {
+                listOwnedSessions: vi
+                    .fn()
+                    .mockResolvedValue([{ sessionId: "terminal-live" }]),
+            },
+        });
+
+        await expect(
+            coordinator.preflightDeleteWorktree("window-a", deleteInput()),
+        ).resolves.toMatchObject({ inventory: { runtimeCount: 2 } });
     });
 
     it("converts an interrupted pre-checkout journal into a safe retry", async () => {
@@ -105,6 +146,36 @@ describe("WorkspaceDestructiveCoordinator", () => {
         expect(completeWorkspaceDeletion).toHaveBeenCalledWith("delete-a");
     });
 
+    it("replays deletion for journaled sessions already absent from history", async () => {
+        const operation = deletionOperation({
+            sessionIds: ["session-gone", "session-child-gone"],
+            status: "purging",
+        });
+        const deleteSession = vi.fn().mockResolvedValue(undefined);
+        const coordinator = createCoordinator({
+            aiService: {
+                deleteSession,
+                listSessionHistory: vi.fn().mockResolvedValue([]),
+            },
+            persistence: {
+                completeWorkspaceDeletion: vi.fn().mockResolvedValue({
+                    ...operation,
+                    status: "completed",
+                }),
+                listIncompleteWorkspaceDeletions: vi
+                    .fn()
+                    .mockResolvedValue([operation]),
+                updateWorkspaceDeletion: vi.fn().mockResolvedValue(operation),
+            },
+        });
+
+        await coordinator.deleteWorktree("window-a", deleteInput());
+
+        expect(deleteSession).toHaveBeenCalledTimes(2);
+        expect(deleteSession).toHaveBeenCalledWith("session-gone");
+        expect(deleteSession).toHaveBeenCalledWith("session-child-gone");
+    });
+
     it("records a pre-checkout failure without starting app-data purge", async () => {
         const operation = deletionOperation({ status: "pending" });
         const removeWorktree = vi
@@ -176,10 +247,12 @@ function createCoordinator(overrides: {
     readonly gitService?: Record<string, unknown>;
     readonly persistence?: Record<string, unknown>;
     readonly projectService?: Record<string, unknown>;
+    readonly terminalService?: Record<string, unknown>;
 }) {
     const aiService = {
         closeSession: vi.fn().mockResolvedValue(undefined),
         deleteSession: vi.fn().mockResolvedValue(undefined),
+        getLiveSessionSnapshotsForWindow: vi.fn().mockReturnValue([]),
         listSessionHistory: vi.fn().mockResolvedValue([]),
         ...overrides.aiService,
     } as unknown as AiService;
@@ -227,6 +300,8 @@ function createCoordinator(overrides: {
     } as unknown as WorkspaceSurfaceManager;
     const terminalService = {
         closeOwnedByWindow: vi.fn(),
+        listOwnedSessions: vi.fn().mockResolvedValue([]),
+        ...overrides.terminalService,
     } as unknown as TerminalGateway;
     return new WorkspaceDestructiveCoordinator({
         aiService,

@@ -12,11 +12,13 @@ import type {
 } from "@shared/ipc";
 import type { NativeWorkspaceDeletionJournalEntry } from "@shared/native-backend";
 import { normalizePathKey } from "@shared/path-identity";
+import { getWorkspaceScopeKey } from "@shared/workspace-context";
 
 import type { AiService } from "@main/ai/service";
 import type { GitGateway } from "@main/git/service";
 import type { NativePersistenceGateway } from "@main/native-backend/persistence";
 import type { ProjectService } from "@main/projects/service";
+import type { SettingsGateway } from "@main/settings/service";
 import type { TerminalGateway } from "@main/terminals/service";
 import type { WorkspaceSurfaceManager } from "./surface-manager";
 
@@ -34,7 +36,12 @@ interface WorkspaceDestructiveCoordinatorOptions {
     readonly aiService: AiService;
     readonly durableWorkspaceRepository: NativePersistenceGateway;
     readonly gitService: GitGateway;
+    readonly onWorkspaceClosed?: (
+        hostWindowId: string,
+        scopeKey: string,
+    ) => Promise<void> | void;
     readonly projectService: ProjectService;
+    readonly settingsService?: SettingsGateway;
     readonly surfaceManager: WorkspaceSurfaceManager;
     readonly terminalService: TerminalGateway;
 }
@@ -46,7 +53,9 @@ export class WorkspaceDestructiveCoordinator {
     readonly #aiService: AiService;
     readonly #durableWorkspaceRepository: NativePersistenceGateway;
     readonly #gitService: GitGateway;
+    readonly #onWorkspaceClosed: WorkspaceDestructiveCoordinatorOptions["onWorkspaceClosed"];
     readonly #projectService: ProjectService;
+    readonly #settingsService: SettingsGateway | null;
     readonly #surfaceManager: WorkspaceSurfaceManager;
     readonly #terminalService: TerminalGateway;
 
@@ -54,7 +63,9 @@ export class WorkspaceDestructiveCoordinator {
         this.#aiService = options.aiService;
         this.#durableWorkspaceRepository = options.durableWorkspaceRepository;
         this.#gitService = options.gitService;
+        this.#onWorkspaceClosed = options.onWorkspaceClosed;
         this.#projectService = options.projectService;
+        this.#settingsService = options.settingsService ?? null;
         this.#surfaceManager = options.surfaceManager;
         this.#terminalService = options.terminalService;
     }
@@ -63,6 +74,7 @@ export class WorkspaceDestructiveCoordinator {
         hostWindowId: string,
         input: DeleteWorktreePreflightInput,
     ): Promise<DeleteWorktreePreflightResult> {
+        this.#assertCanonicalWorktreeScope(input);
         const worktree = this.#resolveSecondaryWorktree(
             input.projectId,
             input.worktreeId,
@@ -110,6 +122,20 @@ export class WorkspaceDestructiveCoordinator {
         const surface = this.#surfaceManager
             .getSurfaceDiagnostics(hostWindowId)
             .surfaces.find((candidate) => candidate.scopeKey === input.scopeKey);
+        const [liveAiSessions, terminalSessions] = durable
+            ? await Promise.all([
+                  Promise.resolve(
+                      this.#aiService.getLiveSessionSnapshotsForWindow(
+                          durable.runtimeOwnerId,
+                      ),
+                  ),
+                  Promise.resolve(
+                      this.#terminalService.listOwnedSessions?.(
+                          durable.runtimeOwnerId,
+                      ) ?? [],
+                  ),
+              ])
+            : [[], []];
         if (surface?.leases.length) {
             blockers.push(...surface.leases.map((lease) => lease.message));
         }
@@ -126,7 +152,10 @@ export class WorkspaceDestructiveCoordinator {
                 recoveryLayoutCount: recoveries.filter(
                     (candidate) => candidate.scopeKey === input.scopeKey,
                 ).length,
-                runtimeCount: surface ? 1 : 0,
+                runtimeCount:
+                    liveAiSessions.length +
+                    terminalSessions.length +
+                    (surface ? 1 : 0),
                 workspaceLayoutCount: durable ? 1 : 0,
             },
             requiresForce: !status.isClean,
@@ -138,6 +167,7 @@ export class WorkspaceDestructiveCoordinator {
         hostWindowId: string,
         input: DeleteWorktreeInput,
     ): Promise<DeleteWorktreeResult> {
+        this.#assertCanonicalWorktreeScope(input);
         const existingOperation = (
             await this.#durableWorkspaceRepository.listIncompleteWorkspaceDeletions()
         ).find(
@@ -180,6 +210,9 @@ export class WorkspaceDestructiveCoordinator {
             input.scopeKey,
         );
         assertWorkspaceClosed(closeResult);
+        if (closeResult.status === "closed") {
+            await this.#onWorkspaceClosed?.(hostWindowId, input.scopeKey);
+        }
         const sessions = await this.#listScopeSessions(
             input.projectId,
             input.worktreeId,
@@ -264,7 +297,14 @@ export class WorkspaceDestructiveCoordinator {
         hostWindowId: string,
         projectId: string,
     ): Promise<ProjectAppDataSummary> {
-        const summary = await this.#projectService.getProjectAppDataSummary(projectId);
+        const nativeSummary =
+            await this.#projectService.getProjectAppDataSummary(projectId);
+        const summary = this.#settingsService?.loadProjectSettings(projectId)
+            ? {
+                  ...nativeSummary,
+                  projectSettingsCount: nativeSummary.projectSettingsCount + 1,
+              }
+            : nativeSummary;
         const [sessions, workspaces] = await Promise.all([
             this.#aiService.listSessionHistory({ limit: null, projectId }),
             this.#durableWorkspaceRepository.listDurableWorkspaces(),
@@ -278,6 +318,12 @@ export class WorkspaceDestructiveCoordinator {
                 workspace.scopeKey,
             );
             assertWorkspaceClosed(result);
+            if (result.status === "closed") {
+                await this.#onWorkspaceClosed?.(
+                    hostWindowId,
+                    workspace.scopeKey,
+                );
+            }
             this.#terminalService.closeOwnedByWindow(workspace.runtimeOwnerId);
         }
 
@@ -299,11 +345,13 @@ export class WorkspaceDestructiveCoordinator {
                 status: "purging",
             });
             await this.#purgeSessionFiles(sessions);
+            // Keep the journal resumable until both the project registry purge
+            // and the durable cross-domain purge have succeeded.
+            await this.#projectService.clearProjectAppData(projectId);
+            await this.#settingsService?.clearProjectSettings?.(projectId);
             await this.#durableWorkspaceRepository.completeWorkspaceDeletion(
                 operationId,
             );
-            // Refresh the project registry cache after the cross-domain transaction.
-            await this.#projectService.clearProjectAppData(projectId);
             return summary;
         } catch (error) {
             await this.#markFailed(operationId, "project_purge", error);
@@ -357,7 +405,14 @@ export class WorkspaceDestructiveCoordinator {
             projectId: operation.projectId,
         });
         const expected = new Set(operation.sessionIds);
-        return sessions.filter((session) => expected.has(session.sessionId));
+        const found = sessions.filter((session) => expected.has(session.sessionId));
+        const foundIds = new Set(found.map((session) => session.sessionId));
+        return [
+            ...found,
+            ...operation.sessionIds
+                .filter((sessionId) => !foundIds.has(sessionId))
+                .map((sessionId) => ({ parentSessionId: null, sessionId })),
+        ];
     }
 
     async #resumeOperation(
@@ -383,17 +438,22 @@ export class WorkspaceDestructiveCoordinator {
             operationId: operation.operationId,
             status: "purging",
         });
+        if (operation.kind === "clear_project_data") {
+            await this.#projectService.clearProjectAppData(operation.projectId);
+            await this.#settingsService?.clearProjectSettings?.(
+                operation.projectId,
+            );
+        }
         await this.#durableWorkspaceRepository.completeWorkspaceDeletion(
             operation.operationId,
         );
-        if (operation.kind === "clear_project_data") {
-            // Keep the in-memory registry aligned after a resumed native purge.
-            await this.#projectService.clearProjectAppData(operation.projectId);
-        }
     }
 
     async #purgeSessionFiles(
-        sessions: Awaited<ReturnType<AiService["listSessionHistory"]>>,
+        sessions: readonly {
+            readonly parentSessionId?: string | null;
+            readonly sessionId: string;
+        }[],
     ): Promise<void> {
         for (const sessionId of rootSessionIds(sessions)) {
             await this.#aiService.deleteSession(sessionId);
@@ -411,6 +471,21 @@ export class WorkspaceDestructiveCoordinator {
             throw new Error("The Primary checkout cannot be deleted.");
         }
         return worktree;
+    }
+
+    #assertCanonicalWorktreeScope(input: {
+        readonly projectId: string;
+        readonly scopeKey: string;
+        readonly worktreeId: string;
+    }): void {
+        if (
+            input.scopeKey !==
+            getWorkspaceScopeKey(input.projectId, input.worktreeId)
+        ) {
+            throw new Error(
+                "The durable workspace identity does not match this worktree.",
+            );
+        }
     }
 
     async #markFailed(

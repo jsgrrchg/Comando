@@ -387,6 +387,8 @@ describe("createNativeAppDataClient", () => {
             client.settings.loadProjectSettings("project-1");
         expect(projectSettings?.editor?.fontSize).toBe(15);
         expect(projectSettings?.appearance?.themeMode).toBe("light");
+        await client.settings.clearProjectSettings?.("project-1");
+        expect(client.settings.loadProjectSettings("project-1")).toBeNull();
 
         client.settings.saveAppAppearanceSettings({
             ...client.settings.loadAppAppearanceSettings(),
@@ -456,6 +458,7 @@ describe("createNativeAppDataClient", () => {
             client: requester,
             databaseFile,
             onWorkspaceMigrationTelemetry,
+            publishWorkspaceRollout: true,
         });
         const runInput = migrationRequests.find(
             (request) => request.command === "workspace_migration_run",

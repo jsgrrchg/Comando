@@ -43,7 +43,7 @@ import { createGitProjectRefreshScheduler } from "./app/git/refresh-scheduler";
 import {
     areGitWorktreeIdsEquivalent,
     getGitContextKey,
-    resolveProjectContextWorktreeId,
+    resolveCommittedProjectWorktreeId,
 } from "./app/git/context-key";
 import {
     reconcileFileTreeSelection,
@@ -167,13 +167,19 @@ import {
     WorkspaceInspector,
     type FileExplorerInlineEditorState,
 } from "./components/workspace-inspector";
-import { WorkspaceView } from "./components/workspace/WorkspaceView";
-import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 import { useModalFocusScope } from "./components/accessibility/useModalFocusScope";
 
 const EmbeddedSettingsApp = lazy(async () => {
     const module = await import("./SettingsApp");
     return { default: module.SettingsApp };
+});
+const LegacyWorkspaceView = lazy(async () => {
+    const module = await import("./components/workspace/WorkspaceView");
+    return { default: module.WorkspaceView };
+});
+const LegacyWorkspaceTerminalHost = lazy(async () => {
+    const module = await import("./features/terminal/WorkspaceTerminalHost");
+    return { default: module.WorkspaceTerminalHost };
 });
 
 type DragState = {
@@ -313,6 +319,11 @@ export function WorkspaceHostApp() {
     const [workspaceSurfaceActionError, setWorkspaceSurfaceActionError] =
         useState<string | null>(null);
     const workspaceSurfaceActionErrorTimerRef = useRef<number | null>(null);
+    const workspaceSurfaceDragBindingRef = useRef<{
+        readonly contextKey: string;
+        readonly projectId: string;
+        readonly worktreeId: string | null;
+    } | null>(null);
     const reportWorkspaceSurfaceActionError = useCallback((message: string) => {
         if (workspaceSurfaceActionErrorTimerRef.current !== null) {
             window.clearTimeout(workspaceSurfaceActionErrorTimerRef.current);
@@ -1039,20 +1050,37 @@ export function WorkspaceHostApp() {
             >,
         ) => {
             const workspaceState = useWorkspaceStore.getState();
-            const contextKey = workspaceState.activeContextKey;
-            const context = contextKey
-                ? workspaceState.contextsByKey[contextKey]
-                : null;
-            if (!contextKey || !context) {
+            if (event.detail.phase === "start") {
+                const contextKey = workspaceState.activeContextKey;
+                const context = contextKey
+                    ? workspaceState.contextsByKey[contextKey]
+                    : null;
+                workspaceSurfaceDragBindingRef.current =
+                    contextKey && context
+                        ? {
+                              contextKey,
+                              projectId: context.projectId,
+                              worktreeId: context.worktreeId,
+                          }
+                        : null;
+            }
+            const binding = workspaceSurfaceDragBindingRef.current;
+            if (!binding) {
                 return;
             }
             void comandoApi.dispatchWorkspaceSurfaceDrag({
-                contextKey,
+                contextKey: binding.contextKey,
                 detail: event.detail,
                 kind,
-                projectId: context.projectId,
-                worktreeId: context.worktreeId,
+                projectId: binding.projectId,
+                worktreeId: binding.worktreeId,
             });
+            if (
+                event.detail.phase === "end" ||
+                event.detail.phase === "cancel"
+            ) {
+                workspaceSurfaceDragBindingRef.current = null;
+            }
         };
         const handleAgentDrag = (event: Event) =>
             forwardDrag(
@@ -1563,12 +1591,9 @@ export function WorkspaceHostApp() {
             : null,
     );
     const activeWorktreeId = activeWorkspaceContext
-        ? // Macro contexts use null for the logical primary checkout, while
-          // scoped services persist and query its canonical worktree id.
-          resolveProjectContextWorktreeId(
+        ? resolveCommittedProjectWorktreeId(
               activeWorkspaceContext.projectId,
               activeWorkspaceContext.worktreeId,
-              gitActiveWorktreeId,
           )
         : workspaceNavigationHydrated
           ? null
@@ -4882,8 +4907,8 @@ export function WorkspaceHostApp() {
                     onPointerDown={handleWorkspaceSurfacePointerDown}
                     tabIndex={0}
                 >
-                    <WorkspaceTerminalHost />
-                    <WorkspaceView
+                    <LegacyWorkspaceTerminalHost />
+                    <LegacyWorkspaceView
                         defaultProjectId={activeProjectId}
                         defaultWorktreeId={activeWorktreeId}
                         onOpenProject={handleOpenProject}
@@ -5012,8 +5037,8 @@ export function WorkspaceHostApp() {
                             onPointerDown={focusWorkspaceSurface}
                             tabIndex={0}
                         >
-                            <WorkspaceTerminalHost />
-                            <WorkspaceView
+                            <LegacyWorkspaceTerminalHost />
+                            <LegacyWorkspaceView
                                 defaultProjectId={activeProjectId}
                                 defaultWorktreeId={activeWorktreeId}
                                 onOpenProject={handleOpenProject}

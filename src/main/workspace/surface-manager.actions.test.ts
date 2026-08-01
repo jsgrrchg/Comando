@@ -427,6 +427,9 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
         await finishActiveSurface(manager, "host-1", "project-a::__primary__");
         const crashed = electronMocks.views[0].webContents;
+        crashed.send.mockImplementation(() => {
+            throw new Error("Render frame was disposed.");
+        });
         crashed.emit("render-process-gone");
 
         expect(
@@ -1135,6 +1138,35 @@ describe("WorkspaceSurfaceManager action routing", () => {
         });
     });
 
+    it("translates drag coordinates between zoomed host and surface CSS pixels", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow(2).window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        const surface = electronMocks.views[0];
+        manager.setContentInsets("host-1", { left: 200, right: 0, top: 100 });
+        await vi.waitFor(() =>
+            expect(surface?.setBounds).toHaveBeenLastCalledWith(
+                expect.objectContaining({ x: 200, y: 100 }),
+            ),
+        );
+
+        manager.dispatchActiveSurfaceDrag("host-1", {
+            contextKey: "project-a::__primary__",
+            detail: { phase: "move", x: 300, y: 150 },
+            kind: "agent",
+            projectId: "project-a",
+            worktreeId: null,
+        });
+
+        expect(surface?.webContents.send).toHaveBeenLastCalledWith(
+            IPC_EVENTS.workspaceSurfaceDrag,
+            expect.objectContaining({ detail: { phase: "move", x: 200, y: 100 } }),
+        );
+    });
+
     it("reveals a surface file only through its active host context", async () => {
         const manager = createTestManager();
         const host = createHostWindow();
@@ -1202,7 +1234,7 @@ function createTestManager(): WorkspaceSurfaceManager {
     });
 }
 
-function createHostWindow(): {
+function createHostWindow(zoomFactor = 1): {
     readonly emit: (event: string) => void;
     readonly getContentBounds: ReturnType<typeof vi.fn>;
     readonly send: ReturnType<typeof vi.fn>;
@@ -1217,7 +1249,7 @@ function createHostWindow(): {
         y: 0,
     }));
     const webContents = {
-        getZoomFactor: () => 1,
+        getZoomFactor: () => zoomFactor,
         isDestroyed: () => false,
         send,
     };

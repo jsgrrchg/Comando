@@ -83,6 +83,72 @@ describe("WorkspaceActivationCoordinator", () => {
         expect(harness.pool.get("scope-commit")?.state).toBe("cold");
     });
 
+    it("finalizes a successful commit when a newer activation fails", async () => {
+        const harness = createHarness();
+        await harness.coordinator.activate("scope-original");
+        const commit = deferred();
+        harness.blockCommit("scope-a", commit);
+
+        const activationA = harness.coordinator.activate("scope-a");
+        await vi.waitFor(() =>
+            expect(harness.adapter.commitActiveScope).toHaveBeenCalledWith(
+                "scope-a",
+                expect.any(String),
+            ),
+        );
+        harness.adapter.acquire.mockRejectedValueOnce(new Error("newer failed"));
+        const activationB = harness.coordinator.activate("scope-b");
+        commit.resolve();
+
+        await expect(activationA).resolves.toEqual({
+            scopeKey: "scope-a",
+            status: "stale",
+        });
+        await expect(activationB).resolves.toMatchObject({ status: "failed" });
+        expect(harness.coordinator.committedScopeKey).toBe("scope-a");
+        expect(harness.pool.get("scope-a")?.state).toBe("active");
+    });
+
+    it("does not clear a newer activation that wins during close preparation", async () => {
+        const preparation = deferred();
+        const harness = createHarness({ preparationPromise: preparation.promise });
+        await harness.coordinator.activate("scope-a");
+
+        const close = harness.coordinator.closeWorkspace("scope-a");
+        await vi.waitFor(() =>
+            expect(harness.adapter.prepareHibernate).toHaveBeenCalled(),
+        );
+        await harness.coordinator.activate("scope-b");
+        preparation.resolve();
+
+        await expect(close).resolves.toMatchObject({ status: "failed" });
+        expect(harness.coordinator.committedScopeKey).toBe("scope-b");
+        expect(harness.pool.get("scope-b")?.state).toBe("active");
+        expect(harness.pool.get("scope-a")?.state).toBe("warm");
+        expect(harness.committedScopes.at(-1)).toBe("scope-b");
+    });
+
+    it("does not clear a newer activation that commits during disposal", async () => {
+        const harness = createHarness();
+        await harness.coordinator.activate("scope-a");
+        const disposal = harness.blockDestroy("scope-a");
+
+        const close = harness.coordinator.closeWorkspace("scope-a");
+        await vi.waitFor(() =>
+            expect(harness.adapter.destroy).toHaveBeenCalledWith(
+                "scope-a",
+                expect.any(String),
+            ),
+        );
+        await harness.coordinator.activate("scope-b");
+        disposal.resolve();
+
+        await expect(close).resolves.toMatchObject({ status: "closed" });
+        expect(harness.coordinator.committedScopeKey).toBe("scope-b");
+        expect(harness.pool.get("scope-b")?.state).toBe("active");
+        expect(harness.committedScopes.at(-1)).toBe("scope-b");
+    });
+
     it("closes active and warm surfaces without deleting their cold pool entries", async () => {
         const harness = createHarness();
         await harness.coordinator.activate("scope-a");
@@ -130,6 +196,35 @@ describe("WorkspaceActivationCoordinator", () => {
         expect(harness.pool.get("scope-a")?.state).toBe("active");
         expect(harness.adapter.destroy).not.toHaveBeenCalled();
     });
+
+    it.each(["active", "warm"] as const)(
+        "restores a %s surface when renderer disposal fails",
+        async (state) => {
+            const harness = createHarness();
+            await harness.coordinator.activate("scope-a");
+            if (state === "warm") {
+                await harness.coordinator.activate("scope-b");
+            }
+            harness.adapter.destroy.mockRejectedValueOnce(
+                new Error("destroy failed"),
+            );
+
+            await expect(
+                harness.coordinator.closeWorkspace("scope-a"),
+            ).resolves.toMatchObject({
+                message: "destroy failed",
+                status: "failed",
+            });
+            expect(harness.pool.get("scope-a")?.state).toBe(state);
+            if (state === "active") {
+                expect(harness.coordinator.committedScopeKey).toBe("scope-a");
+                expect(harness.committedScopes.slice(-2)).toEqual([
+                    null,
+                    "scope-a",
+                ]);
+            }
+        },
+    );
 
     it.each(allHardLeaseKinds)(
         "blocks explicit close for the %s hard lease",
@@ -186,6 +281,7 @@ describe("WorkspaceActivationCoordinator", () => {
 function createHarness(options: {
     readonly maxWarmSurfaces?: number;
     readonly preparation?: WorkspaceSurfaceHibernatePreparation;
+    readonly preparationPromise?: Promise<void>;
 } = {}) {
     let nextGeneration = 0;
     const liveSurfaces = new Map<
@@ -195,6 +291,8 @@ function createHarness(options: {
     const blockedRestores = new Map<string, ReturnType<typeof deferred>>();
     const failedRestores = new Map<string, Error>();
     const failedCommits = new Map<string, Error>();
+    const blockedCommits = new Map<string, ReturnType<typeof deferred>>();
+    const blockedDestroys = new Map<string, ReturnType<typeof deferred>>();
     const committedScopes: Array<string | null> = [];
     const pool = new WorkspaceSurfacePool({
         maxWarmSurfaces: options.maxWarmSurfaces,
@@ -222,24 +320,29 @@ function createHarness(options: {
                 reused: false,
             });
         }),
-        commitActiveScope: vi.fn((scopeKey: string | null) => {
+        commitActiveScope: vi.fn(async (scopeKey: string | null) => {
             const failure = scopeKey ? failedCommits.get(scopeKey) : null;
             if (failure) {
-                return Promise.reject(failure);
+                throw failure;
+            }
+            const blocked = scopeKey ? blockedCommits.get(scopeKey) : null;
+            if (blocked) {
+                await blocked.promise;
             }
             committedScopes.push(scopeKey);
-            return Promise.resolve();
         }),
-        destroy: vi.fn((scopeKey: string) => {
+        destroy: vi.fn(async (scopeKey: string) => {
+            await blockedDestroys.get(scopeKey)?.promise;
             liveSurfaces.delete(scopeKey);
         }),
-        prepareHibernate: vi.fn(() =>
-            Promise.resolve(options.preparation ?? {
+        prepareHibernate: vi.fn(async () => {
+            await options.preparationPromise;
+            return options.preparation ?? {
                 checkpointSucceeded: true,
                 flushSucceeded: true,
                 leases: [],
-            }),
-        ),
+            };
+        }),
         waitUntilReady: vi.fn(async (scopeKey: string) => {
             const failed = failedRestores.get(scopeKey);
             if (failed) {
@@ -259,8 +362,19 @@ function createHarness(options: {
 
     return {
         adapter,
+        blockDestroy: (scopeKey: string) => {
+            const disposal = deferred();
+            blockedDestroys.set(scopeKey, disposal);
+            return disposal;
+        },
         blockRestore: (scopeKey: string) => {
             blockedRestores.set(scopeKey, deferred());
+        },
+        blockCommit: (
+            scopeKey: string,
+            commit: ReturnType<typeof deferred>,
+        ) => {
+            blockedCommits.set(scopeKey, commit);
         },
         committedScopes,
         coordinator,

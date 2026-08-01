@@ -2271,7 +2271,7 @@ export class AiService {
 
             this.#clearLiveSession(sessionId);
             for (const subtreeSessionId of subtreeSessionIds) {
-                this.#promptQueue.deleteSession(subtreeSessionId);
+                await this.#promptQueue.deleteSession(subtreeSessionId);
             }
             if (this.#nativeAi?.shouldHandleHistory()) {
                 await this.#nativeAi.deleteSession(sessionId);

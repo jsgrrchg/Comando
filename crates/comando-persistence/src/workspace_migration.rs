@@ -17,6 +17,7 @@ use comando_types::workspace::{
     normalize_workspace_worktree_id,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use semver::Version;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use time::format_description::well_known::Rfc3339;
@@ -364,6 +365,11 @@ impl SqlitePersistenceStore {
                 "applicationVersion must not be empty".to_string(),
             ));
         }
+        Version::parse(input.application_version.trim()).map_err(|_| {
+            PersistenceError::InvalidWorkspaceInput(
+                "applicationVersion must use semantic versioning".to_string(),
+            )
+        })?;
         if input.retention_days < MINIMUM_LEGACY_RETENTION_DAYS || input.retention_days > 3_650 {
             return Err(PersistenceError::InvalidWorkspaceInput(format!(
                 "retentionDays must be between {MINIMUM_LEGACY_RETENTION_DAYS} and 3650"
@@ -407,9 +413,20 @@ impl SqlitePersistenceStore {
                 "a stable dual-write release must be verified first".to_string(),
             )
         })?;
-        if stable_version == input.application_version {
+        let stable_version_parsed = Version::parse(stable_version).map_err(|_| {
+            PersistenceError::InvalidWorkspaceInput(
+                "stable release version is not valid semantic versioning".to_string(),
+            )
+        })?;
+        let application_version =
+            Version::parse(input.application_version.trim()).map_err(|_| {
+                PersistenceError::InvalidWorkspaceInput(
+                    "applicationVersion must use semantic versioning".to_string(),
+                )
+            })?;
+        if application_version <= stable_version_parsed {
             return Err(PersistenceError::InvalidWorkspaceInput(
-                "legacy writes can only stop in a later application version".to_string(),
+                "legacy writes can only stop in a later semantic version".to_string(),
             ));
         }
         if status.pending_recovery_layout_count != 0 {
@@ -670,8 +687,12 @@ fn compare_active_candidates(left: &MigrationCandidate, right: &MigrationCandida
     right
         .is_window_open
         .cmp(&left.is_window_open)
-        .then_with(|| right.last_activated_at.cmp(&left.last_activated_at))
-        .then_with(|| right.source_updated_at.cmp(&left.source_updated_at))
+        .then_with(|| {
+            compare_migration_timestamps(&left.last_activated_at, &right.last_activated_at)
+        })
+        .then_with(|| {
+            compare_migration_timestamps(&left.source_updated_at, &right.source_updated_at)
+        })
         .then_with(|| right.source_revision.cmp(&left.source_revision))
         .then_with(|| left.source_window_id.cmp(&right.source_window_id))
         .then_with(|| left.original_position.cmp(&right.original_position))
@@ -683,8 +704,12 @@ fn compare_layout_candidates(left: &MigrationCandidate, right: &MigrationCandida
     right_open
         .cmp(&left_open)
         .then_with(|| right.is_active.cmp(&left.is_active))
-        .then_with(|| right.last_activated_at.cmp(&left.last_activated_at))
-        .then_with(|| right.source_updated_at.cmp(&left.source_updated_at))
+        .then_with(|| {
+            compare_migration_timestamps(&left.last_activated_at, &right.last_activated_at)
+        })
+        .then_with(|| {
+            compare_migration_timestamps(&left.source_updated_at, &right.source_updated_at)
+        })
         .then_with(|| right.source_revision.cmp(&left.source_revision))
         .then_with(|| left.source_window_id.cmp(&right.source_window_id))
         .then_with(|| left.original_position.cmp(&right.original_position))
@@ -1070,10 +1095,24 @@ fn select_source_window<'a>(
         right
             .is_open
             .cmp(&left.is_open)
-            .then_with(|| right.restore_updated_at.cmp(&left.restore_updated_at))
+            .then_with(|| {
+                compare_migration_timestamps(&left.restore_updated_at, &right.restore_updated_at)
+            })
             .then_with(|| right.restore_revision.cmp(&left.restore_revision))
             .then_with(|| left.window_id.cmp(&right.window_id))
     })
+}
+
+fn compare_migration_timestamps(left: &str, right: &str) -> Ordering {
+    match (
+        OffsetDateTime::parse(left, &Rfc3339).ok(),
+        OffsetDateTime::parse(right, &Rfc3339).ok(),
+    ) {
+        (Some(left), Some(right)) => right.cmp(&left),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => right.cmp(left),
+    }
 }
 
 fn write_immutable_backup(
@@ -1445,7 +1484,7 @@ fn canonical_json_bytes(value: &Value) -> Result<Vec<u8>, PersistenceError> {
     serde_json::to_vec(value).map_err(invalid_json)
 }
 
-fn hash_json(value: &Value) -> Result<String, PersistenceError> {
+pub(crate) fn hash_json(value: &Value) -> Result<String, PersistenceError> {
     Ok(sha256_hex(&canonical_json_bytes(value)?))
 }
 
@@ -1566,6 +1605,18 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn migration_timestamp_ranking_uses_utc_and_prefers_valid_values() {
+        assert_eq!(
+            compare_migration_timestamps("2026-07-30T12:00:00+02:00", "2026-07-30T10:30:00Z",),
+            Ordering::Greater,
+        );
+        assert_eq!(
+            compare_migration_timestamps("2026-07-30T10:00:00Z", "malformed"),
+            Ordering::Less,
+        );
     }
 
     #[test]
@@ -1876,6 +1927,22 @@ mod tests {
             .expect("stable release recorded");
         assert_eq!(stable.stage, NativeWorkspaceRolloutStage::StableDualWrite);
         assert!(stable.dual_write_enabled);
+        assert!(
+            store
+                .disable_workspace_legacy_writes(NativeWorkspaceDisableLegacyWritesInput {
+                    application_version: "0.2.0".to_string(),
+                })
+                .is_err(),
+            "an older version cannot retire the rollback path"
+        );
+        assert!(
+            store
+                .disable_workspace_legacy_writes(NativeWorkspaceDisableLegacyWritesInput {
+                    application_version: "later".to_string(),
+                })
+                .is_err(),
+            "a non-semver label cannot masquerade as a later release"
+        );
         assert!(
             store
                 .disable_workspace_legacy_writes(NativeWorkspaceDisableLegacyWritesInput {

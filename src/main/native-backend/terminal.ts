@@ -84,6 +84,12 @@ export class NativeTerminalGateway implements TerminalGateway {
             : Promise.resolve([]);
     }
 
+    listOwnedSessions(
+        runtimeOwnerId: string,
+    ): Promise<readonly TerminalSession[]> {
+        return this.#listOwnedSessions(runtimeOwnerId);
+    }
+
     async createSession(
         input: CreateTerminalSessionInput,
         ownerWindowId: string,

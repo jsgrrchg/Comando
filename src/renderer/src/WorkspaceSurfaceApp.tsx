@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
     WorkspaceSurfaceActionEnvelope,
+    WorkspaceSurfaceHardLease,
     WorkspaceSurfaceLifecycleState,
     WorkspaceSurfaceRuntimeBinding,
 } from "@shared/ipc";
@@ -18,7 +19,7 @@ import {
     flushWorkspacePersistenceNow,
     useWorkspaceStore,
 } from "./app/store/workspace-store";
-import { resolveProjectContextWorktreeId } from "./app/git/context-key";
+import { resolveCommittedProjectWorktreeId } from "./app/git/context-key";
 import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
 import { isWorkspaceSurfaceLifecycleCurrent } from "./app/workspace/surface-presentation-lifecycle";
 import {
@@ -37,6 +38,88 @@ import { useTerminalRuntimeStore } from "./features/terminal/terminalRuntimeStor
 const descriptor = parseWorkspaceSurfaceRendererDescriptor(
     window.location.search,
 );
+
+function collectCurrentWorkspaceSurfaceLeases(): readonly WorkspaceSurfaceHardLease[] {
+    const acquiredAt = new Date().toISOString();
+    const leasesById = new Map(
+        [
+            ...collectWorkspaceSurfaceStateLeases(
+                useWorkspaceStore.getState(),
+                acquiredAt,
+            ),
+            ...collectRuntimeWorkspaceSurfaceLeases(acquiredAt),
+            ...workspaceSurfaceLeaseRegistry.list(),
+        ].map((lease) => [lease.id, lease]),
+    );
+    return [...leasesById.values()].sort((left, right) =>
+        left.id.localeCompare(right.id),
+    );
+}
+
+function collectRuntimeWorkspaceSurfaceLeases(
+    acquiredAt: string,
+): readonly WorkspaceSurfaceHardLease[] {
+    const leases: WorkspaceSurfaceHardLease[] = [];
+    for (const [sessionId, session] of Object.entries(
+        useAiStore.getState().sessions,
+    )) {
+        const status = session.snapshot?.status ?? null;
+        if (
+            status === "starting" ||
+            status === "streaming" ||
+            status === "waiting_permission" ||
+            status === "waiting_user_input" ||
+            session.isDispatching
+        ) {
+            leases.push({
+                acquiredAt,
+                id: `ai-critical:${sessionId}`,
+                kind: "ai-critical",
+                message: "An AI session still requires this workspace.",
+            });
+        }
+        const hasStructuredComposer =
+            session.draftAttachments.length > 0 ||
+            session.draftFileContexts.length > 0 ||
+            session.draftComposerParts.some((part) => part.type !== "text");
+        if (hasStructuredComposer) {
+            leases.push({
+                acquiredAt,
+                id: `non-durable-composer:${sessionId}`,
+                kind: "non-durable-composer",
+                message: "A composer contains content that is not durable yet.",
+            });
+        }
+        if (
+            session.snapshot?.trackedFiles.some(
+                (file) =>
+                    file.reviewState === "pending" ||
+                    file.reviewState === "conflict",
+            )
+        ) {
+            leases.push({
+                acquiredAt,
+                id: `pending-review:${sessionId}`,
+                kind: "pending-review",
+                message: "An AI file review is still pending.",
+            });
+        }
+    }
+    for (const runtime of Object.values(
+        useTerminalRuntimeStore.getState().runtimesById,
+    )) {
+        if (!runtime.busy) {
+            continue;
+        }
+        leases.push({
+            acquiredAt,
+            id: `terminal-busy:${runtime.terminalId}`,
+            kind: "terminal-busy",
+            message: "A terminal operation is still in progress.",
+        });
+    }
+    return leases;
+}
 
 export function WorkspaceSurfaceApp() {
     useSystemTheme();
@@ -61,9 +144,6 @@ export function WorkspaceSurfaceApp() {
     const addProjects = useProjectsStore((state) => state.addProjects);
     const gitHydrate = useGitStore((state) => state.hydrate);
     const ingestGitSnapshot = useGitStore((state) => state.ingestSnapshot);
-    const activeWorktreeIds = useGitStore(
-        (state) => state.activeWorktreeIds,
-    );
     const hydrateSurfaceLayout = useWorkspaceStore(
         (state) => state.hydrateSurfaceLayout,
     );
@@ -87,14 +167,14 @@ export function WorkspaceSurfaceApp() {
         readonly width: number;
         readonly x: number;
     } | null>(null);
+    const activeDragLeaseReleaseRef = useRef<(() => void) | null>(null);
 
     const activeProjectId =
         activeContext?.projectId ?? descriptor?.projectId ?? null;
     const activeWorktreeId = activeProjectId
-        ? resolveProjectContextWorktreeId(
+        ? resolveCommittedProjectWorktreeId(
               activeProjectId,
               activeContext?.worktreeId ?? descriptor?.worktreeId ?? null,
-              activeWorktreeIds[activeProjectId] ?? null,
           )
         : null;
     const runtimeBinding = useMemo<WorkspaceSurfaceRuntimeBinding | null>(
@@ -225,17 +305,7 @@ export function WorkspaceSurfaceApp() {
         }
         let lastSignature = "";
         const reportLeases = () => {
-            const leasesById = new Map(
-                [
-                    ...collectWorkspaceSurfaceStateLeases(
-                        useWorkspaceStore.getState(),
-                    ),
-                    ...workspaceSurfaceLeaseRegistry.list(),
-                ].map((lease) => [lease.id, lease]),
-            );
-            const leases = [...leasesById.values()].sort((left, right) =>
-                left.id.localeCompare(right.id),
-            );
+            const leases = collectCurrentWorkspaceSurfaceLeases();
             const signature = JSON.stringify(
                 leases.map((lease) => [lease.id, lease.kind, lease.message]),
             );
@@ -250,18 +320,19 @@ export function WorkspaceSurfaceApp() {
         };
         reportLeases();
         const unsubscribeStore = useWorkspaceStore.subscribe(reportLeases);
+        const unsubscribeAi = useAiStore.subscribe(reportLeases);
+        const unsubscribeTerminal = useTerminalRuntimeStore.subscribe(reportLeases);
         const unsubscribeRegistry =
             workspaceSurfaceLeaseRegistry.subscribe(reportLeases);
         return () => {
             unsubscribeStore();
+            unsubscribeAi();
+            unsubscribeTerminal();
             unsubscribeRegistry();
         };
     }, [runtimeBinding]);
 
     useEffect(() => {
-        if (surfaceLifecycle !== "visible") {
-            return;
-        }
         const api = window.comando;
         const unsubscribe = api.onWorkspaceSurfaceActionRequested(
             (envelope: WorkspaceSurfaceActionEnvelope) => {
@@ -293,7 +364,7 @@ export function WorkspaceSurfaceApp() {
             },
         );
         return unsubscribe;
-    }, [surfaceLifecycle]);
+    }, []);
 
     useEffect(() => {
         if (surfaceLifecycle !== "visible") {
@@ -329,6 +400,19 @@ export function WorkspaceSurfaceApp() {
         }
         const api = window.comando;
         const unsubscribeDrag = api.onWorkspaceSurfaceDrag((event) => {
+            const phase = (event.detail as { readonly phase?: unknown }).phase;
+            if (phase === "start") {
+                activeDragLeaseReleaseRef.current?.();
+                activeDragLeaseReleaseRef.current =
+                    workspaceSurfaceLeaseRegistry.acquire({
+                        id: "active-drag",
+                        kind: "active-drag",
+                        message: "A drag operation is still in progress.",
+                    });
+            } else if (phase === "end" || phase === "cancel") {
+                activeDragLeaseReleaseRef.current?.();
+                activeDragLeaseReleaseRef.current = null;
+            }
             window.dispatchEvent(
                 new CustomEvent(
                     event.kind === "agent"
@@ -346,6 +430,8 @@ export function WorkspaceSurfaceApp() {
                 }));
             });
         return () => {
+            activeDragLeaseReleaseRef.current?.();
+            activeDragLeaseReleaseRef.current = null;
             unsubscribeDrag();
             unsubscribeGitMenu();
         };
@@ -398,9 +484,10 @@ export function WorkspaceSurfaceApp() {
         const unsubscribeReopen = api.onWorkspaceReopenLastClosedTab(() => {
             void useWorkspaceStore.getState().reopenLastClosedTab();
         });
-        const unsubscribeFlush = api.onWorkspaceFlushRequested(
-            flushWorkspacePersistenceNow,
-        );
+        const unsubscribeFlush = api.onWorkspaceFlushRequested(async () => {
+            await flushWorkspacePersistenceNow();
+            return collectCurrentWorkspaceSurfaceLeases();
+        });
         return () => {
             unsubscribeClose();
             unsubscribeReopen();

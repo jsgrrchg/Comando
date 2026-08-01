@@ -150,7 +150,7 @@ interface WorkspaceSurfaceLifecycleHandlers {
     readonly prepareSurfaceHibernate?: (
         subscriber: WorkspaceSurfaceRuntimeSubscriber,
         reason: WorkspaceSurfaceHibernateReason,
-    ) => Promise<void>;
+    ) => Promise<readonly WorkspaceSurfaceHardLease[] | void>;
     readonly resolveRuntimeOwner?: (
         input: WorkspaceSurfaceRuntimeResolutionInput,
     ) => WorkspaceSurfaceRuntimeResolution | Promise<WorkspaceSurfaceRuntimeResolution>;
@@ -692,9 +692,17 @@ export class WorkspaceSurfaceManager {
         const detail = event.detail as Record<string, unknown>;
         const x = detail.x;
         const y = detail.y;
+        const zoomFactor = Math.max(
+            0.01,
+            host?.hostWindow.webContents.getZoomFactor() ?? 1,
+        );
         const translatedDetail =
             bounds && typeof x === "number" && typeof y === "number"
-                ? { ...detail, x: x - bounds.x, y: y - bounds.y }
+                ? {
+                      ...detail,
+                      x: (x * zoomFactor - bounds.x) / zoomFactor,
+                      y: (y * zoomFactor - bounds.y) / zoomFactor,
+                  }
                 : detail;
         surface.webContents.send(IPC_EVENTS.workspaceSurfaceDrag, {
             ...event,
@@ -854,6 +862,14 @@ export class WorkspaceSurfaceManager {
         return Promise.resolve();
     }
 
+    cancelHostClose(hostWindowId: string, hostWindow?: BrowserWindow): void {
+        const host = this.#hostsByWindowId.get(hostWindowId);
+        if (!host || (hostWindow && host.hostWindow !== hostWindow)) {
+            return;
+        }
+        host.isClosing = false;
+    }
+
     disposeHost(hostWindowId: string, hostWindow?: BrowserWindow): void {
         const host = this.#hostsByWindowId.get(hostWindowId);
         if (!host) {
@@ -1008,14 +1024,19 @@ export class WorkspaceSurfaceManager {
                                 "Workspace surface checkpointing is unavailable.",
                             );
                         }
-                        await this.#lifecycleHandlers.prepareSurfaceHibernate(
-                            this.#toRuntimeSubscriber(surface),
-                            reason,
-                        );
+                        const reportedLeases =
+                            await this.#lifecycleHandlers.prepareSurfaceHibernate(
+                                this.#toRuntimeSubscriber(surface),
+                                reason,
+                            );
+                        const leases = reportedLeases ?? [];
                         return {
                             checkpointSucceeded: true,
                             flushSucceeded: true,
-                            leases: this.#collectSurfaceActionLeases(surface),
+                            leases: [
+                                ...leases,
+                                ...this.#collectSurfaceActionLeases(surface),
+                            ],
                         };
                     } catch (error) {
                         console.error(
@@ -1754,12 +1775,17 @@ export class WorkspaceSurfaceManager {
             subscriber,
             lifecycle,
         );
-        surface.webContents.send(IPC_EVENTS.workspaceSurfaceLifecycleChanged, {
-            generation: subscriber.generation,
-            runtimeOwnerId: subscriber.runtimeOwnerId,
-            scopeKey: subscriber.scopeKey,
-            state: lifecycle,
-        });
+        try {
+            surface.webContents.send(IPC_EVENTS.workspaceSurfaceLifecycleChanged, {
+                generation: subscriber.generation,
+                runtimeOwnerId: subscriber.runtimeOwnerId,
+                scopeKey: subscriber.scopeKey,
+                state: lifecycle,
+            });
+        } catch {
+            // A crashed frame can disappear between isDestroyed() and send();
+            // lifecycle cleanup must still release ownership and pool state.
+        }
     }
 
     #detachSurfaceRuntime(surface: WorkspaceSurfaceRecord): void {

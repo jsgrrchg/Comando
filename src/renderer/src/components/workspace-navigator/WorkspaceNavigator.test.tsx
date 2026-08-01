@@ -144,6 +144,91 @@ describe("WorkspaceNavigator", () => {
         expect(rows?.[1]?.getAttribute("aria-label")).toContain("Comando");
     });
 
+    it("lets the latest activation win while an earlier activation is pending", async () => {
+        vi.stubGlobal("comando", {
+            showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
+        });
+        let rejectFirst: ((cause: Error) => void) | null = null;
+        const onActivate = vi
+            .fn<WorkspaceNavigatorProps["onActivate"]>()
+            .mockImplementationOnce(
+                () =>
+                    new Promise<void>((_resolve, reject) => {
+                        rejectFirst = reject;
+                    }),
+            )
+            .mockResolvedValueOnce();
+        const model = createModel();
+        const extraWorkspace = workspace(
+            "project-a::worktree-second",
+            "worktree-second",
+            "feature/second",
+            false,
+        );
+        mount(
+            <WorkspaceNavigator
+                {...createProps({
+                    model: {
+                        ...model,
+                        projects: [
+                            {
+                                ...model.projects[0],
+                                workspaces: [
+                                    ...model.projects[0].workspaces,
+                                    extraWorkspace,
+                                ],
+                            },
+                        ],
+                    },
+                    onActivate,
+                })}
+            />,
+        );
+        await act(async () => Promise.resolve());
+        const rows = container?.querySelectorAll<HTMLElement>(
+            ".workspace-navigator-workspace-row",
+        );
+
+        await act(async () => {
+            rows?.[1]?.click();
+            await Promise.resolve();
+        });
+        await act(async () => {
+            rows?.[2]?.click();
+            await Promise.resolve();
+        });
+        await act(async () => {
+            rejectFirst?.(new Error("Late failure"));
+            await Promise.resolve();
+        });
+
+        expect(onActivate).toHaveBeenCalledTimes(2);
+        expect(rows?.[1]?.dataset.status).not.toBe("error");
+    });
+
+    it("exposes missing projects with visible text", async () => {
+        vi.stubGlobal("comando", {
+            showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
+        });
+        const model = createModel();
+        mount(
+            <WorkspaceNavigator
+                {...createProps({
+                    model: {
+                        ...model,
+                        projects: [{ ...model.projects[0], isMissing: true }],
+                    },
+                })}
+            />,
+        );
+        await act(async () => Promise.resolve());
+
+        expect(
+            container?.querySelector(".workspace-navigator-project-row")
+                ?.textContent,
+        ).toContain("Missing");
+    });
+
     it("requires explicit confirmation before discarding a pending recovery layout", async () => {
         vi.stubGlobal("comando", {
             showNativeContextMenu: vi.fn(() => Promise.resolve("recovery")),

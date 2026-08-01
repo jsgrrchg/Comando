@@ -7,6 +7,7 @@ edition.workspace = true
 comando-types.workspace = true
 rusqlite.workspace = true
 serde_json.workspace = true
+semver.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 time.workspace = true

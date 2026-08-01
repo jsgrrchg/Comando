@@ -2598,6 +2598,13 @@ describe("workspace file opening", () => {
         expect(persistWorkspaceLayoutMock).toHaveBeenCalledTimes(1);
     });
 
+    it("treats a close flush before the first mutation as already durable", async () => {
+        resetWorkspacePersistenceForTests();
+
+        await expect(flushWorkspacePersistenceNow()).resolves.toBeUndefined();
+        expect(persistWorkspaceLayoutMock).not.toHaveBeenCalled();
+    });
+
     it("does not report a successful close flush when persistence keeps failing", async () => {
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
         persistWorkspaceLayoutMock.mockRejectedValue(
