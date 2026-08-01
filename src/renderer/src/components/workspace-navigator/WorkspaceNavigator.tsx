@@ -28,6 +28,9 @@ export interface WorkspaceNavigatorProps {
     readonly onCloseWorkspace: (
         workspace: WorkspaceNavigatorWorkspace,
     ) => Promise<void>;
+    readonly onCopyProjectPath: (
+        project: WorkspaceNavigatorProject,
+    ) => Promise<void>;
     readonly onCopyPath: (workspace: WorkspaceNavigatorWorkspace) => Promise<void>;
     readonly onCreateWorktree: (
         project: WorkspaceNavigatorProject,
@@ -122,6 +125,7 @@ export function WorkspaceNavigator({
     onActivate,
     onCloneRepository,
     onCloseWorkspace,
+    onCopyProjectPath,
     onCopyPath,
     onCreateWorktree,
     onDeleteWorktree,
@@ -422,6 +426,11 @@ export function WorkspaceNavigator({
         if (item.kind === "project") {
             if (action === "new-worktree") {
                 setDialog({ kind: "new-worktree", project: item.project });
+            } else if (action === "copy-project-path") {
+                await runOperation(
+                    () => onCopyProjectPath(item.project),
+                    "Could not copy this project path.",
+                );
             } else if (action === "reveal-project") {
                 const primaryWorkspace = item.project.workspaces[0];
                 if (!primaryWorkspace) {
@@ -507,6 +516,11 @@ export function WorkspaceNavigator({
         },
         {
             enabled: Boolean(project.rootPath),
+            id: "copy-project-path",
+            label: "Copy Full Path",
+        },
+        {
+            enabled: Boolean(project.rootPath),
             id: "reveal-project",
             label: "Reveal Project",
         },
@@ -547,7 +561,7 @@ export function WorkspaceNavigator({
         {
             enabled: Boolean(workspace.rootPath),
             id: "copy-path",
-            label: "Copy Path",
+            label: "Copy Full Path",
         },
         {
             enabled: Boolean(workspace.rootPath),

@@ -140,6 +140,12 @@ export function WorkspaceNavigatorPanel({
                     throw new Error(result.message);
                 }
             }}
+            onCopyProjectPath={async (project) => {
+                if (!project.rootPath) {
+                    throw new Error("This project path is unavailable.");
+                }
+                await window.comando?.writeClipboardText(project.rootPath);
+            }}
             onCopyPath={async (workspace) => {
                 if (!workspace.rootPath) {
                     throw new Error("This workspace path is unavailable.");

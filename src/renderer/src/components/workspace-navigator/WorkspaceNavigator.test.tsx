@@ -291,6 +291,59 @@ describe("WorkspaceNavigator", () => {
         expect(destructiveButton?.disabled).toBe(false);
     });
 
+    it("copies the full path from project and worktree context menus", async () => {
+        const showNativeContextMenu = vi
+            .fn<(input: NativeContextMenuInput) => Promise<string | null>>()
+            .mockResolvedValueOnce("copy-project-path")
+            .mockResolvedValueOnce("copy-path");
+        vi.stubGlobal("comando", { showNativeContextMenu });
+        const onCopyProjectPath = vi.fn(() => Promise.resolve());
+        const onCopyPath = vi.fn(() => Promise.resolve());
+        mount(
+            <WorkspaceNavigator
+                {...createProps({ onCopyPath, onCopyProjectPath })}
+            />,
+        );
+        await act(async () => Promise.resolve());
+
+        const projectRow = container?.querySelector<HTMLElement>(
+            ".workspace-navigator-project-row",
+        );
+        const worktreeRow = container?.querySelectorAll<HTMLElement>(
+            ".workspace-navigator-workspace-row",
+        )[1];
+
+        await act(async () => {
+            projectRow?.dispatchEvent(
+                new MouseEvent("contextmenu", { bubbles: true }),
+            );
+            await Promise.resolve();
+        });
+        await act(async () => {
+            worktreeRow?.dispatchEvent(
+                new MouseEvent("contextmenu", { bubbles: true }),
+            );
+            await Promise.resolve();
+        });
+
+        expect(showNativeContextMenu.mock.calls[0]?.[0].entries).toContainEqual({
+            enabled: true,
+            id: "copy-project-path",
+            label: "Copy Full Path",
+        });
+        expect(showNativeContextMenu.mock.calls[1]?.[0].entries).toContainEqual({
+            enabled: true,
+            id: "copy-path",
+            label: "Copy Full Path",
+        });
+        expect(onCopyProjectPath).toHaveBeenCalledWith(
+            expect.objectContaining({ rootPath: "/projects/comando" }),
+        );
+        expect(onCopyPath).toHaveBeenCalledWith(
+            expect.objectContaining({ rootPath: "/projects/comando-feature" }),
+        );
+    });
+
     it("keeps the committed row active while activation fails and exposes retry copy", async () => {
         vi.stubGlobal("comando", {
             showNativeContextMenu: vi.fn(() => Promise.resolve(null)),
@@ -582,6 +635,7 @@ function createProps(
         onActivate: vi.fn(() => Promise.resolve()),
         onCloneRepository: vi.fn(() => Promise.resolve()),
         onCloseWorkspace: vi.fn(() => Promise.resolve()),
+        onCopyProjectPath: vi.fn(() => Promise.resolve()),
         onCopyPath: vi.fn(() => Promise.resolve()),
         onCreateWorktree: vi.fn(() => Promise.resolve()),
         onDeleteWorktree: vi.fn(() => Promise.resolve()),
