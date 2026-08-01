@@ -246,6 +246,7 @@ if (!hasSingleInstanceLock) {
             }
             const nativeClient = nativeBackendClient;
             nativeAppDataClient = await createNativeAppDataClient({
+                applicationVersion: app.getVersion(),
                 client: nativeClient,
                 databaseFile,
             });

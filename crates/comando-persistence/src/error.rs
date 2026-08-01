@@ -33,6 +33,12 @@ pub enum PersistenceError {
     #[error("The durable workspace already exists: {0}")]
     WorkspaceAlreadyExists(String),
 
+    #[error("The workspace migration was not found: {0}")]
+    WorkspaceMigrationNotFound(String),
+
+    #[error("The immutable workspace backup checksum does not match: {0}")]
+    WorkspaceBackupChecksumMismatch(PathBuf),
+
     #[error(
         "The {entity} revision changed (expected {expected_revision}, actual {actual_revision})."
     )]
@@ -65,7 +71,9 @@ impl PersistenceError {
             Self::EmptyDatabasePath | Self::InvalidWorkspaceInput(_) => {
                 NativeErrorCode::InvalidArgs
             }
-            Self::DatabaseNotFound(_) | Self::WorkspaceNotFound(_) => NativeErrorCode::NotFound,
+            Self::DatabaseNotFound(_)
+            | Self::WorkspaceNotFound(_)
+            | Self::WorkspaceMigrationNotFound(_) => NativeErrorCode::NotFound,
             Self::WorkspaceAlreadyExists(_) | Self::RevisionConflict { .. } => {
                 NativeErrorCode::Conflict
             }
@@ -73,6 +81,7 @@ impl PersistenceError {
             | Self::MissingRequiredColumn { .. }
             | Self::UnsupportedSchemaVersion(_) => NativeErrorCode::UnsupportedSchemaVersion,
             Self::MigrationInterrupted(_)
+            | Self::WorkspaceBackupChecksumMismatch(_)
             | Self::OpenStorage { .. }
             | Self::Sqlite(_)
             | Self::Io(_) => NativeErrorCode::InternalError,
@@ -82,7 +91,9 @@ impl PersistenceError {
     pub fn to_native_error(&self) -> NativeError {
         let mut error = NativeError::new(self.native_code(), self.to_string());
         match self {
-            Self::DatabaseNotFound(path) | Self::OpenStorage { path, .. } => {
+            Self::DatabaseNotFound(path)
+            | Self::WorkspaceBackupChecksumMismatch(path)
+            | Self::OpenStorage { path, .. } => {
                 error = error.with_details(json!({
                     "databasePath": crate::redaction::redact_path(path),
                 }));

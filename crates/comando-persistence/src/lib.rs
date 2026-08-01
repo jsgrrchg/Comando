@@ -5,6 +5,7 @@ pub mod metadata;
 pub mod redaction;
 pub mod sqlite;
 pub mod store;
+pub mod workspace_migration;
 
 pub use error::PersistenceError;
 pub use health::{closed_storage_health, storage_health};

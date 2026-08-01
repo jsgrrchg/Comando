@@ -45,7 +45,9 @@ use comando_types::commands::{
     PERSISTENCE_OPEN_STORE, PROJECT_ADD, PROJECT_CLEAR_APP_DATA, PROJECT_GET_APP_DATA_SUMMARY,
     PROJECT_LIST, PROJECT_RELOCATE, PROJECT_REMOVE, PROJECT_SYNC_WORKTREES, PROJECT_TOUCH,
     SETTINGS_GET_PROJECT, SETTINGS_GET_SNAPSHOT, SETTINGS_SAVE_PROJECT, SETTINGS_SAVE_SNAPSHOT,
-    WORKSPACE_NAVIGATION_GET, WORKSPACE_NAVIGATION_SAVE_SHELL, WORKSPACE_NAVIGATION_SET_ACTIVE,
+    WORKSPACE_MIGRATION_EXPORT_DIAGNOSTICS, WORKSPACE_MIGRATION_ROLLBACK, WORKSPACE_MIGRATION_RUN,
+    WORKSPACE_MIGRATION_SYNC_LEGACY, WORKSPACE_NAVIGATION_GET, WORKSPACE_NAVIGATION_SAVE_SHELL,
+    WORKSPACE_NAVIGATION_SET_ACTIVE,
 };
 use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::BACKEND_TEST_EVENT;
@@ -292,6 +294,12 @@ impl NativeBackend {
             WORKSPACE_NAVIGATION_GET => self.get_workspace_navigation(request),
             WORKSPACE_NAVIGATION_SET_ACTIVE => self.set_active_workspace(request),
             WORKSPACE_NAVIGATION_SAVE_SHELL => self.save_workspace_shell(request),
+            WORKSPACE_MIGRATION_RUN => self.run_workspace_migration(request),
+            WORKSPACE_MIGRATION_SYNC_LEGACY => self.sync_legacy_workspace_migration(request),
+            WORKSPACE_MIGRATION_EXPORT_DIAGNOSTICS => {
+                self.export_workspace_migration_diagnostics(request)
+            }
+            WORKSPACE_MIGRATION_ROLLBACK => self.rollback_workspace_migration(request),
             APP_DATA_GET_JSON => self.app_data_get_json(request),
             APP_DATA_SET_JSON => self.app_data_set_json(request),
             SETTINGS_GET_SNAPSHOT => self.settings_get_snapshot(request),
@@ -658,6 +666,44 @@ impl NativeBackend {
             return backend_not_ready(request.id);
         };
         persistence_response(request.id, store.save_workspace_shell(input))
+    }
+
+    fn run_workspace_migration(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_workspace::NativeWorkspaceMigrationRunInput>(&request)
+        {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.run_workspace_migration(input))
+    }
+
+    fn sync_legacy_workspace_migration(&mut self, request: RpcRequest) -> CommandResult {
+        let input = match parse_args::<native_workspace::NativeWorkspaceMigrationRunInput>(&request)
+        {
+            Ok(input) => input,
+            Err(error) => return error_only(request.id, error),
+        };
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.sync_legacy_workspace_migration(input))
+    }
+
+    fn export_workspace_migration_diagnostics(&self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_ref() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.export_workspace_migration_diagnostics())
+    }
+
+    fn rollback_workspace_migration(&mut self, request: RpcRequest) -> CommandResult {
+        let Some(store) = self.persistence_store.as_mut() else {
+            return backend_not_ready(request.id);
+        };
+        persistence_response(request.id, store.rollback_workspace_migration())
     }
 
     fn app_data_get_json(&mut self, request: RpcRequest) -> CommandResult {
@@ -5456,6 +5502,73 @@ mod tests {
         assert_eq!(
             response.error.as_ref().map(|error| error.code.as_str()),
             Some("backend_not_ready")
+        );
+    }
+
+    #[test]
+    fn workspace_migration_commands_export_and_restore_the_v3_projection() {
+        let (_temp_dir, mut backend) = backend_with_memory_runtime_setup();
+        let migration_input = json!({
+            "applicationVersion": "0.2.1",
+            "historicalLayoutCap": 30,
+            "normalizationDroppedContextCount": 0,
+            "normalizationRepairedWindowCount": 1,
+            "sourceBackup": {"windows": [{"id": "window-a"}]},
+            "windows": [{
+                "windowId": "window-a",
+                "workspaceId": "workspace-a",
+                "isOpen": true,
+                "restoreRevision": 4,
+                "restoreUpdatedAt": "2026-07-31T00:00:00Z",
+                "activeContextKey": "project-a::__primary__",
+                "openContextKeys": ["project-a::__primary__"],
+                "contexts": [{
+                    "scopeKey": "project-a::__primary__",
+                    "projectId": "project-a",
+                    "worktreeId": "project-a:primary",
+                    "lastActivatedAt": "2026-07-31T00:00:00Z",
+                    "layoutSnapshot": {
+                        "activePaneId": "pane-root",
+                        "rootNode": {"id": "pane-root", "type": "pane", "tabIds": ["chat-a"]},
+                        "tabs": [{"id": "chat-a", "kind": "chat", "sessionId": "session-a", "draft": "draft-a"}]
+                    }
+                }],
+                "shellSnapshot": {},
+                "projectionTemplate": {}
+            }]
+        });
+
+        let migrated =
+            backend.handle_request(request("workspace_migration_run", migration_input.clone()));
+        let migrated = only_response(&migrated);
+        assert!(migrated.ok);
+        assert_eq!(migrated.result.as_ref().unwrap()["applied"], true);
+        assert_eq!(
+            migrated.result.as_ref().unwrap()["diagnostics"]["workspaceCount"],
+            1
+        );
+
+        let repeated =
+            backend.handle_request(request("workspace_migration_run", migration_input.clone()));
+        assert_eq!(
+            only_response(&repeated).result.as_ref().unwrap()["applied"],
+            false
+        );
+
+        let exported =
+            backend.handle_request(request("workspace_migration_export_diagnostics", json!({})));
+        let projection = &only_response(&exported).result.as_ref().unwrap()["v3Projection"];
+        assert_eq!(projection.as_array().unwrap().len(), 1);
+        assert_eq!(
+            projection[0]["workspaceRestore"]["snapshot"]["contexts"][0]["workspace"]["tabs"][0]["sessionId"],
+            "session-a"
+        );
+
+        let rolled_back =
+            backend.handle_request(request("workspace_migration_rollback", json!({})));
+        assert!(
+            only_response(&rolled_back).result.as_ref().unwrap()["diagnostics"]["rollbackAt"]
+                .is_string()
         );
     }
 

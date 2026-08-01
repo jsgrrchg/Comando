@@ -61,7 +61,10 @@ impl SqlitePersistenceStore {
         let runtime_owner_id =
             WorkspaceRuntimeOwnerId(format!("workspace-runtime-{}", Uuid::new_v4().simple()));
         let layout_snapshot_json = encode_json(&normalized.layout_snapshot)?;
-        let changed = self.connection_mut().execute(
+        let transaction = self
+            .connection_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "
             INSERT INTO durable_workspaces (
                 scope_key,
@@ -92,9 +95,11 @@ impl SqlitePersistenceStore {
                 normalized.scope_key.0,
             ));
         }
-
-        load_workspace(self.connection(), &normalized.scope_key)?
-            .ok_or_else(|| PersistenceError::WorkspaceNotFound(normalized.scope_key.0.clone()))
+        let workspace = load_workspace(&transaction, &normalized.scope_key)?
+            .ok_or_else(|| PersistenceError::WorkspaceNotFound(normalized.scope_key.0.clone()))?;
+        crate::workspace_migration::refresh_v3_projection(&transaction)?;
+        transaction.commit()?;
+        Ok(workspace)
     }
 
     pub fn save_durable_workspace(
@@ -104,7 +109,10 @@ impl SqlitePersistenceStore {
         require_snapshot_object(&input.layout_snapshot)?;
         let layout_snapshot_json = encode_json(&input.layout_snapshot)?;
         let updated_at = crate::store::now_rfc3339();
-        let changed = self.connection_mut().execute(
+        let transaction = self
+            .connection_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "
             UPDATE durable_workspaces
             SET layout_snapshot_json = ?1,
@@ -122,19 +130,25 @@ impl SqlitePersistenceStore {
         )?;
         if changed == 0 {
             return Err(workspace_revision_error(
-                self.connection(),
+                &transaction,
                 &input.scope_key,
                 input.expected_revision,
             )?);
         }
-        required_workspace(self.connection(), &input.scope_key)
+        let workspace = required_workspace(&transaction, &input.scope_key)?;
+        crate::workspace_migration::refresh_v3_projection(&transaction)?;
+        transaction.commit()?;
+        Ok(workspace)
     }
 
     pub fn archive_durable_workspace(
         &mut self,
         input: NativeDurableWorkspaceRevisionInput,
     ) -> Result<NativeDurableWorkspace, PersistenceError> {
-        let changed = self.connection_mut().execute(
+        let transaction = self
+            .connection_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "
             UPDATE durable_workspaces
             SET lifecycle = 'archived',
@@ -151,12 +165,15 @@ impl SqlitePersistenceStore {
         )?;
         if changed == 0 {
             return Err(workspace_revision_error(
-                self.connection(),
+                &transaction,
                 &input.scope_key,
                 input.expected_revision,
             )?);
         }
-        required_workspace(self.connection(), &input.scope_key)
+        let workspace = required_workspace(&transaction, &input.scope_key)?;
+        crate::workspace_migration::refresh_v3_projection(&transaction)?;
+        transaction.commit()?;
+        Ok(workspace)
     }
 
     pub fn reset_durable_workspace(
@@ -210,6 +227,7 @@ impl SqlitePersistenceStore {
             "DELETE FROM durable_workspaces WHERE scope_key = ?1",
             [&input.scope_key.0],
         )?;
+        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
 
         Ok(NativeDurableWorkspacePurgeOutput {
@@ -255,6 +273,7 @@ impl SqlitePersistenceStore {
         navigation.revision = navigation.revision.saturating_add(1);
         navigation.updated_at = updated_at;
         write_navigation_cas(&transaction, &navigation, input.expected_revision)?;
+        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(navigation)
     }
@@ -277,6 +296,7 @@ impl SqlitePersistenceStore {
         navigation.revision = navigation.revision.saturating_add(1);
         navigation.updated_at = crate::store::now_rfc3339();
         write_navigation_cas(&transaction, &navigation, input.expected_revision)?;
+        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(navigation)
     }

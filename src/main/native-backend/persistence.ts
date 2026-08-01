@@ -12,6 +12,11 @@ import type {
     NativeDurableWorkspaceRevisionInput,
     NativeDurableWorkspaceSaveInput,
     NativeDurableWorkspaceSummary,
+    NativeWorkspaceMigrationDiagnostics,
+    NativeWorkspaceMigrationExportOutput,
+    NativeWorkspaceMigrationRollbackOutput,
+    NativeWorkspaceMigrationRunInput,
+    NativeWorkspaceMigrationRunOutput,
 } from "@shared/native-backend";
 
 export interface NativeBackendRequester {
@@ -131,6 +136,40 @@ export class NativePersistenceGateway {
             }),
         );
     }
+
+    async runWorkspaceMigration(
+        input: NativeWorkspaceMigrationRunInput,
+    ): Promise<NativeWorkspaceMigrationRunOutput> {
+        return parseNativeWorkspaceMigrationRunOutput(
+            await this.#client.request("workspace_migration_run", {
+                ...input,
+            }),
+        );
+    }
+
+    async syncLegacyWorkspaceMigration(
+        input: NativeWorkspaceMigrationRunInput,
+    ): Promise<NativeAppWorkspaceNavigation> {
+        return parseNativeAppWorkspaceNavigation(
+            await this.#client.request("workspace_migration_sync_legacy", {
+                ...input,
+            }),
+        );
+    }
+
+    async exportWorkspaceMigrationDiagnostics(): Promise<NativeWorkspaceMigrationExportOutput> {
+        return parseNativeWorkspaceMigrationExportOutput(
+            await this.#client.request(
+                "workspace_migration_export_diagnostics",
+            ),
+        );
+    }
+
+    async rollbackWorkspaceMigration(): Promise<NativeWorkspaceMigrationRollbackOutput> {
+        return parseNativeWorkspaceMigrationRollbackOutput(
+            await this.#client.request("workspace_migration_rollback"),
+        );
+    }
 }
 
 function parseNativePersistenceOpenStoreOutput(
@@ -239,6 +278,180 @@ function parseNativeDurableWorkspacePurgeOutput(
     return {
         navigation: parseNativeAppWorkspaceNavigation(record.navigation),
         purgedScopeKey: requireString(record.purgedScopeKey, "purgedScopeKey"),
+    };
+}
+
+function parseNativeWorkspaceMigrationRunOutput(
+    value: unknown,
+): NativeWorkspaceMigrationRunOutput {
+    const record = requireRecord(value, "Native workspace migration output");
+    return {
+        applied: requireBoolean(record.applied, "applied"),
+        diagnostics: parseNativeWorkspaceMigrationDiagnostics(
+            record.diagnostics,
+        ),
+        navigation: parseNativeAppWorkspaceNavigation(record.navigation),
+    };
+}
+
+function parseNativeWorkspaceMigrationExportOutput(
+    value: unknown,
+): NativeWorkspaceMigrationExportOutput {
+    const record = requireRecord(
+        value,
+        "Native workspace migration diagnostics export",
+    );
+    if (!Array.isArray(record.recoveryLayouts)) {
+        throw new Error("Native workspace recovery layouts must be an array.");
+    }
+    if (!Array.isArray(record.v3Projection)) {
+        throw new Error("Native workspace v3 projection must be an array.");
+    }
+    return {
+        diagnostics: parseNativeWorkspaceMigrationDiagnostics(
+            record.diagnostics,
+        ),
+        recoveryLayouts: record.recoveryLayouts.map((value) => {
+            const recovery = requireRecord(
+                value,
+                "Native workspace migration recovery source",
+            );
+            return {
+                scopeKey: requireString(recovery.scopeKey, "scopeKey"),
+                snapshotHash: requireString(
+                    recovery.snapshotHash,
+                    "snapshotHash",
+                ),
+                sourceWindowId: requireString(
+                    recovery.sourceWindowId,
+                    "sourceWindowId",
+                ),
+            };
+        }),
+        v3Projection: record.v3Projection,
+    };
+}
+
+function parseNativeWorkspaceMigrationRollbackOutput(
+    value: unknown,
+): NativeWorkspaceMigrationRollbackOutput {
+    const record = requireRecord(
+        value,
+        "Native workspace migration rollback output",
+    );
+    if (!Array.isArray(record.v3Projection)) {
+        throw new Error("Native workspace rollback projection must be an array.");
+    }
+    return {
+        diagnostics: parseNativeWorkspaceMigrationDiagnostics(
+            record.diagnostics,
+        ),
+        v3Projection: record.v3Projection,
+    };
+}
+
+function parseNativeWorkspaceMigrationDiagnostics(
+    value: unknown,
+): NativeWorkspaceMigrationDiagnostics {
+    const record = requireRecord(
+        value,
+        "Native workspace migration diagnostics",
+    );
+    if (!Array.isArray(record.layoutSources)) {
+        throw new Error("Native workspace layout sources must be an array.");
+    }
+    if (!Array.isArray(record.recoverySources)) {
+        throw new Error("Native workspace recovery sources must be an array.");
+    }
+    return {
+        activeScopeKey: requireNullableString(
+            record.activeScopeKey,
+            "activeScopeKey",
+        ),
+        activeSourceWindowId: requireNullableString(
+            record.activeSourceWindowId,
+            "activeSourceWindowId",
+        ),
+        applicationVersion: requireString(
+            record.applicationVersion,
+            "applicationVersion",
+        ),
+        candidateCount: requireRevision(
+            record.candidateCount,
+            "candidateCount",
+        ),
+        completedAt: requireNullableString(record.completedAt, "completedAt"),
+        historicalLayoutCap: requireRevision(
+            record.historicalLayoutCap,
+            "historicalLayoutCap",
+        ),
+        layoutSources: record.layoutSources.map((value) => {
+            const source = requireRecord(
+                value,
+                "Native workspace layout source",
+            );
+            return {
+                scopeKey: requireString(source.scopeKey, "scopeKey"),
+                sourceWindowId: requireString(
+                    source.sourceWindowId,
+                    "sourceWindowId",
+                ),
+            };
+        }),
+        limitation: requireString(record.limitation, "limitation"),
+        migrationId: requireString(record.migrationId, "migrationId"),
+        normalizationDroppedContextCount: requireRevision(
+            record.normalizationDroppedContextCount,
+            "normalizationDroppedContextCount",
+        ),
+        normalizationRepairedWindowCount: requireRevision(
+            record.normalizationRepairedWindowCount,
+            "normalizationRepairedWindowCount",
+        ),
+        prunedLayoutsPossible: requireBoolean(
+            record.prunedLayoutsPossible,
+            "prunedLayoutsPossible",
+        ),
+        recoveryLayoutCount: requireRevision(
+            record.recoveryLayoutCount,
+            "recoveryLayoutCount",
+        ),
+        recoverySources: record.recoverySources.map((value) => {
+            const source = requireRecord(
+                value,
+                "Native workspace recovery source",
+            );
+            return {
+                scopeKey: requireString(source.scopeKey, "scopeKey"),
+                snapshotHash: requireString(
+                    source.snapshotHash,
+                    "snapshotHash",
+                ),
+                sourceWindowId: requireString(
+                    source.sourceWindowId,
+                    "sourceWindowId",
+                ),
+            };
+        }),
+        rollbackAt: requireNullableString(record.rollbackAt, "rollbackAt"),
+        sourceBackupRef: requireString(
+            record.sourceBackupRef,
+            "sourceBackupRef",
+        ),
+        sourceChecksum: requireString(
+            record.sourceChecksum,
+            "sourceChecksum",
+        ),
+        sourceWindowCount: requireRevision(
+            record.sourceWindowCount,
+            "sourceWindowCount",
+        ),
+        startedAt: requireString(record.startedAt, "startedAt"),
+        status: requireString(record.status, "status"),
+        workspaceCount: requireRevision(
+            record.workspaceCount,
+            "workspaceCount",
+        ),
     };
 }
 

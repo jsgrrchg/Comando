@@ -32,6 +32,9 @@ use comando_types::protocol::{NativeRpcOutput, NativeRpcRequest};
 use comando_types::terminal::{
     NativeTerminalDataEvent, NativeTerminalExitEvent, NativeTerminalSession,
 };
+use comando_types::workspace::{
+    NativeWorkspaceMigrationRunInput, NativeWorkspaceMigrationRunOutput,
+};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -347,4 +350,10 @@ fn key_dtos_roundtrip_without_losing_required_fields() {
     assert_typed_roundtrip::<NativeTerminalExitEvent>("terminal/terminal.exit_event.json");
     assert_typed_roundtrip::<NativeWorkspaceSnapshotRef>("persistence/workspace.snapshot_ref.json");
     assert_typed_roundtrip::<NativePersistenceStorageHealth>("persistence/storage.health.json");
+    assert_typed_roundtrip::<NativeWorkspaceMigrationRunInput>(
+        "persistence/workspace.migration_input.json",
+    );
+    assert_typed_roundtrip::<NativeWorkspaceMigrationRunOutput>(
+        "persistence/workspace.migration_output.json",
+    );
 }

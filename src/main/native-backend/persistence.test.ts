@@ -201,6 +201,61 @@ describe("NativePersistenceGateway", () => {
             gateway.loadDurableWorkspace("project-a::__primary__"),
         ).rejects.toThrow("non-negative safe integer");
     });
+
+    it("routes migration, diagnostics and rollback commands", async () => {
+        const navigation = navigationFixture();
+        const diagnostics = migrationDiagnosticsFixture();
+        const requestMock = vi.fn(
+            (command: string, args?: Record<string, unknown>) => {
+                void args;
+            if (command === "workspace_migration_run") {
+                return Promise.resolve({ applied: true, diagnostics, navigation });
+            }
+            if (command === "workspace_migration_sync_legacy") {
+                return Promise.resolve(navigation);
+            }
+            return Promise.resolve({
+                diagnostics,
+                recoveryLayouts: diagnostics.recoverySources,
+                v3Projection: [{ isOpen: true }],
+            });
+            },
+        );
+        const request: NativeBackendRequester["request"] = async (...args) =>
+            (await requestMock(...args)) as never;
+        const gateway = new NativePersistenceGateway({ request });
+        const input = {
+            applicationVersion: "0.2.1",
+            historicalLayoutCap: 30,
+            normalizationDroppedContextCount: 0,
+            normalizationRepairedWindowCount: 0,
+            sourceBackup: { windows: [] },
+            windows: [],
+        };
+
+        await expect(gateway.runWorkspaceMigration(input)).resolves.toMatchObject({
+            applied: true,
+            diagnostics: { workspaceCount: 1 },
+        });
+        await expect(
+            gateway.syncLegacyWorkspaceMigration(input),
+        ).resolves.toEqual(navigation);
+        await expect(
+            gateway.exportWorkspaceMigrationDiagnostics(),
+        ).resolves.toMatchObject({ v3Projection: [{ isOpen: true }] });
+        await expect(gateway.rollbackWorkspaceMigration()).resolves.toMatchObject(
+            { v3Projection: [{ isOpen: true }] },
+        );
+
+        expect(requestMock).toHaveBeenCalledWith(
+            "workspace_migration_sync_legacy",
+            input,
+        );
+        expect(requestMock).toHaveBeenCalledWith(
+            "workspace_migration_export_diagnostics",
+        );
+        expect(requestMock).toHaveBeenCalledWith("workspace_migration_rollback");
+    });
 });
 
 function durableWorkspaceFixture(
@@ -228,5 +283,42 @@ function navigationFixture(): Record<string, unknown> {
         revision: 4,
         shellSnapshot: { leftCollapsed: false },
         updatedAt: "2026-07-31T00:02:00Z",
+    };
+}
+
+function migrationDiagnosticsFixture(): Record<string, unknown> {
+    return {
+        activeScopeKey: "project-a::__primary__",
+        activeSourceWindowId: "window-a",
+        applicationVersion: "0.2.1",
+        candidateCount: 2,
+        completedAt: "2026-07-31T00:02:00Z",
+        historicalLayoutCap: 30,
+        layoutSources: [
+            {
+                scopeKey: "project-a::__primary__",
+                sourceWindowId: "window-a",
+            },
+        ],
+        limitation: "Legacy closed layouts may already have been pruned.",
+        migrationId: "2026-07-31-workspaces-v3-to-v4",
+        normalizationDroppedContextCount: 0,
+        normalizationRepairedWindowCount: 1,
+        prunedLayoutsPossible: true,
+        recoveryLayoutCount: 1,
+        recoverySources: [
+            {
+                scopeKey: "project-a::__primary__",
+                snapshotHash: "hash-b",
+                sourceWindowId: "window-b",
+            },
+        ],
+        rollbackAt: null,
+        sourceBackupRef: "workspace-migrations/v3-checksum.json",
+        sourceChecksum: "checksum",
+        sourceWindowCount: 2,
+        startedAt: "2026-07-31T00:01:00Z",
+        status: "complete",
+        workspaceCount: 1,
     };
 }

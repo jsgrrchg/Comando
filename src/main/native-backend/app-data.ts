@@ -70,6 +70,10 @@ import {
     areWorkspaceScopesEquivalent,
     hasOpenWorkspaceScope,
 } from "@shared/workspace-context";
+import {
+    resolveDurableWorkspaceFeatureFlags,
+    type DurableWorkspaceFeatureFlags,
+} from "@shared/durable-workspace-feature-flags";
 
 import type {
     AiPersistenceGateway,
@@ -94,8 +98,12 @@ import type {
 } from "@main/workspace/service";
 
 import { debugBenignError } from "@main/observability/logging";
+import { prepareLegacyWorkspaceMigration } from "@main/workspace/migration";
 
-import type { NativeBackendRequester } from "./persistence";
+import {
+    NativePersistenceGateway,
+    type NativeBackendRequester,
+} from "./persistence";
 
 const SETTINGS_KEY = "settings.snapshot";
 const PROJECT_SETTINGS_KEY = "settings.projects";
@@ -150,8 +158,10 @@ const KNOWN_SECRET_KEYS = [
 ] as const;
 
 interface NativeAppDataClientOptions {
+    readonly applicationVersion?: string;
     readonly client: NativeBackendRequester;
     readonly databaseFile: string;
+    readonly durableWorkspaceFeatureFlags?: DurableWorkspaceFeatureFlags;
 }
 
 export interface NativeAppDataClient {
@@ -252,8 +262,13 @@ class NativeJsonStore {
         return output.value as T;
     }
 
-    save(key: string, value: unknown): void {
+    save(
+        key: string,
+        value: unknown,
+        afterWrite?: () => Promise<void>,
+    ): void {
         const write = this.saveNow(key, value)
+            .then(() => afterWrite?.())
             .catch((error: unknown) => {
                 debugBenignError(`nativeAppData.save.${key}`, error);
             })
@@ -287,6 +302,9 @@ class NativeJsonStore {
 }
 
 class NativePersistenceClient implements PersistenceGateway {
+    readonly #afterPersist?: (
+        records: readonly PersistedWindowRecord[],
+    ) => Promise<void>;
     readonly #store: NativeJsonStore;
     readonly #recordsByWindowId = new Map<string, PersistedWindowRecord>();
     readonly #windowOrder: string[] = [];
@@ -295,8 +313,12 @@ class NativePersistenceClient implements PersistenceGateway {
     constructor(
         store: NativeJsonStore,
         records: readonly PersistedWindowRecord[],
+        afterPersist?: (
+            records: readonly PersistedWindowRecord[],
+        ) => Promise<void>,
     ) {
         this.#store = store;
+        this.#afterPersist = afterPersist;
         this.#rehydrate(records);
     }
 
@@ -687,14 +709,16 @@ class NativePersistenceClient implements PersistenceGateway {
     }
 
     #persistSoon(): void {
-        this.#store.save(PERSISTENCE_KEY, [...this.#recordsByWindowId.values()]);
+        const records = [...this.#recordsByWindowId.values()];
+        this.#store.save(PERSISTENCE_KEY, records, () =>
+            this.#afterPersist?.(records) ?? Promise.resolve(),
+        );
     }
 
     async #persist(): Promise<void> {
-        await this.#store.saveNow(
-            PERSISTENCE_KEY,
-            [...this.#recordsByWindowId.values()],
-        );
+        const records = [...this.#recordsByWindowId.values()];
+        await this.#store.saveNow(PERSISTENCE_KEY, records);
+        await this.#afterPersist?.(records);
     }
 }
 
@@ -2137,6 +2161,31 @@ export async function createNativeAppDataClient(
         secretStore,
         store,
     });
+    const featureFlags =
+        options.durableWorkspaceFeatureFlags ??
+        resolveDurableWorkspaceFeatureFlags(process.env);
+    const migrationGateway = new NativePersistenceGateway(options.client);
+    let workspaceMigrationReady = false;
+    if (featureFlags.readV4 || featureFlags.writeV4) {
+        const records = await store.load<readonly PersistedWindowRecord[]>(
+            PERSISTENCE_KEY,
+            [],
+        );
+        try {
+            await migrationGateway.runWorkspaceMigration(
+                await prepareLegacyWorkspaceMigration({
+                    applicationVersion: options.applicationVersion ?? "unknown",
+                    loadFallbackLayout: (workspaceId) =>
+                        store.loadNullable(workspaceKey(workspaceId)),
+                    records,
+                }),
+            );
+            workspaceMigrationReady = true;
+        } catch (error) {
+            // The v3 path stays authoritative when migration cannot commit.
+            debugBenignError("nativeAppData.workspaceMigration", error);
+        }
+    }
     await secretStore.hydrate(KNOWN_SECRET_KEYS);
 
     const settings = new NativeSettingsClient(
@@ -2145,9 +2194,24 @@ export async function createNativeAppDataClient(
         await store.load(SETTINGS_KEY, createDefaultSettingsSnapshot()),
         await store.load(PROJECT_SETTINGS_KEY, {}),
     );
+    const syncLegacyProjection =
+        featureFlags.writeV4 && workspaceMigrationReady
+            ? async (records: readonly PersistedWindowRecord[]) => {
+                  await migrationGateway.syncLegacyWorkspaceMigration(
+                      await prepareLegacyWorkspaceMigration({
+                          applicationVersion:
+                              options.applicationVersion ?? "unknown",
+                          loadFallbackLayout: (workspaceId) =>
+                              store.loadNullable(workspaceKey(workspaceId)),
+                          records,
+                      }),
+                  );
+              }
+            : undefined;
     const persistence = new NativePersistenceClient(
         store,
         await store.load(PERSISTENCE_KEY, []),
+        syncLegacyProjection,
     );
     const aiPersistence = new NativeAiPersistenceClient(
         store,

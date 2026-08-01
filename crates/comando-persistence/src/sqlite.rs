@@ -8,10 +8,11 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::PersistenceError;
 
-pub const STORAGE_SCHEMA_VERSION: &str = "2";
+pub const STORAGE_SCHEMA_VERSION: &str = "3";
 pub const STORAGE_MODE_SQLITE_CURRENT: &str = "sqlite-current";
 
 const DURABLE_WORKSPACE_SCHEMA_MIGRATION_ID: &str = "2026-07-31-durable-workspaces-v4";
+const WORKSPACE_COMPATIBILITY_SCHEMA_MIGRATION_ID: &str = "2026-07-31-workspace-v3-compatibility";
 
 const REQUIRED_TABLES: &[(&str, &[&str])] = &[
     (
@@ -96,8 +97,20 @@ const REQUIRED_TABLES: &[(&str, &[&str])] = &[
             "source_checksum",
             "source_backup_ref",
             "status",
+            "diagnostics_json",
             "started_at",
             "completed_at",
+        ],
+    ),
+    (
+        "workspace_v3_compatibility",
+        &[
+            "singleton_id",
+            "migration_id",
+            "projection_template_json",
+            "projection_revision",
+            "updated_at",
+            "rollback_at",
         ],
     ),
     (
@@ -150,6 +163,7 @@ impl SqlitePersistenceStore {
         configure_connection(&connection)?;
         ensure_current_schema(&connection)?;
         ensure_durable_workspace_schema(&mut connection)?;
+        ensure_workspace_compatibility_schema(&mut connection)?;
         validate_schema(&connection)?;
         crate::metadata::ensure_metadata(&connection, STORAGE_SCHEMA_VERSION, &config.mode)?;
 
@@ -193,6 +207,48 @@ impl SqlitePersistenceStore {
     pub fn mode(&self) -> &NativePersistenceMode {
         &self.mode
     }
+}
+
+fn ensure_workspace_compatibility_schema(
+    connection: &mut Connection,
+) -> Result<(), PersistenceError> {
+    let already_applied = connection
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE id = ?1",
+            [WORKSPACE_COMPATIBILITY_SCHEMA_MIGRATION_ID],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if already_applied {
+        return Ok(());
+    }
+
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(
+        "
+        ALTER TABLE workspace_migrations
+            ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '{}';
+
+        CREATE TABLE workspace_v3_compatibility (
+            singleton_id TEXT PRIMARY KEY CHECK(singleton_id = 'main'),
+            migration_id TEXT NOT NULL REFERENCES workspace_migrations(migration_id),
+            projection_template_json TEXT NOT NULL,
+            projection_revision INTEGER NOT NULL DEFAULT 0 CHECK(projection_revision >= 0),
+            updated_at TEXT NOT NULL,
+            rollback_at TEXT
+        );
+        ",
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations (id, applied_at) VALUES (?1, ?2)",
+        rusqlite::params![
+            WORKSPACE_COMPATIBILITY_SCHEMA_MIGRATION_ID,
+            crate::store::now_rfc3339(),
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(())
 }
 
 fn ensure_current_schema(connection: &Connection) -> Result<(), PersistenceError> {
@@ -710,7 +766,7 @@ mod tests {
         assert!(second_output.metadata_ready);
         assert_eq!(
             metadata_value(store.connection(), "native.schema_version"),
-            "2"
+            "3"
         );
         assert_eq!(
             metadata_value(store.connection(), "native.storage_mode"),
@@ -752,7 +808,7 @@ mod tests {
         assert_eq!(store.health().project_count, 0);
         assert_eq!(
             metadata_value(store.connection(), "native.schema_version"),
-            "2"
+            "3"
         );
     }
 
@@ -781,7 +837,7 @@ mod tests {
         })
         .expect("legacy database migrates");
 
-        assert_eq!(output.schema_version, "2");
+        assert_eq!(output.schema_version, "3");
         let legacy_last_opened: String = store
             .connection()
             .query_row(
@@ -808,6 +864,55 @@ mod tests {
                 },)
                 .unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn upgrades_the_phase_one_schema_without_mutating_v4_rows() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let database_path = temp_dir.path().join("phase-one.sqlite3");
+        let mut connection = Connection::open(&database_path).expect("db");
+        configure_connection(&connection).expect("connection config");
+        ensure_current_schema(&connection).expect("base schema");
+        ensure_durable_workspace_schema(&mut connection).expect("phase one schema");
+        connection
+            .execute(
+                "
+                INSERT INTO durable_workspaces (
+                    scope_key, project_id, worktree_id, runtime_owner_id,
+                    layout_snapshot_json, layout_revision, lifecycle,
+                    last_activated_at, created_at, updated_at
+                ) VALUES (
+                    'project-a::__primary__', 'project-a', NULL, 'runtime-a',
+                    '{\"tabs\":[\"chat-a\"]}', 3, 'active', NULL, 'now', 'now'
+                )
+                ",
+                [],
+            )
+            .expect("phase one workspace");
+        crate::metadata::ensure_metadata(&connection, "2", &NativePersistenceMode::Write)
+            .expect("phase one metadata");
+        drop(connection);
+
+        let (store, output) = SqlitePersistenceStore::open(NativeStorageConfig {
+            app_data_dir: temp_dir.path().to_path_buf(),
+            database_path,
+            mode: NativePersistenceMode::Write,
+        })
+        .expect("phase two schema upgrade");
+
+        assert_eq!(output.schema_version, "3");
+        assert!(table_exists(store.connection(), "workspace_v3_compatibility").unwrap());
+        assert_eq!(
+            store
+                .connection()
+                .query_row(
+                    "SELECT layout_snapshot_json FROM durable_workspaces WHERE scope_key = 'project-a::__primary__'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("workspace remains"),
+            "{\"tabs\":[\"chat-a\"]}"
         );
     }
 

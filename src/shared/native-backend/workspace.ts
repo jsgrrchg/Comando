@@ -80,3 +80,89 @@ export type NativeDurableWorkspacePurgeOutput = {
     readonly navigation: NativeAppWorkspaceNavigation;
     readonly purgedScopeKey: NativeWorkspaceScopeKey;
 };
+
+export type NativeLegacyWorkspaceContext = {
+    readonly scopeKey: NativeWorkspaceScopeKey;
+    readonly projectId: NativeProjectId;
+    readonly worktreeId: NativeWorktreeId | null;
+    readonly lastActivatedAt: string;
+    readonly layoutSnapshot: {
+        readonly activePaneId: string;
+        readonly rootNode: unknown;
+        readonly tabs: readonly unknown[];
+    };
+};
+
+export type NativeLegacyWorkspaceWindow = {
+    readonly windowId: string;
+    readonly workspaceId: NativeWorkspaceId | null;
+    readonly isOpen: boolean;
+    readonly restoreRevision: number;
+    readonly restoreUpdatedAt: string;
+    readonly activeContextKey: NativeWorkspaceScopeKey | null;
+    readonly openContextKeys: readonly NativeWorkspaceScopeKey[];
+    readonly contexts: readonly NativeLegacyWorkspaceContext[];
+    readonly shellSnapshot: Readonly<Record<string, unknown>>;
+    readonly projectionTemplate: Readonly<object>;
+};
+
+export type NativeWorkspaceMigrationRunInput = {
+    readonly applicationVersion: string;
+    readonly historicalLayoutCap: number;
+    readonly normalizationDroppedContextCount: number;
+    readonly normalizationRepairedWindowCount: number;
+    readonly sourceBackup: Readonly<object>;
+    readonly windows: readonly NativeLegacyWorkspaceWindow[];
+};
+
+export type NativeWorkspaceMigrationLayoutSource = {
+    readonly scopeKey: NativeWorkspaceScopeKey;
+    readonly sourceWindowId: string;
+};
+
+export type NativeWorkspaceMigrationRecoverySource = {
+    readonly scopeKey: NativeWorkspaceScopeKey;
+    readonly sourceWindowId: string;
+    readonly snapshotHash: string;
+};
+
+export type NativeWorkspaceMigrationDiagnostics = {
+    readonly migrationId: string;
+    readonly status: string;
+    readonly sourceChecksum: string;
+    readonly sourceBackupRef: string;
+    readonly applicationVersion: string;
+    readonly sourceWindowCount: number;
+    readonly candidateCount: number;
+    readonly workspaceCount: number;
+    readonly recoveryLayoutCount: number;
+    readonly normalizationDroppedContextCount: number;
+    readonly normalizationRepairedWindowCount: number;
+    readonly activeScopeKey: NativeWorkspaceScopeKey | null;
+    readonly activeSourceWindowId: string | null;
+    readonly layoutSources: readonly NativeWorkspaceMigrationLayoutSource[];
+    readonly recoverySources: readonly NativeWorkspaceMigrationRecoverySource[];
+    readonly historicalLayoutCap: number;
+    readonly prunedLayoutsPossible: boolean;
+    readonly limitation: string;
+    readonly startedAt: string;
+    readonly completedAt: string | null;
+    readonly rollbackAt: string | null;
+};
+
+export type NativeWorkspaceMigrationRunOutput = {
+    readonly applied: boolean;
+    readonly diagnostics: NativeWorkspaceMigrationDiagnostics;
+    readonly navigation: NativeAppWorkspaceNavigation;
+};
+
+export type NativeWorkspaceMigrationExportOutput = {
+    readonly diagnostics: NativeWorkspaceMigrationDiagnostics;
+    readonly recoveryLayouts: readonly NativeWorkspaceMigrationRecoverySource[];
+    readonly v3Projection: readonly unknown[];
+};
+
+export type NativeWorkspaceMigrationRollbackOutput = {
+    readonly diagnostics: NativeWorkspaceMigrationDiagnostics;
+    readonly v3Projection: readonly unknown[];
+};

@@ -552,6 +552,115 @@ describe("createNativeAppDataClient", () => {
         expect(native.appData.get("legacy.secretsMigrated.v1")).toBe(true);
     });
 
+    it("runs v3 to v4 migration and shadow-syncs later v3 writes", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+        const seed = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const window = await seed.persistence.createMainWindowSession({
+            projectId: "project-1",
+        });
+        const workspaceId = window.windowContext?.workspaceId;
+        expect(workspaceId).toBeTruthy();
+        await seed.workspace.saveSnapshot(
+            workspaceId!,
+            navigationWithDraft("draft before migration"),
+        );
+        await seed.close();
+
+        const migrationRequests: {
+            readonly args: Record<string, unknown>;
+            readonly command: string;
+        }[] = [];
+        const requester: NativeBackendRequester = {
+            request: async <T = unknown>(
+                command: string,
+                args: Record<string, unknown> = {},
+            ): Promise<T> => {
+                if (command.startsWith("workspace_migration_")) {
+                    migrationRequests.push({ args, command });
+                    if (command === "workspace_migration_run") {
+                        return {
+                            applied: true,
+                            diagnostics: appDataMigrationDiagnostics(),
+                            navigation: appDataMigrationNavigation(),
+                        } as T;
+                    }
+                    return appDataMigrationNavigation() as T;
+                }
+                return native.requester.request<T>(command, args);
+            },
+        };
+        const client = await createNativeAppDataClient({
+            applicationVersion: "0.2.1",
+            client: requester,
+            databaseFile,
+            durableWorkspaceFeatureFlags: {
+                newChrome: false,
+                readV4: false,
+                singleWindowHost: false,
+                writeV4: true,
+            },
+        });
+        const runInput = migrationRequests.find(
+            (request) => request.command === "workspace_migration_run",
+        )?.args;
+        expect(runInput).toMatchObject({
+            applicationVersion: "0.2.1",
+            historicalLayoutCap: 30,
+            windows: [
+                {
+                    contexts: [
+                        {
+                            layoutSnapshot: {
+                                tabs: [
+                                    expect.objectContaining({
+                                        draft: "draft before migration",
+                                        sessionId: "session-1",
+                                    }),
+                                ],
+                            },
+                            scopeKey: "project-1::__primary__",
+                        },
+                    ],
+                },
+            ],
+        });
+
+        await client.workspace.saveSnapshot(
+            workspaceId!,
+            navigationWithDraft("draft after migration"),
+        );
+        const syncInput = migrationRequests.findLast(
+            (request) => request.command === "workspace_migration_sync_legacy",
+        )?.args;
+        expect(syncInput).toMatchObject({
+            windows: [
+                {
+                    contexts: [
+                        {
+                            layoutSnapshot: {
+                                tabs: [
+                                    expect.objectContaining({
+                                        draft: "draft after migration",
+                                        sessionId: "session-1",
+                                    }),
+                                ],
+                            },
+                        },
+                    ],
+                },
+            ],
+        });
+        await client.close();
+    });
+
     it("fills partial native runtime catalogs from legacy ACP catalogs", async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
         tempDirs.push(tempDir);
@@ -776,6 +885,86 @@ function workspaceNavigation(
         ],
         openContextKeys: [key],
         version: 3,
+    };
+}
+
+function navigationWithDraft(draft: string): WorkspaceNavigationSnapshot {
+    return {
+        activeContextKey: "project-1::__primary__",
+        contexts: [
+            {
+                key: "project-1::__primary__",
+                lastActivatedAt: "2026-07-31T00:00:00.000Z",
+                projectId: "project-1",
+                workspace: {
+                    activePaneId: "pane-root",
+                    rootNode: {
+                        activeTabId: "chat-1",
+                        id: "pane-root",
+                        pinnedTabIds: ["chat-1"],
+                        tabIds: ["chat-1"],
+                        type: "pane",
+                    },
+                    tabs: [
+                        {
+                            createdAt: "2026-07-31T00:00:00.000Z",
+                            draft,
+                            id: "chat-1",
+                            kind: "chat",
+                            projectId: "project-1",
+                            runtimeId: "codex",
+                            sessionId: "session-1",
+                            title: "Chat",
+                            worktreeId: null,
+                        },
+                    ],
+                },
+                worktreeId: null,
+            },
+        ],
+        openContextKeys: ["project-1::__primary__"],
+        version: 3,
+    };
+}
+
+function appDataMigrationNavigation(): Record<string, unknown> {
+    return {
+        activeScopeKey: "project-1::__primary__",
+        recentScopeKeys: ["project-1::__primary__"],
+        revision: 1,
+        shellSnapshot: {},
+        updatedAt: "2026-07-31T00:00:00Z",
+    };
+}
+
+function appDataMigrationDiagnostics(): Record<string, unknown> {
+    return {
+        activeScopeKey: "project-1::__primary__",
+        activeSourceWindowId: "window-1",
+        applicationVersion: "0.2.1",
+        candidateCount: 1,
+        completedAt: "2026-07-31T00:00:00Z",
+        historicalLayoutCap: 30,
+        layoutSources: [
+            {
+                scopeKey: "project-1::__primary__",
+                sourceWindowId: "window-1",
+            },
+        ],
+        limitation: "Legacy closed layouts may already have been pruned.",
+        migrationId: "2026-07-31-workspaces-v3-to-v4",
+        normalizationDroppedContextCount: 0,
+        normalizationRepairedWindowCount: 0,
+        prunedLayoutsPossible: true,
+        recoveryLayoutCount: 0,
+        recoverySources: [],
+        rollbackAt: null,
+        sourceBackupRef: "workspace-migrations/v3-checksum.json",
+        sourceChecksum: "checksum",
+        sourceWindowCount: 1,
+        startedAt: "2026-07-31T00:00:00Z",
+        status: "complete",
+        workspaceCount: 1,
     };
 }
 
