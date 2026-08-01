@@ -3,10 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WorkspaceSurfacePoolDiagnostics } from "@shared/ipc";
 
 import {
-    appNavigationStore,
-    resetAppNavigationStoreForTests,
-} from "./app-navigation-store";
-import {
     refreshDurableWorkspaceCatalog,
     resetWorkspaceCatalogStoreForTests,
     workspaceCatalogStore,
@@ -15,7 +11,6 @@ import {
 describe("workspace host domain stores", () => {
     beforeEach(() => {
         resetWorkspaceCatalogStoreForTests();
-        resetAppNavigationStoreForTests();
     });
 
     it("adds registered primary and worktree scopes without eager layouts", () => {
@@ -105,7 +100,7 @@ describe("workspace host domain stores", () => {
         ).toMatchObject({ activeScopeKey: "project-1::__primary__" });
     });
 
-    it("refreshes the durable catalog and singleton navigation as one host operation", async () => {
+    it("refreshes the durable catalog as one host operation", async () => {
         await refreshDurableWorkspaceCatalog({
             getWorkspaceCatalog: vi.fn(() =>
                 Promise.resolve({
@@ -134,10 +129,6 @@ describe("workspace host domain stores", () => {
         });
 
         expect(workspaceCatalogStore.getState().status).toBe("ready");
-        expect(appNavigationStore.getState()).toMatchObject({
-            revision: 8,
-            source: "durable",
-        });
     });
 
     it("shows only post-checkout deletion journals as cleanup tombstones", () => {

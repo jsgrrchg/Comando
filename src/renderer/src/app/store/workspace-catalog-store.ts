@@ -16,7 +16,6 @@ import {
     getWorkspaceScopeKey,
     normalizeWorkspaceWorktreeId,
 } from "@shared/workspace-context";
-import { appNavigationStore } from "./app-navigation-store";
 
 export interface WorkspaceCatalogEntry {
     readonly lastActivatedAt: string | null;
@@ -210,7 +209,6 @@ export async function refreshDurableWorkspaceCatalog(
         workspaceCatalogStore
             .getState()
             .setSurfaceDiagnostics(diagnostics);
-        appNavigationStore.getState().replaceDurable(catalog.navigation);
     } catch (error) {
         workspaceCatalogStore
             .getState()

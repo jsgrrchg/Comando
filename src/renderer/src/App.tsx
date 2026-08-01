@@ -23,7 +23,6 @@ import type {
     ProjectTreeNode,
     SettingsWindowCategory,
     SettingsSnapshot,
-    WorkspaceSurfaceActionEnvelope,
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceFileRevealRequest,
     WorkspaceInspectorView,
@@ -64,7 +63,6 @@ import {
     resolveWorkspaceContextRefreshPlan,
     runDeduplicatedContextRefresh,
 } from "./app/workspace/context-activation-refresh";
-import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
 import {
     getShellGridTemplateColumns,
     getOpenShellDrawerSide,
@@ -190,17 +188,6 @@ const rendererWindowMode = new URLSearchParams(window.location.search).get(
     "window",
 );
 const isWorkspaceHostRenderer = rendererWindowMode === "workspace-host";
-const isWorkspaceSurfaceRenderer =
-    rendererWindowMode === "workspace-surface";
-const legacySurfaceRuntimeBinding = (() => {
-    const params = new URLSearchParams(window.location.search);
-    const generation = params.get("surface");
-    const runtimeOwnerId = params.get("runtime-owner");
-    const scopeKey = params.get("scope");
-    return generation && runtimeOwnerId && scopeKey
-        ? { generation, runtimeOwnerId, scopeKey }
-        : null;
-})();
 
 type FileTreeContextMenuPayload =
     | {
@@ -930,53 +917,6 @@ export function WorkspaceHostApp() {
     }, []);
 
     useEffect(() => {
-        if (!isWorkspaceSurfaceRenderer) {
-            return;
-        }
-        const api = getComandoApi();
-        if (!api) {
-            return;
-        }
-        const unsubscribe = api.onWorkspaceSurfaceActionRequested(
-            (envelope: WorkspaceSurfaceActionEnvelope) => {
-                void (async () => {
-                    if (
-                        !(await api.claimWorkspaceSurfaceAction(
-                            envelope.actionId,
-                        ))
-                    ) {
-                        return;
-                    }
-                    try {
-                        await executeWorkspaceSurfaceAction(envelope.request);
-                        await api.completeWorkspaceSurfaceAction({
-                            actionId: envelope.actionId,
-                            status: "completed",
-                        });
-                    } catch (error) {
-                        console.error(
-                            "[workspace-surface] action execution failed",
-                            error,
-                        );
-                        await api.completeWorkspaceSurfaceAction({
-                            actionId: envelope.actionId,
-                            error:
-                                error instanceof Error && error.message
-                                    ? error.message.slice(0, 1_000)
-                                    : "The workspace action failed.",
-                            status: "failed",
-                        });
-                    }
-                })();
-            },
-        );
-        if (legacySurfaceRuntimeBinding) {
-            void api.notifyWorkspaceSurfaceReady(legacySurfaceRuntimeBinding);
-        }
-        return unsubscribe;
-    }, []);
-
-    useEffect(() => {
         if (!isWorkspaceHostRenderer) {
             return;
         }
@@ -989,34 +929,6 @@ export function WorkspaceHostApp() {
             );
         });
     }, [reportWorkspaceSurfaceActionError]);
-
-    useEffect(() => {
-        if (!isWorkspaceSurfaceRenderer) {
-            return;
-        }
-        return getComandoApi()?.onWorkspaceSurfaceDrag((event) => {
-            const workspaceState = useWorkspaceStore.getState();
-            const context = event.contextKey
-                ? workspaceState.contextsByKey[event.contextKey]
-                : null;
-            if (
-                workspaceState.activeContextKey !== event.contextKey ||
-                !context ||
-                context.projectId !== event.projectId ||
-                context.worktreeId !== event.worktreeId
-            ) {
-                return;
-            }
-            window.dispatchEvent(
-                new CustomEvent(
-                    event.kind === "agent"
-                        ? SIDEBAR_AGENT_DRAG_EVENT
-                        : SIDEBAR_GITHUB_DRAG_EVENT,
-                    { detail: event.detail },
-                ),
-            );
-        });
-    }, []);
 
     useEffect(() => {
         if (!isWorkspaceHostRenderer) {
@@ -2132,13 +2044,6 @@ export function WorkspaceHostApp() {
         setGitHubSidebarSelectionResetSignal((signal) => signal + 1);
         setFileTreeContextMenu(null);
     }, [clearFileTreeSelection, focusSurface]);
-
-    const handleWorkspaceSurfacePointerDown = useCallback(() => {
-        focusWorkspaceSurface();
-        if (isWorkspaceSurfaceRenderer) {
-            void getComandoApi()?.notifyWorkspaceSurfaceFocused();
-        }
-    }, [focusWorkspaceSurface]);
 
     useEffect(() => {
         if (!isWorkspaceHostRenderer) {
@@ -3830,20 +3735,6 @@ export function WorkspaceHostApp() {
             worktreeId: activeWorkspaceTab.worktreeId ?? null,
         };
 
-        if (isWorkspaceSurfaceRenderer) {
-            const result =
-                await getComandoApi()?.revealWorkspaceSurfaceFileInHostTree(
-                    request,
-                );
-            if (result && !result.delivered) {
-                console.error(
-                    "[workspace-surface] file reveal delivery failed",
-                    result,
-                );
-            }
-            return;
-        }
-
         await revealFileInHostTree(request);
     }, [activeWorkspaceTab, revealFileInHostTree]);
 
@@ -4655,36 +4546,6 @@ export function WorkspaceHostApp() {
                     {shellDrawers}
                 </div>
                 )}
-            </div>
-        );
-    }
-
-    if (isWorkspaceSurfaceRenderer) {
-        return (
-            <div
-                className="h-screen min-h-0 text-text-primary"
-                data-platform={bootstrap?.platform ?? undefined}
-            >
-                <main
-                    className="surface-focus h-full min-h-0 bg-bg-primary"
-                    data-active={activeSurface === "workspace"}
-                    onFocus={focusWorkspaceSurface}
-                    onPointerDown={handleWorkspaceSurfacePointerDown}
-                    tabIndex={0}
-                >
-                    <LegacyWorkspaceTerminalHost />
-                    <LegacyWorkspaceView
-                        defaultProjectId={activeProjectId}
-                        defaultWorktreeId={activeWorktreeId}
-                        onOpenProject={handleOpenProject}
-                        onOpenProjects={handleOpenProjects}
-                        onRequestCreateFile={() => {
-                            void handleCreateTreeEntry("file", null);
-                        }}
-                        recentProjects={workspaceRecentProjects}
-                        runtimeCatalog={runtimeCatalog}
-                    />
-                </main>
             </div>
         );
     }
