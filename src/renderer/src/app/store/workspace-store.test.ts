@@ -429,6 +429,24 @@ describe("workspace file opening", () => {
         expect(after.tabsById).toEqual(before.tabsById);
     });
 
+    it("adopts committed navigation metadata when the host context is missing", () => {
+        useWorkspaceStore.getState().applyWorkspaceSurfaceNavigation({
+            activeScopeKey: "project-1::worktree-feature",
+            projectId: "project-1",
+            worktreeId: "worktree-feature",
+        });
+
+        expect(useWorkspaceStore.getState()).toMatchObject({
+            activeContextKey: "project-1::worktree-feature",
+            contextsByKey: {
+                "project-1::worktree-feature": {
+                    projectId: "project-1",
+                    worktreeId: "worktree-feature",
+                },
+            },
+        });
+    });
+
     it("exports every durable scope through the surface registry", () => {
         const tab = createWorkspaceFileTab("file-project-1", "README.md");
         useWorkspaceStore.setState((state) => ({

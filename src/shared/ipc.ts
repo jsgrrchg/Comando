@@ -2214,6 +2214,8 @@ export interface WorkspaceSurfaceRegistrySnapshot {
 
 export interface WorkspaceSurfaceNavigationState {
     readonly activeScopeKey: string | null;
+    readonly projectId: string | null;
+    readonly worktreeId: string | null;
 }
 
 export interface WorkspaceSurfaceLayoutRecord

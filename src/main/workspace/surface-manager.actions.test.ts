@@ -604,6 +604,45 @@ describe("WorkspaceSurfaceManager action routing", () => {
         ).toBe("project-b::__primary__");
     });
 
+    it("publishes the committed worktree context for host inspector focus", async () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        const worktreeScope = "project-a::worktree-feature";
+        const snapshot = createSnapshot();
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), {
+            ...snapshot,
+            workspaces: [
+                ...snapshot.workspaces,
+                {
+                    ...createRegistryEntry(worktreeScope, "project-a"),
+                    worktreeId: "worktree-feature",
+                },
+            ],
+        });
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        host.send.mockClear();
+
+        const activation = manager.activate("host-1", worktreeScope);
+        notifySurfaceReady(
+            manager,
+            manager.getSurfaceWebContents("host-1", worktreeScope),
+        );
+        await activation;
+
+        expect(host.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceNavigationChanged,
+            {
+                activeScopeKey: worktreeScope,
+                projectId: "project-a",
+                worktreeId: "worktree-feature",
+            },
+        );
+    });
+
     it("keeps the committed surface visible when a cold restore fails", async () => {
         const manager = createTestManager();
         const host = createHostWindow();

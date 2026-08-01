@@ -890,9 +890,7 @@ export function WorkspaceHostApp() {
             return;
         }
         return comandoApi.onWorkspaceSurfaceNavigationChanged((navigation) => {
-            useWorkspaceStore
-                .getState()
-                .applyWorkspaceSurfaceNavigation(navigation.activeScopeKey);
+            useWorkspaceStore.getState().applyWorkspaceSurfaceNavigation(navigation);
         });
     }, []);
 

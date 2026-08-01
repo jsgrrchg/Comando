@@ -31,6 +31,7 @@ import type {
     WorkspaceSurfaceLifecycleState,
     WorkspaceSurfaceLeaseReport,
     WorkspaceSurfaceMemorySampleDiagnostic,
+    WorkspaceSurfaceNavigationState,
     WorkspaceSurfaceOperationDiagnostic,
     WorkspaceSurfacePoolDiagnostics,
     WorkspaceSurfaceRuntimeBinding,
@@ -1192,9 +1193,18 @@ export class WorkspaceSurfaceManager {
 
     #publishSurfaceNavigation(host: WorkspaceSurfaceHostRecord): void {
         if (!host.hostWindow.webContents.isDestroyed()) {
+            const activeWorkspace = host.activeScopeKey
+                ? (host.registry.workspaces.find(
+                      (workspace) => workspace.scopeKey === host.activeScopeKey,
+                  ) ?? null)
+                : null;
             host.hostWindow.webContents.send(
                 IPC_EVENTS.workspaceSurfaceNavigationChanged,
-                { activeScopeKey: host.activeScopeKey },
+                {
+                    activeScopeKey: host.activeScopeKey,
+                    projectId: activeWorkspace?.projectId ?? null,
+                    worktreeId: activeWorkspace?.worktreeId ?? null,
+                } satisfies WorkspaceSurfaceNavigationState,
             );
         }
     }

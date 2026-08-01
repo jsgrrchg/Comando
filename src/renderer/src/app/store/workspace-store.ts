@@ -17,6 +17,7 @@ import type {
     WorkspaceGitTab,
     WorkspaceLayoutSnapshot,
     WorkspaceReviewTab,
+    WorkspaceSurfaceNavigationState,
     WorkspaceSurfaceRegistrySnapshot,
 } from "@shared/ipc";
 import {
@@ -146,7 +147,9 @@ interface WorkspaceStore extends WorkspaceTreeState {
     readonly contextsByKey: Record<string, RuntimeWorkspaceLayout>;
     readonly deferredPaneIds: ReadonlySet<string>;
     getWorkspaceSurfaceRegistry: () => WorkspaceSurfaceRegistrySnapshot;
-    applyWorkspaceSurfaceNavigation: (activeScopeKey: string | null) => void;
+    applyWorkspaceSurfaceNavigation: (
+        navigation: WorkspaceSurfaceNavigationState,
+    ) => void;
     readonly scopeEpoch: number;
     hydrateSurfaceLayout: (input: {
         readonly generation: string;
@@ -434,8 +437,29 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
 
     getWorkspaceSurfaceRegistry: () => workspaceStoreToSurfaceRegistry(get()),
 
-    applyWorkspaceSurfaceNavigation: (activeScopeKey) => {
+    applyWorkspaceSurfaceNavigation: (navigation) => {
+        const { activeScopeKey, projectId, worktreeId } = navigation;
         if (activeScopeKey) {
+            if (!get().contextsByKey[activeScopeKey] && projectId) {
+                // Main owns the committed focus, so recover its context even if
+                // host catalog hydration and surface activation crossed paths.
+                const workspace = createDefaultWorkspaceState();
+                set((state) => ({
+                    contextsByKey: {
+                        ...captureVisibleWorkspaceContext(state),
+                        [activeScopeKey]: {
+                            key: activeScopeKey,
+                            lastActivatedAt: new Date().toISOString(),
+                            projectId,
+                            workspace,
+                            worktreeId: normalizeWorkspaceWorktreeId(
+                                projectId,
+                                worktreeId,
+                            ),
+                        },
+                    },
+                }));
+            }
             void get().activateWorkspaceLayout(activeScopeKey);
             return;
         }
