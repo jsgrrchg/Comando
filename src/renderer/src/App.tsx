@@ -39,6 +39,7 @@ import {
     findProjectTreeNodeByPath,
 } from "./app/projects/git-tree";
 import { createGitProjectRefreshScheduler } from "./app/git/refresh-scheduler";
+import { revalidateVisibleGitDiffs } from "./app/git/visible-diff-revalidation";
 import {
     areGitWorktreeIdsEquivalent,
     getGitContextKey,
@@ -103,7 +104,10 @@ import {
     flushWorkspacePersistenceNow,
     useWorkspaceStore,
 } from "./app/store/workspace-store";
-import { findPaneById, type RuntimeWorkspaceTab } from "./app/workspace/tree";
+import {
+    findPaneById,
+    type RuntimeWorkspaceTab,
+} from "./app/workspace/tree";
 import {
     compactGitTreeEntriesByAncestor,
     compactGitTreeEntriesForDeletion,
@@ -1166,6 +1170,35 @@ export function WorkspaceHostApp() {
             return;
         }
 
+        const revalidateVisibleGitDiff = (
+            projectId: string,
+            worktreeId: string | null,
+        ) =>
+            revalidateVisibleGitDiffs({
+                ensureBranchDiff: (targetProjectId, targetWorktreeId) =>
+                    useGitStore
+                        .getState()
+                        .ensureBranchDiff(targetProjectId, targetWorktreeId),
+                ensureWorktreeDiff: (targetProjectId, targetWorktreeId) =>
+                    useGitStore
+                        .getState()
+                        .ensureWorktreeDiff(targetProjectId, targetWorktreeId),
+                getDiffMode: (targetProjectId, targetWorktreeId) => {
+                    const contextKey = getGitContextKey(
+                        targetProjectId,
+                        targetWorktreeId,
+                    );
+                    return (
+                        useGitStore.getState().activeDiffModesByContext[
+                            contextKey
+                        ] ?? "worktree"
+                    );
+                },
+                projectId,
+                worktreeId,
+                workspace: useWorkspaceStore.getState(),
+            });
+
         const resolvePreferredWorktreeId = (
             projectId: string,
             worktreeId: string | null,
@@ -1174,8 +1207,14 @@ export function WorkspaceHostApp() {
             useGitStore.getState().activeWorktreeIds[projectId] ??
             null;
         const projectRefreshScheduler = createGitProjectRefreshScheduler({
-            refreshProject: (projectId, worktreeId) => {
-                return refreshGitProject(projectId, worktreeId).then(() => undefined);
+            refreshProject: async (projectId, worktreeId) => {
+                const snapshot = await refreshGitProject(projectId, worktreeId);
+                if (snapshot) {
+                    await revalidateVisibleGitDiff(
+                        snapshot.projectId,
+                        snapshot.currentWorktreeId,
+                    );
+                }
             },
         });
 
@@ -1210,6 +1249,10 @@ export function WorkspaceHostApp() {
                 );
                 projectRefreshScheduler.cancel(snapshot.projectId, null);
                 ingestGitSnapshot(snapshot);
+                void revalidateVisibleGitDiff(
+                    snapshot.projectId,
+                    snapshot.currentWorktreeId,
+                );
             },
         );
         const unsubscribeWorktrees = comandoApi.onGitWorktreesUpdated(
