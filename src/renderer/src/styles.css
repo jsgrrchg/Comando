@@ -2013,6 +2013,10 @@ button {
         color 120ms ease;
 }
 
+.workspace-inspector-tab--compact {
+    flex: 0 0 28px;
+}
+
 .workspace-inspector-tab:hover {
     background: color-mix(in srgb, var(--color-text-primary) 7%, transparent);
     color: var(--color-text-primary);
@@ -2036,16 +2040,11 @@ button {
 }
 
 .workspace-inspector-tab__label {
-    display: none;
     min-width: 0;
     overflow: hidden;
     font-size: 11px;
     text-overflow: ellipsis;
     white-space: nowrap;
-}
-
-.workspace-inspector-tab--active .workspace-inspector-tab__label {
-    display: inline;
 }
 
 .sidebar-tool-button {

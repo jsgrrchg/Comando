@@ -29,10 +29,24 @@ describe("WorkspaceInspector", () => {
         );
 
         expect(tabs).toHaveLength(5);
+        expect(
+            Array.from(tabs ?? [], (tab) => tab.getAttribute("aria-label")),
+        ).toEqual(["Files", "Agents", "Git", "Issues", "Pull Requests"]);
         expect(tabs?.[0]?.getAttribute("aria-selected")).toBe("true");
         expect(container?.querySelector('[role="tabpanel"]')?.textContent).toBe(
             "Files panel",
         );
+        expect(
+            Array.from(
+                container?.querySelectorAll(
+                    ".workspace-inspector-tab__label",
+                ) ?? [],
+                (label) => label.textContent,
+            ),
+        ).toEqual(["Files", "Agents", "Git"]);
+        expect(
+            container?.querySelectorAll(".workspace-inspector-tab--compact"),
+        ).toHaveLength(2);
 
         act(() => {
             tabs?.[0]?.dispatchEvent(
@@ -42,7 +56,7 @@ describe("WorkspaceInspector", () => {
                 }),
             );
         });
-        expect(onChangeView).toHaveBeenCalledWith("git");
+        expect(onChangeView).toHaveBeenCalledWith("agents");
 
         act(() => {
             tabs?.[0]?.dispatchEvent(

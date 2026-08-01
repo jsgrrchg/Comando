@@ -9,8 +9,8 @@ import type { WorkspaceInspectorView } from "@shared/ipc";
 
 const INSPECTOR_VIEWS: readonly WorkspaceInspectorView[] = [
     "files",
-    "git",
     "agents",
+    "git",
     "issues",
     "pull_requests",
 ];
@@ -124,6 +124,8 @@ export function WorkspaceInspector({
                     {INSPECTOR_VIEWS.map((view) => {
                         const selected = view === activeView;
                         const label = VIEW_COPY[view].label;
+                        const compact =
+                            view === "issues" || view === "pull_requests";
                         return (
                             <button
                                 aria-controls={`${id}-panel`}
@@ -131,6 +133,9 @@ export function WorkspaceInspector({
                                 aria-selected={selected}
                                 className={[
                                     "workspace-inspector-tab app-no-drag",
+                                    compact
+                                        ? "workspace-inspector-tab--compact"
+                                        : "",
                                     selected
                                         ? "workspace-inspector-tab--active"
                                         : "",
@@ -157,9 +162,11 @@ export function WorkspaceInspector({
                                 type="button"
                             >
                                 <InspectorViewIcon view={view} />
-                                <span className="workspace-inspector-tab__label">
-                                    {label}
-                                </span>
+                                {compact ? null : (
+                                    <span className="workspace-inspector-tab__label">
+                                        {label}
+                                    </span>
+                                )}
                             </button>
                         );
                     })}
