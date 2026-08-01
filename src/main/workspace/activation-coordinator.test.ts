@@ -173,6 +173,97 @@ describe("WorkspaceActivationCoordinator", () => {
         expect(harness.coordinator.committedScopeKey).toBeNull();
     });
 
+    it("waits for background preheating before closing a workspace", async () => {
+        const harness = createHarness();
+        harness.blockRestore("scope-a");
+
+        const preheat = harness.coordinator.preheat("scope-a");
+        await vi.waitFor(() =>
+            expect(harness.adapter.waitUntilReady).toHaveBeenCalledWith(
+                "scope-a",
+                expect.any(String),
+            ),
+        );
+
+        const close = harness.coordinator.closeWorkspace("scope-a");
+        expect(harness.adapter.prepareHibernate).not.toHaveBeenCalled();
+
+        harness.finishRestore("scope-a");
+
+        await expect(preheat).resolves.toBe(true);
+        await expect(close).resolves.toEqual({
+            scopeKey: "scope-a",
+            status: "closed",
+        });
+        expect(harness.pool.get("scope-a")?.state).toBe("cold");
+    });
+
+    it("coalesces concurrent close requests for the same workspace", async () => {
+        const preparation = deferred();
+        const harness = createHarness({ preparationPromise: preparation.promise });
+        await harness.coordinator.activate("scope-a");
+
+        const firstClose = harness.coordinator.closeWorkspace("scope-a");
+        await vi.waitFor(() =>
+            expect(harness.adapter.prepareHibernate).toHaveBeenCalledTimes(1),
+        );
+        const secondClose = harness.coordinator.closeWorkspace("scope-a");
+        preparation.resolve();
+
+        await expect(firstClose).resolves.toEqual({
+            scopeKey: "scope-a",
+            status: "closed",
+        });
+        await expect(secondClose).resolves.toEqual({
+            scopeKey: "scope-a",
+            status: "closed",
+        });
+        expect(harness.adapter.prepareHibernate).toHaveBeenCalledTimes(1);
+        expect(harness.adapter.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    it("disposes a failed resident surface when it has no hard leases", async () => {
+        const harness = createHarness();
+        await harness.coordinator.activate("scope-a");
+        await harness.coordinator.activate("scope-b");
+        harness.failCommit("scope-a", "navigation failed");
+        await expect(
+            harness.coordinator.activate("scope-a"),
+        ).resolves.toMatchObject({ status: "failed" });
+        expect(harness.pool.get("scope-a")?.state).toBe("error");
+
+        await expect(
+            harness.coordinator.closeWorkspace("scope-a"),
+        ).resolves.toEqual({
+            scopeKey: "scope-a",
+            status: "closed",
+        });
+        expect(harness.pool.get("scope-a")?.state).toBe("cold");
+    });
+
+    it("keeps a failed resident surface when it still has a hard lease", async () => {
+        const harness = createHarness();
+        const activation = await harness.coordinator.activate("scope-a");
+        if (activation.status !== "activated") {
+            throw new Error("Expected activation to succeed.");
+        }
+        await harness.coordinator.activate("scope-b");
+        harness.pool.setLeases("scope-a", activation.generation, [
+            lease("dirty-file", "dirty-a"),
+        ]);
+        harness.failCommit("scope-a", "navigation failed");
+        await harness.coordinator.activate("scope-a");
+
+        await expect(
+            harness.coordinator.closeWorkspace("scope-a"),
+        ).resolves.toMatchObject({
+            leases: [expect.objectContaining({ kind: "dirty-file" })],
+            status: "blocked",
+        });
+        expect(harness.pool.get("scope-a")?.state).toBe("error");
+        expect(harness.adapter.destroy).not.toHaveBeenCalled();
+    });
+
     it("keeps a surface resident when flush or checkpoint fails", async () => {
         const harness = createHarness({
             preparation: {

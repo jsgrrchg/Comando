@@ -68,7 +68,12 @@ export class WorkspaceActivationCoordinator {
     >;
     readonly #pool: WorkspaceSurfacePool;
     #committedScopeKey: string | null = null;
+    readonly #hibernateTransitions = new Map<
+        string,
+        Promise<WorkspaceSurfaceCloseResult>
+    >();
     #operation = 0;
+    readonly #readinessTransitions = new Map<string, Promise<void>>();
 
     constructor(options: WorkspaceActivationCoordinatorOptions) {
         this.#adapter = options.adapter;
@@ -85,6 +90,12 @@ export class WorkspaceActivationCoordinator {
     }
 
     async activate(scopeKey: string): Promise<WorkspaceSurfaceActivationResult> {
+        return this.#trackReadinessTransition(scopeKey, () =>
+            this.#activate(scopeKey),
+        );
+    }
+
+    async #activate(scopeKey: string): Promise<WorkspaceSurfaceActivationResult> {
         const existing = this.#pool.get(scopeKey);
         if (
             this.#committedScopeKey === scopeKey &&
@@ -153,6 +164,12 @@ export class WorkspaceActivationCoordinator {
     }
 
     async preheat(scopeKey: string): Promise<boolean> {
+        return this.#trackReadinessTransition(scopeKey, () =>
+            this.#preheat(scopeKey),
+        );
+    }
+
+    async #preheat(scopeKey: string): Promise<boolean> {
         const existing = this.#pool.get(scopeKey);
         if (
             existing &&
@@ -225,6 +242,25 @@ export class WorkspaceActivationCoordinator {
         scopeKey: string,
         reason: WorkspaceSurfaceHibernateReason,
     ): Promise<WorkspaceSurfaceCloseResult> {
+        const existing = this.#hibernateTransitions.get(scopeKey);
+        if (existing) {
+            return existing;
+        }
+        const transition = this.#performHibernate(scopeKey, reason);
+        this.#hibernateTransitions.set(scopeKey, transition);
+        try {
+            return await transition;
+        } finally {
+            if (this.#hibernateTransitions.get(scopeKey) === transition) {
+                this.#hibernateTransitions.delete(scopeKey);
+            }
+        }
+    }
+
+    async #performHibernate(
+        scopeKey: string,
+        reason: WorkspaceSurfaceHibernateReason,
+    ): Promise<WorkspaceSurfaceCloseResult> {
         const startedAt = performance.now();
         const finish = (
             result: WorkspaceSurfaceCloseResult,
@@ -237,9 +273,52 @@ export class WorkspaceActivationCoordinator {
             );
             return result;
         };
+        // A close request can race the background preheater or an activation.
+        // Let readiness settle so the surface can be hibernated transactionally.
+        await this.#readinessTransitions.get(scopeKey);
         const entry = this.#pool.get(scopeKey);
         if (!entry?.generation || entry.state === "cold") {
             return finish({ scopeKey, status: "not-resident" });
+        }
+        if (entry.state === "error") {
+            if (entry.leases.length > 0) {
+                return finish({
+                    leases: entry.leases,
+                    scopeKey,
+                    status: "blocked",
+                });
+            }
+            const generation = entry.generation;
+            const wasCommitted = this.#committedScopeKey === scopeKey;
+            let navigationCleared = false;
+            ++this.#operation;
+            try {
+                if (wasCommitted) {
+                    await this.#adapter.commitActiveScope(null, null);
+                    navigationCleared = true;
+                    this.#committedScopeKey = null;
+                }
+                await this.#adapter.destroy(scopeKey, generation);
+                this.#pool.commitCold(scopeKey, generation);
+                return finish({ scopeKey, status: "closed" });
+            } catch (error) {
+                if (wasCommitted && navigationCleared) {
+                    try {
+                        await this.#adapter.commitActiveScope(
+                            scopeKey,
+                            generation,
+                        );
+                        this.#committedScopeKey = scopeKey;
+                    } catch {
+                        // Preserve the disposal failure for the caller.
+                    }
+                }
+                return finish({
+                    message: formatError(error),
+                    scopeKey,
+                    status: "failed",
+                });
+            }
         }
         if (entry.state !== "active" && entry.state !== "warm") {
             return finish({
@@ -340,6 +419,29 @@ export class WorkspaceActivationCoordinator {
                 }
             }
             return finish({ message, scopeKey, status: "failed" });
+        }
+    }
+
+    async #trackReadinessTransition<T>(
+        scopeKey: string,
+        transition: () => Promise<T>,
+    ): Promise<T> {
+        const previous = this.#readinessTransitions.get(scopeKey);
+        const result = transition();
+        const settled = result.then(
+            () => undefined,
+            () => undefined,
+        );
+        const tracked = previous
+            ? Promise.all([previous, settled]).then(() => undefined)
+            : settled;
+        this.#readinessTransitions.set(scopeKey, tracked);
+        try {
+            return await result;
+        } finally {
+            if (this.#readinessTransitions.get(scopeKey) === tracked) {
+                this.#readinessTransitions.delete(scopeKey);
+            }
         }
     }
 
