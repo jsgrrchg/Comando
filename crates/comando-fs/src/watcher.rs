@@ -572,7 +572,9 @@ fn route_git_metadata_path(
             || metadata_root.watch_path != scope.common_dir_path
     }) {
         let Some(relative_path) = normalize_watched_path(&scope.git_dir_path, absolute_path) else {
-            return Vec::new();
+            // Linux can coalesce an index write into an event for the linked worktree's
+            // gitdir. The scope is still unambiguous, so refresh only its status.
+            return vec![(scope.root.clone(), GitWatchInvalidationReason::Status)];
         };
         return git_dir_invalidation_reason(&relative_path)
             .map(|reason| vec![(scope.root.clone(), reason)])
@@ -1105,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn ignores_linked_worktree_directory_metadata_events() {
+    fn routes_linked_worktree_directory_to_its_exact_status_scope() {
         let temp = TempDir::new().expect("temp");
         let common_dir = temp.path().join("repo/.git");
         let primary_root = worktree_root(&temp.path().join("repo"), "project_1:primary");
@@ -1126,7 +1128,43 @@ mod tests {
 
         let routed = route_git_metadata_path(&metadata_root, &common_dir.join("worktrees/linked"));
 
-        assert!(routed.is_empty());
+        assert_eq!(
+            routed,
+            vec![(linked_root, GitWatchInvalidationReason::Status)]
+        );
+    }
+
+    #[test]
+    fn routes_linked_worktree_topology_marker_to_every_scope() {
+        let temp = TempDir::new().expect("temp");
+        let common_dir = temp.path().join("repo/.git");
+        let primary_root = worktree_root(&temp.path().join("repo"), "project_1:primary");
+        let linked_root = worktree_root(&temp.path().join("linked"), "worktree-linked");
+        let metadata_root = GitMetadataWatchRoot {
+            watch_path: common_dir.clone(),
+            common_dir_path: common_dir.clone(),
+            scopes: vec![
+                git_watch_scope(&primary_root, &common_dir, &common_dir, true),
+                git_watch_scope(
+                    &linked_root,
+                    &common_dir.join("worktrees/linked"),
+                    &common_dir,
+                    false,
+                ),
+            ],
+        };
+
+        let routed = route_git_metadata_path(
+            &metadata_root,
+            &common_dir.join("worktrees/linked/commondir"),
+        );
+
+        assert_eq!(routed.len(), 2);
+        assert!(
+            routed
+                .iter()
+                .all(|(_, reason)| *reason == GitWatchInvalidationReason::Worktree)
+        );
     }
 
     #[test]
