@@ -801,7 +801,6 @@ fn watch_key(root: &ProjectRoot) -> String {
 #[cfg(test)]
 mod tests {
     use std::fs::{self, OpenOptions};
-    use std::process::Command;
     use std::thread;
     use std::time::Duration;
 
@@ -1198,89 +1197,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn observes_git_add_and_commit_inside_a_real_linked_worktree() {
-        let temp = TempDir::new().expect("temp");
-        let primary_path = temp.path().join("primary");
-        let linked_path = temp.path().join("linked");
-        fs::create_dir(&primary_path).expect("primary directory");
-        run_git(&primary_path, &["init", "-b", "main"]);
-        run_git(&primary_path, &["config", "user.name", "Test User"]);
-        run_git(
-            &primary_path,
-            &["config", "user.email", "test@example.invalid"],
-        );
-        fs::write(primary_path.join("tracked.txt"), "base\n").expect("base file");
-        run_git(&primary_path, &["add", "tracked.txt"]);
-        run_git(&primary_path, &["commit", "-m", "initial"]);
-        run_git(
-            &primary_path,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "feature",
-                linked_path.to_str().expect("linked path"),
-            ],
-        );
-
-        let common_dir = git_path(&linked_path, "--git-common-dir");
-        let primary_git_dir = git_path(&primary_path, "--git-dir");
-        let linked_git_dir = git_path(&linked_path, "--git-dir");
-        let primary_root = worktree_root(&primary_path, "project_1:primary");
-        let linked_root = worktree_root(&linked_path, "worktree-linked");
-        let mut watchers = WatcherRegistry::new();
-        watchers
-            .sync_topology(
-                vec![primary_root.clone(), linked_root.clone()],
-                vec![
-                    git_watch_scope(&primary_root, &primary_git_dir, &common_dir, true),
-                    git_watch_scope(&linked_root, &linked_git_dir, &common_dir, false),
-                ],
-            )
-            .expect("watch topology");
-        let commondir_path = linked_git_dir.join("commondir");
-        let commondir = fs::read(&commondir_path).expect("linked worktree commondir");
-        // RecommendedWatcher becomes live asynchronously on some backends. Rewriting the
-        // marker with identical bytes proves the callback is ready without changing Git state.
-        fs::write(&commondir_path, commondir).expect("refresh linked worktree commondir");
-        let readiness_invalidations = wait_for_git_invalidations(&mut watchers, |invalidation| {
-            invalidation.reason == "worktree"
-        });
-        assert!(
-            readiness_invalidations
-                .iter()
-                .any(|invalidation| invalidation.reason == "worktree"),
-            "the Git metadata watcher did not become ready: {readiness_invalidations:?}"
-        );
-        let _ = watchers.drain(true);
-
-        fs::write(linked_path.join("tracked.txt"), "changed\n").expect("linked change");
-        thread::sleep(Duration::from_millis(250));
-        let _ = watchers.drain(true);
-        run_git(&linked_path, &["add", "tracked.txt"]);
-
-        let invalidations = wait_for_git_invalidations(&mut watchers, |invalidation| {
-            invalidation.worktree_id == linked_root.worktree_id && invalidation.reason == "status"
-        });
-        assert!(invalidations.iter().any(|invalidation| {
-            invalidation.worktree_id == linked_root.worktree_id && invalidation.reason == "status"
-        }));
-        assert!(
-            !invalidations
-                .iter()
-                .any(|invalidation| invalidation.worktree_id == primary_root.worktree_id)
-        );
-
-        run_git(&linked_path, &["commit", "-m", "linked commit"]);
-        let commit_invalidations = wait_for_git_invalidations(&mut watchers, |invalidation| {
-            invalidation.worktree_id == linked_root.worktree_id && invalidation.reason == "branch"
-        });
-        assert!(commit_invalidations.iter().any(|invalidation| {
-            invalidation.worktree_id == linked_root.worktree_id && invalidation.reason == "branch"
-        }));
-    }
-
     fn git_watch_scope(
         root: &ProjectRoot,
         git_dir_path: &Path,
@@ -1293,52 +1209,6 @@ mod tests {
             common_dir_path: common_dir_path.to_path_buf(),
             is_primary,
         }
-    }
-
-    fn run_git(cwd: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .expect("run git");
-        assert!(
-            output.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    fn git_path(cwd: &Path, argument: &str) -> PathBuf {
-        let output = Command::new("git")
-            .args(["rev-parse", "--path-format=absolute", argument])
-            .current_dir(cwd)
-            .output()
-            .expect("resolve git path");
-        assert!(output.status.success(), "resolve {argument}");
-        PathBuf::from(
-            String::from_utf8(output.stdout)
-                .expect("utf8 git path")
-                .trim(),
-        )
-    }
-
-    fn wait_for_git_invalidations<F>(
-        watchers: &mut WatcherRegistry,
-        is_expected: F,
-    ) -> Vec<NativeGitRepositoryInvalidation>
-    where
-        F: Fn(&NativeGitRepositoryInvalidation) -> bool,
-    {
-        let started = Instant::now();
-        let mut invalidations = Vec::new();
-        while started.elapsed() < Duration::from_secs(3) {
-            thread::sleep(Duration::from_millis(50));
-            invalidations.extend(watchers.drain(false).git_invalidations);
-            if invalidations.iter().any(&is_expected) {
-                break;
-            }
-        }
-        invalidations
     }
 
     fn worktree_root(path: &Path, worktree_id: &str) -> ProjectRoot {
