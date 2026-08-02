@@ -3,6 +3,7 @@ export interface ShortcutDefinition {
     readonly id:
         | "attach_line_fragment"
         | "close_focused_surface"
+        | "close_workspace"
         | "commit_git_changes"
         | "decrease_editor_font_size"
         | "focus_git_search"
@@ -13,10 +14,8 @@ export interface ShortcutDefinition {
         | "new_terminal"
         | "open_chat_history"
         | "open_git_history"
-        | "new_window"
         | "next_pane_tab"
         | "next_workspace"
-        | "open_current_project_in_new_window"
         | "open_file_picker"
         | "open_settings"
         | "open_uncommitted_changes"
@@ -27,7 +26,8 @@ export interface ShortcutDefinition {
         | "reveal_active_file_in_tree"
         | "reopen_closed_tab"
         | "save_file"
-        | "toggle_sidebar";
+        | "toggle_inspector"
+        | "toggle_navigator";
     readonly keys: {
         readonly mac: string;
         readonly windows: string;
@@ -167,7 +167,7 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
     {
         id: "next_workspace",
         label: "Next workspace",
-        description: "Switch to the next open workspace.",
+        description: "Switch to the next workspace in the navigator.",
         keys: {
             mac: "Cmd+Alt+]",
             windows: "Ctrl+Alt+]",
@@ -178,7 +178,7 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         id: "open_settings",
         label: "Open settings",
         description:
-            "Open the standalone settings window for the current scope.",
+            "Open settings inside the main application window.",
         keys: {
             mac: "Cmd+,",
             windows: "Ctrl+,",
@@ -198,7 +198,7 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
     {
         id: "previous_workspace",
         label: "Previous workspace",
-        description: "Switch to the previous open workspace.",
+        description: "Switch to the previous workspace in the navigator.",
         keys: {
             mac: "Cmd+Alt+[",
             windows: "Ctrl+Alt+[",
@@ -216,12 +216,22 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         section: "General",
     },
     {
-        id: "toggle_sidebar",
-        label: "Toggle sidebar",
-        description: "Collapse or expand the project sidebar.",
+        id: "toggle_navigator",
+        label: "Toggle navigator",
+        description: "Collapse or expand the workspace navigator.",
         keys: {
             mac: "Cmd+B",
             windows: "Ctrl+B",
+        },
+        section: "General",
+    },
+    {
+        id: "toggle_inspector",
+        label: "Toggle inspector",
+        description: "Collapse or expand the workspace inspector.",
+        keys: {
+            mac: "Cmd+Shift+B",
+            windows: "Ctrl+Shift+B",
         },
         section: "General",
     },
@@ -280,6 +290,17 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         section: "Window",
     },
     {
+        id: "close_workspace",
+        label: "Close workspace",
+        description:
+            "Unload the active workspace renderer while preserving its saved data.",
+        keys: {
+            mac: "Cmd+Shift+W",
+            windows: "Ctrl+Shift+W",
+        },
+        section: "Window",
+    },
+    {
         id: "force_reload_window",
         label: "Force reload",
         description:
@@ -287,27 +308,6 @@ export const shortcutDefinitions: readonly ShortcutDefinition[] = [
         keys: {
             mac: "Cmd+Alt+Shift+R",
             windows: "Ctrl+Alt+Shift+R",
-        },
-        section: "Window",
-    },
-    {
-        id: "new_window",
-        label: "New window",
-        description: "Open a new main window from the native app menu.",
-        keys: {
-            mac: "Cmd+Alt+Shift+N",
-            windows: "Ctrl+Alt+Shift+N",
-        },
-        section: "Window",
-    },
-    {
-        id: "open_current_project_in_new_window",
-        label: "Open current project in new window",
-        description:
-            "Open the current project in a separate window from the native app menu.",
-        keys: {
-            mac: "Cmd+Alt+N",
-            windows: "Ctrl+Alt+N",
         },
         section: "Window",
     },

@@ -69,22 +69,42 @@ import { openExternalUrl } from "./app/utils/external-url";
 const AI_PROVIDER_RUNTIME_IDS = AI_PROVIDER_IDS;
 const RELEASE_NOTES_URL = "https://github.com/jsgrrchg/Comando/releases/latest";
 
-export function SettingsApp() {
+export interface SettingsAppProps {
+    readonly embedded?: boolean;
+    readonly initialCategory?: SettingsWindowProps["initialCategory"];
+    readonly initialCategoryRequestId?: number;
+    readonly onClose?: () => void;
+    readonly projectId?: string | null;
+}
+
+export function SettingsApp({
+    embedded = false,
+    initialCategory: requestedInitialCategory,
+    initialCategoryRequestId = 0,
+    onClose,
+    projectId,
+}: SettingsAppProps = {}) {
     const runtimeProjectId = useMemo(() => {
+        if (projectId !== undefined) {
+            return projectId;
+        }
         const params = new URLSearchParams(window.location.search);
         return params.get("projectId");
-    }, []);
+    }, [projectId]);
     const initialCategory = useMemo(() => {
+        if (requestedInitialCategory) {
+            return requestedInitialCategory;
+        }
         const params = new URLSearchParams(window.location.search);
         const value = params.get("category");
         return isSettingsWindowCategory(value) ? value : undefined;
-    }, []);
+    }, [requestedInitialCategory]);
     const [requestedCategory, setRequestedCategory] = useState<{
         readonly category: SettingsWindowProps["initialCategory"];
         readonly requestId: number;
     }>({
         category: initialCategory,
-        requestId: 0,
+        requestId: initialCategoryRequestId,
     });
     const [appAppearance, setAppAppearance] = useState<AppAppearanceSettings>(
         getDefaultAppAppearance(),
@@ -164,6 +184,7 @@ export function SettingsApp() {
     const availableFontFamilyIds = useAvailableFontFamilyIds();
     const hydrateSettings = useSettingsStore((state) => state.hydrate);
     const settingsRevision = useSettingsStore((state) => state.revision);
+    const setStoreAppearance = useSettingsStore((state) => state.setAppearance);
     const storeAiChat = useSettingsStore((state) => state.aiChat);
     const storeAppAppearance = useSettingsStore((state) => state.appearance);
     const storeAppEditor = useSettingsStore((state) => state.editor);
@@ -171,6 +192,13 @@ export function SettingsApp() {
     const latestSettingsRevisionRef = useRef(0);
 
     useResolvedAppearance();
+
+    useEffect(() => {
+        setRequestedCategory({
+            category: initialCategory,
+            requestId: initialCategoryRequestId,
+        });
+    }, [initialCategory, initialCategoryRequestId]);
 
     useEffect(() => {
         if (!window.comando) {
@@ -446,14 +474,19 @@ export function SettingsApp() {
         void loadEnvironmentDiagnostics();
     }, [loadEnvironmentDiagnostics, loadRuntimeStatuses, settingsRevision]);
 
+    const commitAppAppearance = (nextAppearance: AppAppearanceSettings) => {
+        setAppAppearance(nextAppearance);
+        setStoreAppearance(nextAppearance);
+        void saveAppAppearanceSettings(nextAppearance);
+    };
+
     const handleAppThemeModeChange = (themeMode: ThemeMode) => {
         const nextAppearance = {
             ...appAppearance,
             themeMode,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppFileTreeScaleChange = (fileTreeScale: number) => {
@@ -462,8 +495,7 @@ export function SettingsApp() {
             fileTreeScale,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppAgentsSidebarScaleChange = (
@@ -474,8 +506,7 @@ export function SettingsApp() {
             agentsSidebarScale,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppStickyFoldersEnabledChange = (
@@ -486,8 +517,7 @@ export function SettingsApp() {
             stickyFoldersEnabled,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppThemePresetChange = (themePresetId: string) => {
@@ -496,8 +526,7 @@ export function SettingsApp() {
             themePreset: themePresetId as ThemePreset,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppZoomFactorChange = (zoomFactor: number) => {
@@ -506,8 +535,7 @@ export function SettingsApp() {
             zoomFactor,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppBoostCodeContrastChange = (boostCodeContrast: boolean) => {
@@ -516,8 +544,7 @@ export function SettingsApp() {
             boostCodeContrast,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppChromeTransparencyChange = (
@@ -528,8 +555,7 @@ export function SettingsApp() {
             chromeTransparency,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppTransparencyEnabledChange = (
@@ -540,8 +566,7 @@ export function SettingsApp() {
             transparencyEnabled,
         };
 
-        setAppAppearance(nextAppearance);
-        void saveAppAppearanceSettings(nextAppearance);
+        commitAppAppearance(nextAppearance);
     };
 
     const handleAppEditorFontFamilyChange = (fontFamilyId: string) => {
@@ -864,8 +889,10 @@ export function SettingsApp() {
 
     return (
         <SettingsWindow
+            embedded={embedded}
             initialCategory={requestedCategory.category}
             initialCategoryRequestId={requestedCategory.requestId}
+            onClose={onClose}
             aiChat={{
                 chatFontFamily: aiChat.chatFontFamily,
                 chatFontFamilies: chatFontFamilies,
@@ -1216,8 +1243,10 @@ export function SettingsApp() {
                     if (!window.comando) {
                         return {
                             chatSessionCount: 0,
+                            durableWorkspaceCount: 0,
                             projectSettingsCount: 0,
                             recentProjectCount: 0,
+                            recoveryLayoutCount: 0,
                             workspaceLayoutCount: 0,
                             workspaceSessionCount: 0,
                             workspaceTabCount: 0,

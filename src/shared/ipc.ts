@@ -2,7 +2,13 @@ import type { AppIdentity } from "@shared/app-identity";
 import type { AiReviewActionLogState } from "./ai-review-action-log";
 import type { AppTerminalSettings } from "./terminal-settings";
 import type { ChatFontFamily, EditorFontFamily } from "./typography";
-import type { WorkspaceLocation } from "./workspace-context";
+import type {
+    NativeAppWorkspaceNavigation,
+    NativeDurableWorkspace,
+    NativeDurableWorkspaceSummary,
+    NativeWorkspaceDeletionJournalEntry,
+    NativeWorkspaceRecoveryLayoutSummary,
+} from "./native-backend/workspace";
 
 export type { AppTerminalSettings } from "./terminal-settings";
 export type { ChatFontFamily, EditorFontFamily } from "./typography";
@@ -24,7 +30,7 @@ export const IPC_CHANNELS = {
     openExternalUrl: "app:open-external-url",
     openGeneratedImage: "app:open-generated-image",
     revealGeneratedImage: "app:reveal-generated-image",
-    openProjectWindow: "app:open-project-window",
+    activateProjectWorkspace: "app:activate-project-workspace",
     confirmWorkspaceClose: "workspace:confirm-close",
     checkCommandAvailability: "app:check-command-availability",
     readClaudeCodeTranscript: "app:read-claude-code-transcript",
@@ -136,29 +142,39 @@ export const IPC_CHANNELS = {
     revealProjectEntry: "projects:reveal-entry",
     listProjectEntries: "projects:list-entries",
     searchProjectEntries: "projects:search-entries",
-    getWorkspaceSnapshot: "workspace:get-snapshot",
-    saveWorkspaceSnapshot: "workspace:save-snapshot",
+    getWorkspaceCatalog: "workspace:get-catalog",
+    resetWorkspaceLayout: "workspace:reset-layout",
+    applyWorkspaceRecoveryLayout: "workspace:apply-recovery-layout",
+    discardWorkspaceRecoveryLayout: "workspace:discard-recovery-layout",
+    reassociateWorkspace: "workspace:reassociate",
+    removeSavedWorkspace: "workspace:remove-saved",
+    preflightDeleteWorktree: "workspace:preflight-delete-worktree",
+    deleteWorktree: "workspace:delete-worktree",
     initializeWorkspaceSurfaces: "workspace:initialize-surfaces",
     activateWorkspaceSurface: "workspace:activate-surface",
-    listOpenWorkspaceLocations: "workspace:list-open-locations",
-    activateWorkspaceLocation: "workspace:activate-location",
-    captureWorkspaceSurfaceContext: "workspace:capture-surface-context",
+    closeWorkspaceSurface: "workspace:close-surface",
+    loadWorkspaceSurfaceLayout: "workspace:load-surface-layout",
+    saveWorkspaceSurfaceLayout: "workspace:save-surface-layout",
+    getWorkspaceSurfaceDiagnostics: "workspace:get-surface-diagnostics",
+    setWorkspaceHostOverlayVisible: "workspace:set-host-overlay-visible",
     dispatchWorkspaceSurfaceDrag: "workspace:dispatch-surface-drag",
     dispatchWorkspaceSurfaceAction: "workspace:dispatch-surface-action",
     claimWorkspaceSurfaceAction: "workspace:claim-surface-action",
     completeWorkspaceSurfaceAction: "workspace:complete-surface-action",
     notifyWorkspaceSurfaceReady: "workspace:notify-surface-ready",
+    notifyWorkspaceSurfaceRestoreFailed:
+        "workspace:notify-surface-restore-failed",
+    reportWorkspaceSurfaceLeases: "workspace:report-surface-leases",
+    resyncWorkspaceSurfaceRuntime: "workspace:resync-surface-runtime",
     revealWorkspaceSurfaceFileInHostTree:
         "workspace:reveal-surface-file-in-host-tree",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
-    requestWorkspaceSurfaceContext: "workspace:request-surface-context",
+    requestWorkspaceScopeActivation: "workspace:request-scope-activation",
     openWorkspaceSurfaceGitScopeMenu: "workspace:open-surface-git-scope-menu",
-    openWorkspaceSurfaceProjectMenu: "workspace:open-surface-project-menu",
-    showWorkspaceContextMenu: "workspace:show-context-menu",
-    moveWorkspaceContext: "workspace:move-context",
     showNativeContextMenu: "app:show-native-context-menu",
     setWorkspaceSurfaceContentInset: "workspace:set-surface-content-inset",
     setWorkspaceSurfaceContentLeftInset: "workspace:set-surface-content-left-inset",
+    setWorkspaceSurfaceContentInsets: "workspace:set-surface-content-insets",
     notifyFileBuffer: "workspace:notify-file-buffer",
     getChatSessionState: "workspace:get-chat-session-state",
     createTerminalSession: "terminals:create-session",
@@ -214,24 +230,27 @@ export const IPC_EVENTS = {
     appUpdateState: "app:update-state",
     appPrivacyAccessState: "app:privacy-access-state",
     settingsCategoryRequested: "settings:category-requested",
+    settingsViewRequested: "settings:view-requested",
     projectAppDataCleared: "projects:app-data-cleared",
     projectsUpdated: "projects:updated",
     projectTreeInvalidated: "projects:tree-invalidated",
-    projectWindowRequested: "app:project-window-requested",
+    projectWorkspaceRequested: "app:project-workspace-requested",
     themeUpdated: "app:theme-updated",
     settingsUpdated: "settings:updated",
     projectSettingsUpdated: "settings:project-updated",
-    sidebarToggleRequested: "shell:sidebar-toggle-requested",
+    navigatorToggleRequested: "shell:navigator-toggle-requested",
+    inspectorToggleRequested: "shell:inspector-toggle-requested",
+    internalNavigationRequested: "app:internal-navigation-requested",
     workspaceCloseActiveTab: "workspace:close-active-tab",
     workspaceReopenLastClosedTab: "workspace:reopen-last-closed-tab",
     workspaceSwitcherRequested: "workspace:switcher-requested",
+    workspaceNavigationRequested: "workspace:navigation-requested",
     workspaceFlushRequested: "workspace:flush-requested",
     workspaceFlushAcknowledged: "workspace:flush-acknowledged",
-    workspaceSurfaceSnapshotRequested: "workspace:surface-snapshot-requested",
-    workspaceSurfaceSnapshotCaptured: "workspace:surface-snapshot-captured",
-    workspaceSurfaceSnapshotUpdated: "workspace:surface-snapshot-updated",
+    workspaceSurfacePoolChanged: "workspace:surface-pool-changed",
+    workspaceSurfaceNavigationChanged: "workspace:surface-navigation-changed",
     workspaceSurfaceFocused: "workspace:surface-focused",
-    workspaceSurfaceContextRequested: "workspace:surface-context-requested",
+    workspaceScopeActivationRequested: "workspace:scope-activation-requested",
     workspaceSurfaceDrag: "workspace:surface-drag",
     workspaceSurfaceActionRequested: "workspace:surface-action-requested",
     workspaceSurfaceActionStatus: "workspace:surface-action-status",
@@ -239,7 +258,7 @@ export const IPC_EVENTS = {
         "workspace:surface-file-reveal-requested",
     workspaceSurfaceGitScopeMenuRequested:
         "workspace:surface-git-scope-menu-requested",
-    workspaceSurfaceProjectMenuRequested: "workspace:surface-project-menu-requested",
+    workspaceSurfaceLifecycleChanged: "workspace:surface-lifecycle-changed",
     gitRepositoryInvalidated: "git:repository-invalidated",
     gitRepositorySnapshotUpdated: "git:repository-snapshot-updated",
     gitWorktreesUpdated: "git:worktrees-updated",
@@ -255,8 +274,11 @@ export const IPC_EVENTS = {
 } as const;
 
 export interface WorkspaceSurfaceDragEvent {
+    readonly contextKey: WorkspaceContextKey;
     readonly detail: object;
     readonly kind: "agent" | "github";
+    readonly projectId: string;
+    readonly worktreeId: string | null;
 }
 
 export interface SystemTheme {
@@ -339,7 +361,23 @@ export interface ProjectEditorSettings {
     readonly suggestionsEnabled: boolean | null;
 }
 
-export type PersistedShellSurface = "projects" | "workspace" | "composer";
+export type LegacyPersistedShellSurface =
+    | "projects"
+    | "workspace"
+    | "composer";
+
+export type PersistedShellSurface =
+    | "navigator"
+    | "workspace"
+    | "inspector"
+    | "composer";
+
+export type WorkspaceInspectorView =
+    | "files"
+    | "git"
+    | "agents"
+    | "issues"
+    | "pull_requests";
 
 export interface DatabaseStatus {
     readonly databaseFile: string;
@@ -358,16 +396,47 @@ export interface AppBootstrapSnapshot {
     };
 }
 
-export interface PersistedShellState {
-    readonly activeSurface: PersistedShellSurface;
+export interface LegacyPersistedShellState {
+    readonly activeSurface: LegacyPersistedShellSurface;
     readonly leftCollapsed?: boolean;
     readonly leftWidth: number;
-    readonly sidebarView?:
-        | "files"
-        | "git"
-        | "agents"
-        | "issues"
-        | "pull_requests";
+    readonly sidebarView?: WorkspaceInspectorView;
+    readonly version?: 1;
+}
+
+export interface PersistedShellStateV2 {
+    readonly activeSurface: PersistedShellSurface;
+    readonly leftCollapsed: boolean;
+    readonly leftWidth: number;
+    readonly preferredDrawer: "left" | "right" | null;
+    readonly rightCollapsed: boolean;
+    readonly rightInspectorView: WorkspaceInspectorView;
+    readonly rightWidth: number;
+    readonly version: 2;
+}
+
+export interface PersistedShellStateV3 {
+    readonly activeSurface: PersistedShellSurface;
+    readonly expandedProjectIds: readonly string[];
+    readonly leftCollapsed: boolean;
+    readonly leftWidth: number;
+    readonly preferredDrawer: "left" | "right" | null;
+    readonly projectOrder?: readonly string[];
+    readonly rightCollapsed: boolean;
+    readonly rightInspectorView: WorkspaceInspectorView;
+    readonly rightWidth: number;
+    readonly version: 3;
+}
+
+export type PersistedShellState =
+    | LegacyPersistedShellState
+    | PersistedShellStateV2
+    | PersistedShellStateV3;
+
+export interface WorkspaceSurfaceContentInsets {
+    readonly left: number;
+    readonly right: number;
+    readonly top: number;
 }
 
 export interface CheckCommandAvailabilityInput {
@@ -826,7 +895,7 @@ export interface OpenSettingsWindowInput {
     readonly projectId: string | null;
 }
 
-export interface OpenProjectWindowInput {
+export interface ActivateProjectWorkspaceInput {
     readonly branchName?: string | null;
     readonly projectId: string;
     readonly worktreeId?: string | null;
@@ -1896,8 +1965,10 @@ export interface ProjectAddResult {
 
 export interface ProjectAppDataSummary {
     readonly chatSessionCount: number;
+    readonly durableWorkspaceCount: number;
     readonly projectSettingsCount: number;
     readonly recentProjectCount: number;
+    readonly recoveryLayoutCount: number;
     readonly workspaceLayoutCount: number;
     readonly workspaceSessionCount: number;
     readonly workspaceTabCount: number;
@@ -2115,8 +2186,263 @@ export interface TerminalSession {
     readonly errorMessage?: string | null;
     readonly rows?: number;
     readonly status?: "running" | "exited" | "error";
+    readonly terminalId?: string | null;
     readonly worktreeId?: string | null;
 }
+
+export type WorkspaceSurfaceLifecycleState =
+    | "visible"
+    | "suspended"
+    | "disposing";
+
+export interface WorkspaceSurfaceRuntimeBinding {
+    readonly generation: string;
+    readonly runtimeOwnerId: string;
+    readonly scopeKey: string;
+}
+
+export interface WorkspaceSurfaceRegistrySnapshot {
+    readonly activeScopeKey: string | null;
+    readonly workspaces: readonly {
+        readonly initialLayout: WorkspaceLayoutSnapshot;
+        readonly lastActivatedAt: string;
+        readonly projectId: string;
+        readonly scopeKey: string;
+        readonly worktreeId: string | null;
+    }[];
+}
+
+export interface WorkspaceSurfaceNavigationState {
+    readonly activeScopeKey: string | null;
+    readonly projectId: string | null;
+    readonly worktreeId: string | null;
+}
+
+export interface WorkspaceSurfaceLayoutRecord
+    extends WorkspaceSurfaceRuntimeBinding {
+    readonly lastActivatedAt: string;
+    readonly layout: WorkspaceLayoutSnapshot;
+    readonly projectId: string;
+    readonly revision: number;
+    readonly worktreeId: string | null;
+}
+
+export interface SaveWorkspaceSurfaceLayoutInput
+    extends WorkspaceSurfaceRuntimeBinding {
+    readonly expectedRevision: number;
+    readonly lastActivatedAt: string;
+    readonly layout: WorkspaceLayoutSnapshot;
+}
+
+export interface WorkspaceSurfaceLifecycleEvent
+    extends WorkspaceSurfaceRuntimeBinding {
+    readonly state: WorkspaceSurfaceLifecycleState;
+}
+
+export interface WorkspaceSurfaceRuntimeResync
+    extends WorkspaceSurfaceRuntimeBinding {
+    /** Authoritative current snapshots; incremental events are never replayed. */
+    readonly aiSessions: readonly AiSessionSnapshot[];
+    readonly terminals: readonly TerminalSession[];
+}
+
+export type WorkspaceSurfacePoolState =
+    | "active"
+    | "cold"
+    | "disposing"
+    | "error"
+    | "suspending"
+    | "warm"
+    | "warming";
+
+export type WorkspaceSurfaceHardLeaseKind =
+    | "active-drag"
+    | "ai-critical"
+    | "critical-modal"
+    | "dirty-file"
+    | "external-file-conflict"
+    | "failed-checkpoint"
+    | "failed-flush"
+    | "failed-save"
+    | "non-durable-composer"
+    | "pending-host-action"
+    | "pending-review"
+    | "saving-file"
+    | "terminal-busy";
+
+export interface WorkspaceSurfaceHardLease {
+    readonly acquiredAt: string;
+    readonly id: string;
+    readonly kind: WorkspaceSurfaceHardLeaseKind;
+    readonly message: string;
+}
+
+export interface WorkspaceSurfaceLeaseReport
+    extends WorkspaceSurfaceRuntimeBinding {
+    readonly leases: readonly WorkspaceSurfaceHardLease[];
+}
+
+export interface WorkspaceSurfaceDiagnostic {
+    readonly error: string | null;
+    readonly generation: string | null;
+    readonly lastActivatedAt: string | null;
+    readonly lastReadyDurationMs: number | null;
+    readonly lastTransitionAt: string;
+    readonly leases: readonly WorkspaceSurfaceHardLease[];
+    readonly scopeKey: string;
+    readonly state: WorkspaceSurfacePoolState;
+}
+
+export interface WorkspaceSurfacePoolDiagnostics {
+    readonly activeScopeKey: string | null;
+    readonly environment: WorkspaceSurfaceEnvironmentDiagnostic;
+    readonly performance: WorkspaceSurfacePerformanceDiagnostic;
+    readonly recentOperations: readonly WorkspaceSurfaceOperationDiagnostic[];
+    readonly surfaces: readonly WorkspaceSurfaceDiagnostic[];
+    readonly updatedAt: string;
+}
+
+export interface WorkspaceSurfaceEnvironmentDiagnostic {
+    readonly energySource: "battery" | "external-power";
+    readonly platform: NodeJS.Platform;
+    readonly totalMemoryMb: number;
+}
+
+export interface WorkspaceSurfaceMemorySampleDiagnostic {
+    readonly privateKb: number;
+    readonly residentSetKb: number | null;
+    readonly scopeKey: string;
+    readonly sharedKb: number | null;
+}
+
+export interface WorkspaceSurfacePerformanceDiagnostic {
+    readonly boundsUpdates: number;
+    readonly cacheHits: number;
+    readonly cacheMisses: number;
+    readonly catalogMaxSyncDurationMs: number;
+    readonly catalogPeakScopeCount: number;
+    readonly catalogScopeCount: number;
+    readonly catalogSyncDurationMs: number;
+    readonly catalogSyncs: number;
+    readonly failures: number;
+    readonly hibernations: number;
+    readonly hibernationsAvoided: number;
+    readonly leaseReports: number;
+    readonly lifecycleTransitions: number;
+    readonly memorySampledAt: string | null;
+    readonly memorySamples: readonly WorkspaceSurfaceMemorySampleDiagnostic[];
+    readonly rendererCreates: number;
+    readonly rendererDestroys: number;
+    readonly resyncFailures: number;
+    readonly resyncs: number;
+}
+
+export interface WorkspaceCatalogSnapshot {
+    readonly navigation: NativeAppWorkspaceNavigation;
+    readonly recoveryLayouts: readonly NativeWorkspaceRecoveryLayoutSummary[];
+    readonly pendingDeletions: readonly NativeWorkspaceDeletionJournalEntry[];
+    readonly workspaces: readonly NativeDurableWorkspaceSummary[];
+}
+
+export interface ResetWorkspaceLayoutInput {
+    readonly expectedRevision: number;
+    readonly scopeKey: string;
+}
+
+export interface ApplyWorkspaceRecoveryLayoutInput {
+    readonly expectedRevision: number;
+    readonly recoveryId: string;
+    readonly scopeKey: string;
+}
+
+export interface DiscardWorkspaceRecoveryLayoutInput {
+    readonly recoveryId: string;
+    readonly scopeKey: string;
+}
+
+export interface ReassociateWorkspaceInput {
+    readonly expectedRevision: number;
+    readonly projectId: string;
+    readonly sourceScopeKey: string;
+    readonly targetScopeKey: string;
+    readonly targetWorktreeId: string;
+}
+
+export interface RemoveSavedWorkspaceInput {
+    readonly expectedRevision: number;
+    readonly scopeKey: string;
+}
+
+export interface DeleteWorktreePreflightInput {
+    readonly projectId: string;
+    readonly scopeKey: string;
+    readonly worktreeId: string;
+}
+
+export interface DeleteWorktreeDataInventory {
+    readonly chatSessionCount: number;
+    readonly checkoutPath: string;
+    readonly recoveryLayoutCount: number;
+    readonly runtimeCount: number;
+    readonly workspaceLayoutCount: number;
+}
+
+export interface DeleteWorktreePreflightResult {
+    readonly blockers: readonly string[];
+    readonly inventory: DeleteWorktreeDataInventory;
+    readonly requiresForce: boolean;
+    readonly warnings: readonly string[];
+}
+
+export interface DeleteWorktreeInput extends DeleteWorktreePreflightInput {
+    readonly forceApproved: boolean;
+}
+
+export interface DeleteWorktreeResult {
+    readonly operationId: string;
+    readonly status: "completed";
+}
+
+export interface WorkspaceSurfaceOperationDiagnostic {
+    readonly durationMs: number;
+    readonly finishedAt: string;
+    readonly kind: "activation" | "hibernate";
+    readonly outcome: "blocked" | "cold" | "failed" | "stale" | "warm";
+    readonly scopeKey: string;
+}
+
+export type WorkspaceSurfaceActivationResult =
+    | {
+          readonly generation: string;
+          readonly scopeKey: string;
+          readonly status: "activated";
+          readonly warm: boolean;
+      }
+    | {
+          readonly message: string;
+          readonly scopeKey: string;
+          readonly status: "failed";
+      }
+    | {
+          readonly scopeKey: string;
+          readonly status: "stale";
+      };
+
+export type WorkspaceSurfaceCloseResult =
+    | {
+          readonly scopeKey: string;
+          readonly status: "closed" | "not-resident";
+      }
+    | {
+          readonly leases: readonly WorkspaceSurfaceHardLease[];
+          readonly scopeKey: string;
+          readonly status: "blocked";
+      }
+    | {
+          readonly message: string;
+          readonly scopeKey: string;
+          readonly status: "failed";
+      };
 
 export interface TerminalDataEvent {
     readonly sessionId: string;
@@ -2307,6 +2633,7 @@ export interface PersistedWorkspaceContext {
     readonly worktreeId: string | null;
 }
 
+/** Legacy v3 DTO retained only for migration, rollback, and downgrade export. */
 export interface WorkspaceNavigationSnapshot {
     readonly activeContextKey: WorkspaceContextKey | null;
     readonly contexts: readonly PersistedWorkspaceContext[];
@@ -2314,16 +2641,7 @@ export interface WorkspaceNavigationSnapshot {
     readonly version: 3;
 }
 
-export interface OpenWorkspaceLocationSummary extends WorkspaceLocation {
-    readonly isActive: boolean;
-    readonly isCurrentWindow: boolean;
-    readonly lastActivatedAt: string;
-    readonly windowTitle: string;
-}
-
-export type ActivateWorkspaceLocationInput = WorkspaceLocation;
-
-export interface WorkspaceSurfaceContextRequest {
+export interface WorkspaceScopeActivationRequest {
     readonly emptyLayout?: boolean;
     readonly projectId: string;
     readonly worktreeId?: string | null;
@@ -2335,7 +2653,7 @@ export interface WorkspaceSurfaceActionContext {
     readonly worktreeId: string | null;
 }
 
-/** A request emitted by a workspace surface to reveal its active file in the host sidebar. */
+/** A contextual request emitted by a surface to reveal a file in the host inspector. */
 export interface WorkspaceSurfaceFileRevealRequest
     extends WorkspaceSurfaceActionContext {
     readonly relativePath: string;
@@ -2443,31 +2761,6 @@ export type WorkspaceSurfaceActionDispatchResult =
           readonly state: "queued" | "sent";
       }
     | Extract<WorkspaceSurfaceActionDeliveryResult, { readonly delivered: false }>;
-
-export interface WorkspaceContextMenuInput {
-    readonly canCopyFullPath: boolean;
-    readonly contextKey: string;
-    readonly projectId: string;
-    readonly worktreeId: string | null;
-    readonly x: number;
-    readonly y: number;
-}
-
-export type WorkspaceContextMenuAction =
-    | { readonly type: "copy_full_path" }
-    | {
-          readonly type: "move";
-          /** A null destination asks the main process to create an empty window. */
-          readonly targetWindowId: string | null;
-      }
-    | { readonly type: "close" };
-
-export interface MoveWorkspaceContextInput {
-    readonly contextKey: string;
-    readonly projectId: string;
-    readonly targetWindowId: string | null;
-    readonly worktreeId: string | null;
-}
 
 export type NativeContextMenuEntry =
     | {
@@ -3583,7 +3876,9 @@ export interface ComandoApi {
     openExternalUrl: (url: string) => Promise<void>;
     openGeneratedImage: (path: string) => Promise<void>;
     revealGeneratedImage: (path: string) => Promise<void>;
-    openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
+    activateProjectWorkspace: (
+        input: ActivateProjectWorkspaceInput,
+    ) => Promise<void>;
     confirmWorkspaceClose: (
         input: ConfirmWorkspaceCloseInput,
     ) => Promise<boolean>;
@@ -3625,33 +3920,60 @@ export interface ComandoApi {
     saveActiveProjectId: (projectId: string | null) => Promise<void>;
     saveActiveWorktreeId: (worktreeId: string | null) => Promise<void>;
     saveShellState: (snapshot: PersistedShellState | null) => Promise<void>;
-    initializeWorkspaceSurfaces: (
-        snapshot: WorkspaceNavigationSnapshot,
+    getWorkspaceCatalog: () => Promise<WorkspaceCatalogSnapshot>;
+    resetWorkspaceLayout: (
+        input: ResetWorkspaceLayoutInput,
+    ) => Promise<NativeDurableWorkspace>;
+    applyWorkspaceRecoveryLayout: (
+        input: ApplyWorkspaceRecoveryLayoutInput,
+    ) => Promise<NativeDurableWorkspace>;
+    discardWorkspaceRecoveryLayout: (
+        input: DiscardWorkspaceRecoveryLayoutInput,
     ) => Promise<void>;
-    activateWorkspaceSurface: (contextKey: string) => Promise<void>;
-    listOpenWorkspaceLocations: () => Promise<
-        readonly OpenWorkspaceLocationSummary[]
-    >;
-    activateWorkspaceLocation: (
-        input: ActivateWorkspaceLocationInput,
-    ) => Promise<boolean>;
-    requestWorkspaceSurfaceContext: (
-        input: WorkspaceSurfaceContextRequest,
+    reassociateWorkspace: (
+        input: ReassociateWorkspaceInput,
+    ) => Promise<NativeDurableWorkspace>;
+    removeSavedWorkspace: (
+        input: RemoveSavedWorkspaceInput,
+    ) => Promise<void>;
+    preflightDeleteWorktree: (
+        input: DeleteWorktreePreflightInput,
+    ) => Promise<DeleteWorktreePreflightResult>;
+    deleteWorktree: (
+        input: DeleteWorktreeInput,
+    ) => Promise<DeleteWorktreeResult>;
+    initializeWorkspaceSurfaces: (
+        snapshot: WorkspaceSurfaceRegistrySnapshot,
+    ) => Promise<void>;
+    activateWorkspaceSurface: (
+        contextKey: string,
+    ) => Promise<WorkspaceSurfaceActivationResult>;
+    closeWorkspaceSurface: (
+        contextKey: string,
+    ) => Promise<WorkspaceSurfaceCloseResult>;
+    loadWorkspaceSurfaceLayout: (
+        binding: WorkspaceSurfaceRuntimeBinding,
+    ) => Promise<WorkspaceSurfaceLayoutRecord>;
+    saveWorkspaceSurfaceLayout: (
+        input: SaveWorkspaceSurfaceLayoutInput,
+    ) => Promise<WorkspaceSurfaceLayoutRecord>;
+    getWorkspaceSurfaceDiagnostics: () => Promise<WorkspaceSurfacePoolDiagnostics>;
+    setWorkspaceHostOverlayVisible: (visible: boolean) => Promise<void>;
+    requestWorkspaceScopeActivation: (
+        input: WorkspaceScopeActivationRequest,
     ) => Promise<void>;
     openWorkspaceSurfaceGitScopeMenu: (anchor: {
         readonly width: number;
         readonly x: number;
     }) => Promise<void>;
-    openWorkspaceSurfaceProjectMenu: () => Promise<void>;
-    showWorkspaceContextMenu: (
-        input: WorkspaceContextMenuInput,
-    ) => Promise<WorkspaceContextMenuAction | null>;
-    moveWorkspaceContext: (input: MoveWorkspaceContextInput) => Promise<void>;
     showNativeContextMenu: (
         input: NativeContextMenuInput,
     ) => Promise<string | null>;
     setWorkspaceSurfaceContentInset: (height: number) => Promise<void>;
     setWorkspaceSurfaceContentLeftInset: (width: number) => Promise<void>;
+    setWorkspaceSurfaceContentInsets: (
+        insets: WorkspaceSurfaceContentInsets,
+    ) => Promise<void>;
     setTrafficLightVisibility: (visible: boolean) => Promise<void>;
     setNativeAppearance: (mode: ThemeMode) => Promise<void>;
     resolveTsconfigForPath: (
@@ -3848,8 +4170,8 @@ export interface ComandoApi {
     onProjectsUpdated: (
         listener: (projects: readonly ProjectSummary[]) => void,
     ) => () => void;
-    onProjectWindowRequested: (
-        listener: (payload: OpenProjectWindowInput) => void,
+    onProjectWorkspaceRequested: (
+        listener: (payload: ActivateProjectWorkspaceInput) => void,
     ) => () => void;
     listProjectTree: (
         input: ListProjectTreeInput,
@@ -3884,16 +4206,9 @@ export interface ComandoApi {
         input: OpenProjectEntryExternallyInput,
     ) => Promise<void>;
     revealProjectEntry: (input: RevealProjectEntryInput) => Promise<void>;
-    getWorkspaceSnapshot: () => Promise<PersistedWorkspaceSnapshot>;
-    saveWorkspaceSnapshot: (
-        snapshot: WorkspaceNavigationSnapshot,
-    ) => Promise<void>;
-    captureWorkspaceSurfaceContext: (
-        contextKey: WorkspaceContextKey,
-    ) => Promise<WorkspaceNavigationSnapshot | null>;
     dispatchWorkspaceSurfaceDrag: (
         event: WorkspaceSurfaceDragEvent,
-    ) => Promise<void>;
+    ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
     dispatchWorkspaceSurfaceAction: (
         request: WorkspaceSurfaceActionRequest,
     ) => Promise<WorkspaceSurfaceActionDispatchResult>;
@@ -3901,14 +4216,23 @@ export interface ComandoApi {
     completeWorkspaceSurfaceAction: (
         completion: WorkspaceSurfaceActionCompletion,
     ) => Promise<void>;
-    notifyWorkspaceSurfaceReady: () => Promise<void>;
+    notifyWorkspaceSurfaceReady: (
+        binding: WorkspaceSurfaceRuntimeBinding,
+    ) => Promise<void>;
+    notifyWorkspaceSurfaceRestoreFailed: (
+        binding: WorkspaceSurfaceRuntimeBinding,
+        message: string,
+    ) => Promise<void>;
+    reportWorkspaceSurfaceLeases: (
+        report: WorkspaceSurfaceLeaseReport,
+    ) => Promise<void>;
+    resyncWorkspaceSurfaceRuntime: (
+        binding: WorkspaceSurfaceRuntimeBinding,
+    ) => Promise<WorkspaceSurfaceRuntimeResync>;
     revealWorkspaceSurfaceFileInHostTree: (
         request: WorkspaceSurfaceFileRevealRequest,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
     notifyWorkspaceSurfaceFocused: () => Promise<void>;
-    onWorkspaceSurfaceSnapshotRequested: (
-        listener: () => WorkspaceNavigationSnapshot,
-    ) => () => void;
     notifyFileBuffer: (input: FileBufferNotificationInput) => Promise<void>;
     getChatSessionState: (
         sessionId: string,
@@ -4052,19 +4376,35 @@ export interface ComandoApi {
     onProjectSettingsUpdated: (
         listener: (payload: ProjectSettingsUpdatedEvent) => void,
     ) => () => void;
-    onSidebarToggleRequested: (listener: () => void) => () => void;
+    onNavigatorToggleRequested: (listener: () => void) => () => void;
+    onInspectorToggleRequested: (listener: () => void) => () => void;
+    onInternalNavigationRequested: (
+        listener: (url: string) => void,
+    ) => () => void;
+    onSettingsViewRequested: (
+        listener: (request: OpenSettingsWindowInput) => void,
+    ) => () => void;
     onWorkspaceCloseActiveTab: (listener: () => void) => () => void;
     onWorkspaceReopenLastClosedTab: (listener: () => void) => () => void;
     onWorkspaceSwitcherRequested: (listener: () => void) => () => void;
-    onWorkspaceFlushRequested: (
-        listener: () => Promise<void> | void,
+    onWorkspaceNavigationRequested: (
+        listener: (direction: "next" | "previous") => void,
     ) => () => void;
-    onWorkspaceSurfaceSnapshotUpdated: (
-        listener: (snapshot: WorkspaceNavigationSnapshot) => void,
+    onWorkspaceFlushRequested: (
+        listener: () =>
+            | Promise<readonly WorkspaceSurfaceHardLease[] | void>
+            | readonly WorkspaceSurfaceHardLease[]
+            | void,
+    ) => () => void;
+    onWorkspaceSurfaceNavigationChanged: (
+        listener: (navigation: WorkspaceSurfaceNavigationState) => void,
+    ) => () => void;
+    onWorkspaceSurfacePoolChanged: (
+        listener: (diagnostics: WorkspaceSurfacePoolDiagnostics) => void,
     ) => () => void;
     onWorkspaceSurfaceFocused: (listener: () => void) => () => void;
-    onWorkspaceSurfaceContextRequested: (
-        listener: (input: WorkspaceSurfaceContextRequest) => void,
+    onWorkspaceScopeActivationRequested: (
+        listener: (input: WorkspaceScopeActivationRequest) => void,
     ) => () => void;
     onWorkspaceSurfaceDrag: (
         listener: (event: WorkspaceSurfaceDragEvent) => void,
@@ -4081,7 +4421,9 @@ export interface ComandoApi {
     onWorkspaceSurfaceGitScopeMenuRequested: (
         listener: (anchor: { readonly width: number; readonly x: number }) => void,
     ) => () => void;
-    onWorkspaceSurfaceProjectMenuRequested: (listener: () => void) => () => void;
+    onWorkspaceSurfaceLifecycleChanged: (
+        listener: (event: WorkspaceSurfaceLifecycleEvent) => void,
+    ) => () => void;
     onTerminalData: (
         listener: (event: TerminalDataEvent) => void,
     ) => () => void;

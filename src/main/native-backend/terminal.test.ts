@@ -103,6 +103,63 @@ describe("NativeTerminalGateway", () => {
         });
     });
 
+    it("reattaches terminal subscribers without closing the durable sessions", async () => {
+        const client = createClient();
+        client.request.mockImplementation(<T = unknown>(command: string) => {
+            if (command === "terminal_list") {
+                return Promise.resolve({
+                    sessions: [
+                        {
+                            cols: 80,
+                            cwd: "/workspace/worktree",
+                            displayName: "zsh",
+                            exitCode: null,
+                            launchedBy: "user",
+                            program: "/bin/zsh",
+                            projectId: "project-1",
+                            purpose: "workspace",
+                            rows: 24,
+                            sessionId: "native-session",
+                            signalCode: null,
+                            status: "running",
+                            terminalId: "terminal-tab",
+                            windowId: "runtime-owner",
+                            worktreeId: "worktree-1",
+                        },
+                    ],
+                } as T);
+            }
+            return Promise.resolve({ ok: true } as T);
+        });
+        const gateway = new NativeTerminalGateway({
+            client,
+            onData: vi.fn(),
+            onExit: vi.fn(),
+            projectService: createProjectService(),
+            settingsService: createSettingsService(),
+        });
+
+        await expect(
+            gateway.attachRuntimeSubscriber("runtime-owner", "generation-1"),
+        ).resolves.toEqual([
+            expect.objectContaining({
+                sessionId: "native-session",
+                terminalId: "terminal-tab",
+            }),
+        ]);
+        await gateway.attachRuntimeSubscriber("runtime-owner", "generation-2");
+        await expect(
+            gateway.resyncRuntimeSubscriber("runtime-owner", "generation-1"),
+        ).resolves.toEqual([]);
+        expect(
+            gateway.detachRuntimeSubscriber("runtime-owner", "generation-1"),
+        ).toBe(false);
+        expect(client.request).not.toHaveBeenCalledWith(
+            "terminal_close_window",
+            expect.anything(),
+        );
+    });
+
     it("closes all sessions for a window without surfacing cleanup rejections", () => {
         const client = createClient();
         const diagnostic = vi.fn();

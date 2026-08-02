@@ -8,6 +8,8 @@ import {
     type AppUpdateState,
     type AppBootstrapSnapshot,
     type AppWindowKind,
+    type ApplyWorkspaceRecoveryLayoutInput,
+    type DiscardWorkspaceRecoveryLayoutInput,
     type AiPermissionResponseInput,
     type AiRuntimeAuthDisconnectInput,
     type AiRuntimeAuthLaunchInput,
@@ -44,9 +46,11 @@ import {
     type CreateProjectEntryInput,
     type CreateTerminalSessionInput,
     type DeleteProjectEntryInput,
+    type DeleteWorktreeInput,
+    type DeleteWorktreePreflightInput,
     type FileBufferNotificationInput,
     type NativeContextMenuInput,
-    type MoveWorkspaceContextInput,
+    type ActivateProjectWorkspaceInput,
     type EnqueueAiPromptInput,
     type GitBranchDiffFile,
     type GitBranchDiffInput,
@@ -143,15 +147,12 @@ import {
     type GitWorktreeDiffSection,
     type GitWorktreeListInput,
     type GitWorktreeSummary as SharedGitWorktreeSummary,
-    type ActivateWorkspaceLocationInput,
     type ListAiSessionHistoryInput,
     type ListProjectEntriesInput,
     type ListProjectTreeInput,
     type OpenProjectEntryExternallyInput,
     type OpenProjectFileInput,
-    type OpenProjectWindowInput,
     type OpenSettingsWindowInput,
-    type OpenWorkspaceLocationSummary,
     type PrepareAiSessionInput,
     type PersistedShellState,
     type PersistenceSnapshot,
@@ -163,9 +164,12 @@ import {
     type OpenCodeRuntimeSettingsInput,
     type RevealProjectEntryInput,
     type ResizeTerminalSessionInput,
+    type ReassociateWorkspaceInput,
     type ReadClaudeCodeTranscriptInput,
+    type RemoveSavedWorkspaceInput,
     type SearchProjectEntriesInput,
     type SaveProjectFileInput,
+    type SaveWorkspaceSurfaceLayoutInput,
     type SaveImageAsInput,
     type AiQueuedPromptMutationInput,
     type UpdateAiQueuedPromptInput,
@@ -176,16 +180,21 @@ import {
     type TsconfigResolutionSnapshot,
     type WindowContextSnapshot,
     type WriteTerminalInput,
-    type WorkspaceNavigationSnapshot,
-    type WorkspaceContextMenuAction,
-    type WorkspaceContextMenuInput,
     type WorkspaceSurfaceActionRequest,
     type WorkspaceSurfaceActionCompletion,
-    type WorkspaceSurfaceContextRequest,
+    type WorkspaceSurfaceContentInsets,
+    type WorkspaceSurfaceCloseResult,
+    type WorkspaceScopeActivationRequest,
     type WorkspaceSurfaceDragEvent,
+    type WorkspaceSurfaceLeaseReport,
+    type WorkspaceSurfaceRuntimeBinding,
+    type WorkspaceSurfaceRuntimeResync,
+    type WorkspaceSurfaceRegistrySnapshot,
 } from "@shared/ipc";
 import { normalizePathKey as normalizeSharedPathKey } from "@shared/path-identity";
-import { normalizeWorkspaceNavigationSnapshot } from "@shared/workspace-restore";
+import {
+    normalizeWorkspaceLayoutSnapshot,
+} from "@shared/workspace-restore";
 
 import {
     BrowserWindow,
@@ -230,7 +239,6 @@ import {
     applyWindowTransparencyToAllWindows,
     broadcastSettingsUpdated,
 } from "@main/settings/window-zoom";
-import { openSettingsWindow } from "@main/settings/window";
 import type { TerminalGateway } from "@main/terminals/service";
 import {
     checkForAppUpdates,
@@ -247,34 +255,29 @@ import {
     openMacOsFullDiskAccessSettings,
 } from "@main/privacy-access";
 import type { WorkspaceGateway } from "@main/workspace/service";
+import type { NativePersistenceGateway } from "@main/native-backend/persistence";
+import { createEmptyWorkspaceLayoutSnapshot } from "@shared/workspace-restore";
 import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
-import { buildWorkspaceMoveDestinations } from "@main/workspace/move-destinations";
-import { activateOpenWorkspaceLocation } from "@main/workspace/location-navigation";
-import {
-    activateWorkspaceSurfaceAndNotifyHost,
-    persistWorkspaceSurfaceSnapshot,
-} from "@main/workspace/surface-snapshot-persistence";
+import { workspaceRuntimeOwnership } from "@main/workspace/runtime-ownership-coordinator";
 import {
     isWorkspaceSurfaceActionRequest,
     isWorkspaceSurfaceActionCompletion,
     isWorkspaceSurfaceFileRevealRequest,
 } from "@main/workspace/surface-actions";
+import { WorkspaceDestructiveCoordinator } from "@main/workspace/destructive-coordinator";
 
 interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
     readonly gitService: GitGateway;
     readonly githubService: GitHubGateway;
     readonly getSnapshot: () => AppBootstrapSnapshot;
-    readonly captureWorkspaceSurfaceContext: (
-        hostWindowId: string,
-        contextKey: string,
-    ) => Promise<WorkspaceNavigationSnapshot | null>;
-    readonly openProjectWindow: (input: OpenProjectWindowInput) => Promise<void>;
-    readonly moveWorkspaceContext: (
-        sourceWindowId: string,
-        input: MoveWorkspaceContextInput,
+    readonly durableWorkspaceRepository: NativePersistenceGateway;
+    readonly focusMainWindow: () => void;
+    readonly activateProjectWorkspace: (
+        input: ActivateProjectWorkspaceInput,
     ) => Promise<void>;
+    readonly openSettingsView: (input: OpenSettingsWindowInput) => Promise<void>;
     readonly persistenceService: PersistenceGateway;
     readonly projectService: ProjectService;
     readonly settingsService: SettingsGateway;
@@ -283,6 +286,35 @@ interface RegisterIpcHandlersOptions {
 }
 
 export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
+    const destructiveCoordinator = new WorkspaceDestructiveCoordinator({
+        aiService: options.aiService,
+        durableWorkspaceRepository: options.durableWorkspaceRepository,
+        gitService: options.gitService,
+        onWorkspaceClosed: (hostWindowId) => {
+            if (workspaceSurfaceManager.getActiveContext(hostWindowId)) {
+                return;
+            }
+            options.persistenceService.saveActiveProjectId(
+                hostWindowId,
+                null,
+                null,
+            );
+            windowRegistry.updateMainWindowProjectId(hostWindowId, null, null);
+            const hostWebContents =
+                workspaceSurfaceManager.getHostWebContents(hostWindowId);
+            const hostWindow = hostWebContents
+                ? BrowserWindow.fromWebContents(hostWebContents)
+                : null;
+            hostWindow?.setTitle(buildMainWindowTitle());
+        },
+        projectService: options.projectService,
+        settingsService: options.settingsService,
+        surfaceManager: workspaceSurfaceManager,
+        terminalService: options.terminalService,
+    });
+    void destructiveCoordinator.resumePendingOperations().catch((error) => {
+        debugBenignError("workspace.deletion.resume", error);
+    });
     ipcMain.removeHandler(IPC_CHANNELS.getBootstrapSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.getAppUpdateState);
     ipcMain.removeHandler(IPC_CHANNELS.getAppPrivacyAccessState);
@@ -296,7 +328,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.openExternalUrl);
     ipcMain.removeHandler(IPC_CHANNELS.openGeneratedImage);
     ipcMain.removeHandler(IPC_CHANNELS.revealGeneratedImage);
-    ipcMain.removeHandler(IPC_CHANNELS.openProjectWindow);
+    ipcMain.removeHandler(IPC_CHANNELS.activateProjectWorkspace);
     ipcMain.removeHandler(IPC_CHANNELS.confirmWorkspaceClose);
     ipcMain.removeHandler(IPC_CHANNELS.checkCommandAvailability);
     ipcMain.removeHandler(IPC_CHANNELS.readClaudeCodeTranscript);
@@ -316,6 +348,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveActiveProjectId);
     ipcMain.removeHandler(IPC_CHANNELS.saveActiveWorktreeId);
     ipcMain.removeHandler(IPC_CHANNELS.saveShellState);
+    ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceCatalog);
+    ipcMain.removeHandler(IPC_CHANNELS.resetWorkspaceLayout);
+    ipcMain.removeHandler(IPC_CHANNELS.applyWorkspaceRecoveryLayout);
+    ipcMain.removeHandler(IPC_CHANNELS.discardWorkspaceRecoveryLayout);
+    ipcMain.removeHandler(IPC_CHANNELS.reassociateWorkspace);
+    ipcMain.removeHandler(IPC_CHANNELS.removeSavedWorkspace);
+    ipcMain.removeHandler(IPC_CHANNELS.preflightDeleteWorktree);
+    ipcMain.removeHandler(IPC_CHANNELS.deleteWorktree);
     ipcMain.removeHandler(IPC_CHANNELS.setTrafficLightVisibility);
     ipcMain.removeHandler(IPC_CHANNELS.setNativeAppearance);
     ipcMain.removeHandler(IPC_CHANNELS.resolveTsconfigForPath);
@@ -400,26 +440,27 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.revealProjectEntry);
     ipcMain.removeHandler(IPC_CHANNELS.listProjectEntries);
     ipcMain.removeHandler(IPC_CHANNELS.searchProjectEntries);
-    ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSnapshot);
-    ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSnapshot);
     ipcMain.removeHandler(IPC_CHANNELS.initializeWorkspaceSurfaces);
     ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceSurface);
-    ipcMain.removeHandler(IPC_CHANNELS.listOpenWorkspaceLocations);
-    ipcMain.removeHandler(IPC_CHANNELS.activateWorkspaceLocation);
-    ipcMain.removeHandler(IPC_CHANNELS.captureWorkspaceSurfaceContext);
+    ipcMain.removeHandler(IPC_CHANNELS.closeWorkspaceSurface);
+    ipcMain.removeHandler(IPC_CHANNELS.loadWorkspaceSurfaceLayout);
+    ipcMain.removeHandler(IPC_CHANNELS.saveWorkspaceSurfaceLayout);
+    ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceSurfaceDiagnostics);
+    ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceHostOverlayVisible);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceDrag);
     ipcMain.removeHandler(IPC_CHANNELS.dispatchWorkspaceSurfaceAction);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceReady);
+    ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceRestoreFailed);
+    ipcMain.removeHandler(IPC_CHANNELS.reportWorkspaceSurfaceLeases);
+    ipcMain.removeHandler(IPC_CHANNELS.resyncWorkspaceSurfaceRuntime);
     ipcMain.removeHandler(IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
-    ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceSurfaceContext);
+    ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceScopeActivation);
     ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceGitScopeMenu);
-    ipcMain.removeHandler(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu);
-    ipcMain.removeHandler(IPC_CHANNELS.showWorkspaceContextMenu);
-    ipcMain.removeHandler(IPC_CHANNELS.moveWorkspaceContext);
     ipcMain.removeHandler(IPC_CHANNELS.showNativeContextMenu);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInset);
     ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentLeftInset);
+    ipcMain.removeHandler(IPC_CHANNELS.setWorkspaceSurfaceContentInsets);
     ipcMain.removeHandler(IPC_CHANNELS.notifyFileBuffer);
     ipcMain.removeHandler(IPC_CHANNELS.getChatSessionState);
     ipcMain.removeHandler(IPC_CHANNELS.createTerminalSession);
@@ -600,9 +641,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         },
     );
     ipcMain.handle(
-        IPC_CHANNELS.openProjectWindow,
-        (_event, input: OpenProjectWindowInput) =>
-            options.openProjectWindow(input),
+        IPC_CHANNELS.activateProjectWorkspace,
+        (_event, input: ActivateProjectWorkspaceInput) =>
+            options.activateProjectWorkspace(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.confirmWorkspaceClose,
@@ -779,14 +820,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.openSettingsWindow,
-        (_event, input: OpenSettingsWindowInput) => {
-            const appearance = options.settingsService.loadAppAppearanceSettings();
-            openSettingsWindow(
-                input,
-                appearance.zoomFactor,
-                appearance.transparencyEnabled,
-            );
-        },
+        (_event, input: OpenSettingsWindowInput) =>
+            options.openSettingsView(input),
     );
     ipcMain.handle(
         IPC_CHANNELS.saveActiveProjectId,
@@ -806,7 +841,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const ownerWindow = BrowserWindow.fromWebContents(event.sender);
             if (ownerWindow) {
                 ownerWindow.setTitle(
-                    buildMainWindowTitle(options.projectService, projectId),
+                    buildMainWindowTitle(),
                 );
             }
         },
@@ -1635,6 +1670,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         options.projectService.listProjects(),
     );
     ipcMain.handle(IPC_CHANNELS.openProjects, async (event) => {
+        options.focusMainWindow();
         const ownerWindow =
             BrowserWindow.fromWebContents(event.sender) ??
             BrowserWindow.getFocusedWindow();
@@ -1664,6 +1700,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.cloneRepository,
         async (event, input: CloneRepositoryInput): Promise<CloneRepositoryResult> => {
+            options.focusMainWindow();
             const repositoryUrl = input?.repositoryUrl?.trim() ?? "";
             if (!repositoryUrl) {
                 throw new Error("Repository URL is required.");
@@ -1721,13 +1758,22 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     });
     ipcMain.handle(
         IPC_CHANNELS.getProjectAppDataSummary,
-        (_event, projectId: string) =>
-            options.projectService.getProjectAppDataSummary(projectId),
+        async (_event, projectId: string) => {
+            const summary =
+                await options.projectService.getProjectAppDataSummary(projectId);
+            return options.settingsService.loadProjectSettings(projectId)
+                ? {
+                      ...summary,
+                      projectSettingsCount: summary.projectSettingsCount + 1,
+                  }
+                : summary;
+        },
     );
     ipcMain.handle(
         IPC_CHANNELS.clearProjectAppData,
-        async (_event, input: ClearProjectAppDataInput) => {
-            const result = await options.projectService.clearProjectAppData(
+        async (event, input: ClearProjectAppDataInput) => {
+            const cleared = await destructiveCoordinator.clearProjectAppData(
+                requireMainHostWindowId(event.sender),
                 input.projectId,
             );
             windowRegistry.forEachLiveWebContents((webContents) => {
@@ -1737,7 +1783,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 );
             });
             broadcastProjectsUpdated();
-            return result;
+            return {
+                cleared,
+                projects: options.projectService.listProjects(),
+            };
         },
     );
     ipcMain.handle(IPC_CHANNELS.relocateProject, async (event, projectId: string) => {
@@ -1781,6 +1830,19 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         };
     });
     ipcMain.handle(IPC_CHANNELS.removeProject, async (_event, projectId: string) => {
+        const scopes = (
+            await options.durableWorkspaceRepository.listDurableWorkspaces()
+        ).filter((workspace) => workspace.projectId === projectId);
+        for (const context of windowRegistry.listMainWindowContexts()) {
+            for (const workspace of scopes) {
+                assertWorkspaceSurfaceClosed(
+                    await workspaceSurfaceManager.closeWorkspaceSurface(
+                        context.windowId,
+                        workspace.scopeKey,
+                    ),
+                );
+            }
+        }
         await options.projectService.removeProject(projectId);
         broadcastProjectsUpdated();
     });
@@ -1928,115 +1990,149 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             }
         },
     );
-    ipcMain.handle(IPC_CHANNELS.getWorkspaceSnapshot, (event) => {
-        const context = requireWindowContext(event.sender, "main");
-        const surfaceSnapshot = workspaceSurfaceManager.getSurfaceSnapshot(
-            event.sender,
-        );
-        if (surfaceSnapshot) {
-            return surfaceSnapshot;
+    ipcMain.handle(IPC_CHANNELS.getWorkspaceCatalog, async (event) => {
+        requireWindowContext(event.sender, "main");
+        if (workspaceSurfaceManager.isSurface(event.sender)) {
+            throw new Error("The workspace catalog is available only to the host.");
         }
-        return Promise.resolve(
-            options.workspaceService.loadSnapshot(context.workspaceId!),
-        )
-            .then((record) => record.snapshot);
+        const [workspaces, navigation, recoveryLayouts, pendingDeletions] = await Promise.all([
+            options.durableWorkspaceRepository.listDurableWorkspaces(),
+            options.durableWorkspaceRepository.getWorkspaceNavigation(),
+            options.durableWorkspaceRepository
+                .listWorkspaceRecoveryLayouts(),
+            options.durableWorkspaceRepository.listIncompleteWorkspaceDeletions(),
+        ]);
+        return {
+            navigation,
+            pendingDeletions,
+            recoveryLayouts,
+            workspaces,
+        };
     });
     ipcMain.handle(
-        IPC_CHANNELS.saveWorkspaceSnapshot,
-        async (event, snapshot: WorkspaceNavigationSnapshot) => {
+        IPC_CHANNELS.resetWorkspaceLayout,
+        async (
+            event,
+            input: { readonly expectedRevision?: unknown; readonly scopeKey?: unknown },
+        ) => {
             const context = requireWindowContext(event.sender, "main");
-            const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
-                snapshot,
-            ).snapshot;
             if (
-                await persistWorkspaceSurfaceSnapshot({
-                    manager: workspaceSurfaceManager,
-                    saveSnapshot: (workspaceId, nextSnapshot) =>
-                        Promise.resolve(
-                            options.workspaceService.saveSnapshot(
-                                workspaceId,
-                                nextSnapshot,
-                            ),
-                        ),
-                    sender: event.sender,
-                    snapshot: normalizedSnapshot,
-                    workspaceId: context.workspaceId!,
-                })
+                workspaceSurfaceManager.isSurface(event.sender) ||
+                !input ||
+                typeof input.scopeKey !== "string" ||
+                !input.scopeKey ||
+                !Number.isSafeInteger(input.expectedRevision) ||
+                Number(input.expectedRevision) < 0
             ) {
-                return;
+                throw new Error("A valid durable workspace revision is required.");
             }
-            if (workspaceSurfaceManager.isSurface(event.sender)) {
-                return;
-            }
-            const activeSurface = workspaceSurfaceManager.getActiveWebContents(
-                context.windowId,
-            );
-            const hostSnapshot =
-                workspaceSurfaceManager.getHostSnapshotForWindow(
+            assertWorkspaceSurfaceClosed(
+                await workspaceSurfaceManager.closeWorkspaceSurface(
                     context.windowId,
-                );
-            const canUpdateActiveSurface =
-                activeSurface &&
-                hostSnapshot &&
-                hostSnapshot.activeContextKey === normalizedSnapshot.activeContextKey &&
-                hostSnapshot.openContextKeys.length ===
-                    normalizedSnapshot.openContextKeys.length &&
-                hostSnapshot.openContextKeys.every((key) =>
-                    normalizedSnapshot.openContextKeys.includes(key),
-                );
-            if (canUpdateActiveSurface) {
-                const surfaceUpdate = workspaceSurfaceManager.mergeSurfaceSnapshot(
-                    activeSurface,
-                    normalizedSnapshot,
-                );
-                if (surfaceUpdate) {
-                    await options.workspaceService.saveSnapshot(
-                        context.workspaceId!,
-                        surfaceUpdate.snapshot,
-                    );
-                    const surfaceSnapshot =
-                        workspaceSurfaceManager.getSurfaceSnapshot(activeSurface);
-                    if (surfaceSnapshot) {
-                        activeSurface.send(
-                            IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
-                            surfaceSnapshot,
-                        );
-                    }
-                    workspaceSurfaceManager
-                        .getHostWebContents(surfaceUpdate.hostWindowId)
-                        ?.send(
-                            IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
-                            surfaceUpdate.snapshot,
-                        );
-                    return;
-                }
+                    input.scopeKey,
+                ),
+            );
+            return options.durableWorkspaceRepository.resetDurableWorkspace({
+                expectedRevision: Number(input.expectedRevision),
+                layoutSnapshot:
+                    createEmptyWorkspaceLayoutSnapshot() as unknown as Readonly<
+                        Record<string, unknown>
+                    >,
+                scopeKey: input.scopeKey,
+            });
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.applyWorkspaceRecoveryLayout,
+        async (event, input: ApplyWorkspaceRecoveryLayoutInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error("Recovery layouts are available only to the host.");
             }
-            await options.workspaceService.saveSnapshot(
-                context.workspaceId!,
-                normalizedSnapshot,
+            assertWorkspaceSurfaceClosed(
+                await workspaceSurfaceManager.closeWorkspaceSurface(
+                    context.windowId,
+                    input.scopeKey,
+                ),
             );
-            const activeContext = normalizedSnapshot.contexts.find(
-                (candidate) =>
-                    candidate.key === normalizedSnapshot.activeContextKey,
+            return options.durableWorkspaceRepository.applyWorkspaceRecoveryLayout(
+                input,
             );
-            const projectId = activeContext?.projectId ?? null;
-            const worktreeId = activeContext?.worktreeId ?? null;
-            windowRegistry.updateMainWindowProjectId(
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.discardWorkspaceRecoveryLayout,
+        async (event, input: DiscardWorkspaceRecoveryLayoutInput) => {
+            requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error("Recovery layouts are available only to the host.");
+            }
+            await options.durableWorkspaceRepository.discardWorkspaceRecoveryLayout(
+                input,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.reassociateWorkspace,
+        async (event, input: ReassociateWorkspaceInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error(
+                    "Workspace reassociation is available only to the host.",
+                );
+            }
+            assertWorkspaceSurfaceClosed(
+                await workspaceSurfaceManager.closeWorkspaceSurface(
+                    context.windowId,
+                    input.sourceScopeKey,
+                ),
+            );
+            return options.durableWorkspaceRepository.reassociateWorkspace(input);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.removeSavedWorkspace,
+        async (event, input: RemoveSavedWorkspaceInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error(
+                    "Saved workspaces can be removed only from the host.",
+                );
+            }
+            assertWorkspaceSurfaceClosed(
+                await workspaceSurfaceManager.closeWorkspaceSurface(
+                    context.windowId,
+                    input.scopeKey,
+                ),
+            );
+            await options.durableWorkspaceRepository.purgeDurableWorkspace(input);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.preflightDeleteWorktree,
+        async (event, input: DeleteWorktreePreflightInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            return destructiveCoordinator.preflightDeleteWorktree(
                 context.windowId,
-                projectId,
-                worktreeId,
+                input,
             );
-            const ownerWindow = BrowserWindow.fromWebContents(event.sender);
-            if (ownerWindow) {
-                ownerWindow.setTitle(
-                    buildMainWindowTitle(options.projectService, projectId),
-                );
-            }
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.deleteWorktree,
+        async (event, input: DeleteWorktreeInput) => {
+            const context = requireWindowContext(event.sender, "main");
+            const result = await destructiveCoordinator.deleteWorktree(
+                context.windowId,
+                input,
+            );
+            broadcastProjectsUpdated();
+            return result;
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.initializeWorkspaceSurfaces,
-        async (event, snapshot: WorkspaceNavigationSnapshot) => {
+        (event, snapshot: WorkspaceSurfaceRegistrySnapshot) => {
             const context = requireWindowContext(event.sender, "main");
             if (workspaceSurfaceManager.isSurface(event.sender)) {
                 return;
@@ -2045,41 +2141,11 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             if (!hostWindow) {
                 throw new Error("The workspace host window is unavailable.");
             }
-            const normalizedSnapshot = normalizeWorkspaceNavigationSnapshot(
-                snapshot,
-            ).snapshot;
-            const mergedSnapshot = workspaceSurfaceManager.syncHost(
+            workspaceSurfaceManager.syncWorkspaceRegistry(
                 hostWindow,
                 context,
-                normalizedSnapshot,
+                snapshot,
             );
-            await options.workspaceService.saveSnapshot(
-                context.workspaceId!,
-                mergedSnapshot,
-            );
-        },
-    );
-    ipcMain.handle(
-        IPC_CHANNELS.captureWorkspaceSurfaceContext,
-        async (event, contextKey: unknown) => {
-            const context = requireWindowContext(event.sender, "main");
-            if (workspaceSurfaceManager.isSurface(event.sender)) {
-                return null;
-            }
-            if (typeof contextKey !== "string" || contextKey.length === 0) {
-                throw new Error("A workspace context key is required.");
-            }
-            const snapshot = await options.captureWorkspaceSurfaceContext(
-                context.windowId,
-                contextKey,
-            );
-            if (snapshot) {
-                await options.workspaceService.saveSnapshot(
-                    context.workspaceId!,
-                    snapshot,
-                );
-            }
-            return snapshot;
         },
     );
     ipcMain.handle(
@@ -2094,12 +2160,21 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 typeof payload !== "object" ||
                 ((payload as { kind?: unknown }).kind !== "agent" &&
                     (payload as { kind?: unknown }).kind !== "github") ||
+                typeof (payload as { contextKey?: unknown }).contextKey !==
+                    "string" ||
+                typeof (payload as { projectId?: unknown }).projectId !==
+                    "string" ||
+                !(
+                    (payload as { worktreeId?: unknown }).worktreeId === null ||
+                    typeof (payload as { worktreeId?: unknown }).worktreeId ===
+                        "string"
+                ) ||
                 typeof (payload as { detail?: unknown }).detail !== "object" ||
                 (payload as { detail: object | null }).detail === null
             ) {
                 throw new Error("An agent or GitHub drag payload is required.");
             }
-            workspaceSurfaceManager.dispatchActiveSurfaceDrag(
+            return workspaceSurfaceManager.dispatchActiveSurfaceDrag(
                 context.windowId,
                 payload as WorkspaceSurfaceDragEvent,
             );
@@ -2121,9 +2196,83 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             );
         },
     );
-    ipcMain.handle(IPC_CHANNELS.notifyWorkspaceSurfaceReady, (event) => {
-        workspaceSurfaceManager.notifySurfaceReady(event.sender);
-    });
+    ipcMain.handle(
+        IPC_CHANNELS.notifyWorkspaceSurfaceReady,
+        (event, binding: WorkspaceSurfaceRuntimeBinding) => {
+            workspaceSurfaceManager.notifySurfaceReady(event.sender, binding);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.notifyWorkspaceSurfaceRestoreFailed,
+        (
+            event,
+            binding: WorkspaceSurfaceRuntimeBinding,
+            message: unknown,
+        ) => {
+            workspaceSurfaceManager.notifySurfaceRestoreFailed(
+                event.sender,
+                binding,
+                typeof message === "string"
+                    ? message.slice(0, 1_000)
+                    : "Could not restore the workspace surface.",
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.reportWorkspaceSurfaceLeases,
+        (event, report) => {
+            if (!report || typeof report !== "object") {
+                return false;
+            }
+            return workspaceSurfaceManager.reportSurfaceLeases(
+                event.sender,
+                report as WorkspaceSurfaceLeaseReport,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.resyncWorkspaceSurfaceRuntime,
+        async (
+            event,
+            binding: WorkspaceSurfaceRuntimeBinding,
+        ): Promise<WorkspaceSurfaceRuntimeResync> => {
+            const subscriber =
+                workspaceSurfaceManager.getSurfaceRuntimeSubscriber(
+                    event.sender,
+                );
+            if (
+                !subscriber ||
+                !workspaceSurfaceManager.matchesSurfaceRuntimeBinding(
+                    event.sender,
+                    binding,
+                )
+            ) {
+                throw new Error("The workspace surface binding is stale.");
+            }
+            try {
+                const [aiSessions, terminals] = await Promise.all([
+                    Promise.resolve(
+                        options.aiService.resyncRuntimeSubscriber(
+                            binding.runtimeOwnerId,
+                            binding.generation,
+                        ),
+                    ),
+                    Promise.resolve(
+                        options.terminalService.resyncRuntimeSubscriber(
+                            binding.runtimeOwnerId,
+                            binding.generation,
+                        ),
+                    ),
+                ]);
+                workspaceRuntimeOwnership.consumeResyncRequirement(subscriber);
+                workspaceSurfaceManager.recordRuntimeResync(event.sender, true);
+                return { ...binding, aiSessions, terminals };
+            } catch (error) {
+                workspaceSurfaceManager.recordRuntimeResync(event.sender, false);
+                throw error;
+            }
+        },
+    );
     ipcMain.handle(
         IPC_CHANNELS.claimWorkspaceSurfaceAction,
         (event, actionId: string) =>
@@ -2167,19 +2316,17 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     });
     ipcMain.handle(
         IPC_CHANNELS.activateWorkspaceSurface,
-        (event, contextKey: string) => {
+        async (event, contextKey: string) => {
             const context = requireWindowContext(event.sender, "main");
             if (workspaceSurfaceManager.isSurface(event.sender)) {
-                return;
+                throw new Error("A workspace surface cannot activate another surface.");
             }
-            if (
-                !activateWorkspaceSurfaceAndNotifyHost({
-                    contextKey,
-                    hostWindowId: context.windowId,
-                    manager: workspaceSurfaceManager,
-                })
-            ) {
-                return;
+            const result = await workspaceSurfaceManager.activate(
+                context.windowId,
+                contextKey,
+            );
+            if (result.status !== "activated") {
+                return result;
             }
             const activeContext = workspaceSurfaceManager.getActiveContext(
                 context.windowId,
@@ -2192,101 +2339,163 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             const hostWindow = BrowserWindow.fromWebContents(event.sender);
             if (hostWindow) {
                 hostWindow.setTitle(
-                    buildMainWindowTitle(
-                        options.projectService,
-                        activeContext?.projectId ?? null,
-                    ),
+                    buildMainWindowTitle(),
                 );
             }
+            return result;
         },
     );
-    ipcMain.handle(IPC_CHANNELS.listOpenWorkspaceLocations, (event) => {
-        const sourceContext = requireWindowContext(event.sender, "main");
-        if (workspaceSurfaceManager.isSurface(event.sender)) {
-            return [];
-        }
-        return workspaceSurfaceManager.listOpenWorkspaceLocations().map(
-            (location): OpenWorkspaceLocationSummary => ({
-                ...location,
-                isCurrentWindow:
-                    location.hostWindowId === sourceContext.windowId,
-                windowTitle:
-                    windowRegistry
-                        .getWindowByStableId(location.hostWindowId)
-                        ?.getTitle() ?? "Comando",
-            }),
-        );
-    });
     ipcMain.handle(
-        IPC_CHANNELS.activateWorkspaceLocation,
-        async (event, input: ActivateWorkspaceLocationInput) => {
-            requireWindowContext(event.sender, "main");
+        IPC_CHANNELS.closeWorkspaceSurface,
+        async (event, contextKey: unknown) => {
+            const context = requireWindowContext(event.sender, "main");
             if (
                 workspaceSurfaceManager.isSurface(event.sender) ||
-                !isActivateWorkspaceLocationInput(input)
+                typeof contextKey !== "string" ||
+                !contextKey
             ) {
-                return false;
+                throw new Error("A valid workspace scope is required.");
             }
-            return activateOpenWorkspaceLocation({
-                focusWindow: focusWorkspaceWindow,
-                location: input,
-                manager: workspaceSurfaceManager,
-                notifyChannel: IPC_EVENTS.workspaceSurfaceSnapshotUpdated,
-                onActivated: async (location, snapshot) => {
-                    const targetContext = windowRegistry
-                        .listMainWindowContexts()
-                        .find(
-                            (candidate) =>
-                                candidate.windowId === location.hostWindowId,
-                        );
-                    if (!targetContext?.workspaceId) {
-                        throw new Error(
-                            "The target workspace window is unavailable.",
-                        );
-                    }
-                    await options.workspaceService.saveSnapshot(
-                        targetContext.workspaceId,
-                        snapshot,
-                    );
-                    const latestSnapshot =
-                        workspaceSurfaceManager.getHostSnapshotForWindow(
-                            location.hostWindowId,
-                        );
-                    if (
-                        latestSnapshot &&
-                        latestSnapshot.activeContextKey !==
-                            snapshot.activeContextKey
-                    ) {
-                        await options.workspaceService.saveSnapshot(
-                            targetContext.workspaceId,
-                            latestSnapshot,
-                        );
-                    }
-                    options.persistenceService.saveActiveProjectId(
-                        location.hostWindowId,
-                        location.projectId,
-                        location.worktreeId,
-                    );
-                    windowRegistry.updateMainWindowProjectId(
-                        location.hostWindowId,
-                        location.projectId,
-                        location.worktreeId,
-                    );
-                    windowRegistry
-                        .getWindowByStableId(location.hostWindowId)
-                        ?.setTitle(
-                            buildMainWindowTitle(
-                                options.projectService,
-                                location.projectId,
-                            ),
-                        );
-                },
-            });
+            const result = await workspaceSurfaceManager.closeWorkspaceSurface(
+                context.windowId,
+                contextKey,
+            );
+            if (
+                result.status === "closed" &&
+                !workspaceSurfaceManager.getActiveContext(context.windowId)
+            ) {
+                options.persistenceService.saveActiveProjectId(
+                    context.windowId,
+                    null,
+                    null,
+                );
+                windowRegistry.updateMainWindowProjectId(
+                    context.windowId,
+                    null,
+                    null,
+                );
+                const hostWindow = BrowserWindow.fromWebContents(event.sender);
+                hostWindow?.setTitle(
+                    buildMainWindowTitle(),
+                );
+            }
+            return result;
         },
     );
     ipcMain.handle(
-        IPC_CHANNELS.requestWorkspaceSurfaceContext,
-        (event, input: WorkspaceSurfaceContextRequest) => {
+        IPC_CHANNELS.loadWorkspaceSurfaceLayout,
+        async (event, binding: WorkspaceSurfaceRuntimeBinding) => {
+            if (
+                !workspaceSurfaceManager.matchesSurfaceRuntimeBinding(
+                    event.sender,
+                    binding,
+                )
+            ) {
+                throw new Error("The workspace surface binding is stale.");
+            }
+            const workspace =
+                await options.durableWorkspaceRepository.loadDurableWorkspace(
+                    binding.scopeKey,
+                );
+            if (
+                !workspace ||
+                workspace.runtimeOwnerId !== binding.runtimeOwnerId
+            ) {
+                throw new Error("The durable workspace is unavailable.");
+            }
+            const layout = normalizeWorkspaceLayoutSnapshot(
+                workspace.layoutSnapshot,
+            );
+            if (!layout) {
+                throw new Error("The durable workspace layout is invalid.");
+            }
+            return {
+                ...binding,
+                lastActivatedAt:
+                    workspace.lastActivatedAt ?? workspace.updatedAt,
+                layout,
+                projectId: workspace.projectId,
+                revision: workspace.revision,
+                worktreeId: workspace.worktreeId,
+            };
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.saveWorkspaceSurfaceLayout,
+        async (event, input: SaveWorkspaceSurfaceLayoutInput) => {
+            if (
+                !input ||
+                typeof input !== "object" ||
+                !Number.isInteger(input.expectedRevision) ||
+                input.expectedRevision < 0 ||
+                !workspaceSurfaceManager.matchesSurfaceRuntimeBinding(
+                    event.sender,
+                    input,
+                )
+            ) {
+                throw new Error("A current workspace surface layout is required.");
+            }
+            const layout = normalizeWorkspaceLayoutSnapshot(input.layout);
+            if (!layout) {
+                throw new Error("The workspace surface layout is invalid.");
+            }
+            const current =
+                await options.durableWorkspaceRepository.loadDurableWorkspace(
+                    input.scopeKey,
+                );
+            if (!current || current.runtimeOwnerId !== input.runtimeOwnerId) {
+                throw new Error("The durable workspace is unavailable.");
+            }
+            const workspace =
+                await options.durableWorkspaceRepository.saveDurableWorkspace({
+                    expectedRevision: input.expectedRevision,
+                    layoutSnapshot: layout as unknown as Readonly<
+                        Record<string, unknown>
+                    >,
+                    scopeKey: input.scopeKey,
+                });
+            return {
+                generation: input.generation,
+                lastActivatedAt:
+                    workspace.lastActivatedAt ?? input.lastActivatedAt,
+                layout,
+                projectId: workspace.projectId,
+                revision: workspace.revision,
+                runtimeOwnerId: input.runtimeOwnerId,
+                scopeKey: input.scopeKey,
+                worktreeId: workspace.worktreeId,
+            };
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.getWorkspaceSurfaceDiagnostics,
+        (event) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (workspaceSurfaceManager.isSurface(event.sender)) {
+                throw new Error("Diagnostics are available only to the host.");
+            }
+            return workspaceSurfaceManager.sampleSurfaceMemory(context.windowId);
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.setWorkspaceHostOverlayVisible,
+        (event, visible: unknown) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (
+                workspaceSurfaceManager.isSurface(event.sender) ||
+                typeof visible !== "boolean"
+            ) {
+                return;
+            }
+            workspaceSurfaceManager.setHostOverlayVisible(
+                context.windowId,
+                visible,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.requestWorkspaceScopeActivation,
+        (event, input: WorkspaceScopeActivationRequest) => {
             requireWindowContext(event.sender, "main");
             const surfaceContext = workspaceSurfaceManager.getSurfaceContext(
                 event.sender,
@@ -2307,7 +2516,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             }
             workspaceSurfaceManager
                 .getHostWebContents(surfaceContext.hostWindowId)
-                ?.send(IPC_EVENTS.workspaceSurfaceContextRequested, input);
+                ?.send(IPC_EVENTS.workspaceScopeActivationRequested, input);
         },
     );
     ipcMain.handle(
@@ -2324,126 +2533,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     x: Math.max(0, Math.round(anchor.x)),
                 },
             );
-        },
-    );
-    ipcMain.handle(IPC_CHANNELS.openWorkspaceSurfaceProjectMenu, (event) => {
-        const context = requireWindowContext(event.sender, "main");
-        if (workspaceSurfaceManager.isSurface(event.sender)) {
-            return;
-        }
-        workspaceSurfaceManager.requestActiveProjectMenu(context.windowId);
-    });
-    ipcMain.handle(
-        IPC_CHANNELS.showWorkspaceContextMenu,
-        (event, input: WorkspaceContextMenuInput) => {
-            const sourceContext = requireWindowContext(event.sender, "main");
-            const window = BrowserWindow.fromWebContents(event.sender);
-            if (!window || workspaceSurfaceManager.isSurface(event.sender)) {
-                return null;
-            }
-
-            const destinations = buildWorkspaceMoveDestinations({
-                candidates: windowRegistry
-                    .listMainWindowContexts()
-                    .flatMap((context) => {
-                        const candidateWindow =
-                            windowRegistry.getWindowByStableId(context.windowId);
-                        const snapshot =
-                            workspaceSurfaceManager.getHostSnapshotForWindow(
-                                context.windowId,
-                            );
-                        return candidateWindow && snapshot
-                            ? [
-                                  {
-                                      snapshot,
-                                      windowId: context.windowId,
-                                      windowTitle: candidateWindow.getTitle(),
-                                  },
-                              ]
-                            : [];
-                    }),
-                scope: {
-                    projectId: input.projectId,
-                    worktreeId: input.worktreeId,
-                },
-                sourceWindowId: sourceContext.windowId,
-            });
-
-            return new Promise<WorkspaceContextMenuAction | null>((resolve) => {
-                let selected = false;
-                const select = (action: WorkspaceContextMenuAction) => {
-                    selected = true;
-                    resolve(action);
-                };
-                const menu = Menu.buildFromTemplate([
-                    {
-                        click: () => select({ type: "copy_full_path" }),
-                        enabled: input.canCopyFullPath,
-                        label: "Copy Full Path",
-                    },
-                    { type: "separator" },
-                    {
-                        label: "Move to Window",
-                        submenu: [
-                            ...destinations.map((destination) => ({
-                                click: () =>
-                                    select({
-                                        targetWindowId:
-                                            destination.targetWindowId,
-                                        type: "move",
-                                    }),
-                                enabled: destination.enabled,
-                                label: destination.label,
-                            })),
-                            ...(destinations.length > 0
-                                ? ([{ type: "separator" }] as const)
-                                : []),
-                            {
-                                click: () =>
-                                    select({
-                                        targetWindowId: null,
-                                        type: "move",
-                                    }),
-                                label: "New Window",
-                            },
-                        ],
-                    },
-                    { type: "separator" },
-                    {
-                        click: () => select({ type: "close" }),
-                        label: "Close",
-                    },
-                ]);
-                menu.popup({
-                    callback: () => {
-                        if (!selected) resolve(null);
-                    },
-                    window,
-                    x: Math.max(0, Math.round(input.x)),
-                    y: Math.max(0, Math.round(input.y)),
-                });
-            });
-        },
-    );
-    ipcMain.handle(
-        IPC_CHANNELS.moveWorkspaceContext,
-        async (event, input: MoveWorkspaceContextInput): Promise<void> => {
-            const sourceContext = requireWindowContext(event.sender, "main");
-            if (workspaceSurfaceManager.isSurface(event.sender)) {
-                throw new Error("Workspace moves must start from a host window.");
-            }
-            if (
-                !input ||
-                typeof input.contextKey !== "string" ||
-                typeof input.projectId !== "string" ||
-                (input.worktreeId !== null &&
-                    typeof input.worktreeId !== "string") ||
-                (input.targetWindowId !== null &&
-                    typeof input.targetWindowId !== "string")
-            ) {
-                throw new Error("The workspace move request is invalid.");
-            }
-            await options.moveWorkspaceContext(sourceContext.windowId, input);
         },
     );
     ipcMain.handle(
@@ -2480,6 +2569,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         },
     );
     ipcMain.handle(
+        IPC_CHANNELS.setWorkspaceSurfaceContentInsets,
+        (event, insets: WorkspaceSurfaceContentInsets) => {
+            const context = requireWindowContext(event.sender, "main");
+            if (!workspaceSurfaceManager.isSurface(event.sender)) {
+                workspaceSurfaceManager.setContentInsets(
+                    context.windowId,
+                    insets,
+                );
+            }
+        },
+    );
+    ipcMain.handle(
         IPC_CHANNELS.notifyFileBuffer,
         (_event, input: FileBufferNotificationInput) => {
             if (input.content === null) {
@@ -2499,19 +2600,17 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.createTerminalSession,
         (event, input: CreateTerminalSessionInput) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.terminalService.createSession(
                 input,
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
             );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.writeTerminalInput,
         (event, input: WriteTerminalInput) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.terminalService.writeInput(
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
                 input.sessionId,
                 input.data,
             );
@@ -2520,9 +2619,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.resizeTerminalSession,
         (event, input: ResizeTerminalSessionInput) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.terminalService.resizeSession(
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
                 input.sessionId,
                 input.cols,
                 input.rows,
@@ -2532,9 +2630,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.closeTerminalSession,
         (event, sessionId: string) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.terminalService.closeSessionOrOwnedTerminal(
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
                 sessionId,
             );
         },
@@ -2551,8 +2648,10 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.prepareAiSession,
         (event, input: PrepareAiSessionInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            return options.aiService.prepareSession(input, context.windowId);
+            return options.aiService.prepareSession(
+                input,
+                requireRuntimeOwnerId(event.sender),
+            );
         },
     );
     ipcMain.handle(
@@ -2588,9 +2687,8 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             options.aiService.loadToolActivityDetail(input),
     );
     ipcMain.handle(IPC_CHANNELS.resyncAiSession, (event, sessionId: string) => {
-        const context = requireWindowContext(event.sender, "main");
         return options.aiService.getLiveSessionSnapshotForWindow(
-            context.windowId,
+            requireRuntimeOwnerId(event.sender),
             sessionId,
         );
     });
@@ -2619,59 +2717,69 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         options.aiService.getTranscriptPayloads(input),
     );
     ipcMain.handle(IPC_CHANNELS.getAiPromptQueue, (event, sessionId: string) => {
-        const context = requireWindowContext(event.sender, "main");
-        return options.aiService.getPromptQueue(sessionId, context.windowId);
+        return options.aiService.getPromptQueue(
+            sessionId,
+            requireRuntimeOwnerId(event.sender),
+        );
     });
     ipcMain.handle(
         IPC_CHANNELS.enqueueAiPrompt,
         (event, input: EnqueueAiPromptInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            return options.aiService.enqueuePrompt(input, context.windowId);
+            return options.aiService.enqueuePrompt(
+                input,
+                requireRuntimeOwnerId(event.sender),
+            );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.removeAiQueuedPrompt,
         (event, input: AiQueuedPromptMutationInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            return options.aiService.removeQueuedPrompt(input, context.windowId);
+            return options.aiService.removeQueuedPrompt(
+                input,
+                requireRuntimeOwnerId(event.sender),
+            );
         },
     );
     ipcMain.handle(IPC_CHANNELS.clearAiPromptQueue, (event, sessionId: string) => {
-        const context = requireWindowContext(event.sender, "main");
-        return options.aiService.clearPromptQueue(sessionId, context.windowId);
+        return options.aiService.clearPromptQueue(
+            sessionId,
+            requireRuntimeOwnerId(event.sender),
+        );
     });
     ipcMain.handle(
         IPC_CHANNELS.beginEditAiQueuedPrompt,
         (event, input: AiQueuedPromptMutationInput) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.aiService.beginEditQueuedPrompt(
                 input,
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
             );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.cancelEditAiQueuedPrompt,
         (event, sessionId: string) => {
-            const context = requireWindowContext(event.sender, "main");
             return options.aiService.cancelEditQueuedPrompt(
                 sessionId,
-                context.windowId,
+                requireRuntimeOwnerId(event.sender),
             );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.updateAiQueuedPrompt,
         (event, input: UpdateAiQueuedPromptInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            return options.aiService.updateQueuedPrompt(input, context.windowId);
+            return options.aiService.updateQueuedPrompt(
+                input,
+                requireRuntimeOwnerId(event.sender),
+            );
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.steerAiQueuedPrompt,
         (event, input: AiQueuedPromptMutationInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            return options.aiService.steerQueuedPrompt(input, context.windowId);
+            return options.aiService.steerQueuedPrompt(
+                input,
+                requireRuntimeOwnerId(event.sender),
+            );
         },
     );
     ipcMain.handle(
@@ -2704,8 +2812,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         (_event, input: AiSessionRenameMutationInput) =>
             options.aiService.renameSession(input),
     );
-    ipcMain.handle(IPC_CHANNELS.deleteAiSession, (_event, sessionId: string) =>
-        options.aiService.deleteSession(sessionId),
+    ipcMain.handle(
+        IPC_CHANNELS.deleteAiSession,
+        async (_event, sessionId: string) => {
+            await options.aiService.deleteSession(sessionId);
+            await options.durableWorkspaceRepository.forgetWorkspaceSessionReferences(
+                sessionId,
+            );
+        },
     );
     ipcMain.handle(IPC_CHANNELS.cancelAiSession, (_event, sessionId: string) =>
         options.aiService.cancelSession(sessionId),
@@ -2716,24 +2830,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.handle(
         IPC_CHANNELS.launchAiRuntimeAuth,
         (event, input: AiRuntimeAuthLaunchInput) => {
-            const context = windowRegistry.getContextByWebContents(
-                event.sender,
-            );
             return options.aiService.launchRuntimeAuth({
                 ...input,
-                ownerWindowId: context?.windowId ?? null,
+                ownerWindowId: resolveRuntimeOwnerId(event.sender),
             });
         },
     );
     ipcMain.handle(
         IPC_CHANNELS.logoutAiRuntimeAuth,
         (event, input: AiRuntimeAuthLogoutInput) => {
-            const context = windowRegistry.getContextByWebContents(
-                event.sender,
-            );
             return options.aiService.logoutRuntimeAuth({
                 ...input,
-                ownerWindowId: context?.windowId ?? null,
+                ownerWindowId: resolveRuntimeOwnerId(event.sender),
             });
         },
     );
@@ -2941,54 +3049,50 @@ function requireWindowContext(
     return context;
 }
 
+function requireMainHostWindowId(sender: Electron.WebContents): string {
+    const context = windowRegistry.getContextByWebContents(sender);
+    const windowId =
+        (context?.windowKind === "main" ? context.windowId : context?.hostWindowId) ??
+        windowRegistry.getLastFocusedMainWindowId() ??
+        windowRegistry.listMainWindowContexts()[0]?.windowId ??
+        null;
+    if (!windowId) {
+        throw new Error("A main workspace host is required for this operation.");
+    }
+    return windowId;
+}
+
+function assertWorkspaceSurfaceClosed(result: WorkspaceSurfaceCloseResult): void {
+    if (result.status === "blocked") {
+        throw new Error(result.leases.map((lease) => lease.message).join(" "));
+    }
+    if (result.status === "failed") {
+        throw new Error(result.message);
+    }
+}
+
+function resolveRuntimeOwnerId(sender: Electron.WebContents): string | null {
+    return (
+        workspaceSurfaceManager.getRuntimeOwnerId(sender) ??
+        windowRegistry.getContextByWebContents(sender)?.windowId ??
+        null
+    );
+}
+
+function requireRuntimeOwnerId(sender: Electron.WebContents): string {
+    const runtimeOwnerId = resolveRuntimeOwnerId(sender);
+    if (!runtimeOwnerId) {
+        throw new Error("The current renderer has no runtime owner.");
+    }
+    return runtimeOwnerId;
+}
+
 function getPersistenceOwnerId(context: WindowContextSnapshot): string {
     return context.hostWindowId ?? context.windowId;
 }
 
-function isActivateWorkspaceLocationInput(
-    input: ActivateWorkspaceLocationInput,
-): input is ActivateWorkspaceLocationInput {
-    return (
-        Boolean(input) &&
-        typeof input.contextKey === "string" &&
-        input.contextKey.length > 0 &&
-        typeof input.hostWindowId === "string" &&
-        input.hostWindowId.length > 0 &&
-        typeof input.projectId === "string" &&
-        input.projectId.length > 0 &&
-        (input.worktreeId === null || typeof input.worktreeId === "string")
-    );
-}
-
-function focusWorkspaceWindow(windowId: string): void {
-    const window = windowRegistry.getWindowByStableId(windowId);
-    if (!window || window.isDestroyed()) {
-        return;
-    }
-    if (window.isMinimized()) {
-        window.restore();
-    }
-    window.show();
-    window.focus();
-}
-
-function buildMainWindowTitle(
-    projectService: ProjectService,
-    projectId: string | null,
-): string {
-    if (!projectId) {
-        return "Comando";
-    }
-
-    try {
-        const rootPath = projectService.getProjectRootPath(projectId);
-        const projectName =
-            rootPath.split(/[\\/]/).filter(Boolean).at(-1) ?? projectId;
-        return `Comando · ${projectName}`;
-    } catch (error) {
-        debugBenignError("ipc.resolveWindowTitle", error);
-        return "Comando";
-    }
+function buildMainWindowTitle(): string {
+    return "Comando";
 }
 
 interface ResolvedGitScope {

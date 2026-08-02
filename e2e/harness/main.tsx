@@ -42,6 +42,7 @@ import {
 
 import "@renderer/styles.css";
 import "./transcript-harness.css";
+import { ShellHarness } from "./ShellHarness";
 
 const INITIAL_HISTORY_SIZE = 2_000;
 const INITIAL_HISTORY_SCENARIO = {
@@ -1158,4 +1159,7 @@ function TranscriptHarness() {
     );
 }
 
-createRoot(document.getElementById("root")!).render(<TranscriptHarness />);
+const harness = new URLSearchParams(window.location.search).get("harness");
+createRoot(document.getElementById("root")!).render(
+    harness === "shell" ? <ShellHarness /> : <TranscriptHarness />,
+);

@@ -25,7 +25,6 @@ import {
 } from "./claudeCodeTerminal";
 
 const checkCommandAvailabilityMock = vi.fn();
-const saveWorkspaceSnapshotMock = vi.fn(async () => {});
 const writeTerminalInputMock = vi.fn(async () => {});
 
 afterEach(() => {
@@ -76,7 +75,6 @@ describe("Claude Code terminal launcher", () => {
         resetClaudeCodeTerminalStateForTests();
         resetTerminalRuntimeStoreForTests();
         resetWorkspacePersistenceForTests();
-        saveWorkspaceSnapshotMock.mockClear();
         writeTerminalInputMock.mockClear();
         useWorkspaceStore.setState((state) => ({
             ...state,
@@ -103,7 +101,6 @@ describe("Claude Code terminal launcher", () => {
             configurable: true,
             value: {
                 comando: {
-                    saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
                     writeTerminalInput: writeTerminalInputMock,
                 },
             },

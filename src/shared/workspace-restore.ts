@@ -41,7 +41,7 @@ export function normalizeWorkspaceNavigationSnapshot(
     fallbackScope: { readonly projectId?: string | null; readonly worktreeId?: string | null } = {},
 ): WorkspaceRestoreNormalizationResult {
     if (!isRecord(value) || (value.version !== 2 && value.version !== 3)) {
-        const legacy = normalizeLayout(value);
+        const legacy = normalizeWorkspaceLayoutSnapshot(value);
         const projectId = fallbackScope.projectId ?? firstTabProjectId(legacy);
         if (!legacy || !projectId) {
             return { droppedContextCount: 0, repaired: true, snapshot: emptyNavigation() };
@@ -121,7 +121,7 @@ function normalizeContext(value: unknown): PersistedWorkspaceContext | null {
     if (!isRecord(value) || typeof value.projectId !== "string" || value.projectId.length === 0) return null;
     const rawWorktreeId = typeof value.worktreeId === "string" ? value.worktreeId : null;
     const worktreeId = normalizeWorkspaceWorktreeId(value.projectId, rawWorktreeId);
-    const workspace = normalizeLayout(value.workspace);
+    const workspace = normalizeWorkspaceLayoutSnapshot(value.workspace);
     if (!workspace) return null;
     const scopedWorkspace: WorkspaceLayoutSnapshot = {
         ...workspace,
@@ -140,7 +140,9 @@ function normalizeContext(value: unknown): PersistedWorkspaceContext | null {
     };
 }
 
-function normalizeLayout(value: unknown): WorkspaceLayoutSnapshot | null {
+export function normalizeWorkspaceLayoutSnapshot(
+    value: unknown,
+): WorkspaceLayoutSnapshot | null {
     if (!isRecord(value) || !Array.isArray(value.tabs)) return null;
     const tabs = value.tabs.filter(isWorkspaceTab);
     const rootNode = normalizeNode(

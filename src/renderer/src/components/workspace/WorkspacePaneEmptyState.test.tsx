@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { WorkspacePaneEmptyState } from "./WorkspacePaneEmptyState";
 
@@ -20,87 +20,27 @@ afterEach(() => {
     }
 });
 
-function renderEmptyState(
-    props: Partial<Parameters<typeof WorkspacePaneEmptyState>[0]> = {},
-) {
+function renderEmptyState() {
     const container = document.createElement("div");
     document.body.appendChild(container);
     mountedContainers.push(container);
 
-    const onOpenProject = vi.fn();
-    const onOpenProjects = vi.fn();
     const root = createRoot(container);
     mountedRoots.push(root);
     act(() => {
         root.render(
-            createElement(WorkspacePaneEmptyState, {
-                onOpenProject,
-                onOpenProjects,
-                recentProjects: [],
-                ...props,
-            }),
+            createElement(WorkspacePaneEmptyState),
         );
     });
 
-    return { container, onOpenProject, onOpenProjects };
+    return { container };
 }
 
 describe("WorkspacePaneEmptyState", () => {
-    it("shows the open project CTA as the dominant action when there are no recent projects", () => {
+    it("shows only workspace shortcuts", () => {
         const { container } = renderEmptyState();
-        const cta = container.querySelector<HTMLButtonElement>(
-            'button[type="button"]',
-        );
-        expect(cta?.textContent).toContain("Open existing project");
-    });
-
-    it("renders the name of each recent project", () => {
-        const { container } = renderEmptyState({
-            recentProjects: [
-                { id: "project-1", name: "Comando" },
-                { id: "project-2", name: "Sandbox" },
-            ],
-        });
-
-        expect(container.textContent).toContain("Comando");
-        expect(container.textContent).toContain("Sandbox");
-    });
-
-    it("opens the exact project id clicked", () => {
-        const { container, onOpenProject } = renderEmptyState({
-            recentProjects: [
-                { id: "project-1", name: "Comando" },
-                { id: "project-2", name: "Sandbox" },
-            ],
-        });
-
-        const sandboxButton = Array.from(
-            container.querySelectorAll("button"),
-        ).find((button) => button.textContent?.includes("Sandbox"));
-        expect(sandboxButton).toBeTruthy();
-
-        act(() => {
-            sandboxButton?.click();
-        });
-
-        expect(onOpenProject).toHaveBeenCalledOnce();
-        expect(onOpenProject).toHaveBeenCalledWith("project-2");
-    });
-
-    it("invokes the open projects callback from the CTA", () => {
-        const { container, onOpenProjects } = renderEmptyState({
-            recentProjects: [{ id: "project-1", name: "Comando" }],
-        });
-
-        const cta = Array.from(container.querySelectorAll("button")).find(
-            (button) => button.textContent?.includes("Open existing project"),
-        );
-        expect(cta).toBeTruthy();
-
-        act(() => {
-            cta?.click();
-        });
-
-        expect(onOpenProjects).toHaveBeenCalledOnce();
+        expect(container.textContent).toContain("Open a file");
+        expect(container.textContent).not.toContain("Open existing project");
+        expect(container.querySelectorAll("button")).toHaveLength(0);
     });
 });

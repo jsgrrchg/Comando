@@ -1,0 +1,222 @@
+import { createStore } from "zustand/vanilla";
+
+import type {
+    GitWorktreeSummary,
+    ProjectSummary,
+    WorkspaceSurfacePoolDiagnostics,
+    WorkspaceCatalogSnapshot,
+} from "@shared/ipc";
+import type {
+    NativeDurableWorkspaceLifecycle,
+    NativeDurableWorkspaceSummary,
+    NativeWorkspaceDeletionJournalEntry,
+    NativeWorkspaceRecoveryLayoutSummary,
+} from "@shared/native-backend";
+import {
+    getWorkspaceScopeKey,
+    normalizeWorkspaceWorktreeId,
+} from "@shared/workspace-context";
+
+export interface WorkspaceCatalogEntry {
+    readonly lastActivatedAt: string | null;
+    readonly lifecycle: NativeDurableWorkspaceLifecycle;
+    readonly projectId: string;
+    readonly revision: number | null;
+    readonly runtimeOwnerId: string | null;
+    readonly scopeKey: string;
+    readonly source: "durable" | "registry";
+    readonly worktreeId: string | null;
+}
+
+interface WorkspaceCatalogState {
+    readonly entriesByScopeKey: Readonly<Record<string, WorkspaceCatalogEntry>>;
+    readonly error: string | null;
+    readonly recoveryByScopeKey: Readonly<
+        Record<string, readonly NativeWorkspaceRecoveryLayoutSummary[]>
+    >;
+    readonly pendingDeletionByScopeKey: Readonly<
+        Record<string, NativeWorkspaceDeletionJournalEntry>
+    >;
+    readonly status: "idle" | "loading" | "ready" | "error";
+    readonly surfaceDiagnostics: WorkspaceSurfacePoolDiagnostics | null;
+    replaceDurable: (
+        entries: readonly NativeDurableWorkspaceSummary[],
+    ) => void;
+    mergeRegistry: (
+        projects: readonly ProjectSummary[],
+        worktreesByProject: Readonly<
+            Record<string, readonly GitWorktreeSummary[]>
+        >,
+    ) => void;
+    setError: (error: string) => void;
+    setLoading: () => void;
+    setRecoveryLayouts: (
+        layouts: readonly NativeWorkspaceRecoveryLayoutSummary[],
+    ) => void;
+    setPendingDeletions: (
+        operations: readonly NativeWorkspaceDeletionJournalEntry[],
+    ) => void;
+    setSurfaceDiagnostics: (
+        diagnostics: WorkspaceSurfacePoolDiagnostics,
+    ) => void;
+}
+
+export const workspaceCatalogStore = createStore<WorkspaceCatalogState>(
+    (set) => ({
+        entriesByScopeKey: {},
+        error: null,
+        recoveryByScopeKey: {},
+        pendingDeletionByScopeKey: {},
+        status: "idle",
+        surfaceDiagnostics: null,
+        replaceDurable: (entries) => {
+            set((state) => {
+                const entriesByScopeKey = Object.fromEntries(
+                    Object.values(state.entriesByScopeKey)
+                        .filter((entry) => entry.source === "registry")
+                        .map((entry) => [entry.scopeKey, entry]),
+                );
+                for (const entry of entries) {
+                    entriesByScopeKey[entry.scopeKey] = {
+                        lastActivatedAt: entry.lastActivatedAt,
+                        lifecycle: entry.lifecycle,
+                        projectId: entry.projectId,
+                        revision: entry.revision,
+                        runtimeOwnerId: entry.runtimeOwnerId,
+                        scopeKey: entry.scopeKey,
+                        source: "durable",
+                        worktreeId: entry.worktreeId,
+                    } satisfies WorkspaceCatalogEntry;
+                }
+                return {
+                    entriesByScopeKey,
+                    error: null,
+                    status: "ready",
+                };
+            });
+        },
+        mergeRegistry: (projects, worktreesByProject) => {
+            set((state) => {
+                const entriesByScopeKey = Object.fromEntries(
+                    Object.values(state.entriesByScopeKey)
+                        .filter((entry) => entry.source !== "registry")
+                        .map((entry) => [entry.scopeKey, entry]),
+                );
+                const addScope = (
+                    projectId: string,
+                    worktreeId: string | null,
+                ) => {
+                    const normalizedWorktreeId = normalizeWorkspaceWorktreeId(
+                        projectId,
+                        worktreeId,
+                    );
+                    const scopeKey = getWorkspaceScopeKey(
+                        projectId,
+                        normalizedWorktreeId,
+                    );
+                    entriesByScopeKey[scopeKey] ??= {
+                        lastActivatedAt: null,
+                        lifecycle: "active",
+                        projectId,
+                        revision: null,
+                        runtimeOwnerId: null,
+                        scopeKey,
+                        source: "registry",
+                        worktreeId: normalizedWorktreeId,
+                    };
+                };
+
+                for (const project of projects) {
+                    addScope(project.id, null);
+                    for (const worktree of worktreesByProject[project.id] ?? []) {
+                        if (!worktree.isPrimary) {
+                            addScope(project.id, worktree.id);
+                        }
+                    }
+                }
+
+                return { entriesByScopeKey };
+            });
+        },
+        setError: (error) => set({ error, status: "error" }),
+        setLoading: () => set({ error: null, status: "loading" }),
+        setRecoveryLayouts: (layouts) => {
+            const recoveryByScopeKey: Record<
+                string,
+                NativeWorkspaceRecoveryLayoutSummary[]
+            > = {};
+            for (const layout of layouts) {
+                (recoveryByScopeKey[layout.scopeKey] ??= []).push(layout);
+            }
+            set({ recoveryByScopeKey });
+        },
+        setPendingDeletions: (operations) => {
+            set({
+                pendingDeletionByScopeKey: Object.fromEntries(
+                    operations
+                        .filter(
+                            (operation) =>
+                                operation.kind === "delete_worktree" &&
+                                (operation.status === "checkout_deleted" ||
+                                    operation.status === "purging" ||
+                                    (operation.status === "failed" &&
+                                        !operation.errorCode?.startsWith(
+                                            "pre_checkout:",
+                                        ))),
+                        )
+                        .map((operation) => [operation.scopeKey, operation]),
+                ),
+            });
+        },
+        setSurfaceDiagnostics: (surfaceDiagnostics) =>
+            set({ surfaceDiagnostics }),
+    }),
+);
+
+export function resetWorkspaceCatalogStoreForTests(): void {
+    workspaceCatalogStore.setState({
+        entriesByScopeKey: {},
+        error: null,
+        recoveryByScopeKey: {},
+        pendingDeletionByScopeKey: {},
+        status: "idle",
+        surfaceDiagnostics: null,
+    });
+}
+
+interface DurableWorkspaceCatalogApi {
+    getWorkspaceCatalog: () => Promise<WorkspaceCatalogSnapshot>;
+    getWorkspaceSurfaceDiagnostics: () => Promise<WorkspaceSurfacePoolDiagnostics>;
+}
+
+export async function refreshDurableWorkspaceCatalog(
+    api: DurableWorkspaceCatalogApi,
+): Promise<void> {
+    const store = workspaceCatalogStore.getState();
+    store.setLoading();
+    try {
+        const [catalog, diagnostics] = await Promise.all([
+            api.getWorkspaceCatalog(),
+            api.getWorkspaceSurfaceDiagnostics(),
+        ]);
+        workspaceCatalogStore.getState().replaceDurable(catalog.workspaces);
+        workspaceCatalogStore
+            .getState()
+            .setRecoveryLayouts(catalog.recoveryLayouts);
+        workspaceCatalogStore
+            .getState()
+            .setPendingDeletions(catalog.pendingDeletions);
+        workspaceCatalogStore
+            .getState()
+            .setSurfaceDiagnostics(diagnostics);
+    } catch (error) {
+        workspaceCatalogStore
+            .getState()
+            .setError(
+                error instanceof Error
+                    ? error.message
+                    : "Could not load the workspace catalog.",
+            );
+        throw error;
+    }
+}

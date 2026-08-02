@@ -19,6 +19,13 @@ export function resolveProjectContextWorktreeId(
     );
 }
 
+export function resolveCommittedProjectWorktreeId(
+    projectId: string,
+    contextWorktreeId: string | null,
+): string {
+    return contextWorktreeId ?? getPrimaryWorktreeId(projectId);
+}
+
 export function normalizeGitWorktreeIdForContext(
     projectId: string,
     worktreeId: string | null,

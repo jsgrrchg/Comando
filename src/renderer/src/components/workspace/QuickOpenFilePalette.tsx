@@ -1,5 +1,6 @@
 import {
     useEffect,
+    useId,
     useRef,
     type KeyboardEventHandler,
     type MouseEvent,
@@ -9,6 +10,7 @@ import { createPortal } from "react-dom";
 import { FileTypeIcon } from "@renderer/components/icons/FileTypeIcon";
 
 import type { ProjectQuickOpenMatch } from "@renderer/app/projects/quick-open";
+import { useModalFocusScope } from "@renderer/components/accessibility/useModalFocusScope";
 
 interface QuickOpenFilePaletteProps {
     readonly loading: boolean;
@@ -37,21 +39,18 @@ export function QuickOpenFilePalette({
     results,
     selectedIndex,
 }: QuickOpenFilePaletteProps) {
+    const id = useId();
+    const backdropRef = useRef<HTMLDivElement | null>(null);
+    const dialogRef = useRef<HTMLDivElement | null>(null);
     const inputRef = useRef<HTMLInputElement | null>(null);
     const listRef = useRef<HTMLDivElement | null>(null);
-
-    useEffect(() => {
-        if (!open) {
-            return;
-        }
-
-        const frameId = window.requestAnimationFrame(() => {
-            inputRef.current?.focus();
-            inputRef.current?.select();
-        });
-
-        return () => window.cancelAnimationFrame(frameId);
-    }, [open]);
+    useModalFocusScope({
+        active: open,
+        containerRef: dialogRef,
+        initialFocusRef: inputRef,
+        modalRootRef: backdropRef,
+        onDismiss: onClose,
+    });
 
     useEffect(() => {
         if (!open) {
@@ -68,9 +67,14 @@ export function QuickOpenFilePalette({
         return null;
     }
 
+    const listboxId = `${id}-listbox`;
+    const selectedOptionId = results[selectedIndex]
+        ? `${id}-option-${selectedIndex}`
+        : undefined;
+
     return createPortal(
         <div
-            className="app-no-drag fixed inset-0 z-10030 flex items-start justify-center px-5 pt-[min(12vh,88px)]"
+            className="shell-modal-backdrop app-no-drag fixed inset-0 z-10030 flex items-start justify-center px-5 pt-[min(12vh,88px)]"
             onMouseDown={(event) => {
                 if (event.target === event.currentTarget) {
                     onClose();
@@ -81,9 +85,14 @@ export function QuickOpenFilePalette({
                     "color-mix(in srgb, var(--color-bg-primary) 72%, transparent)",
                 backdropFilter: "blur(10px)",
             }}
+            ref={backdropRef}
         >
             <div
+                aria-label="Quick open file"
+                aria-modal="true"
                 className="app-no-drag flex w-full max-w-155 flex-col overflow-hidden rounded-xl border"
+                ref={dialogRef}
+                role="dialog"
                 style={{
                     background: "var(--color-bg-elevated)",
                     borderColor:
@@ -91,8 +100,14 @@ export function QuickOpenFilePalette({
                     boxShadow:
                         "0 24px 80px rgba(0, 0, 0, 0.22), 0 0 0 1px color-mix(in srgb, var(--color-border) 40%, transparent)",
                 }}
+                tabIndex={-1}
             >
                 <input
+                    aria-activedescendant={selectedOptionId}
+                    aria-autocomplete="list"
+                    aria-controls={listboxId}
+                    aria-expanded="true"
+                    aria-label="Search project files"
                     autoCapitalize="off"
                     autoComplete="off"
                     autoCorrect="off"
@@ -105,6 +120,7 @@ export function QuickOpenFilePalette({
                             : "Search files by name or path…"
                     }
                     ref={inputRef}
+                    role="combobox"
                     spellCheck={false}
                     style={{
                         borderColor:
@@ -115,8 +131,12 @@ export function QuickOpenFilePalette({
                 />
 
                 <div
+                    aria-busy={loading}
+                    aria-label="Matching project files"
                     className="shell-scrollbar max-h-[min(56vh,480px)] overflow-y-auto py-1"
+                    id={listboxId}
                     ref={listRef}
+                    role="listbox"
                 >
                     {results.length > 0 ? (
                         results.map((item, index) => {
@@ -124,8 +144,10 @@ export function QuickOpenFilePalette({
 
                             return (
                                 <button
+                                    aria-selected={isSelected}
                                     className="flex w-full items-center gap-2.5 px-3.5 py-1.25 text-left"
                                     data-quick-open-selected={isSelected}
+                                    id={`${id}-option-${index}`}
                                     key={item.relativePath}
                                     onClick={() => onSelect(item)}
                                     onMouseEnter={() => onHoverIndex(index)}
@@ -136,6 +158,7 @@ export function QuickOpenFilePalette({
                                             () => onHoverIndex(index),
                                         )
                                     }
+                                    role="option"
                                     style={{
                                         background: isSelected
                                             ? "color-mix(in srgb, var(--color-accent) 14%, var(--color-bg-primary))"
@@ -177,7 +200,9 @@ export function QuickOpenFilePalette({
                             "color-mix(in srgb, var(--color-border) 50%, transparent)",
                     }}
                 >
-                    <span>{loading ? "Searching…" : ""}</span>
+                    <span aria-live="polite">
+                        {loading ? "Searching…" : ""}
+                    </span>
                     <span>↑↓ Navigate · Enter Open · Esc Close</span>
                 </div>
             </div>

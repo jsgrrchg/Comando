@@ -1,0 +1,38 @@
+{
+  "applied": true,
+  "diagnostics": {
+    "migrationId": "2026-07-31-workspaces-v3-to-v4",
+    "status": "complete",
+    "sourceChecksum": "d7a01ed700868a89b719767b19823a67186e08444b551cef4829c1677d014e41",
+    "sourceBackupRef": "workspace-migrations/v3-d7a01ed700868a89b719767b19823a67186e08444b551cef4829c1677d014e41.json",
+    "applicationVersion": "0.2.1",
+    "sourceWindowCount": 1,
+    "candidateCount": 1,
+    "workspaceCount": 1,
+    "recoveryLayoutCount": 0,
+    "normalizationDroppedContextCount": 0,
+    "normalizationRepairedWindowCount": 1,
+    "activeScopeKey": "project-a::__primary__",
+    "activeSourceWindowId": "window-a",
+    "layoutSources": [
+      {
+        "scopeKey": "project-a::__primary__",
+        "sourceWindowId": "window-a"
+      }
+    ],
+    "recoverySources": [],
+    "historicalLayoutCap": 30,
+    "prunedLayoutsPossible": true,
+    "limitation": "Legacy versions retained at most 30 closed layouts per window; layouts pruned before this migration cannot be recovered.",
+    "startedAt": "2026-07-31T00:00:00Z",
+    "completedAt": "2026-07-31T00:00:01Z",
+    "rollbackAt": null
+  },
+  "navigation": {
+    "activeScopeKey": "project-a::__primary__",
+    "recentScopeKeys": ["project-a::__primary__"],
+    "shellSnapshot": {},
+    "revision": 1,
+    "updatedAt": "2026-07-31T00:00:01Z"
+  }
+}

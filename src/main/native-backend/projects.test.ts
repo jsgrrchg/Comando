@@ -224,16 +224,20 @@ describe("createNativeProjectRegistryStore", () => {
             store.getProjectAppDataSummary("project-1"),
         ).resolves.toEqual({
             chatSessionCount: 1,
+            durableWorkspaceCount: 1,
             projectSettingsCount: 1,
             recentProjectCount: 1,
+            recoveryLayoutCount: 1,
             workspaceLayoutCount: 1,
             workspaceSessionCount: 1,
             workspaceTabCount: 1,
         });
         await expect(store.clearProjectAppData("project-1")).resolves.toEqual({
             chatSessionCount: 1,
+            durableWorkspaceCount: 1,
             projectSettingsCount: 1,
             recentProjectCount: 1,
+            recoveryLayoutCount: 1,
             workspaceLayoutCount: 1,
             workspaceSessionCount: 1,
             workspaceTabCount: 4,
@@ -365,8 +369,10 @@ type NativeWorktreeFixture = {
 
 type NativeAppDataSummaryFixture = {
     readonly chatSessionCount: number;
+    readonly durableWorkspaceCount: number;
     readonly projectSettingsCount: number;
     readonly recentProjectCount: number;
+    readonly recoveryLayoutCount: number;
     readonly workspaceLayoutCount: number;
     readonly workspaceSessionCount: number;
     readonly workspaceTabCount: number;
@@ -407,8 +413,10 @@ function nativeAppDataSummary(
 ): NativeAppDataSummaryFixture {
     return {
         chatSessionCount: overrides.chatSessionCount ?? 1,
+        durableWorkspaceCount: overrides.durableWorkspaceCount ?? 1,
         projectSettingsCount: overrides.projectSettingsCount ?? 1,
         recentProjectCount: overrides.recentProjectCount ?? 1,
+        recoveryLayoutCount: overrides.recoveryLayoutCount ?? 1,
         workspaceLayoutCount: overrides.workspaceLayoutCount ?? 1,
         workspaceSessionCount: overrides.workspaceSessionCount ?? 1,
         workspaceTabCount: overrides.workspaceTabCount ?? 1,

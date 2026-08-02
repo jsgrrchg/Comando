@@ -10,7 +10,8 @@ import {
     type WebContents,
 } from "electron";
 
-import type { PersistedWindowState, SettingsWindowCategory } from "@shared/ipc";
+import type { PersistedWindowState } from "@shared/ipc";
+import { IPC_EVENTS } from "@shared/ipc";
 
 import { appIdentity } from "./app-runtime";
 import { debugBenignError } from "./observability/logging";
@@ -18,10 +19,10 @@ import { debugBenignError } from "./observability/logging";
 const rootDir = fileURLToPath(new URL("../../", import.meta.url));
 const MIN_VISIBLE_RESTORE_OVERLAP = 80;
 
-export const DESKTOP_TITLE_BAR_HEIGHT = 40;
-export const MAC_MAIN_TRAFFIC_LIGHT_POSITION = { x: 14, y: 12 };
+export const DESKTOP_TITLE_BAR_HEIGHT = 32;
+export const MAC_MAIN_TRAFFIC_LIGHT_POSITION = { x: 14, y: 8 };
 
-type WindowKind = "main" | "settings";
+type WindowKind = "main";
 
 const nativeTitleBarOverlayWindows = new WeakSet<BrowserWindow>();
 
@@ -168,12 +169,8 @@ function createBaseWindow(options: {
         nativeTitleBarOverlayWindows.add(window);
     }
 
-    window.webContents.setWindowOpenHandler(({ url }) => {
-        if (openExternalHttpUrl(url)) {
-            return { action: "deny" };
-        }
-
-        return { action: "deny" };
+    installWindowOpenHandler(window.webContents, (url) => {
+        window.webContents.send(IPC_EVENTS.internalNavigationRequested, url);
     });
 
     if (trafficLightPosition) {
@@ -233,6 +230,32 @@ export function getRendererPreloadPath(): string {
     return path.join(rootDir, "out/preload/index.cjs");
 }
 
+export function installWindowOpenHandler(
+    webContents: WebContents,
+    onInternalNavigation: (url: string) => void,
+): void {
+    if (typeof webContents.setWindowOpenHandler !== "function") {
+        return;
+    }
+    webContents.setWindowOpenHandler(({ url }) => {
+        if (openExternalHttpUrl(url)) {
+            return { action: "deny" };
+        }
+        if (isInternalAppUrl(url)) {
+            onInternalNavigation(url);
+        }
+        return { action: "deny" };
+    });
+}
+
+function isInternalAppUrl(url: string): boolean {
+    try {
+        return new URL(url).protocol === "comando:";
+    } catch {
+        return false;
+    }
+}
+
 function openExternalHttpUrl(url: string): boolean {
     try {
         const parsedUrl = new URL(url);
@@ -262,37 +285,6 @@ export function createMainWindow(
         title: appIdentity.windowTitle,
         transparencyEnabled,
         width: 1480,
-    });
-}
-
-export function createSettingsWindow(
-    projectId: string | null = null,
-    initialCategory: SettingsWindowCategory | null = null,
-    transparencyEnabled = true,
-): BrowserWindow {
-    const searchParams = new URLSearchParams({
-        window: "settings",
-    });
-
-    if (projectId) {
-        searchParams.set("projectId", projectId);
-    }
-
-    if (initialCategory) {
-        searchParams.set("category", initialCategory);
-    }
-
-    return createBaseWindow({
-        backgroundColor: "#eef0f3",
-        height: 720,
-        kind: "settings",
-        minHeight: 560,
-        minWidth: 780,
-        search: `?${searchParams.toString()}`,
-        title: `${appIdentity.name} Settings`,
-        trafficLightPosition: { x: 14, y: 14 },
-        transparencyEnabled,
-        width: 980,
     });
 }
 

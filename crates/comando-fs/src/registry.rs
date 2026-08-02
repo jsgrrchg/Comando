@@ -21,6 +21,14 @@ pub struct ProjectRoot {
     pub root_path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitWatchScope {
+    pub root: ProjectRoot,
+    pub git_dir_path: PathBuf,
+    pub common_dir_path: PathBuf,
+    pub is_primary: bool,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct ProjectRootRegistry {
     projects: Vec<NativeProjectSummary>,
@@ -134,8 +142,12 @@ impl ProjectFsService {
         self.registry.sync_list_result(state);
     }
 
-    pub fn sync_watchers_from_registry(&mut self) -> Result<(), FsError> {
-        self.watcher.sync_roots(self.registry.roots())
+    pub fn sync_watchers_from_registry(
+        &mut self,
+        git_scopes: Vec<GitWatchScope>,
+    ) -> Result<(), FsError> {
+        self.watcher
+            .sync_topology(self.registry.roots(), git_scopes)
     }
 
     pub fn resolve_root(
@@ -144,6 +156,10 @@ impl ProjectFsService {
         worktree_id: Option<&WorktreeId>,
     ) -> Result<ProjectRoot, FsError> {
         self.registry.resolve(project_id, worktree_id)
+    }
+
+    pub fn roots(&self) -> Vec<ProjectRoot> {
+        self.registry.roots()
     }
 
     pub fn write_tracker(&self) -> WriteTracker {

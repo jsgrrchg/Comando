@@ -138,8 +138,10 @@ export interface SettingsAiChatState {
 }
 
 export interface SettingsWindowProps {
+    readonly embedded?: boolean;
     readonly initialCategory?: SettingsWindowCategory;
     readonly initialCategoryRequestId?: number;
+    readonly onClose?: () => void;
     readonly appAppearance: SettingsThemeControlState;
     readonly appEditor: SettingsEditorControlState;
     readonly terminal: SettingsTerminalState;

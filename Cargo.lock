@@ -462,10 +462,13 @@ version = "0.2.1"
 dependencies = [
  "comando-types",
  "rusqlite",
+ "semver",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "time",
+ "uuid",
 ]
 
 [[package]]

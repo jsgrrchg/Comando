@@ -62,6 +62,7 @@ interface WorkspaceTerminalRuntimeStoreActions {
         readonly sessionId: string;
         readonly exitCode: number | null;
     }) => void;
+    readonly resyncSessions: (sessions: readonly TerminalSession[]) => void;
 }
 
 export type WorkspaceTerminalRuntimeStore =
@@ -791,6 +792,38 @@ export const useTerminalRuntimeStore = create<WorkspaceTerminalRuntimeStore>(
             if (!matchedRuntime) {
                 rememberPendingExit(sessionId, exitCode);
             }
+        },
+
+        resyncSessions: (sessions) => {
+            const sessionsByTerminalId = new Map(
+                sessions.flatMap((session) =>
+                    session.terminalId
+                        ? ([[session.terminalId, session]] as const)
+                        : [],
+                ),
+            );
+            set((state) => ({
+                runtimesById: Object.fromEntries(
+                    Object.entries(state.runtimesById).map(
+                        ([terminalId, runtime]) => {
+                            const session = sessionsByTerminalId.get(terminalId);
+                            if (!session) {
+                                return [terminalId, runtime];
+                            }
+                            return [
+                                terminalId,
+                                {
+                                    ...runtime,
+                                    busy: false,
+                                    launchError: null,
+                                    sessionId: session.sessionId,
+                                    snapshot: terminalSessionToSnapshot(session),
+                                },
+                            ];
+                        },
+                    ),
+                ),
+            }));
         },
     }),
 );

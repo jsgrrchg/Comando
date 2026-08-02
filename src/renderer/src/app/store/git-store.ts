@@ -412,7 +412,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             input.projectId,
             result.snapshot.currentWorktreeId ?? input.worktreeId ?? null,
         );
-        refreshCachedWorktreeDiff(get, input.projectId, result.worktreeId);
         return {
             branchName: result.branchName,
             commitSha: result.commitSha,
@@ -442,11 +441,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        refreshCachedWorktreeDiff(
-            get,
-            projectId,
-            snapshot.currentWorktreeId ?? worktreeId,
-        );
         return snapshot;
     },
 
@@ -1415,11 +1409,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        refreshCachedWorktreeDiff(
-            get,
-            projectId,
-            snapshot.currentWorktreeId ?? worktreeId,
-        );
         return snapshot;
     },
 
@@ -1523,11 +1512,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        refreshCachedWorktreeDiff(
-            get,
-            projectId,
-            snapshot.currentWorktreeId ?? worktreeId,
-        );
         return snapshot;
     },
 }));
@@ -1825,21 +1809,6 @@ function collectWorktreeDiffFileIds(
     return result.sections.flatMap((section) =>
         section.files.map((file) => buildGitDiffFileId(file.scope, file.path)),
     );
-}
-
-function refreshCachedWorktreeDiff(
-    get: () => GitStoreState,
-    projectId: string,
-    worktreeId: string | null,
-): void {
-    // Only the visible resource refreshes immediately; the other cache remains stale.
-    const contextKey = getContextKey(projectId, worktreeId);
-    if (
-        get().activeDiffModesByContext[contextKey] === "worktree" &&
-        hasOwn(get().worktreeDiffsByContext, contextKey)
-    ) {
-        void get().refreshWorktreeDiff(projectId, worktreeId);
-    }
 }
 
 function hasOwn<T extends object>(

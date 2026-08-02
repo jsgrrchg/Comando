@@ -115,8 +115,10 @@ pub struct NativeProjectRelocateResult {
 #[serde(rename_all = "camelCase")]
 pub struct NativeProjectAppDataSummary {
     pub chat_session_count: u64,
+    pub durable_workspace_count: u64,
     pub project_settings_count: u64,
     pub recent_project_count: u64,
+    pub recovery_layout_count: u64,
     pub workspace_layout_count: u64,
     pub workspace_session_count: u64,
     pub workspace_tab_count: u64,

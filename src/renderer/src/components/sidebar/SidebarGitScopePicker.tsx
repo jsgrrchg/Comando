@@ -36,6 +36,9 @@ import {
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
 import {
+    requestNativeContextMenuAction,
+} from "@renderer/components/context-menu/nativeContextMenu";
+import {
     MeasuredVirtualList,
     type MeasuredVirtualListHandle,
 } from "@renderer/components/virtual/MeasuredVirtualList";
@@ -85,6 +88,15 @@ interface SidebarGitScopePickerProps {
     readonly onTitlebarKeyDown?: (
         event: ReactKeyboardEvent<HTMLButtonElement>,
     ) => void;
+    readonly onOpenWorkspace?: (
+        projectId: string,
+        worktreeId: string | null,
+        options?: { readonly emptyLayout?: boolean },
+    ) => Promise<void>;
+    readonly overlayBounds?: {
+        readonly left: number;
+        readonly width: number;
+    };
     readonly projectId: string | null;
     readonly titlebarContextKey?: string;
     readonly triggerVariant?: "sidebar" | "titlebar";
@@ -288,6 +300,8 @@ export function SidebarGitScopePicker({
     externalMenuRequest = null,
     onTitlebarKeyDown,
     onTitlebarMenuRequest,
+    onOpenWorkspace,
+    overlayBounds,
     projectId,
     title,
     titlebarContextKey,
@@ -314,6 +328,7 @@ export function SidebarGitScopePicker({
     const [itemContextMenu, setItemContextMenu] = useState<
         ContextMenuState<GitScopeContextMenuPayload> | null
     >(null);
+    const activeNativeContextMenuRef = useRef<object | null>(null);
     const [collapsedSections, setCollapsedSections] = useState<
         Record<string, boolean>
     >({});
@@ -385,7 +400,7 @@ export function SidebarGitScopePicker({
     const refreshGitHistory = useGitStore((state) => state.refreshHistory);
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const removeWorktree = useGitStore((state) => state.removeWorktree);
-    const openContext = useWorkspaceStore((state) => state.openContext);
+    const requestWorkspaceNavigation = useWorkspaceStore((state) => state.requestWorkspaceNavigation);
     const removeWorktreeTabs = useWorkspaceStore(
         (state) => state.removeWorktreeTabs,
     );
@@ -805,25 +820,51 @@ export function SidebarGitScopePicker({
                   height: Math.max(measuredHeight, defaultHeight),
                   width: defaultWidth,
               };
-        const size = clampGitScopeMenuSize(
+        const unconstrainedSize = clampGitScopeMenuSize(
             baseSize,
             {
                 x: buttonRect.left,
                 y: buttonRect.bottom + 6,
             },
         );
+        // Host overlays must stay inside the inspector because the central
+        // WebContentsView is always above host-renderer DOM in its own bounds.
+        const size = overlayBounds
+            ? {
+                  ...unconstrainedSize,
+                  width: Math.min(
+                      unconstrainedSize.width,
+                      Math.max(200, overlayBounds.width - 16),
+                  ),
+              }
+            : unconstrainedSize;
         const spaceAbove = buttonRect.top - 8;
         const spaceBelow = window.innerHeight - buttonRect.bottom - 8;
         const openAbove = spaceAbove >= size.height || spaceAbove > spaceBelow;
         const preferredY = openAbove
             ? buttonRect.top - size.height - 6
             : buttonRect.bottom + 6;
-        const safePosition = getViewportSafeMenuPosition(
+        const viewportSafePosition = getViewportSafeMenuPosition(
             buttonRect.left,
             preferredY,
             size.width,
             size.height,
         );
+        const safePosition = overlayBounds
+            ? {
+                  ...viewportSafePosition,
+                  x: Math.min(
+                      Math.max(
+                          overlayBounds.left + 8,
+                          viewportSafePosition.x,
+                      ),
+                      overlayBounds.left +
+                          overlayBounds.width -
+                          size.width -
+                          8,
+                  ),
+              }
+            : viewportSafePosition;
 
         setMenuPosition({
             height: size.height,
@@ -837,6 +878,7 @@ export function SidebarGitScopePicker({
         hasBranchCreationForm,
         hasBranchCreationQueryOffer,
         listItems.length,
+        overlayBounds,
         userMenuSize,
     ]);
 
@@ -1151,7 +1193,7 @@ export function SidebarGitScopePicker({
         setFocusIndex(-1);
     }, [query]);
 
-    const handleOpenWorktreeInNewTab = useCallback(
+    const handleActivateWorktreeWorkspace = useCallback(
         async (nextWorktreeId: string | null) => {
             if (!projectId || isBusy) {
                 return;
@@ -1181,14 +1223,16 @@ export function SidebarGitScopePicker({
             setIsBusy(true);
 
             try {
-                await openContext(projectId, normalizedWorktreeId);
+                await (onOpenWorkspace
+                    ? onOpenWorkspace(projectId, normalizedWorktreeId)
+                    : requestWorkspaceNavigation(projectId, normalizedWorktreeId));
                 setIsOpen(false);
                 setQuery("");
             } catch (error) {
                 setActionError(
                     error instanceof Error
                         ? error.message
-                        : "Could not open this worktree in a new tab.",
+                        : "Could not activate this workspace.",
                 );
             } finally {
                 setIsBusy(false);
@@ -1196,9 +1240,10 @@ export function SidebarGitScopePicker({
         },
         [
             isBusy,
+            onOpenWorkspace,
             projectId,
             snapshot?.worktrees,
-            openContext,
+            requestWorkspaceNavigation,
             worktreeId,
         ],
     );
@@ -1236,7 +1281,7 @@ export function SidebarGitScopePicker({
                     worktreeId ?? snapshot?.currentWorktreeId ?? null,
                 )
             ) {
-                await handleOpenWorktreeInNewTab(linkedWorktree.id);
+                await handleActivateWorktreeWorkspace(linkedWorktree.id);
                 return;
             }
 
@@ -1294,7 +1339,7 @@ export function SidebarGitScopePicker({
         [
             branches,
             checkoutBranch,
-            handleOpenWorktreeInNewTab,
+            handleActivateWorktreeWorkspace,
             isBusy,
             projectId,
             refreshProjectTree,
@@ -1333,9 +1378,13 @@ export function SidebarGitScopePicker({
                     worktreeId: worktreeId ?? snapshot?.currentWorktreeId ?? null,
                 });
 
-                await openContext(projectId, createdWorktree.id, {
-                    emptyLayout: true,
-                });
+                await (onOpenWorkspace
+                    ? onOpenWorkspace(projectId, createdWorktree.id, {
+                          emptyLayout: true,
+                      })
+                    : requestWorkspaceNavigation(projectId, createdWorktree.id, {
+                          emptyLayout: true,
+                      }));
 
                 setIsOpen(false);
                 setQuery("");
@@ -1353,7 +1402,8 @@ export function SidebarGitScopePicker({
             branches,
             createWorktree,
             isBusy,
-            openContext,
+            onOpenWorkspace,
+            requestWorkspaceNavigation,
             project,
             projectId,
             snapshot?.currentWorktreeId,
@@ -1582,35 +1632,6 @@ export function SidebarGitScopePicker({
             snapshot?.currentWorktreeId,
             worktreeId,
         ],
-    );
-
-    const handleOpenWorktreeInNewWindow = useCallback(
-        async (targetWorktree: GitWorktreeSummary) => {
-            if (!projectId || isBusy) {
-                return;
-            }
-
-            setActionError(null);
-            setIsBusy(true);
-
-            try {
-                await getComandoApi().openProjectWindow({
-                    projectId,
-                    worktreeId: targetWorktree.id,
-                });
-                setIsOpen(false);
-                setQuery("");
-            } catch (error) {
-                setActionError(
-                    error instanceof Error
-                        ? error.message
-                        : "Could not open this worktree in a new window.",
-                );
-            } finally {
-                setIsBusy(false);
-            }
-        },
-        [isBusy, projectId],
     );
 
     const handleRevealWorktreeInFinder = useCallback(
@@ -1846,9 +1867,9 @@ export function SidebarGitScopePicker({
             if (linkedWorktree) {
                 entries.push({
                     action: () =>
-                        void handleOpenWorktreeInNewWindow(linkedWorktree),
+                        void handleActivateWorktreeWorkspace(linkedWorktree.id),
                     disabled: isBusy,
-                    label: "Open Worktree in New Window",
+                    label: "Activate Worktree",
                 });
             }
 
@@ -1894,15 +1915,9 @@ export function SidebarGitScopePicker({
         return [
             {
                 action: () =>
-                    void handleOpenWorktreeInNewTab(row.worktree.id),
+                    void handleActivateWorktreeWorkspace(row.worktree.id),
                 disabled: isBusy || row.isActive,
-                label: "Open in New Tab",
-            },
-            {
-                action: () =>
-                    void handleOpenWorktreeInNewWindow(row.worktree),
-                disabled: isBusy,
-                label: "Open in New Window",
+                label: "Activate Workspace",
             },
             {
                 action: () => void handleRevealWorktreeInFinder(row.worktree),
@@ -1926,11 +1941,10 @@ export function SidebarGitScopePicker({
         handleCreateWorktreeFromBranch,
         handleDeleteLocalBranch,
         handleDeleteRemoteBranch,
-        handleOpenWorktreeInNewWindow,
+        handleActivateWorktreeWorkspace,
         handleRemoveWorktree,
         handleRevealWorktreeInFinder,
         handleSelectBranch,
-        handleOpenWorktreeInNewTab,
         isBusy,
         itemContextMenu,
         openBranchCreationForm,
@@ -1939,6 +1953,31 @@ export function SidebarGitScopePicker({
         worktreeId,
         worktreeRowById,
     ]);
+
+    useEffect(() => {
+        if (!overlayBounds || !itemContextMenu) {
+            activeNativeContextMenuRef.current = null;
+            return;
+        }
+        if (activeNativeContextMenuRef.current === itemContextMenu) {
+            return;
+        }
+        activeNativeContextMenuRef.current = itemContextMenu;
+        void (async () => {
+            let action: (() => void) | null = null;
+            try {
+                action = await requestNativeContextMenuAction(
+                    contextMenuEntries,
+                    itemContextMenu,
+                );
+            } catch {
+                // Native dismissal is also the fallback for menu IPC errors.
+            } finally {
+                setItemContextMenu(null);
+            }
+            if (action) queueMicrotask(action);
+        })();
+    }, [contextMenuEntries, itemContextMenu, overlayBounds]);
 
     const handleSelectFocused = useCallback(() => {
         const item = flatItems[focusIndex];
@@ -1953,14 +1992,14 @@ export function SidebarGitScopePicker({
         } else if (item.kind === "branch") {
             void handleSelectBranch(item.branch);
         } else {
-            void handleOpenWorktreeInNewTab(item.worktree.id);
+            void handleActivateWorktreeWorkspace(item.worktree.id);
         }
     }, [
         defaultBranchCreationBase,
         flatItems,
         focusIndex,
         handleSelectBranch,
-        handleOpenWorktreeInNewTab,
+        handleActivateWorktreeWorkspace,
         openBranchCreationForm,
     ]);
 
@@ -2239,7 +2278,7 @@ export function SidebarGitScopePicker({
                             isBusy
                                 ? undefined
                                 : () =>
-                                      void handleOpenWorktreeInNewTab(
+                                      void handleActivateWorktreeWorkspace(
                                           row.worktree.id,
                                       )
                         }
@@ -2267,7 +2306,7 @@ export function SidebarGitScopePicker({
             handleBranchContextMenu,
             handleMenuTriggerClick,
             handleSelectBranch,
-            handleOpenWorktreeInNewTab,
+            handleActivateWorktreeWorkspace,
             handleWorktreeContextMenu,
             isBusy,
             toggleSection,
@@ -2570,7 +2609,7 @@ export function SidebarGitScopePicker({
                   )
                 : null}
 
-            {itemContextMenu ? (
+            {itemContextMenu && !overlayBounds ? (
                 <ContextMenu
                     entries={contextMenuEntries}
                     menu={itemContextMenu}

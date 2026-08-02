@@ -61,6 +61,10 @@ import {
     openGitHubWebUrl,
 } from "@renderer/components/workspace/GitHubWorkspacePrimitives";
 import { GitHubLabelPicker } from "@renderer/components/workspace/GitHubLabelPicker";
+import {
+    useRestorableSidebarScroll,
+    type SidebarScrollPositionStoreRef,
+} from "./useRestorableSidebarScroll";
 
 import {
     emitSidebarGitHubDrag,
@@ -235,6 +239,8 @@ export function SidebarGitHubPanel({
     onOpenSettings,
     onRequestWorkspaceAction,
     projectId,
+    scrollKey,
+    scrollPositionsRef,
     selectionResetSignal = 0,
     workspaceContextKey,
     worktreeId,
@@ -247,10 +253,19 @@ export function SidebarGitHubPanel({
         request: WorkspaceSurfaceActionRequest,
     ) => void;
     readonly projectId: string | null;
+    readonly scrollKey?: string;
+    readonly scrollPositionsRef?: SidebarScrollPositionStoreRef;
     readonly selectionResetSignal?: number;
     readonly workspaceContextKey?: string | null;
     readonly worktreeId: string | null;
 }) {
+    const localScrollPositionsRef = useRef(new Map<string, number>());
+    const { handleScroll, setScrollElement } = useRestorableSidebarScroll({
+        scrollKey:
+            scrollKey ??
+            `${kind}:${workspaceContextKey ?? projectId ?? "unavailable"}`,
+        scrollPositionsRef: scrollPositionsRef ?? localScrollPositionsRef,
+    });
     const snapshot = useGitStore((state) =>
         projectId
             ? getProjectSnapshot(state.snapshots, projectId, worktreeId)
@@ -372,7 +387,10 @@ export function SidebarGitHubPanel({
     const openGitHubPullRequestTab = useWorkspaceStore(
         (state) => state.openGitHubPullRequestTab,
     );
-    const sidebarWidth = useShellStore((state) => state.leftWidth);
+    const inspectorWidth = useShellStore(
+        (state) => state.responsive.right.width,
+    );
+    const viewportWidth = useShellStore((state) => state.viewportWidth);
     const [githubContextMenu, setGitHubContextMenu] =
         useState<ContextMenuState<SidebarGitHubContextMenuPayload> | null>(null);
     const activeNativeContextMenuRef =
@@ -1285,7 +1303,11 @@ export function SidebarGitHubPanel({
                 </div>
             </div>
 
-            <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 py-2">
+            <div
+                ref={setScrollElement}
+                className="shell-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 py-2"
+                onScroll={handleScroll}
+            >
                 {error ? (
                     <div className="px-1 pb-2">
                         <GitHubErrorState>{error}</GitHubErrorState>
@@ -1387,9 +1409,10 @@ export function SidebarGitHubPanel({
                     item={activeLabelPickerItem}
                     key={`${kind}:${activeLabelPickerItem.number}`}
                     labels={labels}
+                    leftBoundary={viewportWidth - inspectorWidth + 8}
                     onClose={() => setLabelPicker(null)}
                     onSave={(labelNames) => void handleSaveLabels(labelNames)}
-                    rightBoundary={sidebarWidth}
+                    rightBoundary={viewportWidth}
                 />
             ) : null}
         </div>

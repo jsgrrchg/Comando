@@ -4,11 +4,13 @@ import type { BrowserWindow, WebContents } from "electron";
 import { IPC_EVENTS } from "@shared/ipc";
 import type {
     WindowContextSnapshot,
-    WorkspaceNavigationSnapshot,
+    WorkspaceLayoutSnapshot,
+    WorkspaceSurfaceEnvironmentDiagnostic,
+    WorkspaceSurfaceRegistrySnapshot,
     WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceDragEvent,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
-import { createWindowWorkspaceRestoreRecord } from "@shared/workspace-restore";
 
 const electronMocks = vi.hoisted(() => {
     let nextWebContentsId = 100;
@@ -19,22 +21,42 @@ const electronMocks = vi.hoisted(() => {
         readonly focus = vi.fn();
         readonly send = vi.fn();
         readonly setZoomFactor = vi.fn();
+        readonly listeners = new Map<string, Set<(...args: unknown[]) => void>>();
         destroyed = false;
 
         readonly close = vi.fn(() => {
             this.destroyed = true;
+            this.emit("destroyed");
         });
 
         isDestroyed(): boolean {
             return this.destroyed;
         }
 
-        on(): this {
+        getOSProcessId(): number {
+            return this.id + 1_000;
+        }
+
+        on(event: string, listener: (...args: unknown[]) => void): this {
+            const listeners = this.listeners.get(event) ?? new Set();
+            listeners.add(listener);
+            this.listeners.set(event, listeners);
             return this;
         }
 
-        once(): this {
+        once(event: string, listener: (...args: unknown[]) => void): this {
+            const onceListener = (...args: unknown[]) => {
+                this.listeners.get(event)?.delete(onceListener);
+                listener(...args);
+            };
+            this.on(event, onceListener);
             return this;
+        }
+
+        emit(event: string, ...args: unknown[]): void {
+            for (const listener of [...(this.listeners.get(event) ?? [])]) {
+                listener(...args);
+            }
         }
     }
 
@@ -59,13 +81,31 @@ const electronMocks = vi.hoisted(() => {
 });
 
 vi.mock("electron", () => ({
+    app: {
+        getAppMetrics: () =>
+            electronMocks.views.map((view) => ({
+                cpu: { idleWakeupsPerSecond: 0, percentCPUUsage: 0 },
+                creationTime: 0,
+                memory: {
+                    peakWorkingSetSize: 96_000,
+                    privateBytes: 64_000,
+                    workingSetSize: 80_000,
+                },
+                pid: view.webContents.getOSProcessId(),
+                type: "Tab",
+            })),
+    },
     BrowserWindow: class {},
+    powerMonitor: {
+        isOnBatteryPower: () => false,
+    },
     WebContentsView: electronMocks.FakeView,
 }));
 
 vi.mock("@main/window", () => ({
     DESKTOP_TITLE_BAR_HEIGHT: 52,
     getRendererPreloadPath: () => "/tmp/preload.js",
+    installWindowOpenHandler: vi.fn(),
     loadRendererContents: vi.fn(),
 }));
 
@@ -77,17 +117,799 @@ vi.mock("@main/windows/registry", () => ({
 }));
 
 import { WorkspaceSurfaceManager } from "./surface-manager";
+import { loadRendererContents } from "@main/window";
 
 describe("WorkspaceSurfaceManager action routing", () => {
     beforeEach(() => {
         electronMocks.reset();
+        vi.mocked(loadRendererContents).mockClear();
+    });
+
+    it("binds only the cold-restored active renderer to one scope and generation", () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+
+        const searches = vi
+            .mocked(loadRendererContents)
+            .mock.calls.map(([, search]) => new URLSearchParams(search));
+        expect(searches).toHaveLength(1);
+        expect(searches[0]?.get("window")).toBe("workspace-surface");
+        expect(searches[0]?.get("scope")).toBe(
+            "project-a::__primary__",
+        );
+        expect(searches[0]?.get("project")).toBe("project-a");
+        expect(searches[0]?.get("surface")).toBeTruthy();
+        expect(searches[0]?.get("runtime-owner")).toBe(
+            "workspace-runtime:project-a::__primary__",
+        );
+    });
+
+    it("temporarily hides the active surface while the host palette is visible", () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        const surface = electronMocks.views[0];
+        if (!surface) {
+            throw new Error("Expected an active surface.");
+        }
+
+        manager.setHostOverlayVisible("host-1", true);
+        expect(surface.setVisible).toHaveBeenLastCalledWith(false);
+
+        manager.setHostOverlayVisible("host-1", false);
+        expect(surface.setVisible).toHaveBeenLastCalledWith(true);
+        expect(surface.webContents.close).not.toHaveBeenCalled();
+        expect(electronMocks.views).toHaveLength(1);
+    });
+
+    it("keeps an opened background workspace runtime-active after switching", async () => {
+        const manager = createTestManager();
+        const onSurfaceLifecycleChanged = vi.fn();
+        manager.setLifecycleHandlers({ onSurfaceLifecycleChanged });
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        onSurfaceLifecycleChanged.mockClear();
+
+        const activation = manager.activate("host-1", "project-b::__primary__");
+        await finishActiveSurface(manager, "host-1", "project-b::__primary__");
+        await activation;
+
+        expect(onSurfaceLifecycleChanged).not.toHaveBeenCalledWith(
+            expect.objectContaining({ scopeKey: "project-a::__primary__" }),
+            "suspended",
+        );
+    });
+
+    it("delegates workspace shortcuts from the surface to singleton navigation", () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
+        const surface = electronMocks.views[0];
+        if (!surface) {
+            throw new Error("Expected an active surface.");
+        }
+        const preventDefault = vi.fn();
+
+        surface.webContents.emit(
+            "before-input-event",
+            { preventDefault },
+            {
+                alt: true,
+                code: "BracketRight",
+                control: process.platform !== "darwin",
+                key: "]",
+                meta: process.platform === "darwin",
+                shift: false,
+                type: "keyDown",
+            },
+        );
+
+        expect(preventDefault).toHaveBeenCalledOnce();
+        expect(host.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceNavigationRequested,
+            "next",
+        );
+    });
+
+    it("recreates a surface with the same runtime owner and a new subscriber", async () => {
+        const manager = createTestManager();
+        const onSurfaceCreated = vi.fn();
+        const onSurfaceDestroyed = vi.fn();
+        manager.setLifecycleHandlers({
+            onSurfaceCreated,
+            onSurfaceDestroyed,
+            prepareSurfaceHibernate: () => Promise.resolve(),
+            resolveRuntimeOwner: () => ({
+                revision: 7,
+                runtimeOwnerId: "durable-runtime-owner",
+            }),
+        });
+        const host = createHostWindow();
+        const activeSnapshot = singleContextSnapshot(
+            "project-a::__primary__",
+            "project-a",
+        );
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), activeSnapshot);
+        const firstSurface = electronMocks.views[0];
+        if (!firstSurface) {
+            throw new Error("Expected the first surface.");
+        }
+        firstSurface.webContents.emit("did-finish-load");
+        notifySurfaceReady(manager, firstSurface.webContents);
+        await vi.waitFor(() =>
+            expect(
+                manager
+                    .getSurfaceDiagnostics("host-1")
+                    .surfaces.find(
+                        (surface) =>
+                            surface.scopeKey === "project-a::__primary__",
+                    )?.state,
+            ).toBe("active"),
+        );
+        const firstBinding = manager.getSurfaceRuntimeSubscriber(
+            asWebContents(firstSurface.webContents),
+        );
+
+        await expect(
+            manager.closeWorkspaceSurface(
+                "host-1",
+                "project-a::__primary__",
+            ),
+        ).resolves.toMatchObject({ status: "closed" });
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), activeSnapshot);
+        const recreation = manager.activate(
+            "host-1",
+            "project-a::__primary__",
+        );
+        const secondSurface = electronMocks.views[1];
+        if (!secondSurface) {
+            throw new Error("Expected the recreated surface.");
+        }
+        secondSurface.webContents.emit("did-finish-load");
+        notifySurfaceReady(manager, secondSurface.webContents);
+        await recreation;
+        const secondBinding = manager.getSurfaceRuntimeSubscriber(
+            asWebContents(secondSurface.webContents),
+        );
+
+        expect(firstBinding?.runtimeOwnerId).toBe("durable-runtime-owner");
+        expect(secondBinding?.runtimeOwnerId).toBe("durable-runtime-owner");
+        expect(secondBinding?.generation).not.toBe(firstBinding?.generation);
+        expect(onSurfaceDestroyed).toHaveBeenCalledWith(
+            expect.objectContaining({
+                generation: firstBinding?.generation,
+                runtimeOwnerId: "durable-runtime-owner",
+            }),
+        );
+        expect(onSurfaceCreated).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                generation: secondBinding?.generation,
+                runtimeOwnerId: "durable-runtime-owner",
+            }),
+        );
+        expect(
+            vi.mocked(loadRendererContents).mock.calls.at(-1)?.[1],
+        ).toContain("revision=7");
+    });
+
+    it("does not create one renderer per catalog row", async () => {
+        const manager = createTestManager();
+        const workspaces = Array.from({ length: 250 }, (_, index) =>
+            createRegistryEntry(
+                `project-${index}::__primary__`,
+                `project-${index}`,
+            ),
+        );
+        manager.syncWorkspaceRegistry(createHostWindow().window, createHostContext(), {
+            activeScopeKey: workspaces[0]?.scopeKey ?? null,
+            workspaces,
+        });
+
+        expect(electronMocks.views).toHaveLength(1);
+        expect(manager.getSurfaceDiagnostics("host-1").surfaces).toHaveLength(250);
+        await vi.waitFor(() =>
+            expect(
+                manager
+                    .getSurfaceDiagnostics("host-1")
+                    .surfaces.filter((surface) => surface.generation !== null),
+            ).toHaveLength(1),
+        );
+    });
+
+    it("indexes hundreds of dense layouts while restoring only the active renderer", async () => {
+        const manager = createTestManager();
+        const workspaces = Array.from({ length: 500 }, (_, index) =>
+            createDenseRegistryEntry(
+                `project-${index}::__primary__`,
+                `project-${index}`,
+                96,
+            ),
+        );
+        manager.syncWorkspaceRegistry(createHostWindow().window, createHostContext(), {
+            activeScopeKey: workspaces[0]?.scopeKey ?? null,
+            workspaces,
+        });
+
+        expect(electronMocks.views).toHaveLength(1);
+        expect(manager.getSurfaceDiagnostics("host-1").performance).toMatchObject({
+            catalogScopeCount: 500,
+            catalogSyncs: 1,
+            rendererCreates: 1,
+        });
+        await finishActiveSurface(manager, "host-1", workspaces[0].scopeKey);
+        expect(
+            manager
+                .getSurfaceDiagnostics("host-1")
+                .surfaces.filter((surface) => surface.generation !== null),
+        ).toHaveLength(1);
+    });
+
+    it("keeps eight selected workspaces resident after their explicit leases end", async () => {
+        const manager = new WorkspaceSurfaceManager({
+            resolveEnvironment: createEnvironment,
+        });
+        manager.setLifecycleHandlers({
+            prepareSurfaceHibernate: vi.fn(() => Promise.resolve()),
+        });
+        const workspaces = Array.from({ length: 8 }, (_, index) =>
+            createDenseRegistryEntry(
+                `project-${index}::__primary__`,
+                `project-${index}`,
+                120,
+            ),
+        );
+        manager.syncWorkspaceRegistry(createHostWindow().window, createHostContext(), {
+            activeScopeKey: workspaces[0].scopeKey,
+            workspaces,
+        });
+        await finishActiveSurface(manager, "host-1", workspaces[0].scopeKey);
+        const leaseKinds = [
+            "ai-critical",
+            "critical-modal",
+            "terminal-busy",
+            "dirty-file",
+        ] as const;
+
+        for (let index = 0; index < workspaces.length; index += 1) {
+            const workspace = workspaces[index];
+            if (index > 0) {
+                const activation = manager.activate("host-1", workspace.scopeKey);
+                notifySurfaceReady(
+                    manager,
+                    manager.getSurfaceWebContents("host-1", workspace.scopeKey),
+                );
+                await activation;
+            }
+            const webContents = manager.getSurfaceWebContents(
+                "host-1",
+                workspace.scopeKey,
+            )!;
+            const binding = manager.getSurfaceRuntimeSubscriber(webContents)!;
+            expect(
+                manager.reportSurfaceLeases(webContents, {
+                    ...binding,
+                    leases: [
+                        {
+                            acquiredAt: "2026-08-01T00:00:00.000Z",
+                            id: `lease-${index}`,
+                            kind: leaseKinds[index % leaseKinds.length],
+                            message: "Explicit activity keeps this renderer resident.",
+                        },
+                    ],
+                }),
+            ).toBe(true);
+        }
+
+        expect(
+            manager
+                .getSurfaceDiagnostics("host-1")
+                .surfaces.filter((surface) => surface.generation !== null),
+        ).toHaveLength(8);
+
+        for (const workspace of workspaces) {
+            const webContents = manager.getSurfaceWebContents(
+                "host-1",
+                workspace.scopeKey,
+            )!;
+            const binding = manager.getSurfaceRuntimeSubscriber(webContents)!;
+            manager.reportSurfaceLeases(webContents, { ...binding, leases: [] });
+        }
+        const activation = manager.activate("host-1", workspaces[0].scopeKey);
+        await activation;
+
+        const diagnostics = manager.getSurfaceDiagnostics("host-1");
+        expect(
+            diagnostics.surfaces.filter((surface) => surface.generation !== null),
+        ).toHaveLength(8);
+        expect(diagnostics.performance).toMatchObject({
+            hibernations: 0,
+            leaseReports: 16,
+            rendererCreates: 8,
+            rendererDestroys: 0,
+        });
+    });
+
+    it("recovers the same durable scope after a renderer crash", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        const crashed = electronMocks.views[0].webContents;
+        crashed.send.mockImplementation(() => {
+            throw new Error("Render frame was disposed.");
+        });
+        crashed.emit("render-process-gone");
+
+        expect(
+            manager
+                .getSurfaceDiagnostics("host-1")
+                .surfaces.find(
+                    (surface) => surface.scopeKey === "project-a::__primary__",
+                ),
+        ).toMatchObject({ generation: null, state: "cold" });
+        const restored = manager.activate("host-1", "project-a::__primary__");
+        const replacement = manager.getSurfaceWebContents(
+            "host-1",
+            "project-a::__primary__",
+        );
+        notifySurfaceReady(manager, replacement);
+
+        await expect(restored).resolves.toMatchObject({
+            scopeKey: "project-a::__primary__",
+            status: "activated",
+            warm: false,
+        });
+        expect(manager.getSurfaceDiagnostics("host-1").performance).toMatchObject({
+            failures: 1,
+            rendererCreates: 2,
+            rendererDestroys: 1,
+        });
+    });
+
+    it("blocks an immediate close while restore is in flight and records it", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+
+        const activation = manager.activate("host-1", "project-b::__primary__");
+        await expect(
+            manager.closeWorkspaceSurface(
+                "host-1",
+                "project-b::__primary__",
+            ),
+        ).resolves.toMatchObject({ status: "blocked" });
+        notifySurfaceReady(
+            manager,
+            manager.getSurfaceWebContents("host-1", "project-b::__primary__"),
+        );
+        await expect(activation).resolves.toMatchObject({ status: "activated" });
+
+        const diagnostics = manager.getSurfaceDiagnostics("host-1");
+        expect(diagnostics.performance.hibernationsAvoided).toBe(1);
+        expect(
+            diagnostics.surfaces.find(
+                (surface) => surface.scopeKey === "project-b::__primary__",
+            ),
+        ).toMatchObject({ state: "active" });
+    });
+
+    it("samples renderer memory on demand without a recurring observer", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        const webContents = manager.getSurfaceWebContents(
+            "host-1",
+            "project-a::__primary__",
+        )!;
+        manager.recordRuntimeResync(webContents, true);
+        manager.recordRuntimeResync(webContents, false);
+
+        const diagnostics = manager.sampleSurfaceMemory("host-1");
+
+        expect(diagnostics.performance.memorySamples).toEqual([
+            {
+                privateKb: 64_000,
+                residentSetKb: 80_000,
+                scopeKey: "project-a::__primary__",
+                sharedKb: null,
+            },
+        ]);
+        expect(diagnostics.performance.memorySampledAt).not.toBeNull();
+        expect(diagnostics.performance).toMatchObject({
+            resyncFailures: 1,
+            resyncs: 2,
+        });
+    });
+
+    it("reuses renderers through rapid switches and resize bursts", async () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        manager.syncWorkspaceRegistry(
+            host.window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        const coldActivation = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        notifySurfaceReady(
+            manager,
+            manager.getSurfaceWebContents("host-1", "project-b::__primary__"),
+        );
+        await coldActivation;
+
+        for (let index = 0; index < 100; index += 1) {
+            const scopeKey =
+                index % 2 === 0
+                    ? "project-a::__primary__"
+                    : "project-b::__primary__";
+            await manager.activate("host-1", scopeKey);
+            host.emit("resize");
+        }
+        host.getContentBounds.mockReturnValue({
+            height: 820,
+            width: 1_300,
+            x: 0,
+            y: 0,
+        });
+        host.emit("resize");
+        await vi.waitFor(() =>
+            expect(
+                manager.getSurfaceDiagnostics("host-1").performance.boundsUpdates,
+            ).toBeGreaterThan(2),
+        );
+
+        expect(manager.getSurfaceDiagnostics("host-1").performance).toMatchObject({
+            cacheHits: 100,
+            cacheMisses: 2,
+            rendererCreates: 2,
+            rendererDestroys: 0,
+        });
+        expect(electronMocks.views).toHaveLength(2);
+    });
+
+    it("does not let a delayed host registry sync revert committed navigation", async () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        manager.syncWorkspaceRegistry(
+            host.window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        const activation = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        notifySurfaceReady(
+            manager,
+            manager.getSurfaceWebContents("host-1", "project-b::__primary__"),
+        );
+        await activation;
+
+        manager.syncWorkspaceRegistry(
+            host.window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await Promise.resolve();
+
+        expect(manager.getActiveContext("host-1")?.scopeKey).toBe(
+            "project-b::__primary__",
+        );
+        expect(
+            manager.getSurfaceDiagnostics("host-1").activeScopeKey,
+        ).toBe("project-b::__primary__");
+    });
+
+    it("publishes the committed worktree context for host inspector focus", async () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        const worktreeScope = "project-a::worktree-feature";
+        const snapshot = createSnapshot();
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), {
+            ...snapshot,
+            workspaces: [
+                ...snapshot.workspaces,
+                {
+                    ...createRegistryEntry(worktreeScope, "project-a"),
+                    worktreeId: "worktree-feature",
+                },
+            ],
+        });
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        host.send.mockClear();
+
+        const activation = manager.activate("host-1", worktreeScope);
+        notifySurfaceReady(
+            manager,
+            manager.getSurfaceWebContents("host-1", worktreeScope),
+        );
+        await activation;
+
+        expect(host.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceNavigationChanged,
+            {
+                activeScopeKey: worktreeScope,
+                projectId: "project-a",
+                worktreeId: "worktree-feature",
+            },
+        );
+    });
+
+    it("keeps the committed surface visible when a cold restore fails", async () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        const firstSurface = electronMocks.views[0];
+
+        const activation = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const failedSurface = electronMocks.views[1];
+        const binding = manager.getSurfaceRuntimeSubscriber(
+            asWebContents(failedSurface.webContents),
+        );
+        if (!binding) {
+            throw new Error("Expected a bound cold surface.");
+        }
+        manager.notifySurfaceRestoreFailed(
+            asWebContents(failedSurface.webContents),
+            binding,
+            "restore failed",
+        );
+
+        await expect(activation).resolves.toEqual({
+            message: "restore failed",
+            scopeKey: "project-b::__primary__",
+            status: "failed",
+        });
+        expect(manager.getActiveContext("host-1")?.scopeKey).toBe(
+            "project-a::__primary__",
+        );
+        expect(firstSurface.setVisible).toHaveBeenLastCalledWith(true);
+        expect(failedSurface.webContents.close).toHaveBeenCalledOnce();
+    });
+
+    it("blocks close on renderer leases and preserves the durable row", async () => {
+        const manager = createTestManager();
+        manager.setLifecycleHandlers({
+            prepareSurfaceHibernate: () => Promise.resolve(),
+        });
+        const host = createHostWindow();
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        const surface = manager.getSurfaceWebContents(
+            "host-1",
+            "project-a::__primary__",
+        );
+        const binding = surface
+            ? manager.getSurfaceRuntimeSubscriber(surface)
+            : null;
+        if (!surface || !binding) {
+            throw new Error("Expected an active surface binding.");
+        }
+        manager.reportSurfaceLeases(surface, {
+            ...binding,
+            leases: [
+                {
+                    acquiredAt: "2026-08-01T00:00:00.000Z",
+                    id: "dirty:file-a",
+                    kind: "dirty-file",
+                    message: "A file has unsaved changes.",
+                },
+            ],
+        });
+
+        await expect(
+            manager.closeWorkspaceSurface(
+                "host-1",
+                "project-a::__primary__",
+            ),
+        ).resolves.toMatchObject({
+            leases: [expect.objectContaining({ kind: "dirty-file" })],
+            status: "blocked",
+        });
+        expect(manager.getSurfaceWebContents("host-1", binding.scopeKey)).toBe(
+            surface,
+        );
+        expect(manager.getSurfaceWebContents("host-1", binding.scopeKey)).toBe(
+            surface,
+        );
+    });
+
+    it("recreates one host from active, warm and cold metadata without eager restore", async () => {
+        const manager = createTestManager();
+        const firstHost = createHostWindow();
+        const snapshot = createSnapshot();
+        manager.syncWorkspaceRegistry(firstHost.window, createHostContext(), snapshot);
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        const activation = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        notifySurfaceReady(
+            manager,
+            manager.getSurfaceWebContents(
+                "host-1",
+                "project-b::__primary__",
+            ),
+        );
+        await activation;
+        expect(electronMocks.views).toHaveLength(2);
+
+        manager.disposeHost("host-1", firstHost.window);
+        const secondHost = createHostWindow();
+        manager.syncWorkspaceRegistry(secondHost.window, createHostContext(), {
+            ...snapshot,
+            activeScopeKey: "project-b::__primary__",
+        });
+
+        expect(electronMocks.views).toHaveLength(3);
+        const recreatedSearch = new URLSearchParams(
+            vi.mocked(loadRendererContents).mock.calls.at(-1)?.[1],
+        );
+        expect(recreatedSearch.get("scope")).toBe("project-b::__primary__");
+        expect(recreatedSearch.get("runtime-owner")).toBe(
+            "workspace-runtime:project-b::__primary__",
+        );
+    });
+
+    it("applies top, left and right insets atomically only to the active surface", async () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        const firstSurface = electronMocks.views[0];
+        const activation = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const activeSurface = electronMocks.views[1];
+        notifySurfaceReady(manager, activeSurface?.webContents);
+        await activation;
+        firstSurface?.setBounds.mockClear();
+        activeSurface?.setBounds.mockClear();
+
+        manager.setContentInsets("host-1", {
+            left: 281,
+            right: 341,
+            top: 52,
+        });
+
+        await vi.waitFor(() =>
+            expect(activeSurface?.setBounds).toHaveBeenLastCalledWith({
+                height: 748,
+                width: 578,
+                x: 281,
+                y: 52,
+            }),
+        );
+        expect(firstSurface?.setBounds).not.toHaveBeenCalled();
+        expect(activeSurface?.setBounds).toHaveBeenCalledOnce();
+    });
+
+    it("keeps bounds aligned through drawer, zoom and fullscreen changes", async () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
+        await finishActiveSurface(
+            manager,
+            "host-1",
+            "project-a::__primary__",
+        );
+        const surface = electronMocks.views[0];
+        surface?.setBounds.mockClear();
+
+        // Insets arrive already scaled by the host renderer's zoom factor.
+        manager.setContentInsets("host-1", {
+            left: 351.25,
+            right: 426.25,
+            top: 65,
+        });
+        await vi.waitFor(() =>
+            expect(surface?.setBounds).toHaveBeenLastCalledWith({
+                height: 735,
+                width: 423,
+                x: 351,
+                y: 65,
+            }),
+        );
+
+        manager.setContentInsets("host-1", { left: 0, right: 0, top: 65 });
+        await vi.waitFor(() =>
+            expect(surface?.setBounds).toHaveBeenLastCalledWith({
+                height: 735,
+                width: 1_200,
+                x: 0,
+                y: 65,
+            }),
+        );
+
+        host.getContentBounds.mockReturnValue({
+            height: 900,
+            width: 1_480,
+            x: 0,
+            y: 0,
+        });
+        host.emit("enter-full-screen");
+        await vi.waitFor(() =>
+            expect(surface?.setBounds).toHaveBeenLastCalledWith({
+                height: 835,
+                width: 1_480,
+                x: 0,
+                y: 65,
+            }),
+        );
+
+        host.getContentBounds.mockReturnValue({
+            height: 820,
+            width: 1_360,
+            x: 2_100,
+            y: 80,
+        });
+        host.emit("move");
+        await vi.waitFor(() =>
+            expect(surface?.setBounds).toHaveBeenLastCalledWith({
+                height: 755,
+                width: 1_360,
+                x: 0,
+                y: 65,
+            }),
+        );
     });
 
     it("waits until a new host renderer registers its surface container", async () => {
-        const manager = new WorkspaceSurfaceManager();
+        const manager = createTestManager();
         const ready = manager.waitForHost("host-1", 100);
 
-        manager.syncHost(
+        manager.syncWorkspaceRegistry(
             createHostWindow().window,
             createHostContext(),
             createSnapshot(),
@@ -97,15 +919,14 @@ describe("WorkspaceSurfaceManager action routing", () => {
         await expect(manager.waitForHost("host-1", 100)).resolves.toBe(true);
     });
 
-    it("delivers only to the active surface and rejects stale scopes", () => {
-        const manager = new WorkspaceSurfaceManager();
+    it("delivers only to the active surface and rejects stale scopes", async () => {
+        const manager = createTestManager();
         const host = createHostWindow();
         const snapshot = createSnapshot();
-        manager.syncHost(host.window, createHostContext(), snapshot);
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), snapshot);
 
-        const [surfaceA, surfaceB] = electronMocks.views;
+        const [surfaceA] = electronMocks.views;
         expect(surfaceA).toBeDefined();
-        expect(surfaceB).toBeDefined();
 
         const actionA = createFileAction("project-a::__primary__", "project-a");
         const queuedActionA = manager.dispatchActiveSurfaceAction(
@@ -121,7 +942,7 @@ describe("WorkspaceSurfaceManager action routing", () => {
         }
         expect(surfaceA.webContents.send).not.toHaveBeenCalled();
 
-        manager.notifySurfaceReady(asWebContents(surfaceA.webContents));
+        notifySurfaceReady(manager, surfaceA.webContents);
         expect(surfaceA.webContents.send).toHaveBeenCalledWith(
             IPC_EVENTS.workspaceSurfaceActionRequested,
             {
@@ -129,7 +950,6 @@ describe("WorkspaceSurfaceManager action routing", () => {
                 request: actionA,
             },
         );
-        expect(surfaceB.webContents.send).not.toHaveBeenCalled();
         expect(
             manager.claimSurfaceAction(
                 asWebContents(surfaceA.webContents),
@@ -145,7 +965,15 @@ describe("WorkspaceSurfaceManager action routing", () => {
             { actionId: queuedActionA.actionId, status: "completed" },
         );
 
-        manager.activate("host-1", "project-b::__primary__");
+        await manager.activate("host-1", "project-a::__primary__");
+        const activationB = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const surfaceB = electronMocks.views[1];
+        expect(surfaceB).toBeDefined();
+        notifySurfaceReady(manager, surfaceB.webContents);
+        await activationB;
         expect(manager.dispatchActiveSurfaceAction("host-1", actionA)).toEqual({
             delivered: false,
             reason: "inactive-context",
@@ -154,7 +982,6 @@ describe("WorkspaceSurfaceManager action routing", () => {
         expect(surfaceB.webContents.send).not.toHaveBeenCalled();
 
         const actionB = createFileAction("project-b::__primary__", "project-b");
-        manager.notifySurfaceReady(asWebContents(surfaceB.webContents));
         const sentActionB = manager.dispatchActiveSurfaceAction("host-1", actionB);
         expect(sentActionB).toMatchObject({
             delivered: true,
@@ -206,10 +1033,10 @@ describe("WorkspaceSurfaceManager action routing", () => {
         expect(surfaceB.webContents.send).toHaveBeenCalledTimes(1);
     });
 
-    it("rejects a queued action when its context becomes inactive", () => {
-        const manager = new WorkspaceSurfaceManager();
+    it("rejects a queued action when its context becomes inactive", async () => {
+        const manager = createTestManager();
         const host = createHostWindow();
-        manager.syncHost(host.window, createHostContext(), createSnapshot());
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
         const [surfaceA] = electronMocks.views;
         const actionA = createFileAction("project-a::__primary__", "project-a");
         const queuedActionA = manager.dispatchActiveSurfaceAction(
@@ -220,8 +1047,15 @@ describe("WorkspaceSurfaceManager action routing", () => {
             throw new Error("Expected the action to queue.");
         }
 
-        manager.activate("host-1", "project-b::__primary__");
-        manager.notifySurfaceReady(asWebContents(surfaceA.webContents));
+        const activationB = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const surfaceB = electronMocks.views[1];
+        notifySurfaceReady(manager, surfaceB.webContents);
+        await activationB;
+        notifySurfaceReady(manager, surfaceA.webContents);
+        await Promise.resolve();
 
         expect(surfaceA.webContents.send).not.toHaveBeenCalled();
         expect(
@@ -239,11 +1073,166 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
     });
 
-    it("reveals a surface file only through its active host context", () => {
-        const manager = new WorkspaceSurfaceManager();
+    it("delivers inspector drags only to the committed contextual surface", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        const surfaceA = electronMocks.views[0];
+        if (!surfaceA) {
+            throw new Error("Expected the active surface.");
+        }
+        const dragA = {
+            contextKey: "project-a::__primary__",
+            detail: { phase: "move", x: 320, y: 180 },
+            kind: "agent" as const,
+            projectId: "project-a",
+            worktreeId: null,
+        };
+
+        expect(manager.dispatchActiveSurfaceDrag("host-1", dragA)).toEqual({
+            delivered: true,
+        });
+        expect(surfaceA.webContents.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceDrag,
+            expect.objectContaining({
+                contextKey: "project-a::__primary__",
+                projectId: "project-a",
+            }),
+        );
+
+        const activationB = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const surfaceB = electronMocks.views[1];
+        if (!surfaceB) {
+            throw new Error("Expected the next surface.");
+        }
+        notifySurfaceReady(manager, surfaceB.webContents);
+        await activationB;
+
+        expect(manager.dispatchActiveSurfaceDrag("host-1", dragA)).toEqual({
+            delivered: false,
+            reason: "inactive-context",
+        });
+        expect(
+            manager.dispatchActiveSurfaceDrag("host-1", {
+                ...dragA,
+                contextKey: "project-b::__primary__",
+                projectId: "project-a",
+            }),
+        ).toEqual({ delivered: false, reason: "invalid-context" });
+        expect(surfaceB.webContents.send).not.toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceDrag,
+            expect.anything(),
+        );
+    });
+
+    it("translates drags from either sidebar across persistent panels and drawers", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        const surface = electronMocks.views[0];
+        if (!surface) {
+            throw new Error("Expected the active surface.");
+        }
+        manager.setContentInsets("host-1", {
+            left: 281,
+            right: 341,
+            top: 52,
+        });
+        await vi.waitFor(() =>
+            expect(surface.setBounds).toHaveBeenLastCalledWith({
+                height: 748,
+                width: 578,
+                x: 281,
+                y: 52,
+            }),
+        );
+
+        const drag = {
+            contextKey: "project-a::__primary__",
+            detail: { phase: "move", x: 700, y: 180 },
+            kind: "agent" as const,
+            projectId: "project-a",
+            worktreeId: null,
+        };
+        expect(manager.dispatchActiveSurfaceDrag("host-1", drag)).toEqual({
+            delivered: true,
+        });
+        const persistentPanelDrag = surface.webContents.send.mock.calls.at(
+            -1,
+        )?.[1] as WorkspaceSurfaceDragEvent | undefined;
+        expect(persistentPanelDrag).toMatchObject({
+            detail: { x: 419, y: 128 },
+        });
+
+        manager.setContentInsets("host-1", { left: 0, right: 0, top: 52 });
+        await vi.waitFor(() =>
+            expect(surface.setBounds).toHaveBeenLastCalledWith({
+                height: 748,
+                width: 1_200,
+                x: 0,
+                y: 52,
+            }),
+        );
+        manager.setHostOverlayVisible("host-1", true);
+        expect(
+            manager.dispatchActiveSurfaceDrag("host-1", {
+                ...drag,
+                detail: { phase: "end", x: 700, y: 180 },
+                kind: "github",
+            }),
+        ).toEqual({ delivered: true });
+        const drawerDrag = surface.webContents.send.mock.calls.at(-1)?.[1] as
+            | WorkspaceSurfaceDragEvent
+            | undefined;
+        expect(drawerDrag).toMatchObject({
+            detail: { x: 700, y: 128 },
+            kind: "github",
+        });
+    });
+
+    it("translates drag coordinates between zoomed host and surface CSS pixels", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow(2).window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        const surface = electronMocks.views[0];
+        manager.setContentInsets("host-1", { left: 200, right: 0, top: 100 });
+        await vi.waitFor(() =>
+            expect(surface?.setBounds).toHaveBeenLastCalledWith(
+                expect.objectContaining({ x: 200, y: 100 }),
+            ),
+        );
+
+        manager.dispatchActiveSurfaceDrag("host-1", {
+            contextKey: "project-a::__primary__",
+            detail: { phase: "move", x: 300, y: 150 },
+            kind: "agent",
+            projectId: "project-a",
+            worktreeId: null,
+        });
+
+        expect(surface?.webContents.send).toHaveBeenLastCalledWith(
+            IPC_EVENTS.workspaceSurfaceDrag,
+            expect.objectContaining({ detail: { phase: "move", x: 200, y: 100 } }),
+        );
+    });
+
+    it("reveals a surface file only through its active host context", async () => {
+        const manager = createTestManager();
         const host = createHostWindow();
-        manager.syncHost(host.window, createHostContext(), createSnapshot());
-        const [surfaceA, surfaceB] = electronMocks.views;
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
+        const [surfaceA] = electronMocks.views;
         const requestA = createFileRevealRequest(
             "project-a::__primary__",
             "project-a",
@@ -260,7 +1249,13 @@ describe("WorkspaceSurfaceManager action routing", () => {
             requestA,
         );
 
-        manager.activate("host-1", "project-b::__primary__");
+        const activationB = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        const surfaceB = electronMocks.views[1];
+        notifySurfaceReady(manager, surfaceB.webContents);
+        await activationB;
         expect(
             manager.revealSurfaceFileInHostTree(
                 asWebContents(surfaceA.webContents),
@@ -288,633 +1283,22 @@ describe("WorkspaceSurfaceManager action routing", () => {
         ).toEqual({ delivered: true });
     });
 
-    it("indexes open workspaces without changing host activation", () => {
-        const manager = new WorkspaceSurfaceManager();
-        const firstHost = createHostWindow();
-        const secondHost = createHostWindow();
-        const firstSnapshot = createSnapshot();
-        const secondSnapshot: WorkspaceNavigationSnapshot = {
-            activeContextKey: "project-a::worktree-feature",
-            contexts: [
-                {
-                    ...createPersistedContext(
-                        "project-a::worktree-feature",
-                        "project-a",
-                    ),
-                    lastActivatedAt: "2026-07-20T00:00:00.000Z",
-                    worktreeId: "worktree-feature",
-                },
-            ],
-            openContextKeys: ["project-a::worktree-feature"],
-            version: 3,
-        };
-        manager.syncHost(firstHost.window, createHostContext(), firstSnapshot);
-        manager.syncHost(
-            secondHost.window,
-            {
-                ...createHostContext(),
-                windowId: "host-2",
-                workspaceId: "workspace-2",
-                workspaceSessionId: "workspace-session-2",
-            },
-            secondSnapshot,
-        );
 
-        expect(manager.listOpenWorkspaceLocations()).toEqual([
-            expect.objectContaining({
-                contextKey: "project-a::__primary__",
-                hostWindowId: "host-1",
-                isActive: true,
-            }),
-            expect.objectContaining({
-                contextKey: "project-b::__primary__",
-                hostWindowId: "host-1",
-                isActive: false,
-            }),
-            expect.objectContaining({
-                contextKey: "project-a::worktree-feature",
-                hostWindowId: "host-2",
-                isActive: true,
-            }),
-        ]);
-        expect(manager.getActiveContext("host-1")?.key).toBe(
-            "project-a::__primary__",
-        );
-        expect(manager.getActiveContext("host-2")?.key).toBe(
-            "project-a::worktree-feature",
-        );
-    });
-
-    it("resolves historical duplicates deterministically", () => {
-        const manager = new WorkspaceSurfaceManager();
-        const firstHost = createHostWindow();
-        const secondHost = createHostWindow();
-        const firstSnapshot = createSnapshot();
-        const duplicateContext = {
-            ...createPersistedContext(
-                "project-a::project-a:primary",
-                "project-a",
-            ),
-            lastActivatedAt: "2026-07-21T00:00:00.000Z",
-            worktreeId: "project-a:primary",
-        };
-        manager.syncHost(firstHost.window, createHostContext(), firstSnapshot);
-        manager.syncHost(
-            secondHost.window,
-            {
-                ...createHostContext(),
-                windowId: "host-2",
-                workspaceId: "workspace-2",
-                workspaceSessionId: "workspace-session-2",
-            },
-            {
-                activeContextKey: duplicateContext.key,
-                contexts: [duplicateContext],
-                openContextKeys: [duplicateContext.key],
-                version: 3,
-            },
-        );
-
-        const locations = manager.findWorkspaceLocations({
-            projectId: "project-a",
-            worktreeId: null,
-        });
-        expect(locations).toHaveLength(2);
-        expect(
-            manager.findPreferredWorkspaceLocation(
-                { projectId: "project-a", worktreeId: null },
-                "host-2",
-            )?.hostWindowId,
-        ).toBe("host-2");
-
-        manager.activate("host-1", "project-b::__primary__");
-        expect(
-            manager.findPreferredWorkspaceLocation(
-                { projectId: "project-a", worktreeId: null },
-                "host-1",
-            )?.hostWindowId,
-        ).toBe("host-2");
-    });
-
-    it("moves a live surface without changing its owner identity", async () => {
-        const manager = new WorkspaceSurfaceManager();
-        const onSurfaceDestroyed = vi.fn();
-        manager.setLifecycleHandlers({ onSurfaceDestroyed });
-        const sourceHost = createHostWindow();
-        const targetHost = createHostWindow();
-        const sourceSnapshot = createSnapshot();
-        const targetOpenSnapshot = singleContextSnapshot(
-            "project-c::__primary__",
-            "project-c",
-        );
-        const retainedClosedContext = sourceSnapshot.contexts[0];
-        if (!retainedClosedContext) {
-            throw new Error("Expected a retained source context.");
-        }
-        const targetSnapshot: WorkspaceNavigationSnapshot = {
-            ...targetOpenSnapshot,
-            contexts: [
-                ...targetOpenSnapshot.contexts,
-                retainedClosedContext,
-            ],
-        };
-        manager.syncHost(
-            sourceHost.window,
-            createHostContext(),
-            sourceSnapshot,
-        );
-        manager.syncHost(
-            targetHost.window,
-            {
-                ...createHostContext(),
-                projectId: "project-c",
-                windowId: "host-2",
-                workspaceId: "workspace-2",
-                workspaceSessionId: "workspace-session-2",
-            },
-            targetSnapshot,
-        );
-        const originalWebContents = manager.getSurfaceWebContents(
-            "host-1",
-            "project-a::__primary__",
-        );
-        const committedSource = singleContextSnapshot(
-            "project-b::__primary__",
-            "project-b",
-        );
-        const movedContext = sourceSnapshot.contexts[0];
-        if (!originalWebContents || !movedContext) {
-            throw new Error("Expected a live source surface.");
-        }
-        const committedTarget: WorkspaceNavigationSnapshot = {
-            activeContextKey: movedContext.key,
-            contexts: [
-                ...targetSnapshot.contexts.filter(
-                    (context) => context.key !== movedContext.key,
-                ),
-                movedContext,
-            ],
-            openContextKeys: [
-                ...targetSnapshot.openContextKeys,
-                movedContext.key,
-            ],
-            version: 3,
-        };
-
-        const result = await manager.transferSurface({
-            commit: vi.fn(() =>
-                Promise.resolve({
-                    source: createWindowWorkspaceRestoreRecord(
-                        committedSource,
-                        2,
-                    ),
-                    target: createWindowWorkspaceRestoreRecord(
-                        committedTarget,
-                        2,
-                    ),
-                }),
-            ),
-            contextKey: movedContext.key,
-            sourceHostWindowId: "host-1",
-            targetHostWindowId: "host-2",
-        });
-
-        expect(
-            manager.getSurfaceWebContents("host-1", movedContext.key),
-        ).toBeNull();
-        expect(
-            manager.getSurfaceWebContents("host-2", movedContext.key),
-        ).toBe(originalWebContents);
-        expect(manager.getSurfaceContext(originalWebContents)).toMatchObject({
-            hostWindowId: "host-2",
-            windowId: result.surfaceId,
-            workspaceId: "workspace-2",
-            workspaceSessionId: "workspace-session-2",
-        });
-        expect(result.sourceSnapshot.activeContextKey).toBe(
-            "project-b::__primary__",
-        );
-        expect(result.targetSnapshot.activeContextKey).toBe(movedContext.key);
-        expect(
-            result.targetSnapshot.contexts.filter(
-                (context) => context.key === movedContext.key,
-            ),
-        ).toHaveLength(1);
-        expect(onSurfaceDestroyed).not.toHaveBeenCalled();
-    });
-
-    it("rolls a live surface back when persistence fails", async () => {
-        const manager = new WorkspaceSurfaceManager();
-        const sourceHost = createHostWindow();
-        const targetHost = createHostWindow();
-        manager.syncHost(sourceHost.window, createHostContext(), createSnapshot());
-        manager.syncHost(
-            targetHost.window,
-            {
-                ...createHostContext(),
-                projectId: "project-c",
-                windowId: "host-2",
-                workspaceId: "workspace-2",
-                workspaceSessionId: "workspace-session-2",
-            },
-            singleContextSnapshot("project-c::__primary__", "project-c"),
-        );
-        const originalWebContents = manager.getSurfaceWebContents(
-            "host-1",
-            "project-a::__primary__",
-        );
-
-        await expect(
-            manager.transferSurface({
-                commit: vi.fn(() => Promise.reject(new Error("write failed"))),
-                contextKey: "project-a::__primary__",
-                sourceHostWindowId: "host-1",
-                targetHostWindowId: "host-2",
-            }),
-        ).rejects.toThrow("write failed");
-
-        expect(
-            manager.getSurfaceWebContents(
-                "host-1",
-                "project-a::__primary__",
-            ),
-        ).toBe(originalWebContents);
-        expect(
-            manager.getSurfaceWebContents(
-                "host-2",
-                "project-a::__primary__",
-            ),
-        ).toBeNull();
-        expect(
-            originalWebContents
-                ? manager.getSurfaceContext(originalWebContents)
-                : null,
-        ).toMatchObject({ hostWindowId: "host-1", workspaceId: "workspace-1" });
-    });
-
-    it("rejects transfers before a destination starts closing", async () => {
-        const manager = new WorkspaceSurfaceManager();
-        const sourceHost = createHostWindow();
-        const targetHost = createHostWindow();
-        manager.syncHost(sourceHost.window, createHostContext(), createSnapshot());
-        manager.syncHost(
-            targetHost.window,
-            {
-                ...createHostContext(),
-                projectId: "project-c",
-                windowId: "host-2",
-                workspaceId: "workspace-2",
-                workspaceSessionId: "workspace-session-2",
-            },
-            singleContextSnapshot("project-c::__primary__", "project-c"),
-        );
-        const commit = vi.fn();
-
-        await manager.prepareHostForClose("host-2");
-
-        await expect(
-            manager.transferSurface({
-                commit,
-                contextKey: "project-a::__primary__",
-                sourceHostWindowId: "host-1",
-                targetHostWindowId: "host-2",
-            }),
-        ).rejects.toThrow("window is closing");
-        expect(commit).not.toHaveBeenCalled();
-    });
-
-    it("waits for an in-flight transfer before allowing a host to close", async () => {
-        const manager = new WorkspaceSurfaceManager();
-        const sourceHost = createHostWindow();
-        const targetHost = createHostWindow();
-        const sourceSnapshot = createSnapshot();
-        const targetSnapshot = singleContextSnapshot(
-            "project-c::__primary__",
-            "project-c",
-        );
-        manager.syncHost(sourceHost.window, createHostContext(), sourceSnapshot);
-        manager.syncHost(
-            targetHost.window,
-            {
-                ...createHostContext(),
-                projectId: "project-c",
-                windowId: "host-2",
-                workspaceId: "workspace-2",
-                workspaceSessionId: "workspace-session-2",
-            },
-            targetSnapshot,
-        );
-        const movingContext = sourceSnapshot.contexts[0];
-        if (!movingContext) {
-            throw new Error("Expected a moving context.");
-        }
-        const committedSource = singleContextSnapshot(
-            "project-b::__primary__",
-            "project-b",
-        );
-        const committedTarget: WorkspaceNavigationSnapshot = {
-            activeContextKey: movingContext.key,
-            contexts: [...targetSnapshot.contexts, movingContext],
-            openContextKeys: [
-                ...targetSnapshot.openContextKeys,
-                movingContext.key,
-            ],
-            version: 3,
-        };
-        const deferredCommit = createDeferred(
-            {
-                source: createWindowWorkspaceRestoreRecord(
-                    committedSource,
-                    2,
-                ),
-                target: createWindowWorkspaceRestoreRecord(
-                    committedTarget,
-                    2,
-                ),
-            },
-        );
-        let hostsNotified = false;
-        const transfer = manager.transferSurface({
-            commit: () => deferredCommit.promise,
-            contextKey: movingContext.key,
-            onCommitted: () => {
-                hostsNotified = true;
-            },
-            sourceHostWindowId: "host-1",
-            targetHostWindowId: "host-2",
-        });
-        let closePrepared = false;
-        const closePreparation = manager
-            .prepareHostForClose("host-2")
-            .then(() => {
-                closePrepared = true;
-            });
-
-        await Promise.resolve();
-        expect(closePrepared).toBe(false);
-
-        deferredCommit.resolve();
-        await transfer;
-        await closePreparation;
-
-        expect(closePrepared).toBe(true);
-        expect(hostsNotified).toBe(true);
-        expect(
-            manager.getSurfaceWebContents("host-2", movingContext.key),
-        ).not.toBeNull();
-        await expect(
-            manager.transferSurface({
-                commit: vi.fn(),
-                contextKey: "project-b::__primary__",
-                sourceHostWindowId: "host-1",
-                targetHostWindowId: "host-2",
-            }),
-        ).rejects.toThrow("window is closing");
-    });
-
-    it("allows transfers after reopening a host with the same stable id", async () => {
-        const manager = new WorkspaceSurfaceManager();
-        const sourceHost = createHostWindow();
-        const closedTargetHost = createHostWindow();
-        const sourceSnapshot = createSnapshot();
-        const targetSnapshot = singleContextSnapshot(
-            "project-c::__primary__",
-            "project-c",
-        );
-        const targetContext = {
-            ...createHostContext(),
-            projectId: "project-c",
-            windowId: "host-2",
-            workspaceId: "workspace-2",
-            workspaceSessionId: "workspace-session-2",
-        };
-        manager.syncHost(sourceHost.window, createHostContext(), sourceSnapshot);
-        manager.syncHost(
-            closedTargetHost.window,
-            targetContext,
-            targetSnapshot,
-        );
-
-        await manager.prepareHostForClose("host-2");
-        manager.disposeHost("host-2");
-
-        const reopenedTargetHost = createHostWindow();
-        manager.syncHost(
-            reopenedTargetHost.window,
-            targetContext,
-            targetSnapshot,
-        );
-        const movingContext = sourceSnapshot.contexts[0];
-        if (!movingContext) {
-            throw new Error("Expected a moving context.");
-        }
-        const committedTarget: WorkspaceNavigationSnapshot = {
-            activeContextKey: movingContext.key,
-            contexts: [...targetSnapshot.contexts, movingContext],
-            openContextKeys: [
-                ...targetSnapshot.openContextKeys,
-                movingContext.key,
-            ],
-            version: 3,
-        };
-
-        await expect(
-            manager.transferSurface({
-                commit: () =>
-                    Promise.resolve({
-                        source: createWindowWorkspaceRestoreRecord(
-                            singleContextSnapshot(
-                                "project-b::__primary__",
-                                "project-b",
-                            ),
-                            2,
-                        ),
-                        target: createWindowWorkspaceRestoreRecord(
-                            committedTarget,
-                            2,
-                        ),
-                    }),
-                contextKey: movingContext.key,
-                sourceHostWindowId: "host-1",
-                targetHostWindowId: "host-2",
-            }),
-        ).resolves.toMatchObject({
-            targetSnapshot: committedTarget,
-        });
-        expect(
-            manager.getSurfaceWebContents("host-2", movingContext.key),
-        ).not.toBeNull();
-    });
-
-    it("does not let delayed disposal remove a replacement host generation", async () => {
-        const manager = new WorkspaceSurfaceManager();
-        const sourceHost = createHostWindow();
-        const oldTargetHost = createHostWindow();
-        const sourceSnapshot = createSnapshot();
-        const oldTargetSnapshot = singleContextSnapshot(
-            "project-c::__primary__",
-            "project-c",
-        );
-        const targetContext = {
-            ...createHostContext(),
-            projectId: "project-c",
-            windowId: "host-2",
-            workspaceId: "workspace-2",
-            workspaceSessionId: "workspace-session-2",
-        };
-        manager.syncHost(sourceHost.window, createHostContext(), sourceSnapshot);
-        manager.syncHost(
-            oldTargetHost.window,
-            targetContext,
-            oldTargetSnapshot,
-        );
-        const movingContext = sourceSnapshot.contexts[0];
-        if (!movingContext) {
-            throw new Error("Expected a moving context.");
-        }
-        const committedTarget: WorkspaceNavigationSnapshot = {
-            activeContextKey: movingContext.key,
-            contexts: [...oldTargetSnapshot.contexts, movingContext],
-            openContextKeys: [
-                ...oldTargetSnapshot.openContextKeys,
-                movingContext.key,
-            ],
-            version: 3,
-        };
-        const deferredCommit = createDeferred({
-            source: createWindowWorkspaceRestoreRecord(
-                singleContextSnapshot(
-                    "project-b::__primary__",
-                    "project-b",
-                ),
-                2,
-            ),
-            target: createWindowWorkspaceRestoreRecord(committedTarget, 2),
-        });
-        const transfer = manager.transferSurface({
-            commit: () => deferredCommit.promise,
-            contextKey: movingContext.key,
-            sourceHostWindowId: "host-1",
-            targetHostWindowId: "host-2",
-        });
-
-        manager.disposeHost("host-2");
-        const replacementHost = createHostWindow();
-        const replacementSnapshot = singleContextSnapshot(
-            "project-d::__primary__",
-            "project-d",
-        );
-        manager.syncHost(
-            replacementHost.window,
-            {
-                ...targetContext,
-                projectId: "project-d",
-                workspaceSessionId: "workspace-session-2-reopened",
-            },
-            replacementSnapshot,
-        );
-        await manager.prepareHostForClose(
-            "host-2",
-            oldTargetHost.window,
-        );
-        manager.disposeHost("host-2", oldTargetHost.window);
-
-        deferredCommit.resolve();
-        await transfer;
-        await Promise.resolve();
-
-        expect(manager.getHostSnapshotForWindow("host-2")).toEqual(
-            replacementSnapshot,
-        );
-        expect(
-            manager.getSurfaceWebContents(
-                "host-2",
-                "project-d::__primary__",
-            ),
-        ).not.toBeNull();
-    });
-
-    it("keeps committed ownership when presentation refresh fails", async () => {
-        const manager = new WorkspaceSurfaceManager();
-        const sourceHost = createHostWindow();
-        const targetHost = createHostWindow();
-        const sourceSnapshot = createSnapshot();
-        const targetSnapshot = singleContextSnapshot(
-            "project-c::__primary__",
-            "project-c",
-        );
-        manager.syncHost(sourceHost.window, createHostContext(), sourceSnapshot);
-        manager.syncHost(
-            targetHost.window,
-            {
-                ...createHostContext(),
-                projectId: "project-c",
-                windowId: "host-2",
-                workspaceId: "workspace-2",
-                workspaceSessionId: "workspace-session-2",
-            },
-            targetSnapshot,
-        );
-        const movingContext = sourceSnapshot.contexts[0];
-        if (!movingContext) {
-            throw new Error("Expected a moving context.");
-        }
-        const committedTarget: WorkspaceNavigationSnapshot = {
-            activeContextKey: movingContext.key,
-            contexts: [...targetSnapshot.contexts, movingContext],
-            openContextKeys: [
-                ...targetSnapshot.openContextKeys,
-                movingContext.key,
-            ],
-            version: 3,
-        };
-        targetHost.getContentBounds.mockImplementation(() => {
-            throw new Error("layout failed");
-        });
-        const consoleError = vi
-            .spyOn(console, "error")
-            .mockImplementation(() => undefined);
-
-        const result = await manager.transferSurface({
-            commit: () =>
-                Promise.resolve({
-                    source: createWindowWorkspaceRestoreRecord(
-                        singleContextSnapshot(
-                            "project-b::__primary__",
-                            "project-b",
-                        ),
-                        2,
-                    ),
-                    target: createWindowWorkspaceRestoreRecord(
-                        committedTarget,
-                        2,
-                    ),
-                }),
-            contextKey: movingContext.key,
-            sourceHostWindowId: "host-1",
-            targetHostWindowId: "host-2",
-        });
-
-        expect(typeof result.surfaceId).toBe("string");
-        expect(
-            manager.getSurfaceWebContents("host-1", movingContext.key),
-        ).toBeNull();
-        expect(
-            manager.getSurfaceWebContents("host-2", movingContext.key),
-        ).not.toBeNull();
-        expect(consoleError).toHaveBeenCalledWith(
-            "[workspace] Failed to refresh surfaces after a committed transfer",
-            expect.any(Error),
-        );
-        consoleError.mockRestore();
-    });
 });
 
-function createHostWindow(): {
+function createTestManager(): WorkspaceSurfaceManager {
+    return new WorkspaceSurfaceManager({
+        resolveEnvironment: createEnvironment,
+    });
+}
+
+function createHostWindow(zoomFactor = 1): {
+    readonly emit: (event: string) => void;
     readonly getContentBounds: ReturnType<typeof vi.fn>;
     readonly send: ReturnType<typeof vi.fn>;
     readonly window: BrowserWindow;
 } {
+    const listeners = new Map<string, Set<() => void>>();
     const send = vi.fn();
     const getContentBounds = vi.fn(() => ({
         height: 800,
@@ -923,7 +1307,7 @@ function createHostWindow(): {
         y: 0,
     }));
     const webContents = {
-        getZoomFactor: () => 1,
+        getZoomFactor: () => zoomFactor,
         isDestroyed: () => false,
         send,
     };
@@ -934,10 +1318,23 @@ function createHostWindow(): {
         },
         getContentBounds,
         isDestroyed: () => false,
-        on: vi.fn(),
+        on: vi.fn((event: string, listener: () => void) => {
+            const eventListeners = listeners.get(event) ?? new Set();
+            eventListeners.add(listener);
+            listeners.set(event, eventListeners);
+        }),
         webContents,
     } as unknown as BrowserWindow;
-    return { getContentBounds, send, window };
+    return {
+        emit: (event) => {
+            for (const listener of listeners.get(event) ?? []) {
+                listener();
+            }
+        },
+        getContentBounds,
+        send,
+        window,
+    };
 }
 
 function createHostContext(): WindowContextSnapshot {
@@ -951,39 +1348,29 @@ function createHostContext(): WindowContextSnapshot {
     };
 }
 
-function createSnapshot(): WorkspaceNavigationSnapshot {
+function createSnapshot(): WorkspaceSurfaceRegistrySnapshot {
     return {
-        activeContextKey: "project-a::__primary__",
-        contexts: [
-            createPersistedContext("project-a::__primary__", "project-a"),
-            createPersistedContext("project-b::__primary__", "project-b"),
+        activeScopeKey: "project-a::__primary__",
+        workspaces: [
+            createRegistryEntry("project-a::__primary__", "project-a"),
+            createRegistryEntry("project-b::__primary__", "project-b"),
         ],
-        openContextKeys: [
-            "project-a::__primary__",
-            "project-b::__primary__",
-        ],
-        version: 3,
     };
 }
 
 function singleContextSnapshot(
     contextKey: string,
     projectId: string,
-): WorkspaceNavigationSnapshot {
+): WorkspaceSurfaceRegistrySnapshot {
     return {
-        activeContextKey: contextKey,
-        contexts: [createPersistedContext(contextKey, projectId)],
-        openContextKeys: [contextKey],
-        version: 3,
+        activeScopeKey: contextKey,
+        workspaces: [createRegistryEntry(contextKey, projectId)],
     };
 }
 
-function createPersistedContext(key: string, projectId: string) {
+function createRegistryEntry(scopeKey: string, projectId: string) {
     return {
-        key,
-        lastActivatedAt: "2026-07-19T00:00:00.000Z",
-        projectId,
-        workspace: {
+        initialLayout: {
             activePaneId: `pane-${projectId}`,
             rootNode: {
                 activeTabId: null,
@@ -993,26 +1380,85 @@ function createPersistedContext(key: string, projectId: string) {
             },
             tabs: [],
         },
+        lastActivatedAt: "2026-07-19T00:00:00.000Z",
+        projectId,
+        scopeKey,
         worktreeId: null,
     };
 }
 
-function createDeferred<T>(value: T): {
-    readonly promise: Promise<T>;
-    readonly resolve: () => void;
-} {
-    let resolvePromise: ((value: T) => void) | null = null;
-    const promise = new Promise<T>((resolve) => {
-        resolvePromise = resolve;
-    });
-    return {
-        promise,
-        resolve: () => {
-            if (!resolvePromise) {
-                throw new Error("Deferred promise was not initialized.");
+function createDenseRegistryEntry(
+    scopeKey: string,
+    projectId: string,
+    tabCount: number,
+): WorkspaceSurfaceRegistrySnapshot["workspaces"][number] {
+    const tabs: WorkspaceLayoutSnapshot["tabs"][number][] = Array.from(
+        { length: tabCount },
+        (_, index) => {
+            const common = {
+                createdAt: "2026-08-01T00:00:00.000Z",
+                id: `${scopeKey}:tab-${index}`,
+                projectId,
+                title: `Heavy tab ${index}`,
+                worktreeId: null,
+            };
+            switch (index % 5) {
+                case 0:
+                    return {
+                        ...common,
+                        draft: "x".repeat(4_096),
+                        kind: "chat",
+                        runtimeId: "codex",
+                        sessionId: `${scopeKey}:chat-${index}`,
+                    };
+                case 1:
+                    return {
+                        ...common,
+                        kind: "git_worktree_diff",
+                    };
+                case 2:
+                    return {
+                        ...common,
+                        kind: "git",
+                    };
+                case 3:
+                    return {
+                        ...common,
+                        kind: "terminal",
+                        sessionId: `${scopeKey}:terminal-${index}`,
+                    };
+                default:
+                    return {
+                        ...common,
+                        kind: "file",
+                        relativePath: `fixtures/tree-${index}/file-${index}.ts`,
+                    };
             }
-            resolvePromise(value);
         },
+    );
+    return {
+        initialLayout: {
+            activePaneId: `pane-${projectId}`,
+            rootNode: {
+                activeTabId: tabs[0]?.id ?? null,
+                id: `pane-${projectId}`,
+                tabIds: tabs.map((tab) => tab.id),
+                type: "pane",
+            },
+            tabs,
+        },
+        lastActivatedAt: "2026-07-19T00:00:00.000Z",
+        projectId,
+        scopeKey,
+        worktreeId: null,
+    };
+}
+
+function createEnvironment(): WorkspaceSurfaceEnvironmentDiagnostic {
+    return {
+        energySource: "external-power",
+        platform: "darwin",
+        totalMemoryMb: 32_768,
     };
 }
 
@@ -1044,4 +1490,38 @@ function createFileRevealRequest(
 
 function asWebContents(value: unknown): WebContents {
     return value as WebContents;
+}
+
+function notifySurfaceReady(
+    manager: WorkspaceSurfaceManager,
+    value: unknown,
+): void {
+    const webContents = asWebContents(value);
+    const binding = manager.getSurfaceRuntimeSubscriber(webContents);
+    if (!binding) {
+        throw new Error("Expected a bound workspace surface.");
+    }
+    manager.notifySurfaceReady(webContents, binding);
+}
+
+async function finishActiveSurface(
+    manager: WorkspaceSurfaceManager,
+    hostWindowId: string,
+    scopeKey: string,
+): Promise<void> {
+    const webContents = manager.getSurfaceWebContents(hostWindowId, scopeKey);
+    if (!webContents) {
+        throw new Error(`Expected a resident surface for ${scopeKey}.`);
+    }
+    (webContents as unknown as { emit(event: string): void }).emit(
+        "did-finish-load",
+    );
+    notifySurfaceReady(manager, webContents);
+    await vi.waitFor(() =>
+        expect(
+            manager
+                .getSurfaceDiagnostics(hostWindowId)
+                .surfaces.find((surface) => surface.scopeKey === scopeKey)?.state,
+        ).toBe("active"),
+    );
 }
