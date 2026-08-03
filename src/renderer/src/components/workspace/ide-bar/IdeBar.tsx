@@ -74,9 +74,11 @@ export function IdeIconButton({
                 borderRadius: 3,
                 color: "var(--color-text-secondary)",
                 cursor: disabled ? "not-allowed" : "pointer",
+                // Square footprint keeps icon-only toolbars compact.
                 height: 22,
+                minWidth: 22,
                 opacity: disabled ? 0.4 : 1,
-                padding: "0 6px",
+                padding: 0,
             }}
             title={title}
             type="button"

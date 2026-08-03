@@ -323,6 +323,31 @@ pub struct NativeGitWorktreeDiffResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeGitBranchDiffFile {
+    pub additions: Option<i64>,
+    pub deletions: Option<i64>,
+    pub diff: Option<NativeGitFileDiff>,
+    pub error: Option<String>,
+    pub is_binary: bool,
+    pub kind: String,
+    pub path: String,
+    pub previous_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeGitBranchDiffResult {
+    pub project_id: ProjectId,
+    pub worktree_id: Option<WorktreeId>,
+    pub base_ref: Option<String>,
+    pub head_ref: String,
+    pub files: Vec<NativeGitBranchDiffFile>,
+    pub unavailable_reason: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeGitRepositorySnapshot {
     pub repository_id: RepositoryId,
     pub project_id: ProjectId,

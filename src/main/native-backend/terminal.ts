@@ -42,6 +42,7 @@ export class NativeTerminalGateway implements TerminalGateway {
     readonly #onExit: (ownerWindowId: string, event: TerminalExitEvent) => void;
     readonly #projectService: ProjectService;
     readonly #settingsService: SettingsGateway;
+    readonly #runtimeSubscribers = new Map<string, string>();
 
     constructor(options: NativeTerminalGatewayOptions) {
         this.#client = options.client;
@@ -53,6 +54,40 @@ export class NativeTerminalGateway implements TerminalGateway {
         this.#disposeEventListener = this.#client.onEvent((event) => {
             this.#handleNativeEvent(event);
         });
+    }
+
+    async attachRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): Promise<readonly TerminalSession[]> {
+        this.#runtimeSubscribers.set(runtimeOwnerId, subscriberId);
+        return this.#listOwnedSessions(runtimeOwnerId);
+    }
+
+    detachRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): boolean {
+        if (this.#runtimeSubscribers.get(runtimeOwnerId) !== subscriberId) {
+            return false;
+        }
+        this.#runtimeSubscribers.delete(runtimeOwnerId);
+        return true;
+    }
+
+    resyncRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): Promise<readonly TerminalSession[]> {
+        return this.#runtimeSubscribers.get(runtimeOwnerId) === subscriberId
+            ? this.#listOwnedSessions(runtimeOwnerId)
+            : Promise.resolve([]);
+    }
+
+    listOwnedSessions(
+        runtimeOwnerId: string,
+    ): Promise<readonly TerminalSession[]> {
+        return this.#listOwnedSessions(runtimeOwnerId);
     }
 
     async createSession(
@@ -140,6 +175,7 @@ export class NativeTerminalGateway implements TerminalGateway {
     }
 
     async close(): Promise<void> {
+        this.#runtimeSubscribers.clear();
         this.#disposeEventListener();
         await this.#closeAll().catch((error) => {
             this.#reportDiagnostic(
@@ -159,6 +195,15 @@ export class NativeTerminalGateway implements TerminalGateway {
                 windowId: session.windowId,
             });
         }
+    }
+
+    async #listOwnedSessions(
+        runtimeOwnerId: string,
+    ): Promise<readonly TerminalSession[]> {
+        const result = await this.#client.request<{
+            readonly sessions?: readonly NativeTerminalSession[];
+        }>("terminal_list", { windowId: runtimeOwnerId });
+        return (result.sessions ?? []).map(nativeTerminalSessionToIpc);
     }
 
     #handleNativeEvent(event: NativeBackendEvent): void {
@@ -209,6 +254,7 @@ function nativeTerminalSessionToIpc(
         rows: session.rows,
         sessionId: session.sessionId,
         status: session.status,
+        terminalId: session.terminalId,
         worktreeId: session.worktreeId,
     };
 }

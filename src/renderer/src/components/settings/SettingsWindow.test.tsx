@@ -142,6 +142,21 @@ describe("SettingsWindow terminal settings", () => {
         expect(markup).toContain("Terminal");
     });
 
+    it("renders as an embedded main-window view with an explicit return control", () => {
+        const markup = renderToStaticMarkup(
+            <SettingsWindow
+                {...createSettingsWindowProps()}
+                embedded
+                onClose={vi.fn()}
+            />,
+        );
+
+        expect(markup).toContain('aria-label="Close settings"');
+        expect(markup).toContain("Workspace");
+        expect(markup).toContain('height:100%');
+        expect(markup).not.toContain('height:100vh');
+    });
+
     it("warns when the autosave delay can overlap with agent edits", () => {
         const highDelayMarkup = renderToStaticMarkup(
             <SettingsWindow

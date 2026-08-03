@@ -114,7 +114,7 @@ fn reports_capabilities() {
     assert_eq!(response["id"], "caps");
     assert_eq!(response["ok"], true);
     assert_eq!(response["result"]["protocolVersion"], 1);
-    assert_eq!(response["result"]["backendVersion"], "0.2.0");
+    assert_eq!(response["result"]["backendVersion"], "0.2.1");
     assert_eq!(response["result"]["rustVersion"], "1.96");
     assert_eq!(
         response["result"]["capabilities"]["features"],
@@ -123,6 +123,8 @@ fn reports_capabilities() {
             "versioned-protocol",
             "json-fixtures",
             "native-persistence",
+            "durable-workspaces-v4-repository",
+            "durable-workspaces-v3-migration",
             "native-project-registry",
             "native-fs",
             "native-watchers",

@@ -500,6 +500,11 @@ export class AiService {
     >();
     readonly #liveSessionContexts = new Map<string, LiveSessionContext>();
     readonly #liveSnapshots = new Map<string, AiSessionSnapshot>();
+    readonly #runtimeSubscribers = new Map<string, string>();
+    readonly #terminalOutputBytesBySessionId = new Map<
+        string,
+        Map<string, number>
+    >();
     readonly #liveTranscriptTails = new AiLiveTranscriptTailStore();
     readonly #loadedTranscriptBlockMetadataSessionIds = new Set<string>();
     readonly #legacyTranscriptSessionIds = new Set<string>();
@@ -631,6 +636,7 @@ export class AiService {
         this.#activeCustomRuntimeLaunches.clear();
         this.#liveSessionContexts.clear();
         this.#liveSnapshots.clear();
+        this.#runtimeSubscribers.clear();
         this.#liveTranscriptTails.clear();
         this.#loadedTranscriptBlockMetadataSessionIds.clear();
         this.#loadingTranscriptBlockMetadataSessionIds.clear();
@@ -708,6 +714,41 @@ export class AiService {
         }
 
         return snapshots;
+    }
+
+    attachRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): readonly AiSessionSnapshot[] {
+        this.#runtimeSubscribers.set(runtimeOwnerId, subscriberId);
+        return this.getLiveSessionSnapshotsForWindow(runtimeOwnerId);
+    }
+
+    detachRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): boolean {
+        if (this.#runtimeSubscribers.get(runtimeOwnerId) !== subscriberId) {
+            return false;
+        }
+        this.#runtimeSubscribers.delete(runtimeOwnerId);
+        return true;
+    }
+
+    resyncRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): readonly AiSessionSnapshot[] {
+        return this.#runtimeSubscribers.get(runtimeOwnerId) === subscriberId
+            ? this.getLiveSessionSnapshotsForWindow(runtimeOwnerId)
+            : [];
+    }
+
+    isRuntimeSubscriberCurrent(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): boolean {
+        return this.#runtimeSubscribers.get(runtimeOwnerId) === subscriberId;
     }
 
     getLiveSessionSnapshotForWindow(
@@ -826,7 +867,10 @@ export class AiService {
         }
 
         this.#liveTranscriptTails.applyEvent(event);
-        this.#scheduleTranscriptCheckpointAfterRecovery(event.sessionId);
+        this.#scheduleTranscriptCheckpointAfterRecovery(
+            event.sessionId,
+            this.#getTranscriptCheckpointChangedBytes(event),
+        );
         if (event.kind === "turn-status") {
             this.#transcriptPersistence?.requestSeal(
                 event.sessionId,
@@ -2227,7 +2271,7 @@ export class AiService {
 
             this.#clearLiveSession(sessionId);
             for (const subtreeSessionId of subtreeSessionIds) {
-                this.#promptQueue.deleteSession(subtreeSessionId);
+                await this.#promptQueue.deleteSession(subtreeSessionId);
             }
             if (this.#nativeAi?.shouldHandleHistory()) {
                 await this.#nativeAi.deleteSession(sessionId);
@@ -2663,7 +2707,19 @@ export class AiService {
                 };
             }
             case "grok": {
-                const settings = this.#settingsService.loadGrokRuntimeSettings();
+                let settings = this.#settingsService.loadGrokRuntimeSettings();
+                if (
+                    settings.authInvalidatedAtMs !== null &&
+                    settings.authMethod !== "xai-api-key" &&
+                    isGrokExternalCredentialReady(settings)
+                ) {
+                    // Keep legacy and native stores aligned after the CLI renews its login.
+                    settings = {
+                        ...settings,
+                        authInvalidatedAtMs: null,
+                    };
+                    this.#settingsService.saveGrokRuntimeSettings(settings);
+                }
                 return {
                     runtimeId,
                     settings: {
@@ -2856,10 +2912,16 @@ export class AiService {
         );
     }
 
-    #scheduleTranscriptCheckpointAfterRecovery(sessionId: string): void {
+    #scheduleTranscriptCheckpointAfterRecovery(
+        sessionId: string,
+        changedBytes = 0,
+    ): void {
         void this.#recoverTranscriptTail(sessionId)
             .then(() => {
-                this.#transcriptPersistence?.scheduleCheckpoint(sessionId);
+                this.#transcriptPersistence?.scheduleCheckpoint(
+                    sessionId,
+                    changedBytes,
+                );
             })
             .catch((error: unknown) => {
                 debugBenignError(
@@ -2867,6 +2929,32 @@ export class AiService {
                     error,
                 );
             });
+    }
+
+    #getTranscriptCheckpointChangedBytes(
+        event: AiSessionDomainEvent,
+    ): number {
+        if (event.kind === "message-delta" || event.kind === "thinking-delta") {
+            return Buffer.byteLength(event.delta, "utf8");
+        }
+        if (event.kind !== "tool-activity") {
+            return 0;
+        }
+
+        const outputBytes = Buffer.byteLength(
+            event.activity.terminalOutput ?? "",
+            "utf8",
+        );
+        const outputs = this.#terminalOutputBytesBySessionId.get(
+            event.sessionId,
+        ) ?? new Map<string, number>();
+        this.#terminalOutputBytesBySessionId.set(event.sessionId, outputs);
+        const previousBytes = outputs.get(event.activity.id) ?? 0;
+        outputs.set(event.activity.id, outputBytes);
+        // A replacement may shrink after a retry; count its new payload too.
+        return outputBytes >= previousBytes
+            ? outputBytes - previousBytes
+            : outputBytes;
     }
 
     async #recoverTranscriptTail(
@@ -3082,6 +3170,7 @@ export class AiService {
     #detachLiveSession(sessionId: string): void {
         this.#activeCustomRuntimeLaunches.delete(sessionId);
         this.#liveSnapshots.delete(sessionId);
+        this.#terminalOutputBytesBySessionId.delete(sessionId);
         this.#liveSessionContexts.delete(sessionId);
         this.#liveSessionTouches.delete(sessionId);
         this.#freezingSessionIds.delete(sessionId);

@@ -5,6 +5,7 @@ import type {
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceActionContext,
     WorkspaceSurfaceActionCompletion,
+    WorkspaceSurfaceActiveFileState,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 
@@ -104,6 +105,17 @@ export function isWorkspaceSurfaceFileRevealRequest(
     );
 }
 
+export function isWorkspaceSurfaceActiveFileState(
+    input: unknown,
+): input is WorkspaceSurfaceActiveFileState {
+    return (
+        isRecord(input) &&
+        hasValidContext(input) &&
+        (input.relativePath === null ||
+            isNonEmptyString(input.relativePath, MAX_PATH_OR_URL_LENGTH))
+    );
+}
+
 export function isWorkspaceSurfaceActionCompletion(
     input: unknown,
 ): input is WorkspaceSurfaceActionCompletion {
@@ -125,7 +137,10 @@ export function doesWorkspaceSurfaceActionMatchContext(
 
 export function doesWorkspaceSurfaceContextMatchContext(
     request: WorkspaceSurfaceActionContext,
-    context: PersistedWorkspaceContext,
+    context: Pick<
+        PersistedWorkspaceContext,
+        "key" | "projectId" | "worktreeId"
+    >,
 ): boolean {
     return (
         request.contextKey === context.key &&

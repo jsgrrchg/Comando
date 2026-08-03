@@ -20,7 +20,6 @@ import {
     resetClaudeCodeSidebarSessionsForTests,
 } from "./claudeCodeSidebarSession";
 
-const saveWorkspaceSnapshotMock = vi.fn(async () => {});
 const closeTerminalSessionMock = vi.fn(async () => {});
 const readClaudeCodeTranscriptMock = vi.fn();
 
@@ -28,7 +27,6 @@ beforeEach(() => {
     resetClaudeCodeSidebarSessionsForTests();
     resetTerminalRuntimeStoreForTests();
     resetWorkspacePersistenceForTests();
-    saveWorkspaceSnapshotMock.mockClear();
     closeTerminalSessionMock.mockClear();
     readClaudeCodeTranscriptMock.mockReset();
     useWorkspaceStore.setState((state) => ({
@@ -49,7 +47,6 @@ beforeEach(() => {
             comando: {
                 closeTerminalSession: closeTerminalSessionMock,
                 readClaudeCodeTranscript: readClaudeCodeTranscriptMock,
-                saveWorkspaceSnapshot: saveWorkspaceSnapshotMock,
             },
         },
         writable: true,

@@ -130,6 +130,25 @@ export function deriveActivitySegmentChangeStats(
     return deriveDetailedActivitySegmentChangeStats(entries);
 }
 
+export function appendCompactActivitySegmentChangeStats(
+    previous: ActivitySegmentChangeStats,
+    next: ToolActivitySegmentEntry,
+    previousEntryCount: number,
+): ActivitySegmentChangeStats | null {
+    const stats = next.reviewEntry.activity.changeStats;
+    if (!stats) {
+        return null;
+    }
+
+    return {
+        additions: previous.additions + stats.additions,
+        // Compact per-tool totals cannot account for overlapping file edits.
+        approximate:
+            previous.approximate || stats.approximate || previousEntryCount > 0,
+        deletions: previous.deletions + stats.deletions,
+    };
+}
+
 function deriveDetailedActivitySegmentChangeStats(
     entries: readonly ToolActivitySegmentEntry[],
 ): ActivitySegmentChangeStats {

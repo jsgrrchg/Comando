@@ -1,0 +1,21 @@
+{
+    "fixtureSchemaVersion": 1,
+    "files": [
+        {
+            "file": "legacy-v1-layout.json",
+            "sha256": "a7e9755ea96ca6375c1b562f115f0648d99f0b01d538d93f24b36bfcbd2aa26e"
+        },
+        {
+            "file": "legacy-v2-navigation.json",
+            "sha256": "4b0e1f7a1ad32fdb9871aebdc0bf267b1e9296fae2c998a171cefc6ea389ab6d"
+        },
+        {
+            "file": "legacy-v3-multiwindow.json",
+            "sha256": "bfcdb9be4871adf45b9a94fdb09382e3f016d7350ebd674b02c9d7a79cbbce6b"
+        },
+        {
+            "file": "runtime-risk-state.json",
+            "sha256": "64dea7b75fe716425d6ccfe8f520da9d2581fea1eb6b294a1914c82a3c5bdeb2"
+        }
+    ]
+}

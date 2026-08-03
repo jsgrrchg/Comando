@@ -1,4 +1,6 @@
 import type {
+    GitBranchDiffFile,
+    GitBranchDiffResult,
     GitChangeEntry,
     GitDiffScope,
     GitFileDiff as SharedGitFileDiff,
@@ -23,7 +25,7 @@ export interface GitWorktreeDiffPresentationSection {
     readonly additions: number;
     readonly deletions: number;
     readonly files: readonly GitDiffFile[];
-    readonly id: GitDiffScope;
+    readonly id: GitDiffScope | "branch";
     readonly title: string;
 }
 
@@ -132,20 +134,23 @@ export function buildGitDiffFiles(
     });
 }
 
-export function buildGitDiffFileId(scope: GitDiffScope, path: string): string {
+export function buildGitDiffFileId(
+    scope: GitDiffScope | "branch",
+    path: string,
+): string {
     return `${scope}:${encodeURIComponent(path)}`;
 }
 
 export function parseGitDiffFileId(
     fileId: string,
-): { readonly path: string; readonly scope: GitDiffScope } | null {
+): { readonly path: string; readonly scope: GitDiffScope | "branch" } | null {
     const separatorIndex = fileId.indexOf(":");
     if (separatorIndex < 0) {
         return null;
     }
 
     const scope = fileId.slice(0, separatorIndex);
-    if (!isGitDiffScope(scope)) {
+    if (!isGitDiffScope(scope) && scope !== "branch") {
         return null;
     }
 
@@ -186,6 +191,37 @@ export function buildGitWorktreeDiffSections(
             title: formatWorktreeDiffSectionTitle(section.scope),
         };
     });
+}
+
+export function buildGitBranchDiffSections(
+    result: GitBranchDiffResult | null,
+    actions: {
+        readonly onOpenFile: (file: GitBranchDiffFile) => void;
+    },
+): readonly GitWorktreeDiffPresentationSection[] {
+    if (!result) {
+        return [];
+    }
+
+    const files = result.files.map((file) =>
+        convertBranchDiffFile(file, [
+            {
+                id: `${buildGitDiffFileId("branch", file.path)}:open`,
+                label: "Open",
+                onClick: () => actions.onOpenFile(file),
+            },
+        ]),
+    );
+    const totals = sumWorktreeDiffStats(result.files);
+    return [
+        {
+            additions: totals.additions,
+            deletions: totals.deletions,
+            files,
+            id: "branch",
+            title: "Branch Changes",
+        },
+    ];
 }
 
 export function summarizeGitRepository(
@@ -471,6 +507,7 @@ function convertSharedGitDiff(
         kind: diff.kind,
         newText: diff.newText,
         oldText: diff.oldText,
+        patch: diff.patch ?? null,
         path: diff.path,
         previousPath: diff.previousPath,
         reversible: diff.reversible,
@@ -523,6 +560,35 @@ function convertWorktreeDiffFile(
         reversible: file.scope !== "untracked" && !file.isConflicted,
         statusLabel: formatWorktreeDiffStatusLabel(file),
         summary,
+    };
+}
+
+function convertBranchDiffFile(
+    file: GitBranchDiffFile,
+    actions: readonly GitAction[],
+): GitDiffFile {
+    const id = buildGitDiffFileId("branch", file.path);
+    const shared = file.diff ? convertSharedGitDiff(file.diff, null) : null;
+    return {
+        ...(shared ?? {
+            hunks: [],
+            newText: null,
+            oldText: null,
+        }),
+        actions,
+        emptyState: file.error
+            ? file.error
+            : file.isBinary
+              ? "This file is binary, so Comando can show metadata but not a textual diff."
+              : "No hunks were produced for this file.",
+        id,
+        isText: !file.isBinary,
+        kind: mapSharedChangeKindToDiffKind(file.kind),
+        path: file.path,
+        previousPath: file.previousPath,
+        reversible: false,
+        statusLabel: file.error ? "error" : formatSharedChangeKind(file.kind),
+        summary: formatGitCountLabel(file.additions, file.deletions),
     };
 }
 
@@ -712,7 +778,9 @@ function isGitDiffScope(value: string): value is GitDiffScope {
     );
 }
 
-function sumWorktreeDiffStats(files: readonly GitWorktreeDiffFile[]): {
+function sumWorktreeDiffStats(
+    files: readonly (GitWorktreeDiffFile | GitBranchDiffFile)[],
+): {
     readonly additions: number;
     readonly deletions: number;
 } {

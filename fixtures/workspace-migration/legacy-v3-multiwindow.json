@@ -1,0 +1,405 @@
+{
+    "fixtureSchemaVersion": 1,
+    "windows": [
+        {
+            "isOpen": true,
+            "restore": {
+                "revision": 9,
+                "schemaVersion": 1,
+                "snapshot": {
+                    "activeContextKey": "project-alpha::__primary__",
+                    "contexts": [
+                        {
+                            "key": "project-alpha::__primary__",
+                            "lastActivatedAt": "2026-03-20T10:00:00.000Z",
+                            "projectId": "project-alpha",
+                            "workspace": {
+                                "activePaneId": "pane-alpha-chat",
+                                "rootNode": {
+                                    "axis": "horizontal",
+                                    "children": [
+                                        {
+                                            "activeTabId": "chat-alpha",
+                                            "id": "pane-alpha-chat",
+                                            "pinnedTabIds": ["chat-alpha"],
+                                            "tabIds": ["chat-alpha"],
+                                            "type": "pane"
+                                        },
+                                        {
+                                            "activeTabId": "terminal-alpha",
+                                            "id": "pane-alpha-terminal",
+                                            "tabIds": ["terminal-alpha"],
+                                            "type": "pane"
+                                        }
+                                    ],
+                                    "id": "split-alpha",
+                                    "sizes": [0.61, 0.39],
+                                    "type": "split"
+                                },
+                                "tabs": [
+                                    {
+                                        "createdAt": "2026-03-20T09:00:00.000Z",
+                                        "draft": "alpha draft from window A",
+                                        "id": "chat-alpha",
+                                        "kind": "chat",
+                                        "projectId": "project-alpha",
+                                        "runtimeId": "codex",
+                                        "sessionId": "session-alpha-stream",
+                                        "title": "Alpha chat",
+                                        "worktreeId": null
+                                    },
+                                    {
+                                        "createdAt": "2026-03-20T09:01:00.000Z",
+                                        "id": "terminal-alpha",
+                                        "kind": "terminal",
+                                        "projectId": "project-alpha",
+                                        "sessionId": "terminal-session-alpha",
+                                        "terminalId": "terminal-runtime-alpha",
+                                        "title": "Alpha terminal",
+                                        "worktreeId": null
+                                    }
+                                ]
+                            },
+                            "worktreeId": null
+                        },
+                        {
+                            "key": "project-alpha::worktree-feature",
+                            "lastActivatedAt": "2026-03-19T12:00:00.000Z",
+                            "projectId": "project-alpha",
+                            "workspace": {
+                                "activePaneId": "pane-feature",
+                                "rootNode": {
+                                    "activeTabId": "terminal-feature",
+                                    "id": "pane-feature",
+                                    "pinnedTabIds": ["file-feature"],
+                                    "tabIds": ["file-feature", "terminal-feature"],
+                                    "type": "pane"
+                                },
+                                "tabs": [
+                                    {
+                                        "createdAt": "2026-03-19T11:00:00.000Z",
+                                        "id": "file-feature",
+                                        "kind": "file",
+                                        "projectId": "project-alpha",
+                                        "relativePath": "src/feature.ts",
+                                        "title": "feature.ts",
+                                        "worktreeId": "worktree-feature"
+                                    },
+                                    {
+                                        "createdAt": "2026-03-19T11:01:00.000Z",
+                                        "id": "terminal-feature",
+                                        "kind": "terminal",
+                                        "projectId": "project-alpha",
+                                        "sessionId": "terminal-session-feature",
+                                        "terminalId": "terminal-runtime-feature",
+                                        "title": "Feature terminal",
+                                        "worktreeId": "worktree-feature"
+                                    }
+                                ]
+                            },
+                            "worktreeId": "worktree-feature"
+                        },
+                        {
+                            "key": "project-beta::__primary__",
+                            "lastActivatedAt": "2026-03-18T11:00:00.000Z",
+                            "projectId": "project-beta",
+                            "workspace": {
+                                "activePaneId": "pane-beta-a",
+                                "rootNode": {
+                                    "activeTabId": "file-beta-a",
+                                    "id": "pane-beta-a",
+                                    "tabIds": ["file-beta-a"],
+                                    "type": "pane"
+                                },
+                                "tabs": [
+                                    {
+                                        "createdAt": "2026-03-18T10:00:00.000Z",
+                                        "id": "file-beta-a",
+                                        "kind": "file",
+                                        "projectId": "project-beta",
+                                        "relativePath": "README.md",
+                                        "title": "README.md",
+                                        "worktreeId": null
+                                    }
+                                ]
+                            },
+                            "worktreeId": null
+                        }
+                    ],
+                    "openContextKeys": [
+                        "project-alpha::__primary__",
+                        "project-alpha::worktree-feature"
+                    ],
+                    "version": 3
+                },
+                "updatedAt": "2026-03-20T10:01:00.000Z"
+            },
+            "windowId": "window-a",
+            "workspaceId": "workspace-window-a"
+        },
+        {
+            "isOpen": true,
+            "restore": {
+                "revision": 8,
+                "schemaVersion": 1,
+                "snapshot": {
+                    "activeContextKey": "project-alpha::__primary__",
+                    "contexts": [
+                        {
+                            "key": "project-alpha::__primary__",
+                            "lastActivatedAt": "2026-03-21T10:00:00.000Z",
+                            "projectId": "project-alpha",
+                            "workspace": {
+                                "activePaneId": "pane-alpha-chat",
+                                "rootNode": {
+                                    "axis": "horizontal",
+                                    "children": [
+                                        {
+                                            "activeTabId": "chat-alpha",
+                                            "id": "pane-alpha-chat",
+                                            "pinnedTabIds": ["chat-alpha"],
+                                            "tabIds": ["chat-alpha"],
+                                            "type": "pane"
+                                        },
+                                        {
+                                            "activeTabId": "terminal-alpha",
+                                            "id": "pane-alpha-terminal",
+                                            "tabIds": ["terminal-alpha"],
+                                            "type": "pane"
+                                        }
+                                    ],
+                                    "id": "split-alpha",
+                                    "sizes": [0.55, 0.45],
+                                    "type": "split"
+                                },
+                                "tabs": [
+                                    {
+                                        "createdAt": "2026-03-20T09:00:00.000Z",
+                                        "draft": "alpha draft from window B — keep UTF-8 ✓",
+                                        "id": "chat-alpha",
+                                        "kind": "chat",
+                                        "projectId": "project-alpha",
+                                        "runtimeId": "codex",
+                                        "sessionId": "session-alpha-stream",
+                                        "title": "Alpha chat",
+                                        "worktreeId": "project-alpha:primary"
+                                    },
+                                    {
+                                        "createdAt": "2026-03-20T09:01:00.000Z",
+                                        "id": "terminal-alpha",
+                                        "kind": "terminal",
+                                        "projectId": "project-alpha",
+                                        "sessionId": "terminal-session-alpha",
+                                        "terminalId": "terminal-runtime-alpha",
+                                        "title": "Alpha terminal",
+                                        "worktreeId": "project-alpha:primary"
+                                    }
+                                ]
+                            },
+                            "worktreeId": "project-alpha:primary"
+                        },
+                        {
+                            "key": "project-alpha::worktree-feature",
+                            "lastActivatedAt": "2026-03-19T12:00:00.000Z",
+                            "projectId": "project-alpha",
+                            "workspace": {
+                                "activePaneId": "pane-feature",
+                                "rootNode": {
+                                    "activeTabId": "terminal-feature",
+                                    "id": "pane-feature",
+                                    "pinnedTabIds": ["file-feature"],
+                                    "tabIds": ["file-feature", "terminal-feature"],
+                                    "type": "pane"
+                                },
+                                "tabs": [
+                                    {
+                                        "createdAt": "2026-03-19T11:00:00.000Z",
+                                        "id": "file-feature",
+                                        "kind": "file",
+                                        "projectId": "project-alpha",
+                                        "relativePath": "src/feature.ts",
+                                        "title": "feature.ts",
+                                        "worktreeId": "worktree-feature"
+                                    },
+                                    {
+                                        "createdAt": "2026-03-19T11:01:00.000Z",
+                                        "id": "terminal-feature",
+                                        "kind": "terminal",
+                                        "projectId": "project-alpha",
+                                        "sessionId": "terminal-session-feature",
+                                        "terminalId": "terminal-runtime-feature",
+                                        "title": "Feature terminal",
+                                        "worktreeId": "worktree-feature"
+                                    }
+                                ]
+                            },
+                            "worktreeId": "worktree-feature"
+                        },
+                        {
+                            "key": "project-gamma::__primary__",
+                            "lastActivatedAt": "2026-03-20T08:00:00.000Z",
+                            "projectId": "project-gamma",
+                            "workspace": {
+                                "activePaneId": "pane-gamma",
+                                "rootNode": {
+                                    "activeTabId": "file-gamma-dirty",
+                                    "id": "pane-gamma",
+                                    "tabIds": ["file-gamma-dirty"],
+                                    "type": "pane"
+                                },
+                                "tabs": [
+                                    {
+                                        "createdAt": "2026-03-20T07:00:00.000Z",
+                                        "id": "file-gamma-dirty",
+                                        "kind": "file",
+                                        "projectId": "project-gamma",
+                                        "relativePath": "src/dirty.ts",
+                                        "title": "dirty.ts",
+                                        "worktreeId": null
+                                    }
+                                ]
+                            },
+                            "worktreeId": null
+                        }
+                    ],
+                    "openContextKeys": [
+                        "project-alpha::__primary__",
+                        "project-gamma::__primary__"
+                    ],
+                    "version": 3
+                },
+                "updatedAt": "2026-03-20T09:59:00.000Z"
+            },
+            "windowId": "window-b",
+            "workspaceId": "workspace-window-b"
+        },
+        {
+            "isOpen": false,
+            "restore": {
+                "revision": 12,
+                "schemaVersion": 1,
+                "snapshot": {
+                    "activeContextKey": "project-beta::__primary__",
+                    "contexts": [
+                        {
+                            "key": "project-beta::__primary__",
+                            "lastActivatedAt": "2026-03-22T10:00:00.000Z",
+                            "projectId": "project-beta",
+                            "workspace": {
+                                "activePaneId": "pane-beta-c",
+                                "rootNode": {
+                                    "activeTabId": "chat-beta-c",
+                                    "id": "pane-beta-c",
+                                    "pinnedTabIds": ["chat-beta-c"],
+                                    "tabIds": ["chat-beta-c"],
+                                    "type": "pane"
+                                },
+                                "tabs": [
+                                    {
+                                        "createdAt": "2026-03-22T09:00:00.000Z",
+                                        "draft": "beta draft from closed window",
+                                        "id": "chat-beta-c",
+                                        "kind": "chat",
+                                        "projectId": "project-beta",
+                                        "runtimeId": "opencode",
+                                        "sessionId": "session-beta-closed",
+                                        "title": "Beta recovery chat",
+                                        "worktreeId": null
+                                    }
+                                ]
+                            },
+                            "worktreeId": null
+                        },
+                        {
+                            "key": "project-alpha::__primary__",
+                            "lastActivatedAt": "2026-03-17T10:00:00.000Z",
+                            "projectId": "project-alpha",
+                            "workspace": {
+                                "activePaneId": "pane-alpha-c",
+                                "rootNode": {
+                                    "activeTabId": "chat-alpha-c",
+                                    "id": "pane-alpha-c",
+                                    "tabIds": ["chat-alpha-c"],
+                                    "type": "pane"
+                                },
+                                "tabs": [
+                                    {
+                                        "createdAt": "2026-03-17T09:00:00.000Z",
+                                        "draft": "alpha alternate draft from closed window",
+                                        "id": "chat-alpha-c",
+                                        "kind": "chat",
+                                        "projectId": "project-alpha",
+                                        "runtimeId": "codex",
+                                        "sessionId": "session-alpha-recovery",
+                                        "title": "Alpha recovery chat",
+                                        "worktreeId": null
+                                    }
+                                ]
+                            },
+                            "worktreeId": null
+                        },
+                        {
+                            "key": "corrupt",
+                            "lastActivatedAt": "not-a-date",
+                            "projectId": "project-corrupt",
+                            "workspace": {
+                                "activePaneId": "missing",
+                                "tabs": [
+                                    {
+                                        "id": "broken-tab",
+                                        "kind": "file",
+                                        "title": "broken"
+                                    }
+                                ]
+                            },
+                            "worktreeId": null
+                        }
+                    ],
+                    "openContextKeys": [
+                        "project-beta::__primary__",
+                        "corrupt"
+                    ],
+                    "version": 3
+                },
+                "updatedAt": "2026-03-22T10:01:00.000Z"
+            },
+            "windowId": "window-c",
+            "workspaceId": "workspace-window-c"
+        }
+    ],
+    "expected": {
+        "activeScopeKey": "project-alpha::__primary__",
+        "activeSourceWindowId": "window-b",
+        "candidateCountByScope": {
+            "project-alpha::__primary__": 3,
+            "project-alpha::worktree-feature": 2,
+            "project-beta::__primary__": 2,
+            "project-gamma::__primary__": 1
+        },
+        "droppedContextCount": 1,
+        "layoutSourceWindowIdByScope": {
+            "project-alpha::__primary__": "window-b",
+            "project-alpha::worktree-feature": "window-a",
+            "project-beta::__primary__": "window-c",
+            "project-gamma::__primary__": "window-b"
+        },
+        "normalizedContextCount": 8,
+        "preservedDrafts": [
+            "alpha draft from window A",
+            "alpha draft from window B — keep UTF-8 ✓",
+            "alpha alternate draft from closed window",
+            "beta draft from closed window"
+        ],
+        "preservedSessionIds": [
+            "session-alpha-stream",
+            "session-alpha-recovery",
+            "session-beta-closed",
+            "terminal-session-alpha",
+            "terminal-session-feature"
+        ],
+        "recoverySourceWindowIdsByScope": {
+            "project-alpha::__primary__": ["window-a", "window-c"],
+            "project-beta::__primary__": ["window-a"]
+        }
+    }
+}

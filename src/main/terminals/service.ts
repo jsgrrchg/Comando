@@ -4,25 +4,40 @@ import type {
 } from "@shared/ipc";
 
 export interface TerminalGateway {
+    attachRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): Promise<readonly TerminalSession[]> | readonly TerminalSession[];
+    detachRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): boolean;
+    resyncRuntimeSubscriber(
+        runtimeOwnerId: string,
+        subscriberId: string,
+    ): Promise<readonly TerminalSession[]> | readonly TerminalSession[];
+    listOwnedSessions?(
+        runtimeOwnerId: string,
+    ): Promise<readonly TerminalSession[]> | readonly TerminalSession[];
     createSession(
         input: CreateTerminalSessionInput,
-        ownerWindowId: string,
+        runtimeOwnerId: string,
     ): Promise<TerminalSession> | TerminalSession;
     writeInput(
-        ownerWindowId: string,
+        runtimeOwnerId: string,
         sessionId: string,
         data: string,
     ): Promise<void> | void;
     resizeSession(
-        ownerWindowId: string,
+        runtimeOwnerId: string,
         sessionId: string,
         cols: number,
         rows: number,
     ): Promise<void> | void;
     closeSessionOrOwnedTerminal(
-        ownerWindowId: string,
+        runtimeOwnerId: string,
         id: string,
     ): Promise<void> | void;
-    closeOwnedByWindow(ownerWindowId: string): void;
+    closeOwnedByWindow(runtimeOwnerId: string): void;
     close(): Promise<void> | void;
 }

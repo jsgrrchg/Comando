@@ -1,6 +1,7 @@
 import {
     app,
     BrowserWindow,
+    dialog,
     ipcMain,
     MessageChannelMain,
     type MessagePortMain,
@@ -20,14 +21,14 @@ import {
     type AppBootstrapSnapshot,
     type GitRepositoryInvalidation,
     type GitRepositorySnapshot,
-    type MoveWorkspaceContextInput,
-    type OpenProjectWindowInput,
+    type ActivateProjectWorkspaceInput,
+    type OpenSettingsWindowInput,
     type PersistenceSnapshot,
     type ProjectTreeInvalidation,
     type TerminalDataEvent,
     type TerminalExitEvent,
     type WindowContextSnapshot,
-    type WorkspaceNavigationSnapshot,
+    type WorkspaceSurfaceHardLease,
 } from "@shared/ipc";
 import {
     normalizeWorkspaceWorktreeId,
@@ -84,6 +85,7 @@ import {
 } from "./native-backend/projects";
 import type { NativeBackendEvent } from "./native-backend/protocol";
 import { debugBenignError } from "./observability/logging";
+import { collectInitialInternalNavigationUrls } from "./internal-navigation";
 import type { PersistenceGateway } from "./persistence/service";
 import {
     createProjectInvalidationCoordinator,
@@ -96,7 +98,6 @@ import {
     applyAppZoomToWindow,
     broadcastSettingsUpdated,
 } from "./settings/window-zoom";
-import { openSettingsWindow } from "./settings/window";
 import type { TerminalGateway } from "./terminals/service";
 import { initializeAutoUpdates } from "./updater";
 import { isLinuxAppImageEnvironment } from "./updater-config";
@@ -106,8 +107,12 @@ import {
     forEachLiveWindow,
 } from "./window";
 import { windowRegistry } from "./windows/registry";
+import { singleWindowCoordinator } from "./windows/single-window-coordinator";
 import { workspaceSurfaceManager } from "./workspace/surface-manager";
-import { moveWorkspaceBetweenWindows } from "./workspace/move-coordinator";
+import type {
+    WorkspaceSurfaceRuntimeResolutionInput,
+} from "./workspace/surface-manager";
+import { workspaceRuntimeOwnership } from "./workspace/runtime-ownership-coordinator";
 import type { WorkspaceGateway } from "./workspace/service";
 
 import { initReviewEngine } from "@shared/ai-review-engine/reviewEngine";
@@ -130,6 +135,7 @@ let settingsService: SettingsGateway | null = null;
 let terminalService: TerminalGateway | null = null;
 let nativeBackendClient: NativeBackendClient | null = null;
 let nativeBackendCapabilities: NativeCapabilitySet | null = null;
+let nativePersistenceGateway: NativePersistenceGateway | null = null;
 let workspaceService: WorkspaceGateway | null = null;
 let isQuitting = false;
 let isWorkspaceQuitReady = false;
@@ -140,19 +146,18 @@ let pendingShutdown: Promise<void> | null = null;
 let nextWorkspaceFlushRequestId = 0;
 const pendingWorkspaceFlushes = new Map<
     string,
-    { readonly senderId: number; readonly resolve: () => void }
->();
-const pendingWorkspaceSurfaceCaptures = new Map<
-    string,
     {
-        readonly resolve: (snapshot: WorkspaceNavigationSnapshot | null) => void;
         readonly senderId: number;
+        readonly resolve: (leases: readonly WorkspaceSurfaceHardLease[]) => void;
     }
 >();
+const pendingInternalNavigationUrls = collectInitialInternalNavigationUrls(
+    process.argv,
+);
 
 ipcMain.on(
     IPC_EVENTS.workspaceFlushAcknowledged,
-    (event, requestId: unknown) => {
+    (event, requestId: unknown, rawLeases: unknown) => {
         if (typeof requestId !== "string") {
             return;
         }
@@ -161,26 +166,7 @@ ipcMain.on(
             return;
         }
         pendingWorkspaceFlushes.delete(requestId);
-        pending.resolve();
-    },
-);
-
-ipcMain.on(
-    IPC_EVENTS.workspaceSurfaceSnapshotCaptured,
-    (event, requestId: unknown, snapshot: unknown) => {
-        if (typeof requestId !== "string") {
-            return;
-        }
-        const pending = pendingWorkspaceSurfaceCaptures.get(requestId);
-        if (!pending || pending.senderId !== event.sender.id) {
-            return;
-        }
-        pendingWorkspaceSurfaceCaptures.delete(requestId);
-        pending.resolve(
-            snapshot && typeof snapshot === "object"
-                ? (snapshot as WorkspaceNavigationSnapshot)
-                : null,
-        );
+        pending.resolve(parseWorkspaceFlushLeases(rawLeases));
     },
 );
 
@@ -199,6 +185,8 @@ type AiSessionStreamPortState = {
     readonly pendingAckSentAtBySeq: Map<number, number>;
     readonly pendingPreservedPayloads: AiSessionStreamPreservationQueue;
     staleTimer: ReturnType<typeof setTimeout> | null;
+    readonly runtimeOwnerId: string;
+    readonly webContents: WebContents;
 };
 
 const aiSessionStreamPorts = new Map<string, AiSessionStreamPortState>();
@@ -206,28 +194,30 @@ const aiSessionStreamPorts = new Map<string, AiSessionStreamPortState>();
 configureMainProcessApp();
 registerFilePreviewSchemes();
 
-const shouldUseSingleInstanceLock = appChannel === "release";
-const hasSingleInstanceLock = shouldUseSingleInstanceLock
-    ? app.requestSingleInstanceLock()
-    : true;
+const hasSingleInstanceLock = singleWindowCoordinator.acquireInstanceLock(app);
 
 if (!hasSingleInstanceLock) {
     app.quit();
 } else {
-    if (shouldUseSingleInstanceLock) {
-        app.on("second-instance", () => {
-            const mainWindow =
-                windowRegistry.getFocusedMainWindow() ??
-                windowRegistry.getMostRecentMainWindow();
+    app.on("second-instance", (_event, argv) => {
+        pendingInternalNavigationUrls.push(
+            ...argv.filter((argument) => argument.startsWith("comando://")),
+        );
+        void focusCanonicalMainWindowAndRoutePending();
+    });
 
-            if (mainWindow) {
-                focusExistingWindow(mainWindow);
-                return;
-            }
+    app.on("open-url", (event, url) => {
+        event.preventDefault();
+        pendingInternalNavigationUrls.push(url);
+        void focusCanonicalMainWindowAndRoutePending();
+    });
 
-            void openNewMainWindow(null);
-        });
-    }
+    app.on("open-file", (event) => {
+        event.preventDefault();
+        if (!singleWindowCoordinator.focusMainWindow()) {
+            void ensureMainWindow(null);
+        }
+    });
 
     void app
         .whenReady()
@@ -246,8 +236,13 @@ if (!hasSingleInstanceLock) {
             }
             const nativeClient = nativeBackendClient;
             nativeAppDataClient = await createNativeAppDataClient({
+                applicationVersion: app.getVersion(),
                 client: nativeClient,
                 databaseFile,
+                onWorkspaceMigrationTelemetry: (telemetry) => {
+                    console.info("[workspace-migration]", telemetry);
+                },
+                publishWorkspaceRollout: appChannel === "release",
             });
             persistenceService = nativeAppDataClient.persistence;
             secretStore = nativeAppDataClient.secretStore;
@@ -339,14 +334,56 @@ if (!hasSingleInstanceLock) {
             });
             workspaceService = nativeAppDataClient.workspace;
             workspaceSurfaceManager.setLifecycleHandlers({
-                onSurfaceCreated: (webContents, ownerId) => {
-                    attachAiSessionStream(webContents, ownerId);
+                commitActiveScope: (_hostWindowId, scopeKey) =>
+                    commitDurableWorkspaceActiveScope(scopeKey),
+                onSurfaceCreated: (subscriber) => {
+                    const previous = workspaceRuntimeOwnership.attach(subscriber);
+                    if (previous) {
+                        detachAiSessionStream(previous.generation);
+                    }
+                    aiService?.attachRuntimeSubscriber(
+                        subscriber.runtimeOwnerId,
+                        subscriber.generation,
+                    );
+                    void terminalService?.attachRuntimeSubscriber(
+                        subscriber.runtimeOwnerId,
+                        subscriber.generation,
+                    );
                 },
-                onSurfaceDestroyed: (ownerId) => {
-                    detachAiSessionStream(ownerId);
-                    terminalService?.closeOwnedByWindow(ownerId);
-                    aiService?.closeOwnedByWindow(ownerId);
+                onSurfaceDestroyed: (subscriber) => {
+                    detachAiSessionStream(subscriber.generation);
+                    terminalService?.detachRuntimeSubscriber(
+                        subscriber.runtimeOwnerId,
+                        subscriber.generation,
+                    );
+                    aiService?.detachRuntimeSubscriber(
+                        subscriber.runtimeOwnerId,
+                        subscriber.generation,
+                    );
+                    workspaceRuntimeOwnership.detach(subscriber);
                 },
+                onSurfaceLifecycleChanged: (subscriber, lifecycle) => {
+                    if (
+                        !workspaceRuntimeOwnership.setLifecycle(
+                            subscriber,
+                            lifecycle,
+                        )
+                    ) {
+                        return;
+                    }
+                    if (lifecycle === "visible") {
+                        attachAiSessionStream(
+                            subscriber.webContents,
+                            subscriber.generation,
+                            subscriber.runtimeOwnerId,
+                        );
+                    } else {
+                        detachAiSessionStream(subscriber.generation);
+                    }
+                },
+                prepareSurfaceHibernate: (subscriber) =>
+                    requestWorkspaceFlush(subscriber.webContents),
+                resolveRuntimeOwner: resolveWorkspaceSurfaceRuntimeOwner,
             });
 
             bootstrapSnapshot = {
@@ -361,10 +398,18 @@ if (!hasSingleInstanceLock) {
                 },
             };
 
+            if (!nativePersistenceGateway) {
+                throw new Error(
+                    "Durable workspace persistence is unavailable during IPC registration.",
+                );
+            }
+
             registerIpcHandlers({
                 aiService,
-                captureWorkspaceSurfaceContext:
-                    requestWorkspaceSurfaceContextCapture,
+                durableWorkspaceRepository: nativePersistenceGateway,
+                focusMainWindow: () => {
+                    singleWindowCoordinator.focusMainWindow();
+                },
                 getSnapshot: () => {
                     if (!bootstrapSnapshot) {
                         throw new Error(
@@ -377,8 +422,8 @@ if (!hasSingleInstanceLock) {
                 persistenceService,
                 gitService,
                 githubService,
-                openProjectWindow: openOrFocusProjectWindow,
-                moveWorkspaceContext,
+                activateProjectWorkspace,
+                openSettingsView,
                 projectService,
                 settingsService,
                 terminalService,
@@ -389,7 +434,7 @@ if (!hasSingleInstanceLock) {
                 adjustAppZoom: (direction) => {
                     updateAppZoom(direction);
                 },
-                closeFocusedWindowSurface: () => {
+                closeActiveTab: () => {
                     const focusedWindow = BrowserWindow.getFocusedWindow();
                     if (!focusedWindow) {
                         return;
@@ -407,17 +452,15 @@ if (!hasSingleInstanceLock) {
                         );
                         return;
                     }
-
-                    focusedWindow.close();
+                },
+                closeActiveWorkspace: () => {
+                    void closeActiveWorkspace();
                 },
                 getFocusedMainWindowContext: () => {
                     const mainWindow = windowRegistry.getFocusedMainWindow();
                     return mainWindow
                         ? windowRegistry.getContextByBrowserWindow(mainWindow)
                         : null;
-                },
-                openNewMainWindow: (projectId) => {
-                    void openNewMainWindow(projectId ?? null);
                 },
                 openWorkspaceSwitcher: () => {
                     const focusedWindow = windowRegistry.getFocusedMainWindow();
@@ -443,24 +486,26 @@ if (!hasSingleInstanceLock) {
                         IPC_EVENTS.workspaceReopenLastClosedTab,
                     );
                 },
-                toggleSidebar: () => {
+                toggleNavigator: () => {
                     const focusedWindow = windowRegistry.getFocusedMainWindow();
                     if (!focusedWindow) {
                         return;
                     }
 
                     focusedWindow.webContents.send(
-                        IPC_EVENTS.sidebarToggleRequested,
+                        IPC_EVENTS.navigatorToggleRequested,
                     );
                 },
-                openSettingsWindow: (projectId) =>
-                    openSettingsWindow(
-                        { projectId },
-                        loadCurrentAppZoomFactor(),
-                    ),
+                toggleInspector: () => {
+                    windowRegistry.getFocusedMainWindow()?.webContents.send(
+                        IPC_EVENTS.inspectorToggleRequested,
+                    );
+                },
+                openSettingsView: (projectId) =>
+                    openSettingsView({ projectId }),
             });
 
-            restoreMainWindows();
+            await restoreMainWindows();
             initializeAutoUpdates({
                 appChannel,
                 isLinuxAppImage: isLinuxAppImageEnvironment(process.env),
@@ -470,8 +515,8 @@ if (!hasSingleInstanceLock) {
             });
 
             app.on("activate", () => {
-                if (windowRegistry.listMainWindowContexts().length === 0) {
-                    void openNewMainWindow(null);
+                if (!singleWindowCoordinator.focusMainWindow()) {
+                    void ensureMainWindow(null);
                 }
             });
         })
@@ -495,11 +540,19 @@ app.on("before-quit", (event) => {
     }
     event.preventDefault();
     if (!pendingWorkspaceQuit) {
-        pendingWorkspaceQuit = flushAllWorkspaceWindowsForQuit().finally(() => {
-            pendingWorkspaceQuit = null;
-            isWorkspaceQuitReady = true;
-            app.quit();
-        });
+        pendingWorkspaceQuit = flushAllWorkspaceWindowsForQuit()
+            .then(() => {
+                isWorkspaceQuitReady = true;
+                app.quit();
+            })
+            .catch((error) => {
+                isQuitting = false;
+                cancelWorkspaceHostCloseForLiveWindows();
+                showWorkspaceCloseFailure(error);
+            })
+            .finally(() => {
+                pendingWorkspaceQuit = null;
+            });
     }
 });
 
@@ -539,6 +592,7 @@ async function shutdownApplication(): Promise<void> {
     githubService = null;
     nativeBackendClient = null;
     nativeBackendCapabilities = null;
+    nativePersistenceGateway = null;
     persistenceService = null;
     projectService = null;
     projectInvalidationCoordinator = null;
@@ -546,6 +600,7 @@ async function shutdownApplication(): Promise<void> {
     settingsService = null;
     terminalService = null;
     workspaceService = null;
+    workspaceRuntimeOwnership.clear();
 
     const shutdownResults = await Promise.allSettled([
         gitServiceToClose?.close(),
@@ -684,12 +739,80 @@ async function openNativePersistenceRequired(databaseFile: string): Promise<void
                 "Native persistence did not report a compatible open store.",
             );
         }
+        nativePersistenceGateway = gateway;
     } catch (error) {
         throw new Error(
             `[native-backend] Native persistence startup failed: ${formatError(error)}`,
             { cause: error },
         );
     }
+}
+
+async function resolveWorkspaceSurfaceRuntimeOwner(
+    input: WorkspaceSurfaceRuntimeResolutionInput,
+): Promise<{ readonly revision: number; readonly runtimeOwnerId: string }> {
+    const repository = nativePersistenceGateway;
+    if (!repository) {
+        throw new Error("Durable workspace persistence is not available.");
+    }
+
+    let workspace = await repository.loadDurableWorkspace(input.scopeKey);
+    if (!workspace) {
+        try {
+            workspace = await repository.createDurableWorkspace({
+                layoutSnapshot: input.layoutSnapshot,
+                lifecycle: "active",
+                projectId: input.projectId,
+                scopeKey: input.scopeKey,
+                worktreeId: normalizeWorkspaceWorktreeId(
+                    input.projectId,
+                    input.worktreeId,
+                ),
+            });
+        } catch (error) {
+            // Another surface may have won the lazy-create race for this scope.
+            workspace = await repository.loadDurableWorkspace(input.scopeKey);
+            if (!workspace) {
+                throw error;
+            }
+        }
+    }
+
+    return {
+        revision: workspace.revision,
+        runtimeOwnerId: workspace.runtimeOwnerId,
+    };
+}
+
+async function commitDurableWorkspaceActiveScope(
+    scopeKey: string | null,
+): Promise<void> {
+    const repository = nativePersistenceGateway;
+    if (!repository) {
+        throw new Error("Durable workspace persistence is not available.");
+    }
+
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        const navigation = await repository.getWorkspaceNavigation();
+        if (navigation.activeScopeKey === scopeKey) {
+            return;
+        }
+        try {
+            await repository.setActiveWorkspace({
+                activeScopeKey: scopeKey,
+                expectedRevision: navigation.revision,
+            });
+            return;
+        } catch (error) {
+            // Reloading the revision resolves a concurrent activation without
+            // allowing last-write-wins at the persistence boundary.
+            lastError = error;
+        }
+    }
+    throw lastError instanceof Error
+        ? lastError
+        : new Error("Could not commit durable workspace navigation.");
 }
 
 function summarizeNativeBackendCapabilities(capabilities: unknown): string {
@@ -741,18 +864,18 @@ async function requestNativeBackendTestEventOnce(): Promise<void> {
     }
 }
 
-function restoreMainWindows(): void {
+async function restoreMainWindows(): Promise<void> {
     const snapshots = filterRestorableMainWindowSnapshots(
         persistenceService?.listRestorableMainWindowSnapshots() ?? [],
     );
-    if (snapshots.length === 0) {
-        void openNewMainWindow(null);
+    const snapshot = snapshots[0];
+    if (!snapshot) {
+        await ensureMainWindow(null);
+        routePendingInternalNavigation();
         return;
     }
-
-    for (const snapshot of snapshots) {
-        createTrackedMainWindow(snapshot);
-    }
+    createTrackedMainWindow(snapshot);
+    routePendingInternalNavigation();
 }
 
 function filterRestorableMainWindowSnapshots(
@@ -762,34 +885,17 @@ function filterRestorableMainWindowSnapshots(
     return snapshots;
 }
 
-async function openNewMainWindow(projectId: string | null): Promise<void> {
-    await openNewMainWindowWithOptions({
-        projectId,
-    });
-}
-
-async function openOrFocusProjectWindow(
-    input: OpenProjectWindowInput,
+async function activateProjectWorkspace(
+    input: ActivateProjectWorkspaceInput,
 ): Promise<void> {
     if (!persistenceService) {
         throw new Error("The persistence service is unavailable.");
     }
 
-    const existingWindow = await activateExistingWorkspaceScope(
-        input.projectId,
-        input.worktreeId ?? null,
-    );
-    if (!existingWindow) {
-        await openNewMainWindowWithOptions({
-            projectId: input.projectId,
-            worktreeId: input.worktreeId,
-        });
-        return;
-    }
-
-    const context = windowRegistry.getContextByBrowserWindow(existingWindow);
+    const targetWindow = await ensureMainWindow(input.projectId);
+    const context = windowRegistry.getContextByBrowserWindow(targetWindow);
     if (!context || context.windowKind !== "main") {
-        focusExistingWindow(existingWindow);
+        focusExistingWindow(targetWindow);
         return;
     }
 
@@ -806,136 +912,38 @@ async function openOrFocusProjectWindow(
         );
     }
 
-    focusExistingWindow(existingWindow);
+    focusExistingWindow(targetWindow);
 
-    if (input.worktreeId !== undefined || input.branchName !== undefined) {
-        existingWindow.webContents.send(
-            IPC_EVENTS.projectWindowRequested,
-            input,
-        );
-    }
+    sendWhenMainWindowReady(
+        targetWindow,
+        IPC_EVENTS.projectWorkspaceRequested,
+        input,
+    );
 }
 
-async function openNewMainWindowWithOptions(input: {
-    readonly projectId: string | null;
-    readonly worktreeId?: string | null;
-}): Promise<void> {
+async function ensureMainWindow(projectId: string | null): Promise<BrowserWindow> {
+    const existing = singleWindowCoordinator.getMainWindow();
+    if (existing) {
+        singleWindowCoordinator.focusMainWindow();
+        return existing;
+    }
     if (!persistenceService) {
         throw new Error("The persistence service is unavailable.");
     }
-
-    if (input.projectId) {
-        const existingWindow = await activateExistingWorkspaceScope(
-            input.projectId,
-            input.worktreeId ?? null,
-        );
-        if (existingWindow) {
-            return;
-        }
-    }
-
     const closedProjectSnapshot =
-        input.projectId
+        projectId
             ? await persistenceService.findClosedMainWindowSnapshotForProject(
-                  input.projectId,
-                  input.worktreeId,
+                  projectId,
+                  null,
               )
             : null;
     if (closedProjectSnapshot) {
-        createTrackedMainWindow(closedProjectSnapshot);
-        return;
+        return createTrackedMainWindow(closedProjectSnapshot);
     }
-
-    const focusedMainWindow = windowRegistry.getFocusedMainWindow();
-    const sourceContext = focusedMainWindow
-        ? windowRegistry.getContextByBrowserWindow(focusedMainWindow)
-        : null;
-    const sourceShellState =
-        sourceContext?.windowKind === "main"
-            ? persistenceService.loadSnapshot(sourceContext.windowId).shellState
-            : undefined;
     const snapshot = await persistenceService.createMainWindowSession(
-        sourceShellState === undefined
-            ? {
-                  projectId: input.projectId,
-                  worktreeId: input.worktreeId,
-              }
-            : {
-                  projectId: input.projectId,
-                  shellState: sourceShellState,
-                  worktreeId: input.worktreeId,
-              },
+        { projectId, worktreeId: null },
     );
-
-    createTrackedMainWindow(snapshot);
-}
-
-async function activateExistingWorkspaceScope(
-    projectId: string,
-    worktreeId: string | null,
-): Promise<BrowserWindow | null> {
-    const location = workspaceSurfaceManager.findPreferredWorkspaceLocation({
-        projectId,
-        worktreeId,
-    });
-    if (location) {
-        const window = windowRegistry.getWindowByStableId(
-            location.hostWindowId,
-        );
-        const context = window
-            ? windowRegistry.getContextByBrowserWindow(window)
-            : null;
-        if (!window || context?.windowKind !== "main") {
-            return null;
-        }
-        workspaceSurfaceManager.activate(
-            location.hostWindowId,
-            location.contextKey,
-        );
-        const snapshot = workspaceSurfaceManager.getHostSnapshotForWindow(
-            location.hostWindowId,
-        );
-        if (snapshot) {
-            workspaceSurfaceManager
-                .getHostWebContents(location.hostWindowId)
-                ?.send(IPC_EVENTS.workspaceSurfaceSnapshotUpdated, snapshot);
-            if (workspaceService && context.workspaceId) {
-                await workspaceService.saveSnapshot(
-                    context.workspaceId,
-                    snapshot,
-                );
-            }
-        }
-        persistenceService?.saveActiveProjectId(
-            location.hostWindowId,
-            location.projectId,
-            location.worktreeId,
-        );
-        windowRegistry.updateMainWindowProjectId(
-            location.hostWindowId,
-            location.projectId,
-            location.worktreeId,
-        );
-        updateMainWindowTitle(window, location.projectId);
-        focusExistingWindow(window);
-        return window;
-    }
-
-    const pendingWindowContext = windowRegistry
-        .listMainWindowContexts()
-        .find(
-            (context) =>
-                context.projectId === projectId &&
-                normalizeWorkspaceWorktreeId(projectId, context.worktreeId) ===
-                    normalizeWorkspaceWorktreeId(projectId, worktreeId),
-        );
-    const pendingWindow = pendingWindowContext
-        ? windowRegistry.getWindowByStableId(pendingWindowContext.windowId)
-        : null;
-    if (pendingWindow) {
-        focusExistingWindow(pendingWindow);
-    }
-    return pendingWindow;
+    return createTrackedMainWindow(snapshot);
 }
 
 function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
@@ -946,6 +954,12 @@ function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
         throw new Error(
             "A main window snapshot requires a main window context.",
         );
+    }
+
+    const existing = singleWindowCoordinator.getMainWindow();
+    if (existing) {
+        focusExistingWindow(existing);
+        return existing;
     }
 
     const window = createMainWindow(
@@ -962,113 +976,90 @@ function createTrackedMainWindow(snapshot: PersistenceSnapshot): BrowserWindow {
     });
 
     applyAppZoomToWindow(window, loadCurrentAppZoomFactor());
+    singleWindowCoordinator.registerMainWindow(window);
     windowRegistry.register(window, context);
     attachMainWindowLifecycle(window, context);
     persistenceService?.markWindowOpen(context.windowId);
-    updateMainWindowTitle(window, context.projectId);
+    updateMainWindowTitle(window);
 
     return window;
 }
 
-async function moveWorkspaceContext(
-    sourceWindowId: string,
-    input: MoveWorkspaceContextInput,
-): Promise<void> {
-    if (!persistenceService || !workspaceService) {
-        throw new Error("The workspace service is unavailable.");
+async function focusCanonicalMainWindowAndRoutePending(): Promise<void> {
+    try {
+        const window = await ensureMainWindow(null);
+        focusExistingWindow(window);
+        routePendingInternalNavigation();
+    } catch {
+        // Startup will drain queued requests after persistence is available.
     }
-    await moveWorkspaceBetweenWindows(sourceWindowId, input, {
-        captureContext: requestWorkspaceSurfaceContextCapture,
-        createEmptyTarget: createEmptyWorkspaceTransferWindow,
-        flushHost: async (windowId) => {
-            const window = windowRegistry.getWindowByStableId(windowId);
-            if (!window) {
-                throw new Error("A workspace window is no longer available.");
-            }
-            await requestWorkspaceFlushesForHost(window, windowId);
-        },
-        getWindowContext: (windowId) =>
-            windowRegistry
-                .listMainWindowContexts()
-                .find((context) => context.windowId === windowId) ?? null,
-        isWindowAvailable: (windowId) =>
-            Boolean(windowRegistry.getWindowByStableId(windowId)),
-        manager: workspaceSurfaceManager,
-        onTransferred: (sourceId, targetId, transfer) => {
-            applyTransferredWorkspaceWindowState(
-                sourceId,
-                transfer.sourceSnapshot,
-            );
-            applyTransferredWorkspaceWindowState(
-                targetId,
-                transfer.targetSnapshot,
-            );
-            const targetWindow = windowRegistry.getWindowByStableId(targetId);
-            if (targetWindow) {
-                focusExistingWindow(targetWindow);
-            }
-        },
-        workspaceService,
-    });
 }
 
-async function createEmptyWorkspaceTransferWindow(): Promise<WindowContextSnapshot> {
-    if (!persistenceService || !workspaceService) {
-        throw new Error("The workspace service is unavailable.");
+function routePendingInternalNavigation(): void {
+    const window = singleWindowCoordinator.getMainWindow();
+    if (!window) {
+        return;
     }
-    const focusedMainWindow = windowRegistry.getFocusedMainWindow();
-    const focusedContext = focusedMainWindow
-        ? windowRegistry.getContextByBrowserWindow(focusedMainWindow)
+    for (const url of pendingInternalNavigationUrls.splice(0)) {
+        sendWhenMainWindowReady(
+            window,
+            IPC_EVENTS.internalNavigationRequested,
+            url,
+        );
+    }
+}
+
+async function openSettingsView(input: OpenSettingsWindowInput): Promise<void> {
+    const window = await ensureMainWindow(input.projectId);
+    focusExistingWindow(window);
+    sendWhenMainWindowReady(
+        window,
+        IPC_EVENTS.settingsViewRequested,
+        input,
+    );
+}
+
+async function closeActiveWorkspace(): Promise<void> {
+    const window = singleWindowCoordinator.getMainWindow();
+    const context = window
+        ? windowRegistry.getContextByBrowserWindow(window)
         : null;
-    const shellState =
-        focusedContext?.windowKind === "main"
-            ? persistenceService.loadSnapshot(focusedContext.windowId).shellState
-            : null;
-    const persistenceSnapshot = await persistenceService.createMainWindowSession({
-        projectId: null,
-        shellState,
-        worktreeId: null,
-    });
-    const context = persistenceSnapshot.windowContext;
-    if (context?.windowKind !== "main" || !context.workspaceId) {
-        throw new Error("Could not create the destination window.");
+    if (!window || context?.windowKind !== "main") {
+        return;
     }
-    const emptySnapshot: WorkspaceNavigationSnapshot = {
-        activeContextKey: null,
-        contexts: [],
-        openContextKeys: [],
-        version: 3,
-    };
-    await workspaceService.saveSnapshot(context.workspaceId, emptySnapshot);
-    createTrackedMainWindow(persistenceSnapshot);
-    // The live surface can only be attached after the new host renderer has
-    // hydrated its empty navigation and registered its content view owner.
-    if (!(await workspaceSurfaceManager.waitForHost(context.windowId))) {
-        throw new Error("The destination window did not finish starting.");
+    const activeContext = workspaceSurfaceManager.getActiveContext(
+        context.windowId,
+    );
+    if (!activeContext) {
+        return;
     }
-    return context;
+    const result = await workspaceSurfaceManager.closeWorkspaceSurface(
+        context.windowId,
+        activeContext.scopeKey,
+    );
+    if (result.status !== "closed") {
+        return;
+    }
+    persistenceService?.saveActiveProjectId(context.windowId, null, null);
+    windowRegistry.updateMainWindowProjectId(context.windowId, null, null);
+    updateMainWindowTitle(window);
 }
 
-function applyTransferredWorkspaceWindowState(
-    windowId: string,
-    snapshot: WorkspaceNavigationSnapshot,
+function sendWhenMainWindowReady(
+    window: BrowserWindow,
+    channel: string,
+    payload: unknown,
 ): void {
-    const activeContext = snapshot.activeContextKey
-        ? snapshot.contexts.find(
-              (context) => context.key === snapshot.activeContextKey,
-          ) ?? null
-        : null;
-    const projectId = activeContext?.projectId ?? null;
-    const worktreeId = activeContext?.worktreeId ?? null;
-    workspaceSurfaceManager
-        .getHostWebContents(windowId)
-        ?.send(IPC_EVENTS.workspaceSurfaceSnapshotUpdated, snapshot);
-    persistenceService?.saveActiveProjectId(windowId, projectId, worktreeId);
-    windowRegistry.updateMainWindowProjectId(windowId, projectId, worktreeId);
-    const window = windowRegistry.getWindowByStableId(windowId);
-    if (window) {
-        updateMainWindowTitle(window, projectId);
+    // A request can arrive during startup before the host installs preload listeners.
+    if (window.webContents.isLoadingMainFrame()) {
+        window.webContents.once("did-finish-load", () => {
+            if (!window.isDestroyed()) {
+                window.webContents.send(channel, payload);
+            }
+        });
+        return;
     }
+    window.webContents.send(channel, payload);
 }
 
 function loadCurrentAppZoomFactor(): number {
@@ -1182,16 +1173,23 @@ function attachMainWindowLifecycle(
             event.preventDefault();
             if (!closeFlushInFlight) {
                 closeFlushInFlight = true;
-                void prepareWorkspaceHostForClose(
-                    window,
-                    context.windowId,
-                ).finally(() => {
-                    closeFlushComplete = true;
-                    closeFlushInFlight = false;
-                    if (!window.isDestroyed()) {
-                        window.close();
-                    }
-                });
+                void prepareWorkspaceHostForClose(window, context.windowId)
+                    .then(() => {
+                        closeFlushComplete = true;
+                        if (!window.isDestroyed()) {
+                            window.close();
+                        }
+                    })
+                    .catch((error) => {
+                        workspaceSurfaceManager.cancelHostClose(
+                            context.windowId,
+                            window,
+                        );
+                        showWorkspaceCloseFailure(error, window);
+                    })
+                    .finally(() => {
+                        closeFlushInFlight = false;
+                    });
             }
             return;
         }
@@ -1233,27 +1231,45 @@ function attachMainWindowLifecycle(
     persistWindowState();
 }
 
-async function requestWorkspaceFlush(webContents: WebContents): Promise<void> {
+async function requestWorkspaceFlush(
+    webContents: WebContents,
+): Promise<readonly WorkspaceSurfaceHardLease[]> {
+    if (webContents.isDestroyed()) {
+        throw new Error("The workspace renderer closed before it could flush.");
+    }
     const requestId = `${webContents.id}:${++nextWorkspaceFlushRequestId}`;
-    await new Promise<void>((resolve) => {
+    return await new Promise<readonly WorkspaceSurfaceHardLease[]>(
+        (resolve, reject) => {
         let settled = false;
-        const finish = () => {
+        const finish = (error?: Error) => {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
             pendingWorkspaceFlushes.delete(requestId);
-            resolve();
+            if (error) {
+                reject(error);
+            }
         };
-        const timer = setTimeout(finish, 1_500);
+        const timer = setTimeout(
+            () =>
+                finish(
+                    new Error("The workspace renderer did not confirm its flush."),
+                ),
+            1_500,
+        );
         pendingWorkspaceFlushes.set(requestId, {
-            resolve: finish,
+            resolve: (leases) => {
+                finish();
+                resolve(leases);
+            },
             senderId: webContents.id,
         });
         webContents.send(
             IPC_EVENTS.workspaceFlushRequested,
             requestId,
         );
-    });
+        },
+    );
 }
 
 async function requestWorkspaceFlushesForHost(
@@ -1261,10 +1277,39 @@ async function requestWorkspaceFlushesForHost(
     hostWindowId: string,
 ): Promise<void> {
     const surfaces = workspaceSurfaceManager.getWebContentsForHost(hostWindowId);
-    await Promise.all([
+    const leases = (
+        await Promise.all([
         requestWorkspaceFlush(window.webContents),
         ...surfaces.map((webContents) => requestWorkspaceFlush(webContents)),
-    ]);
+        ])
+    ).flat();
+    if (leases.length > 0) {
+        throw new Error(
+            leases.map((lease) => lease.message).filter(Boolean).join(" ") ||
+                "Workspace resources are not ready to close.",
+        );
+    }
+}
+
+function parseWorkspaceFlushLeases(
+    value: unknown,
+): readonly WorkspaceSurfaceHardLease[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return (value as readonly unknown[]).flatMap((candidate) => {
+        const record = candidate as Record<string, unknown> | null;
+        if (
+            !record ||
+            typeof record.acquiredAt !== "string" ||
+            typeof record.id !== "string" ||
+            typeof record.kind !== "string" ||
+            typeof record.message !== "string"
+        ) {
+            return [];
+        }
+        return [record as unknown as WorkspaceSurfaceHardLease];
+    });
 }
 
 async function prepareWorkspaceHostForClose(
@@ -1273,47 +1318,6 @@ async function prepareWorkspaceHostForClose(
 ): Promise<void> {
     await workspaceSurfaceManager.prepareHostForClose(hostWindowId, window);
     await requestWorkspaceFlushesForHost(window, hostWindowId);
-}
-
-async function requestWorkspaceSurfaceContextCapture(
-    hostWindowId: string,
-    contextKey: string,
-): Promise<WorkspaceNavigationSnapshot | null> {
-    const surface = workspaceSurfaceManager.getSurfaceWebContents(
-        hostWindowId,
-        contextKey,
-    );
-    if (!surface) {
-        return workspaceSurfaceManager.getHostSnapshotForWindow(hostWindowId);
-    }
-    const snapshot = await requestWorkspaceSurfaceSnapshot(surface);
-    if (!snapshot) {
-        return null;
-    }
-    return workspaceSurfaceManager.mergeSurfaceSnapshot(surface, snapshot)?.snapshot ?? null;
-}
-
-async function requestWorkspaceSurfaceSnapshot(
-    webContents: WebContents,
-): Promise<WorkspaceNavigationSnapshot | null> {
-    const requestId = `snapshot:${webContents.id}:${++nextWorkspaceFlushRequestId}`;
-    return await new Promise<WorkspaceNavigationSnapshot | null>((resolve) => {
-        const timer = setTimeout(() => {
-            pendingWorkspaceSurfaceCaptures.delete(requestId);
-            resolve(null);
-        }, 500);
-        pendingWorkspaceSurfaceCaptures.set(requestId, {
-            resolve: (snapshot) => {
-                clearTimeout(timer);
-                resolve(snapshot);
-            },
-            senderId: webContents.id,
-        });
-        webContents.send(
-            IPC_EVENTS.workspaceSurfaceSnapshotRequested,
-            requestId,
-        );
-    });
 }
 
 async function flushAllWorkspaceWindowsForQuit(): Promise<void> {
@@ -1343,6 +1347,41 @@ async function flushAllWorkspaceWindowsForQuit(): Promise<void> {
     );
 }
 
+function cancelWorkspaceHostCloseForLiveWindows(): void {
+    for (const window of BrowserWindow.getAllWindows()) {
+        const context = windowRegistry.getContextByBrowserWindow(window);
+        if (context?.windowKind === "main") {
+            workspaceSurfaceManager.cancelHostClose(context.windowId, window);
+        }
+    }
+}
+
+function showWorkspaceCloseFailure(
+    error: unknown,
+    preferredWindow?: BrowserWindow,
+): void {
+    const detail =
+        error instanceof Error && error.message
+            ? error.message
+            : "Workspace persistence did not confirm the close operation.";
+    const options = {
+        detail,
+        message: "The workspace could not be saved, so the app remains open.",
+        title: "Workspace not closed",
+        type: "error" as const,
+    };
+    const owner =
+        preferredWindow && !preferredWindow.isDestroyed()
+            ? preferredWindow
+            : singleWindowCoordinator.getMainWindow();
+    void (owner
+        ? dialog.showMessageBox(owner, options)
+        : dialog.showMessageBox(options)
+    ).catch((dialogError) => {
+        debugBenignError("workspace.closeFailureDialog", dialogError);
+    });
+}
+
 function isClosingLastAppWindow(): boolean {
     if (process.platform === "darwin" || isQuitting) {
         return false;
@@ -1355,24 +1394,8 @@ function isClosingLastAppWindow(): boolean {
     return liveWindowCount <= 1;
 }
 
-function updateMainWindowTitle(
-    window: BrowserWindow,
-    projectId: string | null,
-): void {
-    if (!projectId || !projectService) {
-        window.setTitle(appIdentity.windowTitle);
-        return;
-    }
-
-    try {
-        const rootPath = projectService.getProjectRootPath(projectId);
-        const projectName =
-            rootPath.split(/[\\/]/).filter(Boolean).at(-1) ?? projectId;
-        window.setTitle(`${appIdentity.windowTitle} · ${projectName}`);
-    } catch (error) {
-        debugBenignError("applyProjectWindowTitle", error);
-        window.setTitle(appIdentity.windowTitle);
-    }
+function updateMainWindowTitle(window: BrowserWindow): void {
+    window.setTitle(appIdentity.windowTitle);
 }
 
 function focusExistingWindow(window: BrowserWindow): void {
@@ -1501,15 +1524,17 @@ function broadcastAiPromptQueueSnapshot(
     ownerWindowId: string,
     payload: AiPromptQueueSnapshot,
 ): void {
+    const subscriber = workspaceRuntimeOwnership.getVisibleSubscriber(
+        ownerWindowId,
+    );
+    if (subscriber) {
+        subscriber.webContents.send(IPC_EVENTS.aiPromptQueue, payload);
+        return;
+    }
+    workspaceRuntimeOwnership.markRuntimeChanged(ownerWindowId);
     const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
     if (targetContents) {
         targetContents.send(IPC_EVENTS.aiPromptQueue, payload);
-    }
-    const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
-        ownerWindowId,
-    );
-    if (hostContents && hostContents !== targetContents) {
-        hostContents.send(IPC_EVENTS.aiPromptQueue, payload);
     }
 }
 
@@ -1524,15 +1549,22 @@ function broadcastAiSessionSnapshot(
         return;
     }
 
+    const subscriber = workspaceRuntimeOwnership.getVisibleSubscriber(
+        ownerWindowId,
+    );
+    if (subscriber) {
+        dispatchAiSessionSnapshot(
+            subscriber.webContents,
+            payload,
+            subscriber.generation,
+        );
+        return;
+    }
+    workspaceRuntimeOwnership.markRuntimeChanged(ownerWindowId);
+
     const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
     if (targetContents) {
         dispatchAiSessionSnapshot(targetContents, payload, ownerWindowId);
-    }
-    const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
-        ownerWindowId,
-    );
-    if (hostContents && hostContents !== targetContents) {
-        dispatchAiSessionSnapshot(hostContents, payload, ownerWindowId, false);
     }
 }
 
@@ -1547,25 +1579,36 @@ function broadcastAiSessionEvent(
         return;
     }
 
+    const subscriber = workspaceRuntimeOwnership.getVisibleSubscriber(
+        ownerWindowId,
+    );
+    if (subscriber) {
+        dispatchAiSessionEvent(
+            subscriber.webContents,
+            payload,
+            subscriber.generation,
+        );
+        return;
+    }
+    workspaceRuntimeOwnership.markRuntimeChanged(ownerWindowId);
+
     const targetContents = windowRegistry.getWebContentsByOwnerId(ownerWindowId);
     if (targetContents) {
         dispatchAiSessionEvent(targetContents, payload, ownerWindowId);
     }
-    const hostContents = workspaceSurfaceManager.getHostWebContentsForOwner(
-        ownerWindowId,
-    );
-    if (hostContents && hostContents !== targetContents) {
-        dispatchAiSessionEvent(hostContents, payload, ownerWindowId, false);
-    }
 }
 
-function attachAiSessionStream(webContents: WebContents, windowId: string): void {
+function attachAiSessionStream(
+    webContents: WebContents,
+    subscriberId: string,
+    runtimeOwnerId = subscriberId,
+): void {
     if (webContents.isDestroyed()) {
-        detachAiSessionStream(windowId);
+        detachAiSessionStream(subscriberId);
         return;
     }
 
-    detachAiSessionStream(windowId);
+    detachAiSessionStream(subscriberId);
 
     const channel = new MessageChannelMain();
 
@@ -1592,18 +1635,20 @@ function attachAiSessionStream(webContents: WebContents, windowId: string): void
             pendingAckSentAtBySeq: new Map(),
             pendingPreservedPayloads: new Map(),
             port: channel.port1,
+            runtimeOwnerId,
             staleTimer: null,
+            webContents,
         };
         channel.port1.on("message", (event: { data: unknown }) => {
-            handleAiSessionStreamPortMessage(windowId, event.data);
+            handleAiSessionStreamPortMessage(subscriberId, event.data);
         });
         channel.port1.start();
         state.heartbeatTimer = setInterval(() => {
-            sendAiSessionStreamHeartbeat(windowId);
+            sendAiSessionStreamHeartbeat(subscriberId);
         }, AI_SESSION_STREAM_HEARTBEAT_MS);
         state.heartbeatTimer.unref?.();
-        aiSessionStreamPorts.set(windowId, state);
-        sendAiSessionStreamHeartbeat(windowId);
+        aiSessionStreamPorts.set(subscriberId, state);
+        sendAiSessionStreamHeartbeat(subscriberId);
     } catch (error) {
         debugBenignError("attachAiSessionStream", error);
         channel.port1.close();
@@ -1779,14 +1824,17 @@ function recoverAiSessionStreamPort(
     reason: AiSessionStreamRecoveryReason,
 ): void {
     const state = aiSessionStreamPorts.get(windowId);
-    const targetContents = windowRegistry.getWebContentsByOwnerId(windowId);
+    const targetContents = state?.webContents ?? null;
     const pendingPreservedPayloadCount =
         state?.pendingPreservedPayloads.size ?? 0;
     const canSendFallback = Boolean(
         targetContents && !targetContents.isDestroyed(),
     );
+    const runtimeOwnerId = state?.runtimeOwnerId ?? windowId;
     const resyncSnapshots = canSendFallback
-        ? (aiService?.getLiveSessionSnapshotsForWindow(windowId) ?? [])
+        ? (workspaceRuntimeOwnership.getCurrentSubscriber(runtimeOwnerId)
+              ? aiService?.resyncRuntimeSubscriber(runtimeOwnerId, windowId)
+              : aiService?.getLiveSessionSnapshotsForWindow(runtimeOwnerId)) ?? []
         : [];
 
     if (targetContents && canSendFallback) {
@@ -1816,7 +1864,11 @@ function recoverAiSessionStreamPort(
     debugBenignError("aiSessionStreamPort.recover", new Error(message));
     detachAiSessionStream(windowId);
     if (targetContents && !targetContents.isDestroyed()) {
-        attachAiSessionStream(targetContents, windowId);
+        attachAiSessionStream(
+            targetContents,
+            windowId,
+            state?.runtimeOwnerId ?? windowId,
+        );
     }
 }
 
@@ -1909,6 +1961,14 @@ function broadcastTerminalData(
     ownerWindowId: string,
     payload: TerminalDataEvent,
 ): void {
+    const subscriber = workspaceRuntimeOwnership.getVisibleSubscriber(
+        ownerWindowId,
+    );
+    if (subscriber) {
+        subscriber.webContents.send(IPC_EVENTS.terminalData, payload);
+        return;
+    }
+    workspaceRuntimeOwnership.markRuntimeChanged(ownerWindowId);
     windowRegistry
         .getWebContentsByOwnerId(ownerWindowId)
         ?.send(IPC_EVENTS.terminalData, payload);
@@ -1918,6 +1978,14 @@ function broadcastTerminalExit(
     ownerWindowId: string,
     payload: TerminalExitEvent,
 ): void {
+    const subscriber = workspaceRuntimeOwnership.getVisibleSubscriber(
+        ownerWindowId,
+    );
+    if (subscriber) {
+        subscriber.webContents.send(IPC_EVENTS.terminalExit, payload);
+        return;
+    }
+    workspaceRuntimeOwnership.markRuntimeChanged(ownerWindowId);
     windowRegistry
         .getWebContentsByOwnerId(ownerWindowId)
         ?.send(IPC_EVENTS.terminalExit, payload);

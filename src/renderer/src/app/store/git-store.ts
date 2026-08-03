@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import type {
+    GitBranchDiffResult,
     GitBranchSummary,
     GitCommitDetail,
     GitCommitInput,
@@ -52,6 +53,8 @@ type GitPushRepositoryOptions = {
     readonly setUpstream?: boolean;
 };
 
+export type GitDiffMode = "branch" | "worktree";
+
 type GitHistorySearchOptions = {
     readonly caseSensitive?: boolean;
     readonly query?: string;
@@ -64,6 +67,15 @@ type GitHistorySearchState = {
 };
 
 interface GitStoreState {
+    readonly activeDiffModesByContext: Record<string, GitDiffMode>;
+    readonly branchDiffErrorsByContext: Record<string, string | null>;
+    readonly branchDiffRequestKeysByContext: Record<string, string>;
+    readonly branchDiffsByContext: Record<string, GitBranchDiffResult | null>;
+    readonly collapsedBranchDiffFileIds: Record<string, readonly string[]>;
+    readonly failedBranchDiffContexts: Record<string, boolean>;
+    readonly loadingBranchDiffContexts: Record<string, boolean>;
+    readonly selectedBranchDiffFileIds: Record<string, string | null>;
+    readonly staleBranchDiffContexts: Record<string, boolean>;
     readonly activeWorktreeIds: Record<string, string | null>;
     readonly branchesByProject: Record<string, readonly GitBranchSummary[]>;
     readonly changeExpandedPaths: Record<string, readonly string[]>;
@@ -148,6 +160,10 @@ interface GitStoreState {
         commitSha: string,
         worktreeId?: string | null,
     ) => Promise<GitCommitDetail | null>;
+    ensureBranchDiff: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<GitBranchDiffResult | null>;
     ensureWorktreeDiff: (
         projectId: string,
         worktreeId?: string | null,
@@ -185,6 +201,10 @@ interface GitStoreState {
         projectId: string,
         preferredWorktreeId?: string | null,
     ) => Promise<GitRepositorySnapshot | null>;
+    refreshBranchDiff: (
+        projectId: string,
+        worktreeId?: string | null,
+    ) => Promise<GitBranchDiffResult | null>;
     refreshWorktreeDiff: (
         projectId: string,
         worktreeId?: string | null,
@@ -223,14 +243,29 @@ interface GitStoreState {
         path: string | null,
         worktreeId?: string | null,
     ) => Promise<void>;
+    selectBranchDiffFile: (
+        projectId: string,
+        fileId: string | null,
+        worktreeId?: string | null,
+    ) => void;
     selectWorktreeDiffFile: (
         projectId: string,
         fileId: string | null,
         worktreeId?: string | null,
     ) => void;
+    setBranchDiffCollapsedFileIds: (
+        projectId: string,
+        fileIds: readonly string[],
+        worktreeId?: string | null,
+    ) => void;
     setWorktreeDiffCollapsedFileIds: (
         projectId: string,
         fileIds: readonly string[],
+        worktreeId?: string | null,
+    ) => void;
+    setActiveDiffMode: (
+        projectId: string,
+        mode: GitDiffMode,
         worktreeId?: string | null,
     ) => void;
     setActiveWorktree: (
@@ -263,6 +298,11 @@ interface GitStoreState {
         path: string,
         worktreeId?: string | null,
     ) => void;
+    toggleBranchDiffFileCollapse: (
+        projectId: string,
+        fileId: string,
+        worktreeId?: string | null,
+    ) => void;
     toggleWorktreeDiffFileCollapse: (
         projectId: string,
         fileId: string,
@@ -278,6 +318,15 @@ interface GitStoreState {
 }
 
 export const useGitStore = create<GitStoreState>((set, get) => ({
+    activeDiffModesByContext: {},
+    branchDiffErrorsByContext: {},
+    branchDiffRequestKeysByContext: {},
+    branchDiffsByContext: {},
+    collapsedBranchDiffFileIds: {},
+    failedBranchDiffContexts: {},
+    loadingBranchDiffContexts: {},
+    selectedBranchDiffFileIds: {},
+    staleBranchDiffContexts: {},
     activeWorktreeIds: {},
     branchesByProject: {},
     changeExpandedPaths: {},
@@ -363,7 +412,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             input.projectId,
             result.snapshot.currentWorktreeId ?? input.worktreeId ?? null,
         );
-        refreshCachedWorktreeDiff(get, input.projectId, result.worktreeId);
         return {
             branchName: result.branchName,
             commitSha: result.commitSha,
@@ -393,11 +441,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        refreshCachedWorktreeDiff(
-            get,
-            projectId,
-            snapshot.currentWorktreeId ?? worktreeId,
-        );
         return snapshot;
     },
 
@@ -479,6 +522,26 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             }));
             return null;
         }
+    },
+
+    ensureBranchDiff: async (projectId, worktreeId = null) => {
+        const contextKey = getContextKey(projectId, worktreeId);
+        const state = get();
+        const cachedResult = state.branchDiffsByContext[contextKey] ?? null;
+        if (
+            hasOwn(state.branchDiffsByContext, contextKey) &&
+            state.staleBranchDiffContexts[contextKey] !== true
+        ) {
+            return cachedResult;
+        }
+        if (
+            state.loadingBranchDiffContexts[contextKey] === true ||
+            state.failedBranchDiffContexts[contextKey] === true
+        ) {
+            return cachedResult;
+        }
+
+        return get().refreshBranchDiff(projectId, worktreeId);
     },
 
     ensureWorktreeDiff: async (projectId, worktreeId = null) => {
@@ -900,6 +963,109 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         }
     },
 
+    refreshBranchDiff: async (projectId, worktreeId = null) => {
+        const contextKey = getContextKey(projectId, worktreeId);
+        const requestKey = `${Date.now()}:${Math.random()}`;
+
+        set((state) => ({
+            branchDiffErrorsByContext: {
+                ...state.branchDiffErrorsByContext,
+                [contextKey]: null,
+            },
+            branchDiffRequestKeysByContext: {
+                ...state.branchDiffRequestKeysByContext,
+                [contextKey]: requestKey,
+            },
+            failedBranchDiffContexts: {
+                ...state.failedBranchDiffContexts,
+                [contextKey]: false,
+            },
+            loadingBranchDiffContexts: {
+                ...state.loadingBranchDiffContexts,
+                [contextKey]: true,
+            },
+            // Preserve invalidations that arrive while this request is running.
+            staleBranchDiffContexts: {
+                ...state.staleBranchDiffContexts,
+                [contextKey]: false,
+            },
+        }));
+
+        try {
+            const result = await getComandoApi().listGitBranchDiff({
+                projectId,
+                worktreeId,
+            });
+            set((state) => {
+                if (state.branchDiffRequestKeysByContext[contextKey] !== requestKey) {
+                    return {};
+                }
+
+                const nextFileIds = collectBranchDiffFileIds(result);
+                const nextFileIdSet = new Set(nextFileIds);
+                const previousSelectedFileId =
+                    state.selectedBranchDiffFileIds[contextKey] ?? null;
+                return {
+                    branchDiffErrorsByContext: {
+                        ...state.branchDiffErrorsByContext,
+                        [contextKey]: null,
+                    },
+                    branchDiffsByContext: {
+                        ...state.branchDiffsByContext,
+                        [contextKey]: result,
+                    },
+                    collapsedBranchDiffFileIds: {
+                        ...state.collapsedBranchDiffFileIds,
+                        [contextKey]: (
+                            state.collapsedBranchDiffFileIds[contextKey] ?? []
+                        ).filter((fileId) => nextFileIdSet.has(fileId)),
+                    },
+                    loadingBranchDiffContexts: {
+                        ...state.loadingBranchDiffContexts,
+                        [contextKey]: false,
+                    },
+                    selectedBranchDiffFileIds: {
+                        ...state.selectedBranchDiffFileIds,
+                        [contextKey]:
+                            previousSelectedFileId &&
+                            nextFileIdSet.has(previousSelectedFileId)
+                                ? previousSelectedFileId
+                                : (nextFileIds[0] ?? null),
+                    },
+                };
+            });
+            return result;
+        } catch (error) {
+            set((state) => {
+                if (state.branchDiffRequestKeysByContext[contextKey] !== requestKey) {
+                    return {};
+                }
+                return {
+                    branchDiffErrorsByContext: {
+                        ...state.branchDiffErrorsByContext,
+                        [contextKey]:
+                            error instanceof Error
+                                ? error.message
+                                : "Could not load branch changes.",
+                    },
+                    failedBranchDiffContexts: {
+                        ...state.failedBranchDiffContexts,
+                        [contextKey]: true,
+                    },
+                    loadingBranchDiffContexts: {
+                        ...state.loadingBranchDiffContexts,
+                        [contextKey]: false,
+                    },
+                    staleBranchDiffContexts: {
+                        ...state.staleBranchDiffContexts,
+                        [contextKey]: true,
+                    },
+                };
+            });
+            return null;
+        }
+    },
+
     refreshWorktreeDiff: async (projectId, worktreeId = null) => {
         const contextKey = getContextKey(projectId, worktreeId);
         const requestKey = `${Date.now()}:${Math.random()}`;
@@ -1158,11 +1324,27 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
         }
     },
 
+    selectBranchDiffFile: (projectId, fileId, worktreeId = null) =>
+        set((state) => ({
+            selectedBranchDiffFileIds: {
+                ...state.selectedBranchDiffFileIds,
+                [getContextKey(projectId, worktreeId)]: fileId,
+            },
+        })),
+
     selectWorktreeDiffFile: (projectId, fileId, worktreeId = null) =>
         set((state) => ({
             selectedWorktreeDiffFileIds: {
                 ...state.selectedWorktreeDiffFileIds,
                 [getContextKey(projectId, worktreeId)]: fileId,
+            },
+        })),
+
+    setActiveDiffMode: (projectId, mode, worktreeId = null) =>
+        set((state) => ({
+            activeDiffModesByContext: {
+                ...state.activeDiffModesByContext,
+                [getContextKey(projectId, worktreeId)]: mode,
             },
         })),
 
@@ -1196,6 +1378,18 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             },
         })),
 
+    setBranchDiffCollapsedFileIds: (
+        projectId,
+        fileIds,
+        worktreeId = null,
+    ) =>
+        set((state) => ({
+            collapsedBranchDiffFileIds: {
+                ...state.collapsedBranchDiffFileIds,
+                [getContextKey(projectId, worktreeId)]: fileIds,
+            },
+        })),
+
     setWorktreeDiffCollapsedFileIds: (
         projectId,
         fileIds,
@@ -1215,11 +1409,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        refreshCachedWorktreeDiff(
-            get,
-            projectId,
-            snapshot.currentWorktreeId ?? worktreeId,
-        );
         return snapshot;
     },
 
@@ -1260,6 +1449,23 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
                     [contextKey]: isExpanded
                         ? currentPaths.filter((entry) => entry !== path)
                         : [...currentPaths, path],
+                },
+            };
+        }),
+
+    toggleBranchDiffFileCollapse: (projectId, fileId, worktreeId = null) =>
+        set((state) => {
+            const contextKey = getContextKey(projectId, worktreeId);
+            const currentFileIds =
+                state.collapsedBranchDiffFileIds[contextKey] ?? [];
+            const isCollapsed = currentFileIds.includes(fileId);
+
+            return {
+                collapsedBranchDiffFileIds: {
+                    ...state.collapsedBranchDiffFileIds,
+                    [contextKey]: isCollapsed
+                        ? currentFileIds.filter((entry) => entry !== fileId)
+                        : [...currentFileIds, fileId],
                 },
             };
         }),
@@ -1306,11 +1512,6 @@ export const useGitStore = create<GitStoreState>((set, get) => ({
             worktreeId,
         });
         applySnapshotState(set, projectId, snapshot);
-        refreshCachedWorktreeDiff(
-            get,
-            projectId,
-            snapshot.currentWorktreeId ?? worktreeId,
-        );
         return snapshot;
     },
 }));
@@ -1413,6 +1614,7 @@ function applySnapshotState(
                   }
                 : {}),
             ...nextWorktreeDiffState,
+            ...markBranchDiffStaleState(state, contextKey),
         };
     });
 }
@@ -1475,6 +1677,22 @@ function rfc3339TimestampToNanoseconds(timestamp: string): bigint | null {
 
     const nanoseconds = BigInt(`${fraction}000000000`.slice(0, 9));
     return BigInt(milliseconds) * 1_000_000n + nanoseconds;
+}
+
+function markBranchDiffStaleState(
+    state: GitStoreState,
+    contextKey: string,
+): Pick<GitStoreState, "failedBranchDiffContexts" | "staleBranchDiffContexts"> {
+    return {
+        failedBranchDiffContexts: {
+            ...state.failedBranchDiffContexts,
+            [contextKey]: false,
+        },
+        staleBranchDiffContexts: {
+            ...state.staleBranchDiffContexts,
+            [contextKey]: hasOwn(state.branchDiffsByContext, contextKey),
+        },
+    };
 }
 
 function clearCleanWorktreeDiffState(
@@ -1573,6 +1791,14 @@ function resolveSnapshotWorktreeId(
     );
 }
 
+function collectBranchDiffFileIds(
+    result: GitBranchDiffResult | null,
+): readonly string[] {
+    return (
+        result?.files.map((file) => buildGitDiffFileId("branch", file.path)) ?? []
+    );
+}
+
 function collectWorktreeDiffFileIds(
     result: GitWorktreeDiffResult | null,
 ): readonly string[] {
@@ -1583,19 +1809,6 @@ function collectWorktreeDiffFileIds(
     return result.sections.flatMap((section) =>
         section.files.map((file) => buildGitDiffFileId(file.scope, file.path)),
     );
-}
-
-function refreshCachedWorktreeDiff(
-    get: () => GitStoreState,
-    projectId: string,
-    worktreeId: string | null,
-): void {
-    // Explicit Git mutations refresh immediately; filesystem invalidations
-    // only mark the cached diff stale.
-    const contextKey = getContextKey(projectId, worktreeId);
-    if (hasOwn(get().worktreeDiffsByContext, contextKey)) {
-        void get().refreshWorktreeDiff(projectId, worktreeId);
-    }
 }
 
 function hasOwn<T extends object>(

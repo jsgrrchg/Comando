@@ -10,6 +10,18 @@ import {
 } from "react";
 
 import type { AiSessionSnapshot } from "@shared/ipc";
+import { createChatLoadFixture } from "@shared/testing/chatLoadFactories";
+import {
+    createChatLoadDiagnosticSummary,
+    type ChatLoadDiagnosticSummary,
+    type ChatLoadScenario,
+} from "@shared/testing/chatLoadScenario";
+import { applyAiTranscriptMemoryPressure } from "@renderer/app/store/ai-store";
+import {
+    readChatPerformanceCounters,
+    resetChatPerformanceCounters,
+    type ChatPerformanceCounterSnapshot,
+} from "@renderer/app/debug/chatPerformanceCounters";
 import {
     markChatPerformanceFrame,
     setChatPerformanceProbeEnabledForTests,
@@ -22,11 +34,28 @@ import {
 } from "@renderer/components/workspace/chat/chatScrollCoordinator";
 import type { MeasuredVirtualScrollRequest } from "@renderer/components/virtual/MeasuredVirtualList";
 import type { ChatTimelineRow } from "@renderer/components/workspace/chat/chatTimelineModel";
+import { reconcileChatTimelineModel } from "@renderer/components/workspace/chat/chatTimelineModel";
+import {
+    flattenTranscriptTimelineItems,
+    type TranscriptTimelineItem,
+} from "@renderer/components/workspace/chat/transcriptBlockVirtualization";
 
 import "@renderer/styles.css";
 import "./transcript-harness.css";
+import { ShellHarness } from "./ShellHarness";
 
 const INITIAL_HISTORY_SIZE = 2_000;
+const INITIAL_HISTORY_SCENARIO = {
+    activeTools: 0,
+    aggregateDiffBytes: 0,
+    deltaBytes: 0,
+    diffCount: 0,
+    historyMessages: INITIAL_HISTORY_SIZE,
+    seed: 2_000,
+    sessionCount: 1,
+    streamingDeltas: 0,
+    terminalOutputBytes: 0,
+} satisfies ChatLoadScenario;
 const HISTORY_ROW_ID = "message:assistant-1999";
 const STREAMING_ROW_ID = "message:assistant-live";
 
@@ -80,6 +109,7 @@ interface TranscriptStreamingViolations {
 }
 
 interface TranscriptStreamingDiagnostic {
+    readonly loadScenario: ChatLoadDiagnosticSummary;
     readonly mutations: readonly TranscriptDiagnosticEvent[];
     readonly performanceEvents: readonly ChatPerformanceProbeEvent[];
     readonly resizeEvents: readonly TranscriptDiagnosticEvent[];
@@ -87,6 +117,7 @@ interface TranscriptStreamingDiagnostic {
     readonly scrollWrites: readonly TranscriptScrollWrite[];
     readonly violations: TranscriptStreamingViolations;
     readonly virtualRanges: readonly TranscriptVirtualRangeEvent[];
+    readonly workCounters: ChatPerformanceCounterSnapshot;
 }
 
 interface TranscriptFastScrollViolations {
@@ -95,10 +126,74 @@ interface TranscriptFastScrollViolations {
 }
 
 interface TranscriptFastScrollDiagnostic {
+    readonly loadScenario: ChatLoadDiagnosticSummary;
     readonly longTasks: readonly TranscriptDiagnosticEvent[];
     readonly samples: readonly TranscriptDiagnosticSample[];
     readonly virtualRanges: readonly TranscriptVirtualRangeEvent[];
     readonly violations: TranscriptFastScrollViolations;
+    readonly workCounters: ChatPerformanceCounterSnapshot;
+}
+
+export interface TranscriptHarnessScenarioConfig extends ChatLoadScenario {
+    readonly expandTools?: boolean;
+    readonly sessionIndex?: number;
+}
+
+export interface TranscriptStreamingConfig {
+    readonly deltaLimit?: number;
+    readonly finalText?: string;
+}
+
+export interface TranscriptScrollPattern {
+    readonly positions: readonly number[];
+}
+
+interface TranscriptHarnessMetrics {
+    readonly loadScenario: ChatLoadDiagnosticSummary;
+    readonly performanceEvents: readonly ChatPerformanceProbeEvent[];
+    readonly samples: readonly TranscriptDiagnosticSample[];
+    readonly scrollWrites: readonly TranscriptScrollWrite[];
+    readonly snapshot: TranscriptHarnessSnapshot;
+    readonly virtualRanges: readonly TranscriptVirtualRangeEvent[];
+    readonly workCounters: ChatPerformanceCounterSnapshot;
+}
+
+interface TranscriptResourceMetrics {
+    readonly activeResizeObservers: number | null;
+    readonly domNodes: number;
+    readonly heapUsedBytes: number | null;
+    readonly residentBlocks: number;
+    readonly residentPayloadBytes: number;
+    readonly retainedArtifacts: number;
+}
+
+interface TranscriptSessionCycleSample extends TranscriptResourceMetrics {
+    readonly cycle: number;
+}
+
+interface TranscriptSessionCyclesDiagnostic {
+    readonly samples: readonly TranscriptSessionCycleSample[];
+    readonly steadyState: {
+        readonly firstHeapUsedBytes: number | null;
+        readonly heapGrowthRatio: number | null;
+        readonly lastHeapUsedBytes: number | null;
+        readonly maxActiveResizeObservers: number | null;
+        readonly maxDomNodes: number;
+        readonly maxResidentBlocks: number;
+        readonly maxResidentPayloadBytes: number;
+        readonly maxRetainedArtifacts: number;
+    };
+}
+
+interface TranscriptSoakConfig {
+    readonly durationMs?: number;
+    readonly sampleIntervalMs?: number;
+}
+
+interface TranscriptSoakDiagnostic {
+    readonly cycles: number;
+    readonly durationMs: number;
+    readonly samples: readonly TranscriptSessionCycleSample[];
 }
 
 interface MutableTranscriptStreamingDiagnostic {
@@ -111,10 +206,17 @@ interface MutableTranscriptStreamingDiagnostic {
 }
 
 interface ComandoTranscriptHarness {
+    applyMemoryPressure(): Promise<void>;
     appendDelta(delta: string): Promise<void>;
+    collectMetrics(): TranscriptHarnessMetrics;
+    loadScenario(config: TranscriptHarnessScenarioConfig): Promise<void>;
+    runSessionCycles(cycles?: number): Promise<TranscriptSessionCyclesDiagnostic>;
+    runSoakDiagnostic(config?: TranscriptSoakConfig): Promise<TranscriptSoakDiagnostic>;
     runFastScrollDiagnostic(): Promise<TranscriptFastScrollDiagnostic>;
+    runScrollPattern(pattern: TranscriptScrollPattern): Promise<void>;
     runStreamingDiagnostic(): Promise<TranscriptStreamingDiagnostic>;
     snapshot(): TranscriptHarnessSnapshot;
+    startStreaming(config?: TranscriptStreamingConfig): Promise<void>;
     startTurn(): Promise<void>;
 }
 
@@ -131,6 +233,45 @@ declare global {
 
 setChatPerformanceProbeEnabledForTests(true);
 
+let activeResizeObserverCount = 0;
+const NativeResizeObserver = globalThis.ResizeObserver;
+
+if (NativeResizeObserver) {
+    // Browser APIs do not expose observer liveness. Wrapping it in the isolated
+    // harness lets the soak test catch observers retained after a tab switch.
+    class TrackedResizeObserver implements ResizeObserver {
+        private readonly observed = new Set<Element>();
+        private readonly nativeObserver: ResizeObserver;
+
+        constructor(callback: ResizeObserverCallback) {
+            this.nativeObserver = new NativeResizeObserver(callback);
+        }
+
+        disconnect() {
+            activeResizeObserverCount -= this.observed.size;
+            this.observed.clear();
+            this.nativeObserver.disconnect();
+        }
+
+        observe(target: Element, options?: ResizeObserverOptions) {
+            if (!this.observed.has(target)) {
+                this.observed.add(target);
+                activeResizeObserverCount += 1;
+            }
+            this.nativeObserver.observe(target, options);
+        }
+
+        unobserve(target: Element) {
+            if (this.observed.delete(target)) {
+                activeResizeObserverCount -= 1;
+            }
+            this.nativeObserver.unobserve(target);
+        }
+    }
+
+    globalThis.ResizeObserver = TrackedResizeObserver;
+}
+
 function waitForAnimationFrames(count: number): Promise<void> {
     return new Promise((resolve) => {
         const wait = (remaining: number) => {
@@ -142,6 +283,72 @@ function waitForAnimationFrames(count: number): Promise<void> {
         };
         wait(count);
     });
+}
+
+function waitForMilliseconds(milliseconds: number): Promise<void> {
+    return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function readHeapUsedBytes(): number | null {
+    const memory = (performance as Performance & {
+        memory?: { readonly usedJSHeapSize?: number };
+    }).memory;
+    return typeof memory?.usedJSHeapSize === "number"
+        ? memory.usedJSHeapSize
+        : null;
+}
+
+function countFixturePayloadBytes(items: readonly TranscriptTimelineItem[]): number {
+    let bytes = 0;
+    for (const item of items) {
+        if (item.kind !== "activity-entry" || item.item.kind !== "tool") continue;
+        const activity = item.item.entry.reviewEntry.activity;
+        bytes += new TextEncoder().encode(activity.terminalOutput ?? "").byteLength;
+        bytes += activity.diffs.reduce(
+            (total, diff) =>
+                total + (diff.newText?.length ?? 0) + (diff.oldText?.length ?? 0),
+            0,
+        );
+    }
+    return bytes;
+}
+
+function describeSteadyState(
+    samples: readonly TranscriptSessionCycleSample[],
+): TranscriptSessionCyclesDiagnostic["steadyState"] {
+    const steadySamples = samples.slice(10);
+    const firstHeapUsedBytes = steadySamples[0]?.heapUsedBytes ?? null;
+    const lastHeapUsedBytes = steadySamples.at(-1)?.heapUsedBytes ?? null;
+    return {
+        firstHeapUsedBytes,
+        heapGrowthRatio:
+            firstHeapUsedBytes && lastHeapUsedBytes
+                ? (lastHeapUsedBytes - firstHeapUsedBytes) / firstHeapUsedBytes
+                : null,
+        lastHeapUsedBytes,
+        maxActiveResizeObservers: steadySamples.every(
+            (sample) => sample.activeResizeObservers === null,
+        )
+            ? null
+            : Math.max(
+                  ...steadySamples.map(
+                      (sample) => sample.activeResizeObservers ?? 0,
+                  ),
+              ),
+        maxDomNodes: Math.max(0, ...steadySamples.map((sample) => sample.domNodes)),
+        maxResidentBlocks: Math.max(
+            0,
+            ...steadySamples.map((sample) => sample.residentBlocks),
+        ),
+        maxResidentPayloadBytes: Math.max(
+            0,
+            ...steadySamples.map((sample) => sample.residentPayloadBytes),
+        ),
+        maxRetainedArtifacts: Math.max(
+            0,
+            ...steadySamples.map((sample) => sample.retainedArtifacts),
+        ),
+    };
 }
 
 function createEmptyDiagnostic(): MutableTranscriptStreamingDiagnostic {
@@ -230,16 +437,53 @@ function createMessageRow(
         kind,
         status,
     };
-    return { id: `message:${id}`, kind: "message", message };
+    return { blockId: null, id: `message:${id}`, kind: "message", message };
 }
 
 function createInitialHistory(): readonly ChatTimelineRow[] {
-    return Array.from({ length: INITIAL_HISTORY_SIZE }, (_, index) =>
+    const fixture = createChatLoadFixture(INITIAL_HISTORY_SCENARIO);
+    const messages = fixture.sessions[0]?.messages ?? [];
+    return messages.map((message, index) =>
         createMessageRow(
             `assistant-${index}`,
-            `Historical assistant response ${index}. This content gives the row a measurable height.`,
+            `Historical assistant response ${index}. Deterministic token ${message.content.slice(-16)} gives the row a measurable height.`,
         ),
     );
+}
+
+function createScenarioTimeline(
+    config: TranscriptHarnessScenarioConfig,
+): {
+    readonly deltas: readonly string[];
+    readonly items: readonly TranscriptTimelineItem[];
+    readonly summary: ChatLoadDiagnosticSummary;
+} {
+    const fixture = createChatLoadFixture(config);
+    const sessionIndex = Math.min(
+        Math.max(0, Math.floor(config.sessionIndex ?? 0)),
+        fixture.sessions.length - 1,
+    );
+    const session = fixture.sessions[sessionIndex];
+    if (!session) {
+        throw new Error("Transcript scenario did not create a session.");
+    }
+    const model = reconcileChatTimelineModel(null, {
+        messages: session.messages,
+        status: "idle",
+        toolActivity: session.toolActivity,
+        trackedFiles: [],
+    });
+
+    return {
+        deltas: session.streamingDeltas,
+        // The harness begins collapsed, matching a cold chat view. Scenarios
+        // can still exercise virtual scroll without materializing every tool.
+        items: flattenTranscriptTimelineItems(model.orderedRows, {
+            defaultExpanded: config.expandTools ?? false,
+            expansionByGroupId: {},
+        }),
+        summary: createChatLoadDiagnosticSummary(config),
+    };
 }
 
 function readNumericDataset(
@@ -296,10 +540,17 @@ function TranscriptHarness() {
     const diagnosticPhase = useRef("idle");
     const fastScrollActiveRef = useRef(false);
     const previousFrameAt = useRef(0);
+    const scenarioSummaryRef = useRef<ChatLoadDiagnosticSummary>(
+        createChatLoadDiagnosticSummary(INITIAL_HISTORY_SCENARIO),
+    );
+    const scenarioDeltasRef = useRef<readonly string[]>([]);
+    const scenarioItemsRef = useRef<readonly TranscriptTimelineItem[]>([]);
     const [scrollCoordinator] = useState<ChatScrollCoordinator>(
         createChatScrollCoordinator,
     );
-    const [historyRows, setHistoryRows] = useState(createInitialHistory);
+    const [historyRows, setHistoryRows] = useState<
+        readonly TranscriptTimelineItem[]
+    >(createInitialHistory);
     const [streamingText, setStreamingText] = useState<string | null>(null);
 
     const timelineItems = historyRows;
@@ -333,6 +584,35 @@ function TranscriptHarness() {
             scrollHeight,
             scrollTop,
         };
+    }, []);
+
+    const collectResourceMetrics = useCallback((): TranscriptResourceMetrics => {
+        const mountedRows = document.querySelectorAll("[data-list-key]").length;
+        return {
+            activeResizeObservers: NativeResizeObserver
+                ? activeResizeObserverCount
+                : null,
+            domNodes: document.querySelectorAll("*").length,
+            heapUsedBytes: readHeapUsedBytes(),
+            // Mounted virtual rows are the renderer's resident transcript blocks.
+            // The complete fixture remains in a ref only for deterministic reloads.
+            residentBlocks: mountedRows,
+            residentPayloadBytes: countFixturePayloadBytes(
+                scenarioItemsRef.current,
+            ),
+            retainedArtifacts:
+                scenarioItemsRef.current.length + scenarioDeltasRef.current.length,
+        };
+    }, []);
+
+    const forceGarbageCollection = useCallback(async () => {
+        const gc = (globalThis as typeof globalThis & { gc?: () => void }).gc;
+        // Chromium exposes gc only when the diagnostic runner asks for it.
+        // Repeating it avoids sampling an object that was promoted one cycle ago.
+        gc?.();
+        await waitForAnimationFrames(1);
+        gc?.();
+        await waitForAnimationFrames(1);
     }, []);
 
     const recordSample = useCallback(
@@ -403,7 +683,11 @@ function TranscriptHarness() {
 
     const requestScroll = useCallback(
         (request: {
-            readonly reason: "follow-end" | "measure-anchor" | "scroll-to-index";
+            readonly reason:
+                | "follow-end"
+                | "measure-anchor"
+                | "restore"
+                | "scroll-to-index";
             readonly target: "end" | number;
         }) => {
             scrollCoordinator.request(request, {
@@ -547,11 +831,103 @@ function TranscriptHarness() {
 
     useEffect(() => {
         window.comandoTranscriptHarness = {
+            applyMemoryPressure: async () => {
+                applyAiTranscriptMemoryPressure(0);
+                await waitForAnimationFrames(2);
+            },
             appendDelta: async (delta) => {
                 flushSync(() => {
                     setStreamingText((current) => (current ?? "") + delta);
                 });
                 await waitForAnimationFrames(3);
+            },
+            collectMetrics: () => {
+                const probeRoot = globalThis as PerformanceProbeRoot;
+                return {
+                    loadScenario: scenarioSummaryRef.current,
+                    performanceEvents: [
+                        ...(probeRoot.__comandoChatPerformanceProbeDump?.() ?? []),
+                    ],
+                    samples: [...diagnostic.current.samples],
+                    scrollWrites: [...diagnostic.current.scrollWrites],
+                    snapshot: snapshot(),
+                    virtualRanges: [...diagnostic.current.virtualRanges],
+                    workCounters: readChatPerformanceCounters(),
+                };
+            },
+            loadScenario: async (config) => {
+                const next = createScenarioTimeline(config);
+                scenarioSummaryRef.current = next.summary;
+                scenarioDeltasRef.current = next.deltas;
+                scenarioItemsRef.current = next.items;
+                diagnostic.current = createEmptyDiagnostic();
+                diagnosticFrame.current = 0;
+                previousFrameAt.current = 0;
+                resetChatPerformanceCounters();
+                flushSync(() => {
+                    setHistoryRows(next.items);
+                    setStreamingText(null);
+                });
+                await waitForAnimationFrames(4);
+            },
+            runSessionCycles: async (cycles = 50) => {
+                const samples: TranscriptSessionCycleSample[] = [];
+                const cycleCount = Math.max(1, Math.floor(cycles));
+                const scenario = {
+                    activeTools: 24,
+                    aggregateDiffBytes: 384 * 1024,
+                    deltaBytes: 768,
+                    diffCount: 12,
+                    expandTools: true,
+                    historyMessages: 512,
+                    seed: 7_027,
+                    sessionCount: 2,
+                    streamingDeltas: 4,
+                    terminalOutputBytes: 128 * 1024,
+                } satisfies TranscriptHarnessScenarioConfig;
+
+                for (let cycle = 0; cycle < cycleCount; cycle += 1) {
+                    await window.comandoTranscriptHarness.loadScenario({
+                        ...scenario,
+                        sessionIndex: cycle % scenario.sessionCount,
+                    });
+                    await window.comandoTranscriptHarness.runScrollPattern({
+                        positions: [1, 0.25, 0.75, 1],
+                    });
+                    await window.comandoTranscriptHarness.startStreaming({
+                        deltaLimit: 2,
+                        finalText: "\n\n```ts\nexport const cycle = true;\n```\n",
+                    });
+                    await window.comandoTranscriptHarness.applyMemoryPressure();
+                    await forceGarbageCollection();
+                    samples.push({ cycle: cycle + 1, ...collectResourceMetrics() });
+                }
+
+                return { samples, steadyState: describeSteadyState(samples) };
+            },
+            runSoakDiagnostic: async (config = {}) => {
+                const durationMs = config.durationMs ?? 30 * 60 * 1_000;
+                const sampleIntervalMs = config.sampleIntervalMs ?? 30_000;
+                const startedAt = performance.now();
+                const samples: TranscriptSessionCycleSample[] = [];
+                let cycle = 0;
+                let nextSampleAt = startedAt;
+
+                while (performance.now() - startedAt < durationMs) {
+                    await window.comandoTranscriptHarness.runSessionCycles(1);
+                    cycle += 1;
+                    const now = performance.now();
+                    if (now >= nextSampleAt) {
+                        await forceGarbageCollection();
+                        samples.push({ cycle, ...collectResourceMetrics() });
+                        nextSampleAt = now + sampleIntervalMs;
+                    }
+                    // This keeps the soak representative of a live renderer instead
+                    // of turning it into an unrealistic tight-loop CPU benchmark.
+                    await waitForMilliseconds(250);
+                }
+
+                return { cycles: cycle, durationMs, samples };
             },
             runFastScrollDiagnostic: async () => {
                 const scrollElement = scrollRef.current;
@@ -565,6 +941,7 @@ function TranscriptHarness() {
                 diagnostic.current = createEmptyDiagnostic();
                 diagnosticFrame.current = 0;
                 previousFrameAt.current = 0;
+                resetChatPerformanceCounters();
                 fastScrollActiveRef.current = true;
                 const maximum = Math.max(
                     0,
@@ -596,8 +973,12 @@ function TranscriptHarness() {
 
                     const samples = diagnostic.current.samples;
                     return {
+                        loadScenario: createChatLoadDiagnosticSummary(
+                            INITIAL_HISTORY_SCENARIO,
+                        ),
                         longTasks: diagnostic.current.longTasks,
                         samples,
+                        workCounters: readChatPerformanceCounters(),
                         virtualRanges: diagnostic.current.virtualRanges,
                         violations: {
                             longTaskCount: diagnostic.current.longTasks.length,
@@ -620,6 +1001,7 @@ function TranscriptHarness() {
                 await waitForAnimationFrames(14);
                 const probeRoot = globalThis as PerformanceProbeRoot;
                 probeRoot.__comandoChatPerformanceProbeReset?.();
+                resetChatPerformanceCounters();
                 diagnostic.current = createEmptyDiagnostic();
                 diagnosticFrame.current = 0;
                 previousFrameAt.current = 0;
@@ -657,14 +1039,56 @@ function TranscriptHarness() {
                 ];
                 return {
                     ...diagnostic.current,
+                    loadScenario: createChatLoadDiagnosticSummary(
+                        INITIAL_HISTORY_SCENARIO,
+                    ),
                     performanceEvents,
+                    workCounters: readChatPerformanceCounters(),
                     violations: collectViolations(
                         diagnostic.current,
                         performanceEvents,
                     ),
                 };
             },
+            runScrollPattern: async (pattern) => {
+                const scrollElement = scrollRef.current;
+                if (!scrollElement) {
+                    throw new Error("Transcript scroll container is unavailable.");
+                }
+                const maximum = Math.max(
+                    0,
+                    scrollElement.scrollHeight - scrollElement.clientHeight,
+                );
+                for (const [index, position] of pattern.positions.entries()) {
+                    diagnosticPhase.current = `scroll-pattern-${index + 1}`;
+                    scrollElement.scrollTop = Math.round(
+                        Math.min(1, Math.max(0, position)) * maximum,
+                    );
+                    scrollElement.dispatchEvent(new Event("scroll"));
+                    await new Promise<void>((resolve) => {
+                        requestAnimationFrame((frameAt) => {
+                            recordSample(diagnosticPhase.current, frameAt);
+                            resolve();
+                        });
+                    });
+                }
+            },
             snapshot,
+            startStreaming: async (config = {}) => {
+                await window.comandoTranscriptHarness.startTurn();
+                const deltas = scenarioDeltasRef.current.slice(
+                    0,
+                    config.deltaLimit ?? scenarioDeltasRef.current.length,
+                );
+                for (const delta of deltas) {
+                    await window.comandoTranscriptHarness.appendDelta(delta);
+                }
+                if (config.finalText) {
+                    await window.comandoTranscriptHarness.appendDelta(
+                        config.finalText,
+                    );
+                }
+            },
             startTurn: async () => {
                 flushSync(() => {
                     setHistoryRows((current) => [
@@ -735,4 +1159,7 @@ function TranscriptHarness() {
     );
 }
 
-createRoot(document.getElementById("root")!).render(<TranscriptHarness />);
+const harness = new URLSearchParams(window.location.search).get("harness");
+createRoot(document.getElementById("root")!).render(
+    harness === "shell" ? <ShellHarness /> : <TranscriptHarness />,
+);

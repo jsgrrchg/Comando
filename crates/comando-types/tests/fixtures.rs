@@ -16,11 +16,11 @@ use comando_types::error::{NativeError, NativeErrorCode};
 use comando_types::events::all_events;
 use comando_types::fs::NativeFsReadFileResult;
 use comando_types::git::{
-    NativeGitBranchSummary, NativeGitChangeEntry, NativeGitCommitDetail, NativeGitDiffStatRecord,
-    NativeGitFileDiff, NativeGitHistoryListResult, NativeGitOperationResult, NativeGitOriginalFile,
-    NativeGitRemoteSummary, NativeGitRepositoryInvalidation, NativeGitRepositoryResolution,
-    NativeGitRepositorySnapshot, NativeGitStatusSnapshot, NativeGitWorktreeDiffResult,
-    NativeGitWorktreeSummary,
+    NativeGitBranchDiffResult, NativeGitBranchSummary, NativeGitChangeEntry, NativeGitCommitDetail,
+    NativeGitDiffStatRecord, NativeGitFileDiff, NativeGitHistoryListResult,
+    NativeGitOperationResult, NativeGitOriginalFile, NativeGitRemoteSummary,
+    NativeGitRepositoryInvalidation, NativeGitRepositoryResolution, NativeGitRepositorySnapshot,
+    NativeGitStatusSnapshot, NativeGitWorktreeDiffResult, NativeGitWorktreeSummary,
 };
 use comando_types::index::{
     NativeIndexStatusResult, NativeIndexedProjectEntry, NativeProjectEntrySearchResult,
@@ -31,6 +31,9 @@ use comando_types::projects::{NativeProjectState, NativeProjectSummary, NativePr
 use comando_types::protocol::{NativeRpcOutput, NativeRpcRequest};
 use comando_types::terminal::{
     NativeTerminalDataEvent, NativeTerminalExitEvent, NativeTerminalSession,
+};
+use comando_types::workspace::{
+    NativeWorkspaceMigrationRunInput, NativeWorkspaceMigrationRunOutput,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -278,6 +281,8 @@ fn local_domain_fixtures_deserialize() {
     assert_eq!(commit_detail.changed_file_count, 1);
     let worktree_diff: NativeGitWorktreeDiffResult = fixture("git/worktree.diff.json");
     assert_eq!(worktree_diff.sections.len(), 1);
+    let branch_diff: NativeGitBranchDiffResult = fixture("git/branch.diff.json");
+    assert_eq!(branch_diff.base_ref.as_deref(), Some("origin/main"));
     let invalidation: NativeGitRepositoryInvalidation = fixture("git/repository.invalidation.json");
     assert_eq!(invalidation.reason, "status");
     let operation: NativeGitOperationResult = fixture("git/operation.result.json");
@@ -332,6 +337,7 @@ fn key_dtos_roundtrip_without_losing_required_fields() {
     assert_typed_roundtrip::<NativeGitHistoryListResult>("git/history.list.json");
     assert_typed_roundtrip::<NativeGitCommitDetail>("git/commit.detail.json");
     assert_typed_roundtrip::<NativeGitWorktreeDiffResult>("git/worktree.diff.json");
+    assert_typed_roundtrip::<NativeGitBranchDiffResult>("git/branch.diff.json");
     assert_typed_roundtrip::<NativeGitRepositoryInvalidation>("git/repository.invalidation.json");
     assert_typed_roundtrip::<NativeGitOperationResult>("git/operation.result.json");
     assert_typed_roundtrip::<NativeIndexStatusResult>("index/index.status.json");
@@ -344,4 +350,10 @@ fn key_dtos_roundtrip_without_losing_required_fields() {
     assert_typed_roundtrip::<NativeTerminalExitEvent>("terminal/terminal.exit_event.json");
     assert_typed_roundtrip::<NativeWorkspaceSnapshotRef>("persistence/workspace.snapshot_ref.json");
     assert_typed_roundtrip::<NativePersistenceStorageHealth>("persistence/storage.health.json");
+    assert_typed_roundtrip::<NativeWorkspaceMigrationRunInput>(
+        "persistence/workspace.migration_input.json",
+    );
+    assert_typed_roundtrip::<NativeWorkspaceMigrationRunOutput>(
+        "persistence/workspace.migration_output.json",
+    );
 }

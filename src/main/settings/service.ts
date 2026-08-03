@@ -19,6 +19,7 @@ import type {
 import type { SecretRecordPatch } from "@main/ai/secret-store";
 
 export interface SettingsGateway {
+    clearProjectSettings?(projectId: string): Promise<void> | void;
     runTransaction?(action: () => void): void;
     saveCodexAuth?(
         settings: CodexRuntimeSettings,

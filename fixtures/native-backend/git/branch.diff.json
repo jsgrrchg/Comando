@@ -1,0 +1,61 @@
+{
+  "projectId": "project_1",
+  "worktreeId": "worktree_1",
+  "baseRef": "origin/main",
+  "headRef": "feature/review",
+  "files": [
+    {
+      "additions": 1,
+      "deletions": 1,
+      "diff": {
+        "path": "src/main.ts",
+        "previousPath": null,
+        "kind": "update",
+        "staged": false,
+        "isBinary": false,
+        "isText": true,
+        "isTooLarge": false,
+        "oldText": null,
+        "newText": null,
+        "raw": "diff --git a/src/main.ts b/src/main.ts\n@@ -1 +1 @@\n-old\n+new\n",
+        "summary": {
+          "insertions": 1,
+          "deletions": 1
+        },
+        "hunks": [
+          {
+            "id": "src/main.ts:0",
+            "header": "@@ -1 +1 @@",
+            "oldStart": 1,
+            "oldCount": 1,
+            "newStart": 1,
+            "newCount": 1,
+            "lines": [
+              {
+                "id": "src/main.ts:0:0",
+                "type": "remove",
+                "text": "old",
+                "oldLineNumber": 1,
+                "newLineNumber": null
+              },
+              {
+                "id": "src/main.ts:0:1",
+                "type": "add",
+                "text": "new",
+                "oldLineNumber": null,
+                "newLineNumber": 1
+              }
+            ]
+          }
+        ]
+      },
+      "error": null,
+      "isBinary": false,
+      "kind": "modified",
+      "path": "src/main.ts",
+      "previousPath": null
+    }
+  ],
+  "unavailableReason": null,
+  "updatedAt": "2026-07-26T00:00:00.000Z"
+}

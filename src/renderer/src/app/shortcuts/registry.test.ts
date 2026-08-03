@@ -54,7 +54,7 @@ describe("shortcutDefinitions", () => {
         );
 
         expect(nextWorkspaceShortcut).toMatchObject({
-            description: "Switch to the next open workspace.",
+            description: "Switch to the next workspace in the navigator.",
             keys: {
                 mac: "Cmd+Alt+]",
                 windows: "Ctrl+Alt+]",
@@ -63,7 +63,7 @@ describe("shortcutDefinitions", () => {
             section: "General",
         });
         expect(previousWorkspaceShortcut).toMatchObject({
-            description: "Switch to the previous open workspace.",
+            description: "Switch to the previous workspace in the navigator.",
             keys: {
                 mac: "Cmd+Alt+[",
                 windows: "Ctrl+Alt+[",
@@ -71,5 +71,22 @@ describe("shortcutDefinitions", () => {
             label: "Previous workspace",
             section: "General",
         });
+    });
+
+    it("documents singleton chrome controls without window creation shortcuts", () => {
+        expect(
+            shortcutDefinitions.map((shortcut) => shortcut.id),
+        ).toEqual(
+            expect.arrayContaining([
+                "close_workspace",
+                "toggle_inspector",
+                "toggle_navigator",
+            ]),
+        );
+        expect(
+            shortcutDefinitions.some((shortcut) =>
+                shortcut.label.toLowerCase().includes("new window"),
+            ),
+        ).toBe(false);
     });
 });

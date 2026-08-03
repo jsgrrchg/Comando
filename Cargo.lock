@@ -367,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "comando-ai"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "agent-client-protocol",
  "comando-diff",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "comando-diff"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "imara-diff",
  "serde",
@@ -398,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "comando-fs"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "comando-types",
@@ -412,7 +412,7 @@ dependencies = [
 
 [[package]]
 name = "comando-git"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "comando-types",
  "serde_json",
@@ -424,7 +424,7 @@ dependencies = [
 
 [[package]]
 name = "comando-index"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "comando-fs",
  "comando-types",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "comando-native-backend"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "comando-ai",
  "comando-diff",
@@ -458,19 +458,22 @@ dependencies = [
 
 [[package]]
 name = "comando-persistence"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "comando-types",
  "rusqlite",
+ "semver",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "time",
+ "uuid",
 ]
 
 [[package]]
 name = "comando-projects"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "comando-persistence",
  "comando-types",
@@ -483,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "comando-settings"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "comando-types",
  "keyring",
@@ -495,7 +498,7 @@ dependencies = [
 
 [[package]]
 name = "comando-terminal"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "comando-types",
  "portable-pty",
@@ -507,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "comando-types"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",

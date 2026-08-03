@@ -1,126 +1,429 @@
 import { create } from "zustand";
 
-import type { PersistedShellState } from "@shared/ipc";
+import type {
+    PersistedShellState,
+    PersistedShellStateV3,
+    WorkspaceInspectorView,
+} from "@shared/ipc";
 
 import {
     createDefaultShellLayout,
     normalizeShellLayout,
     nudgeShellPanel,
     resizeShellPanel,
+    resolveShellResponsiveLayout,
     type ShellLayoutDimensions,
     type ShellPanelSide,
+    type ShellResponsiveLayout,
     type ShellSurface,
 } from "../layout/shell-layout";
 
 const initialLayout = createDefaultShellLayout();
+const INITIAL_VIEWPORT_WIDTH = 1_440;
+type NormalizedPersistedShellState = PersistedShellStateV3 & {
+    readonly projectOrder: readonly string[];
+};
 
-type SidebarView = "files" | "git" | "agents" | "issues" | "pull_requests";
-
-interface ShellStore extends ShellLayoutDimensions {
+export interface ShellStore extends ShellLayoutDimensions {
     readonly activeSurface: ShellSurface;
+    readonly drawerChangedLocally: boolean;
+    readonly expandedProjectIds: readonly string[];
     readonly isResizingPanel: boolean;
     readonly leftCollapsed: boolean;
     readonly leftCollapsedChangedLocally: boolean;
-    readonly sidebarView: SidebarView;
+    readonly preferredDrawer: ShellPanelSide | null;
+    readonly projectOrder: readonly string[];
+    readonly responsive: ShellResponsiveLayout;
+    readonly rightCollapsed: boolean;
+    readonly rightCollapsedChangedLocally: boolean;
+    readonly rightInspectorView: WorkspaceInspectorView;
     readonly viewportWidth: number;
     focusSurface: (surface: ShellSurface) => void;
     hydrate: (snapshot: PersistedShellState | null) => void;
-    resizePanel: (side: ShellPanelSide, nextWidth: number) => void;
     nudgePanel: (side: ShellPanelSide, delta: number) => void;
-    setResizingPanel: (resizing: boolean) => void;
+    resizePanel: (side: ShellPanelSide, nextWidth: number) => void;
     setLeftCollapsed: (collapsed: boolean) => void;
-    setSidebarView: (view: SidebarView) => void;
-    toggleLeftCollapsed: () => void;
-    toggleSidebarView: () => void;
+    setProjectExpanded: (projectId: string, expanded: boolean) => void;
+    setPanelCollapsed: (side: ShellPanelSide, collapsed: boolean) => void;
+    setPreferredDrawer: (side: ShellPanelSide | null) => void;
+    setProjectOrder: (projectIds: readonly string[]) => void;
+    setResizingPanel: (resizing: boolean) => void;
+    setRightCollapsed: (collapsed: boolean) => void;
+    setRightInspectorView: (view: WorkspaceInspectorView) => void;
     syncViewport: (viewportWidth: number) => void;
+    toggleLeftCollapsed: () => void;
+    togglePanel: (side: ShellPanelSide) => void;
+    toggleRightCollapsed: () => void;
+    toggleSidebarView: () => void;
 }
 
-type LegacyShellSnapshot = PersistedShellState & {
-    readonly activeSurface?: string | null;
-    readonly sidebarView?: string | null;
+export function migratePersistedShellState(
+    snapshot: PersistedShellState | null,
+): NormalizedPersistedShellState {
+    if (snapshot?.version === 2 || snapshot?.version === 3) {
+        return {
+            activeSurface: normalizeActiveSurface(snapshot.activeSurface),
+            expandedProjectIds:
+                snapshot.version === 3
+                    ? normalizeExpandedProjectIds(snapshot.expandedProjectIds)
+                    : [],
+            leftCollapsed: snapshot.leftCollapsed === true,
+            leftWidth: finiteOrDefault(
+                snapshot.leftWidth,
+                initialLayout.leftWidth,
+            ),
+            preferredDrawer: normalizePreferredDrawer(
+                snapshot.preferredDrawer,
+            ),
+            projectOrder:
+                snapshot.version === 3
+                    ? normalizeProjectOrder(snapshot.projectOrder)
+                    : [],
+            rightCollapsed: snapshot.rightCollapsed === true,
+            rightInspectorView: normalizeInspectorView(
+                snapshot.rightInspectorView,
+            ),
+            rightWidth: finiteOrDefault(
+                snapshot.rightWidth,
+                initialLayout.rightWidth,
+            ),
+            version: 3,
+        };
+    }
+
+    return {
+        activeSurface: normalizeActiveSurface(snapshot?.activeSurface),
+        expandedProjectIds: [],
+        leftCollapsed: false,
+        leftWidth: initialLayout.leftWidth,
+        preferredDrawer: null,
+        projectOrder: [],
+        // The legacy panel becomes the inspector; navigator preferences start
+        // from their own defaults instead of inheriting unrelated UI state.
+        rightCollapsed: snapshot?.leftCollapsed === true,
+        rightInspectorView: normalizeInspectorView(snapshot?.sidebarView),
+        rightWidth: finiteOrDefault(
+            snapshot?.leftWidth,
+            initialLayout.rightWidth,
+        ),
+        version: 3,
+    };
+}
+
+export function createPersistedShellState(
+    state: Pick<
+        ShellStore,
+        | "activeSurface"
+        | "expandedProjectIds"
+        | "leftCollapsed"
+        | "leftWidth"
+        | "preferredDrawer"
+        | "projectOrder"
+        | "rightCollapsed"
+        | "rightInspectorView"
+        | "rightWidth"
+    >,
+): PersistedShellStateV3 {
+    return {
+        activeSurface: state.activeSurface,
+        expandedProjectIds: state.expandedProjectIds,
+        leftCollapsed: state.leftCollapsed,
+        leftWidth: state.leftWidth,
+        preferredDrawer: state.preferredDrawer,
+        projectOrder: state.projectOrder,
+        rightCollapsed: state.rightCollapsed,
+        rightInspectorView: state.rightInspectorView,
+        rightWidth: state.rightWidth,
+        version: 3,
+    };
+}
+
+const initialPreferences = {
+    leftCollapsed: false,
+    preferredDrawer: null,
+    projectOrder: [],
+    rightCollapsed: false,
 };
-
-function normalizeActiveSurface(
-    surface: LegacyShellSnapshot["activeSurface"],
-): ShellSurface {
-    return surface === "projects" ? "projects" : "workspace";
-}
-
-function normalizeSidebarView(
-    view: LegacyShellSnapshot["sidebarView"],
-): SidebarView {
-    if (view === "git") {
-        return "git";
-    }
-    if (view === "agents") {
-        return "agents";
-    }
-    if (view === "issues") {
-        return "issues";
-    }
-    if (view === "pull_requests") {
-        return "pull_requests";
-    }
-    return "files";
-}
 
 export const useShellStore = create<ShellStore>((set) => ({
     activeSurface: "workspace",
+    drawerChangedLocally: false,
+    expandedProjectIds: [],
     isResizingPanel: false,
-    leftCollapsed: false,
+    leftCollapsed: initialPreferences.leftCollapsed,
     leftCollapsedChangedLocally: false,
     leftWidth: initialLayout.leftWidth,
-    sidebarView: "files",
-    viewportWidth: 1440,
+    preferredDrawer: initialPreferences.preferredDrawer,
+    projectOrder: initialPreferences.projectOrder,
+    responsive: resolveShellResponsiveLayout(
+        initialLayout,
+        initialPreferences,
+        INITIAL_VIEWPORT_WIDTH,
+    ),
+    rightCollapsed: initialPreferences.rightCollapsed,
+    rightCollapsedChangedLocally: false,
+    rightInspectorView: "files",
+    rightWidth: initialLayout.rightWidth,
+    viewportWidth: INITIAL_VIEWPORT_WIDTH,
     focusSurface: (surface) => set({ activeSurface: surface }),
     hydrate: (snapshot) => {
         if (!snapshot) {
             return;
         }
 
-        const legacySnapshot = snapshot as LegacyShellSnapshot;
-
-        set((state) => ({
-            activeSurface: normalizeActiveSurface(legacySnapshot.activeSurface),
-            // The host stays interactive while persistence is loading. Do not
-            // let a late snapshot undo a sidebar toggle made during startup.
-            leftCollapsed: state.leftCollapsedChangedLocally
-                ? state.leftCollapsed
-                : (legacySnapshot.leftCollapsed ?? false),
-            sidebarView: normalizeSidebarView(legacySnapshot.sidebarView),
-            viewportWidth: state.viewportWidth,
-            ...normalizeShellLayout(
-                {
-                    leftWidth: legacySnapshot.leftWidth,
-                },
-                state.viewportWidth,
-            ),
-        }));
-    },
-    resizePanel: (side, nextWidth) =>
+        const migrated = migratePersistedShellState(snapshot);
         set((state) =>
-            resizeShellPanel(state, side, nextWidth, state.viewportWidth),
-        ),
+            withResponsiveState({
+                ...state,
+                activeSurface: migrated.activeSurface,
+                expandedProjectIds: migrated.expandedProjectIds,
+                leftCollapsed: state.leftCollapsedChangedLocally
+                    ? state.leftCollapsed
+                    : migrated.leftCollapsed,
+                preferredDrawer: state.drawerChangedLocally
+                    ? state.preferredDrawer
+                    : migrated.preferredDrawer,
+                projectOrder: migrated.projectOrder,
+                rightCollapsed: state.rightCollapsedChangedLocally
+                    ? state.rightCollapsed
+                    : migrated.rightCollapsed,
+                rightInspectorView: migrated.rightInspectorView,
+                ...normalizeShellLayout(
+                    {
+                        leftWidth: migrated.leftWidth,
+                        rightWidth: migrated.rightWidth,
+                    },
+                    Number.POSITIVE_INFINITY,
+                ),
+            }),
+        );
+    },
     nudgePanel: (side, delta) =>
         set((state) =>
-            nudgeShellPanel(state, side, delta, state.viewportWidth),
+            withResponsiveState({
+                ...state,
+                ...nudgeShellPanel(
+                    getEffectiveDimensions(state),
+                    side,
+                    delta,
+                    state.viewportWidth,
+                ),
+            }),
         ),
-    setResizingPanel: (resizing) => set({ isResizingPanel: resizing }),
-    setLeftCollapsed: (collapsed) =>
-        set({ leftCollapsed: collapsed, leftCollapsedChangedLocally: true }),
-    setSidebarView: (view) => set({ sidebarView: view }),
-    toggleLeftCollapsed: () =>
+    resizePanel: (side, nextWidth) =>
+        set((state) =>
+            withResponsiveState({
+                ...state,
+                ...resizeShellPanel(
+                    getEffectiveDimensions(state),
+                    side,
+                    nextWidth,
+                    state.viewportWidth,
+                ),
+            }),
+        ),
+    setLeftCollapsed: (collapsed) => {
+        setPanelEffectiveCollapsed(set, "left", collapsed);
+    },
+    setProjectExpanded: (projectId, expanded) =>
         set((state) => ({
-            leftCollapsed: !state.leftCollapsed,
-            leftCollapsedChangedLocally: true,
+            expandedProjectIds: expanded
+                ? state.expandedProjectIds.includes(projectId)
+                    ? state.expandedProjectIds
+                    : [...state.expandedProjectIds, projectId]
+                : state.expandedProjectIds.filter(
+                      (candidate) => candidate !== projectId,
+                  ),
         })),
+    setPanelCollapsed: (side, collapsed) => {
+        setPanelEffectiveCollapsed(set, side, collapsed);
+    },
+    setPreferredDrawer: (side) =>
+        set((state) =>
+            withResponsiveState({
+                ...state,
+                drawerChangedLocally: true,
+                preferredDrawer: side,
+            }),
+        ),
+    setProjectOrder: (projectIds) =>
+        set({ projectOrder: normalizeProjectOrder(projectIds) }),
+    setResizingPanel: (resizing) => set({ isResizingPanel: resizing }),
+    setRightCollapsed: (collapsed) => {
+        setPanelEffectiveCollapsed(set, "right", collapsed);
+    },
+    setRightInspectorView: (view) => set({ rightInspectorView: view }),
+    syncViewport: (viewportWidth) =>
+        set((state) =>
+            withResponsiveState({
+                ...state,
+                viewportWidth,
+            }),
+        ),
+    toggleLeftCollapsed: () => {
+        togglePanel(set, "left");
+    },
+    togglePanel: (side) => {
+        togglePanel(set, side);
+    },
+    toggleRightCollapsed: () => {
+        togglePanel(set, "right");
+    },
     toggleSidebarView: () =>
         set((state) => ({
-            sidebarView: state.sidebarView === "files" ? "git" : "files",
-        })),
-    syncViewport: (viewportWidth) =>
-        set((state) => ({
-            viewportWidth,
-            ...normalizeShellLayout(state, viewportWidth),
+            rightInspectorView:
+                state.rightInspectorView === "files" ? "git" : "files",
         })),
 }));
+
+function setPanelEffectiveCollapsed(
+    set: (
+        update: (state: ShellStore) => ShellStore,
+    ) => void,
+    side: ShellPanelSide,
+    collapsed: boolean,
+): void {
+    set((state) => {
+        const usesDrawer =
+            state.responsive.mode === "narrow" ||
+            (state.responsive.mode === "medium" && side === "right");
+        if (usesDrawer) {
+            return withResponsiveState({
+                ...state,
+                drawerChangedLocally: true,
+                preferredDrawer: collapsed
+                    ? state.preferredDrawer === side
+                        ? null
+                        : state.preferredDrawer
+                    : side,
+            });
+        }
+        return withResponsiveState({
+            ...state,
+            ...(side === "left"
+                ? {
+                      leftCollapsed: collapsed,
+                      leftCollapsedChangedLocally: true,
+                  }
+                : {
+                      rightCollapsed: collapsed,
+                      rightCollapsedChangedLocally: true,
+                  }),
+        });
+    });
+}
+
+function togglePanel(
+    set: (
+        update: (state: ShellStore) => ShellStore,
+    ) => void,
+    side: ShellPanelSide,
+): void {
+    set((state) => {
+        const usesDrawer =
+            state.responsive.mode === "narrow" ||
+            (state.responsive.mode === "medium" && side === "right");
+        if (usesDrawer) {
+            return withResponsiveState({
+                ...state,
+                drawerChangedLocally: true,
+                preferredDrawer:
+                    state.preferredDrawer === side ? null : side,
+            });
+        }
+        return withResponsiveState({
+            ...state,
+            ...(side === "left"
+                ? {
+                      leftCollapsed: !state.leftCollapsed,
+                      leftCollapsedChangedLocally: true,
+                  }
+                : {
+                      rightCollapsed: !state.rightCollapsed,
+                      rightCollapsedChangedLocally: true,
+                  }),
+        });
+    });
+}
+
+function withResponsiveState(state: ShellStore): ShellStore {
+    return {
+        ...state,
+        responsive: resolveShellResponsiveLayout(
+            state,
+            state,
+            state.viewportWidth,
+        ),
+    };
+}
+
+function getEffectiveDimensions(state: ShellStore): ShellLayoutDimensions {
+    return {
+        leftWidth: state.responsive.left.width,
+        rightWidth: state.responsive.right.width,
+    };
+}
+
+function normalizeActiveSurface(surface: unknown): ShellSurface {
+    if (
+        surface === "navigator" ||
+        surface === "inspector" ||
+        surface === "composer"
+    ) {
+        return surface;
+    }
+    if (surface === "projects") {
+        return "navigator";
+    }
+    return "workspace";
+}
+
+function normalizeExpandedProjectIds(value: unknown): readonly string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return [
+        ...new Set(
+            value.filter(
+                (projectId): projectId is string =>
+                    typeof projectId === "string" && projectId.length > 0,
+            ),
+        ),
+    ];
+}
+
+function normalizeProjectOrder(value: unknown): readonly string[] {
+    if (!Array.isArray(value)) {
+        return [];
+    }
+    return [
+        ...new Set(
+            value.filter(
+                (projectId): projectId is string =>
+                    typeof projectId === "string" && projectId.length > 0,
+            ),
+        ),
+    ];
+}
+
+function normalizeInspectorView(view: unknown): WorkspaceInspectorView {
+    if (
+        view === "git" ||
+        view === "agents" ||
+        view === "issues" ||
+        view === "pull_requests"
+    ) {
+        return view;
+    }
+    return "files";
+}
+
+function normalizePreferredDrawer(value: unknown): ShellPanelSide | null {
+    return value === "left" || value === "right" ? value : null;
+}
+
+function finiteOrDefault(value: unknown, fallback: number): number {
+    return typeof value === "number" && Number.isFinite(value)
+        ? value
+        : fallback;
+}

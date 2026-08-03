@@ -50,6 +50,9 @@ import {
     type ContextMenuState,
 } from "@renderer/components/context-menu/ContextMenu";
 import {
+    requestNativeContextMenuAction,
+} from "@renderer/components/context-menu/nativeContextMenu";
+import {
     formatHistoryRelativeDateCompact,
     getHistoryRuntimeLabel,
 } from "@renderer/components/workspace/chat-history/historyPresentation";
@@ -108,6 +111,10 @@ import {
     SidebarAgentsFolderList,
     type EditingSidebarAgentFolder,
 } from "./SidebarAgentsFolderList";
+import {
+    useRestorableSidebarScroll,
+    type SidebarScrollPositionStoreRef,
+} from "./useRestorableSidebarScroll";
 
 interface SidebarAgentsContextMenuPayload {
     readonly sessionId: string;
@@ -152,6 +159,8 @@ export function SidebarAgentsPanel({
     onRequestWorkspaceAction,
     projectId,
     runtimeCatalog = BUILT_IN_AI_RUNTIME_CATALOG,
+    scrollKey,
+    scrollPositionsRef,
     workspaceContextKey,
     worktreeId,
 }: {
@@ -161,9 +170,18 @@ export function SidebarAgentsPanel({
     ) => void;
     readonly projectId: string | null;
     readonly runtimeCatalog?: readonly AiRuntimeDescriptor[];
+    readonly scrollKey?: string;
+    readonly scrollPositionsRef?: SidebarScrollPositionStoreRef;
     readonly workspaceContextKey?: string | null;
     readonly worktreeId: string | null;
 }) {
+    const localScrollPositionsRef = useRef(new Map<string, number>());
+    const { handleScroll, setScrollElement } = useRestorableSidebarScroll({
+        scrollKey:
+            scrollKey ??
+            `agents:${workspaceContextKey ?? projectId ?? "unavailable"}`,
+        scrollPositionsRef: scrollPositionsRef ?? localScrollPositionsRef,
+    });
     const openChatSessionTab = useWorkspaceStore(
         (state) => state.openChatSessionTab,
     );
@@ -1186,6 +1204,120 @@ export function SidebarAgentsPanel({
         visibleFolderState.sessionFolderIds,
         visibleSessions,
     ]);
+    const folderMenuEntries = useMemo<readonly ContextMenuEntry[]>(
+        () =>
+            folderMenu
+                ? [
+                      {
+                          label: "Rename Folder",
+                          action: () =>
+                              setEditingFolder({
+                                  folderId: folderMenu.payload.id,
+                                  name: folderMenu.payload.name,
+                              }),
+                      },
+                      { type: "separator" as const },
+                      {
+                          label: "Delete Folder",
+                          danger: true,
+                          action: () =>
+                              updateFolderState((current) =>
+                                  deleteSidebarAgentsFolder(
+                                      current,
+                                      folderMenu.payload.id,
+                                  ),
+                              ),
+                      },
+                  ]
+                : [],
+        [folderMenu, updateFolderState],
+    );
+    const useNativeContextMenus = Boolean(onRequestWorkspaceAction);
+    const activeNativeSessionMenuRef = useRef<object | null>(null);
+    const activeNativeFolderMenuRef = useRef<object | null>(null);
+    const activeNativeNewAgentMenuRef = useRef<object | null>(null);
+
+    const openNativeMenu = useCallback(
+        async (
+            entries: readonly ContextMenuEntry[],
+            menu: ContextMenuState<unknown>,
+            close: () => void,
+        ) => {
+            let action: (() => void) | null = null;
+            try {
+                action = await requestNativeContextMenuAction(entries, menu);
+            } catch {
+                // Native menus are best-effort; dismissal is the safe fallback.
+            } finally {
+                close();
+            }
+            if (action) queueMicrotask(action);
+        },
+        [],
+    );
+
+    useEffect(() => {
+        if (!useNativeContextMenus || !contextMenu) {
+            activeNativeSessionMenuRef.current = null;
+            return;
+        }
+        if (activeNativeSessionMenuRef.current === contextMenu) {
+            return;
+        }
+        activeNativeSessionMenuRef.current = contextMenu;
+        void openNativeMenu(
+            contextMenuEntries,
+            contextMenu,
+            () => setContextMenu(null),
+        );
+    }, [
+        contextMenu,
+        contextMenuEntries,
+        openNativeMenu,
+        useNativeContextMenus,
+    ]);
+
+    useEffect(() => {
+        if (!useNativeContextMenus || !folderMenu) {
+            activeNativeFolderMenuRef.current = null;
+            return;
+        }
+        if (activeNativeFolderMenuRef.current === folderMenu) {
+            return;
+        }
+        activeNativeFolderMenuRef.current = folderMenu;
+        void openNativeMenu(
+            folderMenuEntries,
+            folderMenu,
+            () => setFolderMenu(null),
+        );
+    }, [
+        folderMenu,
+        folderMenuEntries,
+        openNativeMenu,
+        useNativeContextMenus,
+    ]);
+
+    useEffect(() => {
+        if (!useNativeContextMenus || !newAgentMenu) {
+            activeNativeNewAgentMenuRef.current = null;
+            return;
+        }
+        if (activeNativeNewAgentMenuRef.current === newAgentMenu) {
+            return;
+        }
+        activeNativeNewAgentMenuRef.current = newAgentMenu;
+        void openNativeMenu(
+            newAgentMenuEntries,
+            newAgentMenu,
+            () => setNewAgentMenu(null),
+        );
+    }, [
+        newAgentMenu,
+        newAgentMenuEntries,
+        openNativeMenu,
+        useNativeContextMenus,
+    ]);
 
     const openSessionIds = useMemo(() => {
         const ids = new Set<string>();
@@ -1537,7 +1669,11 @@ export function SidebarAgentsPanel({
                 </button>
             </div>
 
-            <div className="shell-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-2">
+            <div
+                ref={setScrollElement}
+                className="shell-scrollbar min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1 pb-2"
+                onScroll={handleScroll}
+            >
                 {!showBlockingLoading &&
                 !visibleError &&
                 visibleSessions.length === 0 ? (
@@ -1687,7 +1823,7 @@ export function SidebarAgentsPanel({
                 ) : null}
             </div>
 
-            {contextMenu ? (
+            {contextMenu && !useNativeContextMenus ? (
                 <ContextMenu
                     entries={contextMenuEntries}
                     menu={contextMenu}
@@ -1696,37 +1832,16 @@ export function SidebarAgentsPanel({
                 />
             ) : null}
 
-            {folderMenu ? (
+            {folderMenu && !useNativeContextMenus ? (
                 <ContextMenu
-                    entries={[
-                        {
-                            label: "Rename Folder",
-                            action: () =>
-                                setEditingFolder({
-                                    folderId: folderMenu.payload.id,
-                                    name: folderMenu.payload.name,
-                                }),
-                        },
-                        { type: "separator" },
-                        {
-                            label: "Delete Folder",
-                            danger: true,
-                            action: () =>
-                                updateFolderState((current) =>
-                                    deleteSidebarAgentsFolder(
-                                        current,
-                                        folderMenu.payload.id,
-                                    ),
-                                ),
-                        },
-                    ]}
+                    entries={folderMenuEntries}
                     menu={folderMenu}
                     minWidth={160}
                     onClose={() => setFolderMenu(null)}
                 />
             ) : null}
 
-            {newAgentMenu ? (
+            {newAgentMenu && !useNativeContextMenus ? (
                 <ContextMenu
                     entries={newAgentMenuEntries}
                     menu={newAgentMenu}

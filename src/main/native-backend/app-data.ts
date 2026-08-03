@@ -66,11 +66,6 @@ import {
     createWindowWorkspaceRestoreRecord,
     normalizeWindowWorkspaceRestoreRecord,
 } from "@shared/workspace-restore";
-import {
-    areWorkspaceScopesEquivalent,
-    hasOpenWorkspaceScope,
-} from "@shared/workspace-context";
-
 import type {
     AiPersistenceGateway,
     PersistedAiSessionRuntimeMapping,
@@ -87,22 +82,28 @@ import type {
     PersistenceGateway,
 } from "@main/persistence/service";
 import type { SettingsGateway } from "@main/settings/service";
-import type {
-    WorkspaceContextTransferInput,
-    WorkspaceContextTransferResult,
-    WorkspaceGateway,
-} from "@main/workspace/service";
+import type { WorkspaceGateway } from "@main/workspace/service";
 
 import { debugBenignError } from "@main/observability/logging";
+import { prepareLegacyWorkspaceMigration } from "@main/workspace/migration";
+import {
+    createWorkspaceMigrationTelemetry,
+    type WorkspaceMigrationTelemetry,
+} from "@main/workspace/rollout";
 
-import type { NativeBackendRequester } from "./persistence";
+import {
+    NativePersistenceGateway,
+    type NativeBackendRequester,
+} from "./persistence";
 
 const SETTINGS_KEY = "settings.snapshot";
 const PROJECT_SETTINGS_KEY = "settings.projects";
-const PERSISTENCE_KEY = "persistence.windows";
+const LEGACY_PERSISTENCE_KEY = "persistence.windows";
+const HOST_PERSISTENCE_KEY = "persistence.mainWindow";
 const AI_CATALOGS_KEY = "ai.runtimeCatalogs";
 const AI_PREFERENCES_KEY = "ai.runtimePreferences";
 const AI_PROMPT_QUEUES_KEY = "ai.promptQueues";
+const LEGACY_WORKSPACE_RETENTION_DAYS = 90;
 const WORKSPACE_KEY_PREFIX = "workspace.";
 const AI_RUNTIME_IDS = [
     "claude",
@@ -150,8 +151,13 @@ const KNOWN_SECRET_KEYS = [
 ] as const;
 
 interface NativeAppDataClientOptions {
+    readonly applicationVersion?: string;
     readonly client: NativeBackendRequester;
     readonly databaseFile: string;
+    readonly onWorkspaceMigrationTelemetry?: (
+        telemetry: WorkspaceMigrationTelemetry,
+    ) => void;
+    readonly publishWorkspaceRollout?: boolean;
 }
 
 export interface NativeAppDataClient {
@@ -252,8 +258,13 @@ class NativeJsonStore {
         return output.value as T;
     }
 
-    save(key: string, value: unknown): void {
+    save(
+        key: string,
+        value: unknown,
+        afterWrite?: () => Promise<void>,
+    ): void {
         const write = this.saveNow(key, value)
+            .then(() => afterWrite?.())
             .catch((error: unknown) => {
                 debugBenignError(`nativeAppData.save.${key}`, error);
             })
@@ -455,137 +466,6 @@ class NativePersistenceClient implements PersistenceGateway {
         await commit;
     }
 
-    async transferWorkspaceContext(
-        input: WorkspaceContextTransferInput,
-    ): Promise<WorkspaceContextTransferResult> {
-        const commit = this.#workspaceCommitChain.then(() =>
-            this.#transferWorkspaceContextNow(input),
-        );
-        this.#workspaceCommitChain = commit.then(
-            () => undefined,
-            () => undefined,
-        );
-        return await commit;
-    }
-
-    async #transferWorkspaceContextNow(
-        input: WorkspaceContextTransferInput,
-    ): Promise<WorkspaceContextTransferResult> {
-        if (input.sourceWorkspaceId === input.targetWorkspaceId) {
-            throw new Error("Workspace transfers require two different windows.");
-        }
-        const sourceEntry = this.#findWindowEntryByWorkspaceId(
-            input.sourceWorkspaceId,
-        );
-        const targetEntry = this.#findWindowEntryByWorkspaceId(
-            input.targetWorkspaceId,
-        );
-        if (!sourceEntry || !targetEntry) {
-            throw new Error("A workspace transfer window was not found.");
-        }
-        const [sourceWindowId, sourceRecord] = sourceEntry;
-        const [targetWindowId, targetRecord] = targetEntry;
-        const sourceRestore = sourceRecord.workspaceRestore ??
-            createWindowWorkspaceRestoreRecord(emptyWorkspaceNavigation());
-        const targetRestore = targetRecord.workspaceRestore ??
-            createWindowWorkspaceRestoreRecord(emptyWorkspaceNavigation());
-        if (
-            sourceRestore.revision !== input.sourceRevision ||
-            targetRestore.revision !== input.targetRevision
-        ) {
-            throw new Error("A workspace changed before it could be moved.");
-        }
-        const context = sourceRestore.snapshot.contexts.find(
-            (candidate) => candidate.key === input.contextKey,
-        );
-        if (
-            !context ||
-            !sourceRestore.snapshot.openContextKeys.includes(input.contextKey)
-        ) {
-            throw new Error("The workspace to move is no longer open.");
-        }
-        if (hasOpenWorkspaceScope(targetRestore.snapshot, context)) {
-            throw new Error("The destination already contains this workspace.");
-        }
-
-        const sourceOpenContextKeys =
-            sourceRestore.snapshot.openContextKeys.filter(
-                (key) => key !== input.contextKey,
-            );
-        const sourceIndex = sourceRestore.snapshot.openContextKeys.indexOf(
-            input.contextKey,
-        );
-        const sourceActiveContextKey =
-            sourceRestore.snapshot.activeContextKey === input.contextKey
-                ? (sourceOpenContextKeys[
-                      Math.min(sourceIndex, sourceOpenContextKeys.length - 1)
-                  ] ?? null)
-                : sourceRestore.snapshot.activeContextKey;
-        const targetIndex = Math.max(
-            0,
-            Math.min(
-                input.targetIndex ?? targetRestore.snapshot.openContextKeys.length,
-                targetRestore.snapshot.openContextKeys.length,
-            ),
-        );
-        const targetOpenContextKeys = [
-            ...targetRestore.snapshot.openContextKeys.slice(0, targetIndex),
-            context.key,
-            ...targetRestore.snapshot.openContextKeys.slice(targetIndex),
-        ];
-        const updatedContext = {
-            ...context,
-            lastActivatedAt: new Date().toISOString(),
-        };
-        const source = createWindowWorkspaceRestoreRecord(
-            {
-                ...sourceRestore.snapshot,
-                activeContextKey: sourceActiveContextKey,
-                contexts: sourceRestore.snapshot.contexts.filter(
-                    (candidate) => candidate.key !== input.contextKey,
-                ),
-                openContextKeys: sourceOpenContextKeys,
-            },
-            sourceRestore.revision + 1,
-        );
-        const target = createWindowWorkspaceRestoreRecord(
-            {
-                ...targetRestore.snapshot,
-                activeContextKey: context.key,
-                // A closed retained context is a cache, not a live duplicate.
-                // Replace it with the incoming live context and its latest state.
-                contexts: [
-                    ...targetRestore.snapshot.contexts.filter(
-                        (candidate) =>
-                            !areWorkspaceScopesEquivalent(candidate, context),
-                    ),
-                    updatedContext,
-                ],
-                openContextKeys: targetOpenContextKeys,
-            },
-            targetRestore.revision + 1,
-        );
-
-        this.#recordsByWindowId.set(
-            sourceWindowId,
-            withWorkspaceRestore(sourceRecord, source),
-        );
-        this.#recordsByWindowId.set(
-            targetWindowId,
-            withWorkspaceRestore(targetRecord, target),
-        );
-        try {
-            await this.#persist();
-        } catch (error) {
-            // Restore both records together so a failed durable write cannot
-            // leak a half-applied move into later in-memory reads.
-            this.#recordsByWindowId.set(sourceWindowId, sourceRecord);
-            this.#recordsByWindowId.set(targetWindowId, targetRecord);
-            throw error;
-        }
-        return { source, target };
-    }
-
     async #commitWorkspaceRestoreNow(
         workspaceId: string,
         snapshot: WorkspaceNavigationSnapshot,
@@ -623,17 +503,6 @@ class NativePersistenceClient implements PersistenceGateway {
             workspaceRestore: restore,
         });
         await this.#persist();
-    }
-
-    #findWindowEntryByWorkspaceId(
-        workspaceId: string,
-    ): [string, PersistedWindowRecord] | null {
-        return (
-            [...this.#recordsByWindowId.entries()].find(
-                ([, record]) =>
-                    record.snapshot.windowContext?.workspaceId === workspaceId,
-            ) ?? null
-        );
     }
 
     #rehydrate(records: readonly PersistedWindowRecord[]): void {
@@ -687,49 +556,14 @@ class NativePersistenceClient implements PersistenceGateway {
     }
 
     #persistSoon(): void {
-        this.#store.save(PERSISTENCE_KEY, [...this.#recordsByWindowId.values()]);
+        const records = [...this.#recordsByWindowId.values()];
+        this.#store.save(HOST_PERSISTENCE_KEY, records);
     }
 
     async #persist(): Promise<void> {
-        await this.#store.saveNow(
-            PERSISTENCE_KEY,
-            [...this.#recordsByWindowId.values()],
-        );
+        const records = [...this.#recordsByWindowId.values()];
+        await this.#store.saveNow(HOST_PERSISTENCE_KEY, records);
     }
-}
-
-function emptyWorkspaceNavigation(): WorkspaceNavigationSnapshot {
-    return {
-        activeContextKey: null,
-        contexts: [],
-        openContextKeys: [],
-        version: 3,
-    };
-}
-
-function withWorkspaceRestore(
-    record: PersistedWindowRecord,
-    workspaceRestore: WindowWorkspaceRestoreRecord,
-): PersistedWindowRecord {
-    const activeContext = workspaceRestore.snapshot.contexts.find(
-        (context) => context.key === workspaceRestore.snapshot.activeContextKey,
-    );
-    return {
-        ...record,
-        snapshot: {
-            ...record.snapshot,
-            activeProjectId: activeContext?.projectId ?? null,
-            activeWorktreeId: activeContext?.worktreeId ?? null,
-            windowContext: record.snapshot.windowContext
-                ? {
-                      ...record.snapshot.windowContext,
-                      projectId: activeContext?.projectId ?? null,
-                      worktreeId: activeContext?.worktreeId ?? null,
-                  }
-                : null,
-        },
-        workspaceRestore,
-    };
 }
 
 class NativeSettingsClient implements SettingsGateway {
@@ -812,6 +646,16 @@ class NativeSettingsClient implements SettingsGateway {
     saveProjectSettings(snapshot: ProjectSettingsSnapshot): void {
         this.#projectSettingsById.set(snapshot.projectId, structuredClone(snapshot));
         this.#store.save(
+            PROJECT_SETTINGS_KEY,
+            Object.fromEntries(this.#projectSettingsById),
+        );
+    }
+
+    async clearProjectSettings(projectId: string): Promise<void> {
+        if (!this.#projectSettingsById.delete(projectId)) {
+            return;
+        }
+        await this.#store.saveNow(
             PROJECT_SETTINGS_KEY,
             Object.fromEntries(this.#projectSettingsById),
         );
@@ -1195,12 +1039,6 @@ class NativeWorkspaceClient implements WorkspaceGateway {
         );
     }
 
-    transferContext(
-        input: WorkspaceContextTransferInput,
-    ): Promise<WorkspaceContextTransferResult> {
-        return this.#persistence.transferWorkspaceContext(input);
-    }
-
     loadChatSessionState(
         sessionId: string,
     ): PersistedChatSessionState | null {
@@ -1377,10 +1215,10 @@ class NativeAiPersistenceClient implements AiPersistenceGateway {
         this.#store.save(AI_CATALOGS_KEY, Object.fromEntries(this.#catalogs));
     }
 
-    savePromptQueueSnapshots(
+    async savePromptQueueSnapshots(
         snapshots: readonly AiPromptQueueSnapshot[],
-    ): void {
-        this.#store.save(AI_PROMPT_QUEUES_KEY, snapshots);
+    ): Promise<void> {
+        await this.#store.saveNow(AI_PROMPT_QUEUES_KEY, snapshots);
     }
 }
 
@@ -1409,12 +1247,12 @@ async function migrateLegacyAppData(input: {
         }
         if (
             (await input.store.loadNullable<readonly PersistedWindowRecord[]>(
-                PERSISTENCE_KEY,
+                LEGACY_PERSISTENCE_KEY,
             )) === null
         ) {
             const windows = readLegacyWindowRecords(database);
             if (windows.length > 0) {
-                await input.store.saveNow(PERSISTENCE_KEY, windows);
+                await input.store.saveNow(LEGACY_PERSISTENCE_KEY, windows);
             }
         }
         await migrateLegacyWorkspaces(database, input.store);
@@ -2137,6 +1975,51 @@ export async function createNativeAppDataClient(
         secretStore,
         store,
     });
+    const migrationGateway = new NativePersistenceGateway(options.client);
+    const storedLegacyRecords = await store.load<unknown>(
+        LEGACY_PERSISTENCE_KEY,
+        [],
+    );
+    const records = Array.isArray(storedLegacyRecords)
+        ? (storedLegacyRecords as readonly PersistedWindowRecord[])
+        : [];
+    const applicationVersion = options.applicationVersion ?? "unknown";
+    const migrationInput = await prepareLegacyWorkspaceMigration({
+        applicationVersion,
+        loadFallbackLayout: (workspaceId) =>
+            store.loadNullable(workspaceKey(workspaceId)),
+        records,
+    });
+    // Migration is a startup gate now that v4 is the only runtime authority.
+    const migration = await migrationGateway.runWorkspaceMigration(migrationInput);
+    let rollout = await migrationGateway.getWorkspaceRolloutStatus();
+    if (
+        !migration.applied &&
+        rollout.dualWriteEnabled &&
+        records.length > 0
+    ) {
+        // A downgraded binary may have changed the canonical v3 projection.
+        await migrationGateway.syncLegacyWorkspaceMigration(migrationInput);
+        rollout = await migrationGateway.getWorkspaceRolloutStatus();
+    }
+    if (rollout.stage === "internal" && options.publishWorkspaceRollout === true) {
+        rollout = await migrationGateway.markWorkspaceRolloutStable({
+            applicationVersion,
+            retentionDays: LEGACY_WORKSPACE_RETENTION_DAYS,
+        });
+    }
+    try {
+        options.onWorkspaceMigrationTelemetry?.(
+            createWorkspaceMigrationTelemetry({
+                diagnostics: migration.diagnostics,
+                migrationApplied: migration.applied,
+                rollout,
+            }),
+        );
+    } catch (error) {
+        // Local observability must never weaken the migration commit gate.
+        debugBenignError("nativeAppData.workspaceMigrationTelemetry", error);
+    }
     await secretStore.hydrate(KNOWN_SECRET_KEYS);
 
     const settings = new NativeSettingsClient(
@@ -2145,10 +2028,20 @@ export async function createNativeAppDataClient(
         await store.load(SETTINGS_KEY, createDefaultSettingsSnapshot()),
         await store.load(PROJECT_SETTINGS_KEY, {}),
     );
-    const persistence = new NativePersistenceClient(
-        store,
-        await store.load(PERSISTENCE_KEY, []),
+    let hostRecords = await store.load<readonly PersistedWindowRecord[]>(
+        HOST_PERSISTENCE_KEY,
+        [],
     );
+    if (hostRecords.length === 0 && records.length > 0) {
+        // Window state moves to a v4 host key so legacy projection cleanup cannot recreate it.
+        hostRecords = records.map((record) => ({
+            isOpen: record.isOpen,
+            lastOpenedAt: record.lastOpenedAt,
+            snapshot: record.snapshot,
+        }));
+        await store.saveNow(HOST_PERSISTENCE_KEY, hostRecords);
+    }
+    const persistence = new NativePersistenceClient(store, hostRecords);
     const aiPersistence = new NativeAiPersistenceClient(
         store,
         await store.load(AI_PREFERENCES_KEY, {}),

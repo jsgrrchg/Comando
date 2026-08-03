@@ -1,3 +1,4 @@
+pub mod branch_diff;
 pub mod branches;
 pub mod diff;
 pub mod env;
@@ -16,6 +17,7 @@ pub mod worktrees;
 #[cfg(test)]
 pub mod test_support;
 
+pub use branch_diff::list_branch_diff;
 pub use branches::{GitBranchListScope, list_branches};
 pub use diff::{GitFileDiffRequest, get_diff_stats, get_file_diff, parse_unified_diff};
 pub use env::GitEnvironment;

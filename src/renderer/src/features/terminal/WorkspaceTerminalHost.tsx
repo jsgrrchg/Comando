@@ -32,45 +32,20 @@ export function getReadyActiveWorkspaceTabIds(
     );
 }
 
-export function getOpenContextTerminalIds(
-    contextsByKey: Readonly<Record<string, { readonly workspace: { readonly tabsById: Record<string, unknown> } }>>,
-    openContextKeys: readonly string[],
-    activeContextKey: string | null,
-): readonly string[] {
-    return openContextKeys.flatMap((contextKey) => {
-        if (contextKey === activeContextKey) {
-            return [];
-        }
-        const context = contextsByKey[contextKey];
-        if (!context) {
-            return [];
-        }
-        return Object.values(context.workspace.tabsById).flatMap((tab) =>
-            typeof tab === "object" && tab !== null &&
-            "kind" in tab && tab.kind === "terminal" &&
-            "terminalId" in tab && typeof tab.terminalId === "string"
-                ? [tab.terminalId]
-                : [],
-        );
-    });
-}
-
-export function WorkspaceTerminalHost() {
+export function WorkspaceTerminalHost({
+    presentationActive = true,
+}: {
+    readonly presentationActive?: boolean;
+}) {
     const {
-        activeContextKey,
         activePaneId,
-        contextsByKey,
         deferredPaneIds,
-        openContextKeys,
         rootNode,
         tabsById,
     } = useWorkspaceStore(
         useShallow((state) => ({
-            activeContextKey: state.activeContextKey,
             activePaneId: state.activePaneId,
-            contextsByKey: state.contextsByKey,
             deferredPaneIds: state.deferredPaneIds,
-            openContextKeys: state.openContextKeys,
             rootNode: state.rootNode,
             tabsById: state.tabsById,
         })),
@@ -92,18 +67,10 @@ export function WorkspaceTerminalHost() {
 
         return visibleTerminalTabs.filter((tab) => activeTabIds.has(tab.id));
     }, [activePaneId, deferredPaneIds, rootNode, visibleTerminalTabs]);
-    const liveTerminalIds = useMemo(() => {
-        const inactiveTerminalIds = getOpenContextTerminalIds(
-            contextsByKey,
-            openContextKeys,
-            activeContextKey,
-        );
-
-        return [
-            ...visibleTerminalTabs.map((tab) => tab.terminalId),
-            ...inactiveTerminalIds,
-        ];
-    }, [activeContextKey, contextsByKey, openContextKeys, visibleTerminalTabs]);
+    const liveTerminalIds = useMemo(
+        () => visibleTerminalTabs.map((tab) => tab.terminalId),
+        [visibleTerminalTabs],
+    );
     const ensureTerminal = useTerminalRuntimeStore(
         (state) => state.ensureTerminal,
     );
@@ -112,6 +79,9 @@ export function WorkspaceTerminalHost() {
     );
 
     useEffect(() => {
+        if (!presentationActive) {
+            return;
+        }
         const comandoApi = getComandoApiOrNull();
         if (!comandoApi) {
             return;
@@ -199,9 +169,12 @@ export function WorkspaceTerminalHost() {
             unsubscribeData();
             unsubscribeExit();
         };
-    }, []);
+    }, [presentationActive]);
 
     useEffect(() => {
+        if (!presentationActive) {
+            return;
+        }
         for (const tab of activeTerminalTabs) {
             ensureTerminal(tab);
         }
@@ -211,14 +184,8 @@ export function WorkspaceTerminalHost() {
         closeMissingTerminals,
         ensureTerminal,
         liveTerminalIds,
+        presentationActive,
     ]);
-
-    useEffect(
-        () => () => {
-            useTerminalRuntimeStore.getState().closeMissingTerminals([]);
-        },
-        [],
-    );
 
     return null;
 }

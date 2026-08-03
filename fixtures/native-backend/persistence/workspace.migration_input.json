@@ -1,0 +1,50 @@
+{
+  "applicationVersion": "0.2.1",
+  "historicalLayoutCap": 30,
+  "normalizationDroppedContextCount": 0,
+  "normalizationRepairedWindowCount": 1,
+  "sourceBackup": {
+    "format": "workspace-v3-backup",
+    "windows": []
+  },
+  "windows": [
+    {
+      "windowId": "window-a",
+      "workspaceId": "workspace-a",
+      "isOpen": true,
+      "restoreRevision": 4,
+      "restoreUpdatedAt": "2026-07-31T00:00:00Z",
+      "activeContextKey": "project-a::__primary__",
+      "openContextKeys": ["project-a::__primary__"],
+      "contexts": [
+        {
+          "scopeKey": "project-a::__primary__",
+          "projectId": "project-a",
+          "worktreeId": null,
+          "lastActivatedAt": "2026-07-31T00:00:00Z",
+          "layoutSnapshot": {
+            "activePaneId": "pane-root",
+            "rootNode": {
+              "activeTabId": "chat-a",
+              "id": "pane-root",
+              "pinnedTabIds": ["chat-a"],
+              "tabIds": ["chat-a"],
+              "type": "pane"
+            },
+            "tabs": [
+              {
+                "draft": "preserved draft",
+                "id": "chat-a",
+                "kind": "chat",
+                "sessionId": "session-a",
+                "title": "Chat"
+              }
+            ]
+          }
+        }
+      ],
+      "shellSnapshot": {},
+      "projectionTemplate": {}
+    }
+  ]
+}

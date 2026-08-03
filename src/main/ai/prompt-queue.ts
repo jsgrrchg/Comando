@@ -42,7 +42,9 @@ export interface AiPromptQueueOptions {
         ownerWindowId: string,
         snapshot: AiPromptQueueSnapshot,
     ) => void;
-    readonly saveSnapshots?: (snapshots: readonly AiPromptQueueSnapshot[]) => void;
+    readonly saveSnapshots?: (
+        snapshots: readonly AiPromptQueueSnapshot[],
+    ) => Promise<void> | void;
 }
 
 export class AiPromptQueue {
@@ -437,9 +439,9 @@ export class AiPromptQueue {
         }
     }
 
-    deleteSession(sessionId: string): void {
+    async deleteSession(sessionId: string): Promise<void> {
         if (this.#records.delete(sessionId)) {
-            this.#persist();
+            await this.#persist();
         }
     }
 
@@ -554,7 +556,7 @@ export class AiPromptQueue {
 
     #commit(record: PromptQueueRecord): void {
         record.revision += 1;
-        this.#persist();
+        void this.#persist().catch(() => undefined);
         if (record.ownerWindowId) {
             this.#options.onSnapshot(
                 record.ownerWindowId,
@@ -563,8 +565,8 @@ export class AiPromptQueue {
         }
     }
 
-    #persist(): void {
-        this.#options.saveSnapshots?.(
+    async #persist(): Promise<void> {
+        await this.#options.saveSnapshots?.(
             [...this.#records.values()]
                 .map((record) => this.#snapshot(record))
                 .filter(

@@ -413,4 +413,27 @@ describe("terminalRuntimeStore", () => {
 
         expect(createTerminalSessionView(runtime).getReplaySnapshot()).toBeNull();
     });
+
+    it("applies the authoritative terminal snapshot on subscriber resync", async () => {
+        createTerminalSessionMock.mockResolvedValueOnce(
+            createSession("live-session-1"),
+        );
+        useTerminalRuntimeStore.getState().ensureTerminal(createTerminalTab());
+        await flushPromises();
+
+        useTerminalRuntimeStore.getState().resyncSessions([
+            createSession("live-session-1", {
+                exitCode: 23,
+                status: "exited",
+                terminalId: "terminal-1",
+            }),
+        ]);
+
+        expect(
+            useTerminalRuntimeStore.getState().runtimesById["terminal-1"],
+        ).toMatchObject({
+            sessionId: "live-session-1",
+            snapshot: { exitCode: 23, status: "exited" },
+        });
+    });
 });

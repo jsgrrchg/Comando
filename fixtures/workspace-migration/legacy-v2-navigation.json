@@ -1,0 +1,63 @@
+{
+    "activeContextKey": "project-v2::project-v2:primary",
+    "contexts": [
+        {
+            "key": "project-v2::project-v2:primary",
+            "lastActivatedAt": "2026-02-11T09:00:00.000Z",
+            "projectId": "project-v2",
+            "workspace": {
+                "activePaneId": "pane-primary",
+                "rootNode": {
+                    "activeTabId": "chat-v2-primary",
+                    "id": "pane-primary",
+                    "pinnedTabIds": ["chat-v2-primary"],
+                    "tabIds": ["chat-v2-primary"],
+                    "type": "pane"
+                },
+                "tabs": [
+                    {
+                        "createdAt": "2026-02-11T08:00:00.000Z",
+                        "draft": "primary draft from v2",
+                        "id": "chat-v2-primary",
+                        "kind": "chat",
+                        "projectId": "project-v2",
+                        "runtimeId": "claude",
+                        "sessionId": "session-v2-primary",
+                        "title": "Primary chat",
+                        "worktreeId": "project-v2:primary"
+                    }
+                ]
+            },
+            "worktreeId": "project-v2:primary"
+        },
+        {
+            "key": "project-v2::worktree-v2-feature",
+            "lastActivatedAt": "2026-02-10T09:00:00.000Z",
+            "projectId": "project-v2",
+            "workspace": {
+                "activePaneId": "pane-feature",
+                "rootNode": {
+                    "activeTabId": "terminal-v2-feature",
+                    "id": "pane-feature",
+                    "tabIds": ["terminal-v2-feature"],
+                    "type": "pane"
+                },
+                "tabs": [
+                    {
+                        "createdAt": "2026-02-10T08:00:00.000Z",
+                        "id": "terminal-v2-feature",
+                        "kind": "terminal",
+                        "projectId": "project-v2",
+                        "sessionId": "terminal-session-v2-feature",
+                        "terminalId": "terminal-runtime-v2-feature",
+                        "title": "Feature terminal",
+                        "worktreeId": "worktree-v2-feature"
+                    }
+                ]
+            },
+            "worktreeId": "worktree-v2-feature"
+        }
+    ],
+    "openContextKeys": ["project-v2::project-v2:primary"],
+    "version": 2
+}

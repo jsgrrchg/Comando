@@ -2,6 +2,7 @@ import path from "node:path";
 
 import type { GitRemoteSummary } from "@shared/ipc";
 import type {
+    NativeGitBranchDiffResult,
     NativeGitBranchSummary,
     NativeGitChangeTreeNode,
     NativeGitCommitDetail,
@@ -29,6 +30,7 @@ import type {
 
 import type { GitGateway } from "../git/service";
 import type {
+    GitBranchDiffResult,
     GitBranchSummary,
     GitChangeKind,
     GitChangeScope,
@@ -161,6 +163,17 @@ export class NativeGitGateway implements ClosableGitGateway {
                             ? [...options.scopes]
                             : null,
                 }),
+            ),
+        );
+    }
+
+    async listBranchDiff(inputPath: string): Promise<GitBranchDiffResult> {
+        return nativeBranchDiffToMain(
+            parseNativeBranchDiff(
+                await this.#client.request(
+                    "git_list_branch_diff",
+                    nativeGitScope(inputPath),
+                ),
             ),
         );
     }
@@ -609,6 +622,27 @@ function nativeWorktreeDiffToMain(
     };
 }
 
+function nativeBranchDiffToMain(
+    result: NativeGitBranchDiffResult,
+): GitBranchDiffResult {
+    return {
+        baseRef: result.baseRef,
+        files: result.files.map((file) => ({
+            additions: file.additions,
+            deletions: file.deletions,
+            diff: file.diff ? nativeFileDiffToMain(file.diff) : null,
+            error: file.error,
+            isBinary: file.isBinary,
+            kind: nativeChangeKindToMain(file.kind),
+            path: file.path,
+            previousPath: file.previousPath,
+        })),
+        headRef: result.headRef,
+        unavailableReason: result.unavailableReason,
+        updatedAt: result.updatedAt,
+    };
+}
+
 function nativeGitScope(inputPath: string): NativeGitRepositoryScope {
     const rootPath = path.resolve(inputPath);
     return {
@@ -1047,6 +1081,14 @@ function parseNativeWorktreeDiff(value: unknown): NativeGitWorktreeDiffResult {
     requireArray(record.sections, "sections");
     requireString(record.updatedAt, "updatedAt");
     return record as unknown as NativeGitWorktreeDiffResult;
+}
+
+function parseNativeBranchDiff(value: unknown): NativeGitBranchDiffResult {
+    const record = requireRecord(value, "Native git branch diff");
+    requireArray(record.files, "files");
+    requireString(record.headRef, "headRef");
+    requireString(record.updatedAt, "updatedAt");
+    return record as unknown as NativeGitBranchDiffResult;
 }
 
 function parseNativeOriginalFile(value: unknown): NativeGitOriginalFile {

@@ -3,6 +3,45 @@ import { describe, expect, it, vi } from "vitest";
 import { TranscriptPayloadCache } from "./transcriptPayloadCache";
 
 describe("TranscriptPayloadCache", () => {
+    it("enforces byte eviction for 100 KB, 1 MB, and 5 MB payloads", async () => {
+        const kibibyte = 1024;
+        const mebibyte = 1024 * kibibyte;
+        const payloads = new Map([
+            ["100kb", new Uint8Array(100 * kibibyte)],
+            ["1mb", new Uint8Array(mebibyte)],
+            ["5mb", new Uint8Array(5 * mebibyte)],
+        ]);
+        const cache = new TranscriptPayloadCache(
+            {
+                load: (payloadRef) =>
+                    Promise.resolve(payloads.get(payloadRef)!),
+            },
+            6 * mebibyte,
+            (payload) => payload.byteLength,
+        );
+
+        await cache.load("100kb");
+        await cache.load("1mb");
+        await cache.load("5mb");
+
+        expect(cache.residentBytes).toBe(6 * mebibyte);
+        expect(cache.has("100kb")).toBe(false);
+        expect(cache.has("1mb")).toBe(true);
+        expect(cache.has("5mb")).toBe(true);
+        expect(cache.takeEvictedPayloadRefs()).toEqual(["100kb"]);
+
+        cache.protect("1mb");
+        cache.protect("5mb");
+        cache.applyMemoryPressure(0);
+
+        expect(cache.residentBytes).toBe(0);
+        expect(cache.has("1mb")).toBe(false);
+        expect(cache.has("5mb")).toBe(false);
+        expect(cache.takeEvictedPayloadRefs()).toEqual(
+            expect.arrayContaining(["1mb", "5mb"]),
+        );
+    });
+
     it("loads heavy payloads only on demand and enforces its byte budget", async () => {
         const load = vi.fn((payloadRef: string) =>
             Promise.resolve(payloadRef.repeat(10)),
@@ -137,5 +176,33 @@ describe("TranscriptPayloadCache", () => {
         expect(cache.residentBytes).toBe(80);
         expect(cache.has("payload-1")).toBe(true);
         expect(cache.has("payload-2")).toBe(true);
+    });
+
+    it("coalesces concurrent 1 MB single-payload loads", async () => {
+        let resolvePayload!: (payload: Uint8Array) => void;
+        const load = vi.fn(
+            () =>
+                new Promise<Uint8Array>((resolve) => {
+                    resolvePayload = resolve;
+                }),
+        );
+        const cache = new TranscriptPayloadCache(
+            { load },
+            2 * 1024 * 1024,
+            (payload) => payload.byteLength,
+        );
+
+        const first = cache.load("1mb");
+        const second = cache.load("1mb");
+
+        expect(load).toHaveBeenCalledOnce();
+        resolvePayload(new Uint8Array(1024 * 1024));
+
+        await expect(Promise.all([first, second])).resolves.toEqual([
+            expect.any(Uint8Array),
+            expect.any(Uint8Array),
+        ]);
+        expect(cache.residentBytes).toBe(1024 * 1024);
+        expect(cache.has("1mb")).toBe(true);
     });
 });

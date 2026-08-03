@@ -22,7 +22,7 @@ pub use mutations::{
 };
 pub use origin::WriteTracker;
 pub use read::read_file;
-pub use registry::{ProjectFsService, ProjectRoot, ProjectRootRegistry};
+pub use registry::{GitWatchScope, ProjectFsService, ProjectRoot, ProjectRootRegistry};
 pub use tree::{list_entries, list_tree_children};
 pub use watcher::{WatcherDrain, WatcherRegistry};
 pub use write::write_file;

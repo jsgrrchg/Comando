@@ -26,6 +26,7 @@ import {
     assertCodexRuntimeBundleVersion,
     resolveExpectedCodexRuntimeVersion,
 } from "./codex-runtime-version.mjs";
+import { readNodeVersion } from "./node-runtime.mjs";
 
 export function verifyAiRuntimes() {
     const codexVendorExists = fs.existsSync(codexVendorDir);
@@ -43,7 +44,8 @@ export function verifyAiRuntimes() {
     ].every(isExecutableFile);
     const legacyTargetExists = fs.existsSync(codexLegacyVendorTargetDir);
     const claudeVendorExists = fs.existsSync(claudeVendorDir);
-    const embeddedNodeReady = isExecutableFile(embeddedNodeBin);
+    const embeddedNodeStatus = verifyEmbeddedNodeRuntime();
+    const embeddedNodeReady = embeddedNodeStatus.ok;
     const claudeEmbeddedReady = isFile(`${claudeEmbeddedDist}/index.js`);
     const claudeModulesReady = fs.existsSync(claudeEmbeddedNodeModules);
     const claudeRuntimeDependencies = verifyClaudeRuntimeDependencies();
@@ -91,6 +93,11 @@ export function verifyAiRuntimes() {
         console.error(
             "[verify:ai-runtimes] Claude is not staged correctly. Run pnpm run stage:ai.",
         );
+        if (!embeddedNodeStatus.ok && embeddedNodeStatus.error) {
+            console.error(
+                `[verify:ai-runtimes] Embedded Node failed to start: ${embeddedNodeStatus.error}`,
+            );
+        }
         process.exit(1);
     }
 
@@ -99,6 +106,27 @@ export function verifyAiRuntimes() {
             `[verify:ai-runtimes] Claude embedded runtime dependencies are incomplete: ${claudeRuntimeDependencies.missing.join(", ")}. Run pnpm run stage:ai.`,
         );
         process.exit(1);
+    }
+}
+
+function verifyEmbeddedNodeRuntime() {
+    if (!isExecutableFile(embeddedNodeBin)) {
+        return {
+            error: `${relativeToRepo(embeddedNodeBin)} is missing or not executable.`,
+            ok: false,
+        };
+    }
+
+    try {
+        return {
+            ok: true,
+            version: readNodeVersion(embeddedNodeBin).version,
+        };
+    } catch (error) {
+        return {
+            error: error instanceof Error ? error.message : String(error),
+            ok: false,
+        };
     }
 }
 

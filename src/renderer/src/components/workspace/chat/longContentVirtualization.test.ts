@@ -5,6 +5,7 @@ import type { ChatTimelineMessageRow } from "./chatTimelineModel";
 import {
     LONG_CONTENT_CHUNK_MAX_CHARACTERS,
     LONG_CONTENT_MIN_CHARACTERS,
+    isLongContentChunkRow,
     splitLongContentRows,
     splitMarkdownIntoPresentationChunks,
 } from "./longContentVirtualization";
@@ -99,5 +100,44 @@ describe("long content virtualization", () => {
                 (chunk) => chunk.length <= LONG_CONTENT_CHUNK_MAX_CHARACTERS + 16,
             ),
         ).toBe(true);
+    });
+
+    it("keeps completed Markdown chunks stable and lossless", () => {
+        const content = Array.from({ length: 600 }, (_, index) =>
+            [
+                `Paragraph ${index}: ${"text ".repeat(8)}`,
+                "",
+                "```ts",
+                `const value${index} = ${index};`,
+                "```",
+                "",
+            ].join("\n"),
+        ).join("\n");
+        const row: ChatTimelineMessageRow = {
+            blockId: null,
+            id: "message:assistant-1",
+            kind: "message",
+            message: createMessage(content),
+        };
+
+        const first = splitLongContentRows(
+            [row],
+            (item): item is ChatTimelineMessageRow => item.kind === "message",
+        );
+        const second = splitLongContentRows(
+            [row],
+            (item): item is ChatTimelineMessageRow => item.kind === "message",
+        );
+        const firstChunks = first.filter(isLongContentChunkRow);
+        const secondChunks = second.filter(isLongContentChunkRow);
+
+        expect(firstChunks.length).toBeGreaterThan(1);
+        expect(firstChunks.map((chunk) => chunk.content).join("")).toBe(content);
+        expect(secondChunks.map((chunk) => chunk.id)).toEqual(
+            firstChunks.map((chunk) => chunk.id),
+        );
+        expect(secondChunks.map((chunk) => chunk.content)).toEqual(
+            firstChunks.map((chunk) => chunk.content),
+        );
     });
 });

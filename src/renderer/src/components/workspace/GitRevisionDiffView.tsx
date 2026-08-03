@@ -3,6 +3,7 @@ import {
     useMemo,
     useState,
     type ReactNode,
+    type RefCallback,
     type RefObject,
 } from "react";
 
@@ -10,7 +11,12 @@ import type { GitRevisionFileDiff } from "@shared/ipc";
 import { convertRevisionFilesToDiffFiles } from "@renderer/app/git/history-presentation";
 import { useResolvedEditorSettings } from "@renderer/app/hooks/use-resolved-editor-settings";
 import { buildEditorFontFamily } from "@renderer/app/settings/theme";
-import { GitDiffsView } from "@renderer/components/git";
+import {
+    GitDiffStyleControl,
+    GitDiffsView,
+    usePersistedGitDiffStyle,
+} from "@renderer/components/git";
+import { PierreDiffWorkerPoolProvider } from "@renderer/components/git/PierreDiffWorkerPoolProvider";
 
 import { IdeActionButton } from "./ide-bar";
 import {
@@ -24,7 +30,9 @@ export function GitRevisionDiffView({
     deletions,
     files,
     leadingContent,
+    onScrollTop,
     scrollContainerRef,
+    scrollRef,
     totalFileCount,
 }: {
     readonly additions: number;
@@ -32,10 +40,13 @@ export function GitRevisionDiffView({
     readonly deletions: number;
     readonly files: readonly GitRevisionFileDiff[];
     readonly leadingContent?: ReactNode;
+    readonly onScrollTop?: (scrollTop: number) => void;
     readonly scrollContainerRef?: RefObject<HTMLElement | null>;
+    readonly scrollRef?: RefCallback<HTMLDivElement>;
     readonly totalFileCount: number;
 }) {
     const settings = useResolvedEditorSettings();
+    const [diffStyle, setDiffStyle] = usePersistedGitDiffStyle();
     const diffFiles = useMemo(
         () => convertRevisionFilesToDiffFiles(files),
         [files],
@@ -81,6 +92,10 @@ export function GitRevisionDiffView({
                 className="flex flex-wrap items-center gap-3 border-y border-[color-mix(in_srgb,var(--color-border)_60%,transparent)] bg-bg-secondary px-5 py-1.5 font-mono text-[10.5px] text-text-secondary"
             >
                 {leadingContent}
+                <GitDiffStyleControl
+                    onChange={setDiffStyle}
+                    value={diffStyle}
+                />
                 {diffFiles.length > 0 ? (
                     <IdeActionButton
                         onClick={toggleAll}
@@ -103,20 +118,25 @@ export function GitRevisionDiffView({
                     </span>
                 ) : null}
             </div>
-            <GitDiffsView
-                codeFontFamily={buildEditorFontFamily(settings.fontFamily)}
-                codeFontSize={settings.fontSize}
-                codeLineHeight={settings.lineHeight}
-                collapsedFileIds={collapsedFileIds}
-                displayMode="stack"
-                emptyState="This pull request has no file changes."
-                files={diffFiles}
-                lineWrapping={false}
-                onToggleFileCollapse={toggleFile}
-                scrollContainerRef={scrollContainerRef}
-                showFileSelector={false}
-                surfaceVariant="flat"
-            />
+            <PierreDiffWorkerPoolProvider>
+                <GitDiffsView
+                    codeFontFamily={buildEditorFontFamily(settings.fontFamily)}
+                    codeFontSize={settings.fontSize}
+                    codeLineHeight={settings.lineHeight}
+                    collapsedFileIds={collapsedFileIds}
+                    displayMode="stack"
+                    diffStyle={diffStyle}
+                    emptyState="This pull request has no file changes."
+                    files={diffFiles}
+                    lineWrapping={false}
+                    onScrollTop={onScrollTop}
+                    onToggleFileCollapse={toggleFile}
+                    scrollContainerRef={scrollContainerRef}
+                    scrollRef={scrollRef}
+                    showFileSelector={false}
+                    surfaceVariant="flat"
+                />
+            </PierreDiffWorkerPoolProvider>
         </div>
     );
 }

@@ -1,7 +1,33 @@
 import type {
+    NativeAppWorkspaceNavigation,
+    NativeAppWorkspaceSaveShellInput,
+    NativeAppWorkspaceSetActiveInput,
     NativePersistenceOpenStoreInput,
     NativePersistenceOpenStoreOutput,
     NativePersistenceStorageHealth,
+    NativeDurableWorkspace,
+    NativeDurableWorkspaceCreateInput,
+    NativeDurableWorkspacePurgeOutput,
+    NativeDurableWorkspaceResetInput,
+    NativeDurableWorkspaceRevisionInput,
+    NativeDurableWorkspaceSaveInput,
+    NativeDurableWorkspaceSummary,
+    NativeWorkspaceMigrationDiagnostics,
+    NativeWorkspaceMigrationExportOutput,
+    NativeWorkspaceMigrationRollbackOutput,
+    NativeWorkspaceMigrationRunInput,
+    NativeWorkspaceMigrationRunOutput,
+    NativeWorkspaceCleanupLegacyInput,
+    NativeWorkspaceDisableLegacyWritesInput,
+    NativeWorkspaceMarkStableInput,
+    NativeWorkspaceRecoveryDiscardInput,
+    NativeWorkspaceRolloutStatus,
+    NativeWorkspaceDeletionBeginInput,
+    NativeWorkspaceDeletionJournalEntry,
+    NativeWorkspaceDeletionUpdateInput,
+    NativeWorkspaceRecoveryApplyInput,
+    NativeWorkspaceRecoveryLayoutSummary,
+    NativeWorkspaceReassociateInput,
 } from "@shared/native-backend";
 
 export interface NativeBackendRequester {
@@ -33,6 +59,241 @@ export class NativePersistenceGateway {
     async getStorageHealth(): Promise<NativePersistenceStorageHealth> {
         return parseNativePersistenceStorageHealth(
             await this.#client.request("persistence_get_storage_health"),
+        );
+    }
+
+    async loadDurableWorkspace(
+        scopeKey: string,
+    ): Promise<NativeDurableWorkspace | null> {
+        const value = await this.#client.request("durable_workspace_load", {
+            scopeKey,
+        });
+        return value === null ? null : parseNativeDurableWorkspace(value);
+    }
+
+    async listDurableWorkspaces(): Promise<readonly NativeDurableWorkspaceSummary[]> {
+        const value = requireRecord(
+            await this.#client.request("durable_workspace_list"),
+            "Native durable workspace list output",
+        );
+        if (!Array.isArray(value.workspaces)) {
+            throw new Error("Native durable workspace list must contain workspaces.");
+        }
+        return value.workspaces.map(parseNativeDurableWorkspaceSummary);
+    }
+
+    async createDurableWorkspace(
+        input: NativeDurableWorkspaceCreateInput,
+    ): Promise<NativeDurableWorkspace> {
+        return parseNativeDurableWorkspace(
+            await this.#client.request("durable_workspace_create", { ...input }),
+        );
+    }
+
+    async saveDurableWorkspace(
+        input: NativeDurableWorkspaceSaveInput,
+    ): Promise<NativeDurableWorkspace> {
+        return parseNativeDurableWorkspace(
+            await this.#client.request("durable_workspace_save", { ...input }),
+        );
+    }
+
+    async archiveDurableWorkspace(
+        input: NativeDurableWorkspaceRevisionInput,
+    ): Promise<NativeDurableWorkspace> {
+        return parseNativeDurableWorkspace(
+            await this.#client.request("durable_workspace_archive", { ...input }),
+        );
+    }
+
+    async resetDurableWorkspace(
+        input: NativeDurableWorkspaceResetInput,
+    ): Promise<NativeDurableWorkspace> {
+        return parseNativeDurableWorkspace(
+            await this.#client.request("durable_workspace_reset", { ...input }),
+        );
+    }
+
+    async purgeDurableWorkspace(
+        input: NativeDurableWorkspaceRevisionInput,
+    ): Promise<NativeDurableWorkspacePurgeOutput> {
+        return parseNativeDurableWorkspacePurgeOutput(
+            await this.#client.request("durable_workspace_purge", { ...input }),
+        );
+    }
+
+    async listWorkspaceRecoveryLayouts(): Promise<readonly NativeWorkspaceRecoveryLayoutSummary[]> {
+        const output = requireRecord(
+            await this.#client.request("workspace_recovery_list"),
+            "Native workspace recovery list",
+        );
+        if (!Array.isArray(output.layouts)) {
+            throw new Error("Native workspace recovery list must contain layouts.");
+        }
+        return output.layouts.map(parseNativeWorkspaceRecoveryLayout);
+    }
+
+    async applyWorkspaceRecoveryLayout(
+        input: NativeWorkspaceRecoveryApplyInput,
+    ): Promise<NativeDurableWorkspace> {
+        return parseNativeDurableWorkspace(
+            await this.#client.request("workspace_recovery_apply", { ...input }),
+        );
+    }
+
+    async discardWorkspaceRecoveryLayout(
+        input: NativeWorkspaceRecoveryDiscardInput,
+    ): Promise<void> {
+        const output = requireRecord(
+            await this.#client.request("workspace_recovery_discard", { ...input }),
+            "Native workspace recovery discard output",
+        );
+        if (!requireBoolean(output.discarded, "discarded")) {
+            throw new Error("Native workspace recovery layout was not discarded.");
+        }
+    }
+
+    async reassociateWorkspace(
+        input: NativeWorkspaceReassociateInput,
+    ): Promise<NativeDurableWorkspace> {
+        return parseNativeDurableWorkspace(
+            await this.#client.request("workspace_reassociate", { ...input }),
+        );
+    }
+
+    async forgetWorkspaceSessionReferences(sessionId: string): Promise<number> {
+        return requireRevision(
+            await this.#client.request("workspace_forget_session", { sessionId }),
+            "changedWorkspaceCount",
+        );
+    }
+
+    async beginWorkspaceDeletion(
+        input: NativeWorkspaceDeletionBeginInput,
+    ): Promise<NativeWorkspaceDeletionJournalEntry> {
+        return parseNativeWorkspaceDeletion(
+            await this.#client.request("workspace_deletion_begin", { ...input }),
+        );
+    }
+
+    async updateWorkspaceDeletion(
+        input: NativeWorkspaceDeletionUpdateInput,
+    ): Promise<NativeWorkspaceDeletionJournalEntry> {
+        return parseNativeWorkspaceDeletion(
+            await this.#client.request("workspace_deletion_update", { ...input }),
+        );
+    }
+
+    async listIncompleteWorkspaceDeletions(): Promise<readonly NativeWorkspaceDeletionJournalEntry[]> {
+        const output = requireRecord(
+            await this.#client.request("workspace_deletion_list_incomplete"),
+            "Native workspace deletion list",
+        );
+        if (!Array.isArray(output.operations)) {
+            throw new Error("Native workspace deletion list must contain operations.");
+        }
+        return output.operations.map(parseNativeWorkspaceDeletion);
+    }
+
+    async completeWorkspaceDeletion(
+        operationId: string,
+    ): Promise<NativeWorkspaceDeletionJournalEntry> {
+        return parseNativeWorkspaceDeletion(
+            await this.#client.request("workspace_deletion_complete", { operationId }),
+        );
+    }
+
+    async getWorkspaceNavigation(): Promise<NativeAppWorkspaceNavigation> {
+        return parseNativeAppWorkspaceNavigation(
+            await this.#client.request("workspace_navigation_get"),
+        );
+    }
+
+    async setActiveWorkspace(
+        input: NativeAppWorkspaceSetActiveInput,
+    ): Promise<NativeAppWorkspaceNavigation> {
+        return parseNativeAppWorkspaceNavigation(
+            await this.#client.request("workspace_navigation_set_active", {
+                ...input,
+            }),
+        );
+    }
+
+    async saveWorkspaceShell(
+        input: NativeAppWorkspaceSaveShellInput,
+    ): Promise<NativeAppWorkspaceNavigation> {
+        return parseNativeAppWorkspaceNavigation(
+            await this.#client.request("workspace_navigation_save_shell", {
+                ...input,
+            }),
+        );
+    }
+
+    async runWorkspaceMigration(
+        input: NativeWorkspaceMigrationRunInput,
+    ): Promise<NativeWorkspaceMigrationRunOutput> {
+        return parseNativeWorkspaceMigrationRunOutput(
+            await this.#client.request("workspace_migration_run", {
+                ...input,
+            }),
+        );
+    }
+
+    async syncLegacyWorkspaceMigration(
+        input: NativeWorkspaceMigrationRunInput,
+    ): Promise<NativeAppWorkspaceNavigation> {
+        return parseNativeAppWorkspaceNavigation(
+            await this.#client.request("workspace_migration_sync_legacy", {
+                ...input,
+            }),
+        );
+    }
+
+    async exportWorkspaceMigrationDiagnostics(): Promise<NativeWorkspaceMigrationExportOutput> {
+        return parseNativeWorkspaceMigrationExportOutput(
+            await this.#client.request(
+                "workspace_migration_export_diagnostics",
+            ),
+        );
+    }
+
+    async rollbackWorkspaceMigration(): Promise<NativeWorkspaceMigrationRollbackOutput> {
+        return parseNativeWorkspaceMigrationRollbackOutput(
+            await this.#client.request("workspace_migration_rollback"),
+        );
+    }
+
+    async getWorkspaceRolloutStatus(): Promise<NativeWorkspaceRolloutStatus> {
+        return parseNativeWorkspaceRolloutStatus(
+            await this.#client.request("workspace_rollout_get_status"),
+        );
+    }
+
+    async markWorkspaceRolloutStable(
+        input: NativeWorkspaceMarkStableInput,
+    ): Promise<NativeWorkspaceRolloutStatus> {
+        return parseNativeWorkspaceRolloutStatus(
+            await this.#client.request("workspace_rollout_mark_stable", { ...input }),
+        );
+    }
+
+    async disableWorkspaceLegacyWrites(
+        input: NativeWorkspaceDisableLegacyWritesInput,
+    ): Promise<NativeWorkspaceRolloutStatus> {
+        return parseNativeWorkspaceRolloutStatus(
+            await this.#client.request("workspace_rollout_disable_legacy_writes", {
+                ...input,
+            }),
+        );
+    }
+
+    async cleanupWorkspaceLegacyCompatibility(
+        input: NativeWorkspaceCleanupLegacyInput,
+    ): Promise<NativeWorkspaceRolloutStatus> {
+        return parseNativeWorkspaceRolloutStatus(
+            await this.#client.request("workspace_rollout_cleanup_legacy", {
+                ...input,
+            }),
         );
     }
 }
@@ -70,6 +331,363 @@ function parseNativePersistenceStorageHealth(
     };
 }
 
+function parseNativeDurableWorkspace(value: unknown): NativeDurableWorkspace {
+    const record = requireRecord(value, "Native durable workspace");
+    return {
+        ...parseNativeDurableWorkspaceSummary(record),
+        layoutSnapshot: requireRecord(
+            record.layoutSnapshot,
+            "Native durable workspace layoutSnapshot",
+        ),
+    };
+}
+
+function parseNativeDurableWorkspaceSummary(
+    value: unknown,
+): NativeDurableWorkspaceSummary {
+    const record = requireRecord(value, "Native durable workspace summary");
+    const lifecycle = record.lifecycle;
+    if (
+        lifecycle !== "active" &&
+        lifecycle !== "archived" &&
+        lifecycle !== "orphaned"
+    ) {
+        throw new Error("Native durable workspace lifecycle is invalid.");
+    }
+    return {
+        createdAt: requireString(record.createdAt, "createdAt"),
+        lastActivatedAt: requireNullableString(
+            record.lastActivatedAt,
+            "lastActivatedAt",
+        ),
+        lifecycle,
+        projectId: requireString(record.projectId, "projectId"),
+        revision: requireRevision(record.revision, "revision"),
+        runtimeOwnerId: requireString(record.runtimeOwnerId, "runtimeOwnerId"),
+        scopeKey: requireString(record.scopeKey, "scopeKey"),
+        updatedAt: requireString(record.updatedAt, "updatedAt"),
+        worktreeId: requireNullableString(record.worktreeId, "worktreeId"),
+    };
+}
+
+function parseNativeAppWorkspaceNavigation(
+    value: unknown,
+): NativeAppWorkspaceNavigation {
+    const record = requireRecord(value, "Native app workspace navigation");
+    if (
+        !Array.isArray(record.recentScopeKeys) ||
+        !record.recentScopeKeys.every((scopeKey) => typeof scopeKey === "string")
+    ) {
+        throw new Error(
+            "Native app workspace navigation recentScopeKeys must be strings.",
+        );
+    }
+    return {
+        activeScopeKey: requireNullableString(
+            record.activeScopeKey,
+            "activeScopeKey",
+        ),
+        recentScopeKeys: record.recentScopeKeys,
+        revision: requireRevision(record.revision, "revision"),
+        shellSnapshot: requireRecord(
+            record.shellSnapshot,
+            "Native app workspace navigation shellSnapshot",
+        ),
+        updatedAt: requireString(record.updatedAt, "updatedAt"),
+    };
+}
+
+function parseNativeDurableWorkspacePurgeOutput(
+    value: unknown,
+): NativeDurableWorkspacePurgeOutput {
+    const record = requireRecord(value, "Native durable workspace purge output");
+    return {
+        navigation: parseNativeAppWorkspaceNavigation(record.navigation),
+        purgedScopeKey: requireString(record.purgedScopeKey, "purgedScopeKey"),
+    };
+}
+
+function parseNativeWorkspaceRecoveryLayout(
+    value: unknown,
+): NativeWorkspaceRecoveryLayoutSummary {
+    const record = requireRecord(value, "Native workspace recovery layout");
+    return {
+        createdAt: requireString(record.createdAt, "createdAt"),
+        id: requireString(record.id, "id"),
+        scopeKey: requireString(record.scopeKey, "scopeKey"),
+        snapshotHash: requireString(record.snapshotHash, "snapshotHash"),
+        sourceRevision: requireRevision(record.sourceRevision, "sourceRevision"),
+        sourceUpdatedAt: requireString(record.sourceUpdatedAt, "sourceUpdatedAt"),
+        sourceWindowId: requireNullableString(record.sourceWindowId, "sourceWindowId"),
+        sourceWorkspaceId: requireNullableString(record.sourceWorkspaceId, "sourceWorkspaceId"),
+    };
+}
+
+function parseNativeWorkspaceDeletion(
+    value: unknown,
+): NativeWorkspaceDeletionJournalEntry {
+    const record = requireRecord(value, "Native workspace deletion operation");
+    const kind = record.kind;
+    const status = record.status;
+    if (kind !== "delete_worktree" && kind !== "clear_project_data") {
+        throw new Error("Native workspace deletion kind is invalid.");
+    }
+    if (
+        status !== "pending" &&
+        status !== "checkout_deleted" &&
+        status !== "purging" &&
+        status !== "completed" &&
+        status !== "failed"
+    ) {
+        throw new Error("Native workspace deletion status is invalid.");
+    }
+    if (
+        !Array.isArray(record.sessionIds) ||
+        !record.sessionIds.every((sessionId) => typeof sessionId === "string")
+    ) {
+        throw new Error("Native workspace deletion sessionIds must be strings.");
+    }
+    return {
+        checkoutPath: requireNullableString(record.checkoutPath, "checkoutPath"),
+        errorCode: requireNullableString(record.errorCode, "errorCode"),
+        forceApproved: requireBoolean(record.forceApproved, "forceApproved"),
+        kind,
+        operationId: requireString(record.operationId, "operationId"),
+        projectId: requireString(record.projectId, "projectId"),
+        scopeKey: requireString(record.scopeKey, "scopeKey"),
+        sessionIds: record.sessionIds,
+        startedAt: requireString(record.startedAt, "startedAt"),
+        status,
+        updatedAt: requireString(record.updatedAt, "updatedAt"),
+        worktreeId: requireNullableString(record.worktreeId, "worktreeId"),
+    };
+}
+
+function parseNativeWorkspaceMigrationRunOutput(
+    value: unknown,
+): NativeWorkspaceMigrationRunOutput {
+    const record = requireRecord(value, "Native workspace migration output");
+    return {
+        applied: requireBoolean(record.applied, "applied"),
+        diagnostics: parseNativeWorkspaceMigrationDiagnostics(
+            record.diagnostics,
+        ),
+        navigation: parseNativeAppWorkspaceNavigation(record.navigation),
+    };
+}
+
+function parseNativeWorkspaceMigrationExportOutput(
+    value: unknown,
+): NativeWorkspaceMigrationExportOutput {
+    const record = requireRecord(
+        value,
+        "Native workspace migration diagnostics export",
+    );
+    if (!Array.isArray(record.recoveryLayouts)) {
+        throw new Error("Native workspace recovery layouts must be an array.");
+    }
+    if (!Array.isArray(record.v3Projection)) {
+        throw new Error("Native workspace v3 projection must be an array.");
+    }
+    return {
+        diagnostics: parseNativeWorkspaceMigrationDiagnostics(
+            record.diagnostics,
+        ),
+        recoveryLayouts: record.recoveryLayouts.map((value) => {
+            const recovery = requireRecord(
+                value,
+                "Native workspace migration recovery source",
+            );
+            return {
+                scopeKey: requireString(recovery.scopeKey, "scopeKey"),
+                snapshotHash: requireString(
+                    recovery.snapshotHash,
+                    "snapshotHash",
+                ),
+                sourceWindowId: requireString(
+                    recovery.sourceWindowId,
+                    "sourceWindowId",
+                ),
+            };
+        }),
+        v3Projection: record.v3Projection,
+    };
+}
+
+function parseNativeWorkspaceMigrationRollbackOutput(
+    value: unknown,
+): NativeWorkspaceMigrationRollbackOutput {
+    const record = requireRecord(
+        value,
+        "Native workspace migration rollback output",
+    );
+    if (!Array.isArray(record.v3Projection)) {
+        throw new Error("Native workspace rollback projection must be an array.");
+    }
+    return {
+        diagnostics: parseNativeWorkspaceMigrationDiagnostics(
+            record.diagnostics,
+        ),
+        v3Projection: record.v3Projection,
+    };
+}
+
+function parseNativeWorkspaceMigrationDiagnostics(
+    value: unknown,
+): NativeWorkspaceMigrationDiagnostics {
+    const record = requireRecord(
+        value,
+        "Native workspace migration diagnostics",
+    );
+    if (!Array.isArray(record.layoutSources)) {
+        throw new Error("Native workspace layout sources must be an array.");
+    }
+    if (!Array.isArray(record.recoverySources)) {
+        throw new Error("Native workspace recovery sources must be an array.");
+    }
+    return {
+        activeScopeKey: requireNullableString(
+            record.activeScopeKey,
+            "activeScopeKey",
+        ),
+        activeSourceWindowId: requireNullableString(
+            record.activeSourceWindowId,
+            "activeSourceWindowId",
+        ),
+        applicationVersion: requireString(
+            record.applicationVersion,
+            "applicationVersion",
+        ),
+        candidateCount: requireRevision(
+            record.candidateCount,
+            "candidateCount",
+        ),
+        completedAt: requireNullableString(record.completedAt, "completedAt"),
+        historicalLayoutCap: requireRevision(
+            record.historicalLayoutCap,
+            "historicalLayoutCap",
+        ),
+        layoutSources: record.layoutSources.map((value) => {
+            const source = requireRecord(
+                value,
+                "Native workspace layout source",
+            );
+            return {
+                scopeKey: requireString(source.scopeKey, "scopeKey"),
+                sourceWindowId: requireString(
+                    source.sourceWindowId,
+                    "sourceWindowId",
+                ),
+            };
+        }),
+        limitation: requireString(record.limitation, "limitation"),
+        migrationId: requireString(record.migrationId, "migrationId"),
+        normalizationDroppedContextCount: requireRevision(
+            record.normalizationDroppedContextCount,
+            "normalizationDroppedContextCount",
+        ),
+        normalizationRepairedWindowCount: requireRevision(
+            record.normalizationRepairedWindowCount,
+            "normalizationRepairedWindowCount",
+        ),
+        prunedLayoutsPossible: requireBoolean(
+            record.prunedLayoutsPossible,
+            "prunedLayoutsPossible",
+        ),
+        recoveryLayoutCount: requireRevision(
+            record.recoveryLayoutCount,
+            "recoveryLayoutCount",
+        ),
+        recoverySources: record.recoverySources.map((value) => {
+            const source = requireRecord(
+                value,
+                "Native workspace recovery source",
+            );
+            return {
+                scopeKey: requireString(source.scopeKey, "scopeKey"),
+                snapshotHash: requireString(
+                    source.snapshotHash,
+                    "snapshotHash",
+                ),
+                sourceWindowId: requireString(
+                    source.sourceWindowId,
+                    "sourceWindowId",
+                ),
+            };
+        }),
+        rollbackAt: requireNullableString(record.rollbackAt, "rollbackAt"),
+        sourceBackupRef: requireString(
+            record.sourceBackupRef,
+            "sourceBackupRef",
+        ),
+        sourceChecksum: requireString(
+            record.sourceChecksum,
+            "sourceChecksum",
+        ),
+        sourceWindowCount: requireRevision(
+            record.sourceWindowCount,
+            "sourceWindowCount",
+        ),
+        startedAt: requireString(record.startedAt, "startedAt"),
+        status: requireString(record.status, "status"),
+        workspaceCount: requireRevision(
+            record.workspaceCount,
+            "workspaceCount",
+        ),
+    };
+}
+
+function parseNativeWorkspaceRolloutStatus(
+    value: unknown,
+): NativeWorkspaceRolloutStatus {
+    const record = requireRecord(value, "Native workspace rollout status");
+    const stage = requireString(record.stage, "stage");
+    if (
+        stage !== "internal" &&
+        stage !== "stable_dual_write" &&
+        stage !== "v4_only" &&
+        stage !== "legacy_retired"
+    ) {
+        throw new Error(`Native workspace rollout stage is invalid: ${stage}`);
+    }
+    return {
+        dualWriteEnabled: requireBoolean(
+            record.dualWriteEnabled,
+            "dualWriteEnabled",
+        ),
+        legacyCleanupCompletedAt: requireNullableString(
+            record.legacyCleanupCompletedAt,
+            "legacyCleanupCompletedAt",
+        ),
+        legacyRetentionUntil: requireNullableString(
+            record.legacyRetentionUntil,
+            "legacyRetentionUntil",
+        ),
+        pendingRecoveryLayoutCount: requireRevision(
+            record.pendingRecoveryLayoutCount,
+            "pendingRecoveryLayoutCount",
+        ),
+        rollbackAvailable: requireBoolean(
+            record.rollbackAvailable,
+            "rollbackAvailable",
+        ),
+        sourceBackupRetained: requireBoolean(
+            record.sourceBackupRetained,
+            "sourceBackupRetained",
+        ),
+        stableReleaseVerifiedAt: requireNullableString(
+            record.stableReleaseVerifiedAt,
+            "stableReleaseVerifiedAt",
+        ),
+        stableReleaseVersion: requireNullableString(
+            record.stableReleaseVersion,
+            "stableReleaseVersion",
+        ),
+        stage,
+        v4OnlySince: requireNullableString(record.v4OnlySince, "v4OnlySince"),
+    };
+}
+
 function requireRecord(
     value: unknown,
     label: string,
@@ -94,9 +712,29 @@ function requireNumber(value: unknown, fieldName: string): number {
     return value;
 }
 
+function requireRevision(value: unknown, fieldName: string): number {
+    const revision = requireNumber(value, fieldName);
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+        throw new Error(
+            `Native persistence field ${fieldName} must be a non-negative safe integer.`,
+        );
+    }
+    return revision;
+}
+
 function requireString(value: unknown, fieldName: string): string {
     if (typeof value !== "string") {
         throw new Error(`Native persistence field ${fieldName} must be a string.`);
     }
     return value;
+}
+
+function requireNullableString(
+    value: unknown,
+    fieldName: string,
+): string | null {
+    if (value === null) {
+        return null;
+    }
+    return requireString(value, fieldName);
 }

@@ -2252,6 +2252,98 @@ mod tests {
             .expect("close fixture session");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn custom_acp_fixture_storm_keeps_native_event_ids_and_history_order() {
+        let app_data = tempfile::tempdir().expect("app data");
+        let project = tempfile::tempdir().expect("project");
+        let additional_root = tempfile::tempdir().expect("additional root");
+        let history = AiHistoryStore::new(app_data.path()).expect("history store");
+        let engine = AiEngine::default();
+        engine
+            .set_history_store(Some(history.clone()))
+            .expect("install history store");
+        // The fixture produces every event before replying to the prompt, so
+        // leave enough room for the native bridge while the test drains it.
+        let (sender, receiver) = mpsc::sync_channel(4_096);
+        engine
+            .set_event_sender(sender)
+            .expect("install event sender");
+        let summary = engine
+            .prepare_session(custom_fixture_input(
+                "custom-fixture-storm",
+                project.path(),
+                additional_root.path(),
+            ))
+            .expect("prepare fixture session");
+
+        engine
+            .send_prompt(NativeAiSendPromptInput {
+                session_id: summary.session_id.clone(),
+                target_session_id: None,
+                runtime_session_id: summary.runtime_session_id.clone(),
+                message_id: MessageId("fixture-storm-prompt".to_string()),
+                prompt: NativeAiPromptInput {
+                    text: "phase6:storm".to_string(),
+                    display_text: None,
+                    attachments: Vec::new(),
+                },
+            })
+            .expect("send storm prompt");
+
+        let mut tool_ids = Vec::new();
+        let mut saw_terminal_status = false;
+        while !saw_terminal_status || tool_ids.len() < 500 {
+            let event = receiver
+                .recv_timeout(Duration::from_secs(15))
+                .expect("storm event before terminal status");
+            match event.event_name.as_str() {
+                AI_TOOL_ACTIVITY_EVENT => {
+                    let tool_id = event.payload["toolCallId"]
+                        .as_str()
+                        .expect("storm tool id")
+                        .to_string();
+                    if !tool_ids.contains(&tool_id) {
+                        engine
+                            .record_history_event(&event)
+                            .expect("record compact storm tool event");
+                        tool_ids.push(tool_id);
+                    }
+                }
+                AI_PERMISSION_REQUEST_EVENT => {
+                    engine
+                        .respond_permission(NativeAiPermissionResponseInput {
+                            session_id: summary.session_id.clone(),
+                            target_session_id: None,
+                            request_id: event.payload["requestId"]
+                                .as_str()
+                                .expect("storm permission id")
+                                .to_string(),
+                            option_id: Some("allow".to_string()),
+                        })
+                        .expect("respond to storm permission");
+                }
+                AI_STATUS_EVENT if event.payload["status"] != serde_json::json!("streaming") => {
+                    saw_terminal_status = true;
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(tool_ids.len(), 500);
+        assert_eq!(
+            tool_ids,
+            (0..500)
+                .map(|index| format!("fixture-storm-tool-{index}"))
+                .collect::<Vec<_>>()
+        );
+        let snapshot = history
+            .load_session_snapshot(&summary.session_id)
+            .expect("load storm history")
+            .expect("storm history snapshot");
+        assert_eq!(snapshot.tool_activity.len(), 500);
+    }
+
     #[test]
     fn synthetic_turn_started_status_emits_for_non_codex_runtime() {
         let engine = AiEngine::default();

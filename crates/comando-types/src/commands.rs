@@ -6,6 +6,33 @@ pub const BACKEND_EMIT_TEST_EVENT: &str = "backend_emit_test_event";
 pub const PERSISTENCE_OPEN_STORE: &str = "persistence_open_store";
 pub const PERSISTENCE_GET_STORAGE_HEALTH: &str = "persistence_get_storage_health";
 pub const PERSISTENCE_GET_SNAPSHOT: &str = "persistence_get_snapshot";
+pub const DURABLE_WORKSPACE_LOAD: &str = "durable_workspace_load";
+pub const DURABLE_WORKSPACE_LIST: &str = "durable_workspace_list";
+pub const DURABLE_WORKSPACE_CREATE: &str = "durable_workspace_create";
+pub const DURABLE_WORKSPACE_SAVE: &str = "durable_workspace_save";
+pub const DURABLE_WORKSPACE_ARCHIVE: &str = "durable_workspace_archive";
+pub const DURABLE_WORKSPACE_RESET: &str = "durable_workspace_reset";
+pub const DURABLE_WORKSPACE_PURGE: &str = "durable_workspace_purge";
+pub const WORKSPACE_RECOVERY_LIST: &str = "workspace_recovery_list";
+pub const WORKSPACE_RECOVERY_APPLY: &str = "workspace_recovery_apply";
+pub const WORKSPACE_RECOVERY_DISCARD: &str = "workspace_recovery_discard";
+pub const WORKSPACE_REASSOCIATE: &str = "workspace_reassociate";
+pub const WORKSPACE_FORGET_SESSION: &str = "workspace_forget_session";
+pub const WORKSPACE_DELETION_BEGIN: &str = "workspace_deletion_begin";
+pub const WORKSPACE_DELETION_UPDATE: &str = "workspace_deletion_update";
+pub const WORKSPACE_DELETION_LIST_INCOMPLETE: &str = "workspace_deletion_list_incomplete";
+pub const WORKSPACE_DELETION_COMPLETE: &str = "workspace_deletion_complete";
+pub const WORKSPACE_NAVIGATION_GET: &str = "workspace_navigation_get";
+pub const WORKSPACE_NAVIGATION_SET_ACTIVE: &str = "workspace_navigation_set_active";
+pub const WORKSPACE_NAVIGATION_SAVE_SHELL: &str = "workspace_navigation_save_shell";
+pub const WORKSPACE_MIGRATION_RUN: &str = "workspace_migration_run";
+pub const WORKSPACE_MIGRATION_SYNC_LEGACY: &str = "workspace_migration_sync_legacy";
+pub const WORKSPACE_MIGRATION_EXPORT_DIAGNOSTICS: &str = "workspace_migration_export_diagnostics";
+pub const WORKSPACE_MIGRATION_ROLLBACK: &str = "workspace_migration_rollback";
+pub const WORKSPACE_ROLLOUT_GET_STATUS: &str = "workspace_rollout_get_status";
+pub const WORKSPACE_ROLLOUT_MARK_STABLE: &str = "workspace_rollout_mark_stable";
+pub const WORKSPACE_ROLLOUT_DISABLE_LEGACY_WRITES: &str = "workspace_rollout_disable_legacy_writes";
+pub const WORKSPACE_ROLLOUT_CLEANUP_LEGACY: &str = "workspace_rollout_cleanup_legacy";
 pub const APP_DATA_GET_JSON: &str = "app_data_get_json";
 pub const APP_DATA_SET_JSON: &str = "app_data_set_json";
 pub const APP_SECRET_GET: &str = "app_secret_get";
@@ -36,6 +63,33 @@ pub const PERSISTENCE_COMMANDS: &[&str] = &[
     PERSISTENCE_OPEN_STORE,
     PERSISTENCE_GET_STORAGE_HEALTH,
     PERSISTENCE_GET_SNAPSHOT,
+    DURABLE_WORKSPACE_LOAD,
+    DURABLE_WORKSPACE_LIST,
+    DURABLE_WORKSPACE_CREATE,
+    DURABLE_WORKSPACE_SAVE,
+    DURABLE_WORKSPACE_ARCHIVE,
+    DURABLE_WORKSPACE_RESET,
+    DURABLE_WORKSPACE_PURGE,
+    WORKSPACE_RECOVERY_LIST,
+    WORKSPACE_RECOVERY_APPLY,
+    WORKSPACE_RECOVERY_DISCARD,
+    WORKSPACE_REASSOCIATE,
+    WORKSPACE_FORGET_SESSION,
+    WORKSPACE_DELETION_BEGIN,
+    WORKSPACE_DELETION_UPDATE,
+    WORKSPACE_DELETION_LIST_INCOMPLETE,
+    WORKSPACE_DELETION_COMPLETE,
+    WORKSPACE_NAVIGATION_GET,
+    WORKSPACE_NAVIGATION_SET_ACTIVE,
+    WORKSPACE_NAVIGATION_SAVE_SHELL,
+    WORKSPACE_MIGRATION_RUN,
+    WORKSPACE_MIGRATION_SYNC_LEGACY,
+    WORKSPACE_MIGRATION_EXPORT_DIAGNOSTICS,
+    WORKSPACE_MIGRATION_ROLLBACK,
+    WORKSPACE_ROLLOUT_GET_STATUS,
+    WORKSPACE_ROLLOUT_MARK_STABLE,
+    WORKSPACE_ROLLOUT_DISABLE_LEGACY_WRITES,
+    WORKSPACE_ROLLOUT_CLEANUP_LEGACY,
     APP_DATA_GET_JSON,
     APP_DATA_SET_JSON,
     APP_SECRET_GET,
@@ -99,6 +153,7 @@ pub const GIT_COMMANDS: &[&str] = &[
     "git_list_remotes",
     "git_get_diff_stats",
     "git_list_worktree_diff",
+    "git_list_branch_diff",
     "git_init_repository",
     "git_clone_repository",
     "git_stage_paths",

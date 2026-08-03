@@ -428,8 +428,10 @@ function nativeProjectAppDataSummaryToIpc(
 ): ProjectAppDataSummary {
     return {
         chatSessionCount: summary.chatSessionCount,
+        durableWorkspaceCount: summary.durableWorkspaceCount,
         projectSettingsCount: summary.projectSettingsCount,
         recentProjectCount: summary.recentProjectCount,
+        recoveryLayoutCount: summary.recoveryLayoutCount,
         workspaceLayoutCount: summary.workspaceLayoutCount,
         workspaceSessionCount: summary.workspaceSessionCount,
         workspaceTabCount: summary.workspaceTabCount,
@@ -493,6 +495,10 @@ function parseNativeProjectAppDataSummary(
             record.chatSessionCount,
             "chatSessionCount",
         ),
+        durableWorkspaceCount: requireNumber(
+            record.durableWorkspaceCount,
+            "durableWorkspaceCount",
+        ),
         projectSettingsCount: requireNumber(
             record.projectSettingsCount,
             "projectSettingsCount",
@@ -500,6 +506,10 @@ function parseNativeProjectAppDataSummary(
         recentProjectCount: requireNumber(
             record.recentProjectCount,
             "recentProjectCount",
+        ),
+        recoveryLayoutCount: requireNumber(
+            record.recoveryLayoutCount,
+            "recoveryLayoutCount",
         ),
         workspaceLayoutCount: requireNumber(
             record.workspaceLayoutCount,

@@ -24,6 +24,7 @@ export function GitHubLabelPicker({
     isSaving,
     item,
     labels,
+    leftBoundary,
     onClose,
     onSave,
     rightBoundary,
@@ -34,6 +35,7 @@ export function GitHubLabelPicker({
     readonly isSaving: boolean;
     readonly item: GitHubLabelPickerItem;
     readonly labels: readonly GitHubLabelSummary[];
+    readonly leftBoundary?: number;
     readonly onClose: () => void;
     readonly onSave: (labelNames: readonly string[]) => void;
     readonly rightBoundary?: number;
@@ -95,15 +97,16 @@ export function GitHubLabelPicker({
             rect.width,
             rect.height,
         );
+        const rightClampedX =
+            rightBoundary === undefined
+                ? safePosition.x
+                : Math.min(
+                      safePosition.x,
+                      Math.max(8, rightBoundary - rect.width - 8),
+                  );
         setPosition({
             ...safePosition,
-            x:
-                rightBoundary === undefined
-                    ? safePosition.x
-                    : Math.min(
-                          safePosition.x,
-                          Math.max(8, rightBoundary - rect.width - 8),
-                      ),
+            x: Math.max(leftBoundary ?? 8, rightClampedX),
         });
     }, [
         anchor.x,
@@ -111,6 +114,7 @@ export function GitHubLabelPicker({
         error,
         isLoading,
         labelOptions.length,
+        leftBoundary,
         rightBoundary,
         visibleLabels.length,
     ]);
@@ -132,7 +136,15 @@ export function GitHubLabelPicker({
             className="fixed w-[min(320px,calc(100vw-16px))] rounded-lg border border-border bg-bg-panel p-2 shadow-[0_18px_42px_rgba(0,0,0,0.34)]"
             data-context-menu-root="true"
             ref={ref}
-            style={{ left: position.x, top: position.y, zIndex: 10020 }}
+            style={{
+                left: position.x,
+                maxWidth:
+                    leftBoundary !== undefined && rightBoundary !== undefined
+                        ? Math.max(200, rightBoundary - leftBoundary - 8)
+                        : undefined,
+                top: position.y,
+                zIndex: 10020,
+            }}
         >
             <div className="flex min-w-0 items-start justify-between gap-3">
                 <div className="min-w-0">

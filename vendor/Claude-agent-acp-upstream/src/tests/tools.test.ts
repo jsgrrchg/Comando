@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ClientCapabilities } from "@agentclientprotocol/sdk";
 import { ImageBlockParam, ToolResultBlockParam } from "@anthropic-ai/sdk/resources";
 import {
@@ -489,6 +489,94 @@ describe("Bash terminal output", () => {
           signal: null,
         },
       });
+    });
+
+    it("keys the terminal metas off the tool_use id, which is what was announced", () => {
+      // `toolInfoFromToolUse` announces the terminal as `toolUse.id`, so the
+      // result's metas have to use the same value for the client to match them
+      // up. A result block that disagrees (or omits `tool_use_id`) must not be
+      // allowed to retarget them.
+      const toolResult = {
+        ...makeBashResult("out", "", 0),
+        tool_use_id: "toolu_something_else",
+      };
+      const update = toolUpdateFromToolResult(toolResult, bashToolUse, true);
+
+      expect(update.content).toEqual([{ type: "terminal", terminalId: "toolu_bash" }]);
+      expect(update._meta).toEqual({
+        terminal_info: { terminal_id: "toolu_bash" },
+        terminal_output: { terminal_id: "toolu_bash", data: "out" },
+        terminal_exit: { terminal_id: "toolu_bash", exit_code: 0, signal: null },
+      });
+    });
+
+    it("falls back to the result's tool_use_id when the tool_use is unavailable", () => {
+      const toolResult = makeBashResult("out", "", 0);
+      const update = toolUpdateFromToolResult(toolResult, { name: "Bash" }, true);
+
+      expect(update.content).toEqual([{ type: "terminal", terminalId: "toolu_bash" }]);
+      expect(update._meta).toEqual({
+        terminal_info: { terminal_id: "toolu_bash" },
+        terminal_output: { terminal_id: "toolu_bash", data: "out" },
+        terminal_exit: { terminal_id: "toolu_bash", exit_code: 0, signal: null },
+      });
+    });
+
+    it("renders a code block instead of a dangling terminal when no id is available", () => {
+      // Previously this emitted `terminal_id: ""` for all three metas. Nothing
+      // on the client has a terminal under that id, so the output was stranded
+      // (Zed buffers output/exit for unknown terminals indefinitely) and the
+      // user saw an empty terminal. Degrade to the non-terminal rendering.
+      // `tool_use_id` is required on every result-block type, so a block without
+      // it can only arrive at runtime (an older or non-conforming emitter). The
+      // source guards for it with `"tool_use_id" in toolResult`, so exercise that
+      // path with a cast rather than pretending the type allows it.
+      const { content, type } = makeBashResult("out", "", 0);
+      const update = toolUpdateFromToolResult(
+        { content, type } as unknown as Parameters<typeof toolUpdateFromToolResult>[0],
+        { name: "Bash" },
+        true,
+      );
+
+      expect(update._meta).toBeUndefined();
+      expect(update.content).toEqual([
+        {
+          type: "content",
+          content: { type: "text", text: "```console\nout\n```" },
+        },
+      ]);
+    });
+
+    it("treats an empty tool_use id as no id and falls back to the result block", () => {
+      const toolResult = makeBashResult("out", "", 0);
+      const update = toolUpdateFromToolResult(toolResult, { id: "", name: "Bash" }, true);
+
+      expect(update.content).toEqual([{ type: "terminal", terminalId: "toolu_bash" }]);
+      expect(update._meta).toEqual({
+        terminal_info: { terminal_id: "toolu_bash" },
+        terminal_output: { terminal_id: "toolu_bash", data: "out" },
+        terminal_exit: { terminal_id: "toolu_bash", exit_code: 0, signal: null },
+      });
+    });
+
+    it("renders a code block when neither id is a usable string", () => {
+      // A present-but-undefined `tool_use_id` still satisfies an `in` check, and
+      // stringifying it would key all three metas on the literal "undefined" — an
+      // id no client ever created a terminal for, so the output strands exactly as
+      // it did under the old empty-string id.
+      const toolResult = {
+        ...makeBashResult("out", "", 0),
+        tool_use_id: undefined,
+      } as unknown as Parameters<typeof toolUpdateFromToolResult>[0];
+      const update = toolUpdateFromToolResult(toolResult, { id: "", name: "Bash" }, true);
+
+      expect(update._meta).toBeUndefined();
+      expect(update.content).toEqual([
+        {
+          type: "content",
+          content: { type: "text", text: "```console\nout\n```" },
+        },
+      ]);
     });
 
     it("should include exit_code from return_code in terminal_exit", () => {
@@ -1024,7 +1112,7 @@ describe("Bash terminal output", () => {
       );
 
       // Fire PostToolUse hook with a structuredPatch in tool_response
-      const hook = createPostToolUseHook(mockLogger);
+      const hook = createPostToolUseHook();
       await hook(
         {
           hook_event_name: "PostToolUse",
@@ -1102,7 +1190,7 @@ describe("Bash terminal output", () => {
         mockLogger,
       );
 
-      const hook = createPostToolUseHook(mockLogger);
+      const hook = createPostToolUseHook();
       await hook(
         {
           hook_event_name: "PostToolUse",
@@ -1182,7 +1270,7 @@ describe("Bash terminal output", () => {
         mockLogger,
       );
 
-      const hook = createPostToolUseHook(mockLogger);
+      const hook = createPostToolUseHook();
       await hook(
         {
           hook_event_name: "PostToolUse",
@@ -1202,6 +1290,36 @@ describe("Bash terminal output", () => {
       const hookUpdate = hookUpdates[0].update;
       expect(hookUpdate.content).toBeUndefined();
       expect(hookUpdate.locations).toBeUndefined();
+    });
+
+    // Regression for issue #889: tool uses that never register a callback
+    // (TodoWrite/Task* are rendered as plan updates, not tool_calls) fire the
+    // PostToolUse hook too. That's expected — the hook must stay silent
+    // instead of spamming "No onPostToolUseHook found" to stderr.
+    it("should not log an error when no callback is registered for the tool use", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const hook = createPostToolUseHook();
+        const result = await hook(
+          {
+            hook_event_name: "PostToolUse",
+            tool_name: "TodoWrite",
+            tool_input: { todos: [] },
+            tool_response: { success: true },
+            tool_use_id: "toolu_todo_no_callback",
+            session_id: "test-session",
+            transcript_path: "/tmp/test",
+            cwd: "/tmp",
+          },
+          "toolu_todo_no_callback",
+          { signal: AbortSignal.abort() },
+        );
+
+        expect(result).toEqual({ continue: true });
+        expect(errorSpy).not.toHaveBeenCalled();
+      } finally {
+        errorSpy.mockRestore();
+      }
     });
   });
 
@@ -1239,7 +1357,7 @@ describe("Bash terminal output", () => {
         mockLogger,
       );
 
-      const hook = createPostToolUseHook(mockLogger);
+      const hook = createPostToolUseHook();
       await hook(
         {
           hook_event_name: "PostToolUse",
@@ -1315,7 +1433,7 @@ describe("Bash terminal output", () => {
         mockLogger,
       );
 
-      const hook = createPostToolUseHook(mockLogger);
+      const hook = createPostToolUseHook();
       await hook(
         {
           hook_event_name: "PostToolUse",
@@ -1438,7 +1556,7 @@ describe("Bash terminal output", () => {
       expect((resultNotifications[1].update as any).status).toBe("completed");
 
       // Step 3: Fire the PostToolUse hook (simulates what Claude Code SDK does)
-      const hook = createPostToolUseHook(mockLogger);
+      const hook = createPostToolUseHook();
       await hook(
         {
           hook_event_name: "PostToolUse",
@@ -1519,7 +1637,7 @@ describe("Bash terminal output", () => {
       );
 
       // Fire hook
-      const hook = createPostToolUseHook(mockLogger);
+      const hook = createPostToolUseHook();
       await hook(
         {
           hook_event_name: "PostToolUse",
@@ -2275,7 +2393,8 @@ describe("Agent/Task tool_result rendering from tool_use_result", () => {
     ]);
   });
 
-  it("leaves malformed trailers alone without expensive regular-expression matching", () => {
+  it("leaves malformed trailers alone", () => {
+    // Incomplete trailers are ordinary report text, not metadata to strip.
     const malformedResult: ToolResultBlockParam = {
       type: "tool_result",
       tool_use_id: "toolu_agent",
@@ -2284,6 +2403,7 @@ describe("Agent/Task tool_result rendering from tool_use_result", () => {
         { type: "text", text: "Report.\nagentId: abc-123 (missing closing paren" },
       ],
     };
+
     const update = toolUpdateFromToolResult(malformedResult, agentToolUse, false);
 
     expect(update.content).toEqual([
@@ -2292,6 +2412,40 @@ describe("Agent/Task tool_result rendering from tool_use_result", () => {
         type: "content",
         content: { type: "text", text: "Report.\nagentId: abc-123 (missing closing paren" },
       },
+    ]);
+  });
+
+  it("strips only the trailer when the report itself mentions <usage>", () => {
+    const result: ToolResultBlockParam = {
+      type: "tool_result",
+      tool_use_id: "toolu_agent",
+      content: "Grep for <usage> found 3 hits.\n<usage>subagent_tokens: 5</usage>",
+    };
+    const update = toolUpdateFromToolResult(result, agentToolUse, false);
+
+    expect(update.content).toEqual([
+      { type: "content", content: { type: "text", text: "Grep for <usage> found 3 hits." } },
+    ]);
+  });
+
+  it("handles adversarial trailer-shaped input in linear time", () => {
+    // Regression: the old regex-based strip backtracked quadratically on
+    // these shapes (CodeQL js/polynomial-redos) — at this size it would
+    // blow the test timeout rather than merely run slow.
+    const result: ToolResultBlockParam = {
+      type: "tool_result",
+      tool_use_id: "toolu_agent",
+      content: [
+        { type: "text", text: "agentId: - (".repeat(20000) },
+        { type: "text", text: "<usage>".repeat(30000) },
+      ],
+    };
+    const update = toolUpdateFromToolResult(result, agentToolUse, false);
+
+    // Neither is a real trailer, so both come through unchanged.
+    expect(update.content).toEqual([
+      { type: "content", content: { type: "text", text: "agentId: - (".repeat(20000) } },
+      { type: "content", content: { type: "text", text: "<usage>".repeat(30000) } },
     ]);
   });
 
@@ -2366,6 +2520,154 @@ describe("Agent/Task tool_result rendering from tool_use_result", () => {
         content: [{ type: "content", content: { type: "text", text: "The report." } }],
       });
     }
+  });
+});
+
+describe("tool_result_meta non-execution stamping", () => {
+  const mockClient = {} as AcpClient;
+  const mockLogger: Logger = { log: () => {}, error: () => {} };
+
+  const bashToolUse = {
+    type: "tool_use" as const,
+    id: "toolu_bash",
+    name: "Bash",
+    input: { command: "rm -rf build" },
+  };
+
+  const deniedResult: ToolResultBlockParam = {
+    type: "tool_result",
+    tool_use_id: "toolu_bash",
+    is_error: true,
+    content: "The user doesn't want to proceed with this tool use.",
+  };
+
+  it("stamps nonExecutionKind and userFeedback on the failed tool_call_update", () => {
+    const toolUseCache: ToolUseCache = { toolu_bash: bashToolUse };
+
+    const notifications = toAcpNotifications(
+      [deniedResult] as any,
+      "user",
+      "test-session",
+      toolUseCache,
+      mockClient,
+      mockLogger,
+      {
+        toolResultMeta: [
+          { id: "toolu_bash", non_execution_kind: "user-rejected", user_feedback: "use npm" },
+        ],
+      },
+    );
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].update).toMatchObject({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "toolu_bash",
+      status: "failed",
+      _meta: {
+        claudeCode: {
+          toolName: "Bash",
+          nonExecutionKind: "user-rejected",
+          userFeedback: "use npm",
+        },
+      },
+    });
+  });
+
+  it("attributes entries by tool_use_id, so only the flagged result in a batch is stamped", () => {
+    const toolUseCache: ToolUseCache = {
+      toolu_bash: bashToolUse,
+      toolu_bash2: { ...bashToolUse, id: "toolu_bash2" },
+    };
+
+    const notifications = toAcpNotifications(
+      [
+        deniedResult,
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_bash2",
+          content: "ok",
+        },
+      ] as any,
+      "user",
+      "test-session",
+      toolUseCache,
+      mockClient,
+      mockLogger,
+      { toolResultMeta: [{ id: "toolu_bash", non_execution_kind: "user-rejected" }] },
+    );
+
+    expect(notifications).toHaveLength(2);
+    const [denied, ran] = notifications.map((n) => n.update) as any[];
+    expect(denied._meta.claudeCode).toMatchObject({ nonExecutionKind: "user-rejected" });
+    // No user_feedback on the wire entry → no userFeedback key at all.
+    expect(denied._meta.claudeCode).not.toHaveProperty("userFeedback");
+    expect(ran._meta.claudeCode).not.toHaveProperty("nonExecutionKind");
+  });
+
+  it("ignores a malformed sidecar and malformed entries", () => {
+    for (const malformed of [
+      "user-rejected", // not an array
+      [{ non_execution_kind: "user-rejected" }], // entry missing id
+      [{ id: "toolu_bash", non_execution_kind: 7 }], // kind not a string
+      [null, 42], // entries not objects
+    ]) {
+      const toolUseCache: ToolUseCache = { toolu_bash: bashToolUse };
+      const notifications = toAcpNotifications(
+        [deniedResult] as any,
+        "user",
+        "test-session",
+        toolUseCache,
+        mockClient,
+        mockLogger,
+        { toolResultMeta: malformed },
+      );
+
+      expect(notifications).toHaveLength(1);
+      expect((notifications[0].update as any)._meta.claudeCode).not.toHaveProperty(
+        "nonExecutionKind",
+      );
+    }
+  });
+
+  it("stamps the resolve of a permission-surfaced suppressed tool (Task*)", () => {
+    // A TaskGet surfaced as a real tool_call by the permission flow never gets
+    // a tool_call_update from the suppressed Task* branch; the wasEmitted
+    // resolve must carry the denial kind too.
+    const taskGetToolUse = {
+      type: "tool_use" as const,
+      id: "toolu_taskget",
+      name: "TaskGet",
+      input: { taskId: "1" },
+    };
+    const toolUseCache: ToolUseCache = { toolu_taskget: taskGetToolUse };
+
+    const notifications = toAcpNotifications(
+      [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_taskget",
+          is_error: true,
+          content: "The user doesn't want to proceed with this tool use.",
+        },
+      ] as any,
+      "user",
+      "test-session",
+      toolUseCache,
+      mockClient,
+      mockLogger,
+      {
+        emittedToolCalls: new Set(["toolu_taskget"]),
+        toolResultMeta: [{ id: "toolu_taskget", non_execution_kind: "user-rejected" }],
+      },
+    );
+
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].update).toMatchObject({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "toolu_taskget",
+      status: "failed",
+      _meta: { claudeCode: { toolName: "TaskGet", nonExecutionKind: "user-rejected" } },
+    });
   });
 });
 

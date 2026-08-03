@@ -313,157 +313,6 @@ describe("createNativeAppDataClient", () => {
         await secondClient.close();
     });
 
-    it("atomically transfers a context between window snapshots", async () => {
-        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
-        tempDirs.push(tempDir);
-        const databaseFile = path.join(tempDir, "comando.sqlite");
-        new DatabaseSync(databaseFile).close();
-        const native = createFakeNativeRequester();
-        const { createNativeAppDataClient } = await import("./app-data");
-        const client = await createNativeAppDataClient({
-            client: native.requester,
-            databaseFile,
-        });
-        const sourceWindow = await client.persistence.createMainWindowSession({
-            projectId: "project-1",
-        });
-        const targetWindow = await client.persistence.createMainWindowSession({
-            projectId: "project-2",
-        });
-        const sourceWorkspaceId = sourceWindow.windowContext?.workspaceId;
-        const targetWorkspaceId = targetWindow.windowContext?.workspaceId;
-        if (!sourceWorkspaceId || !targetWorkspaceId) {
-            throw new Error("Expected transfer workspace ids.");
-        }
-        const sourceNavigation = workspaceNavigation(
-            "project-1",
-            null,
-            "pane-source",
-        );
-        await client.workspace.saveSnapshot(
-            sourceWorkspaceId,
-            sourceNavigation,
-        );
-        const targetNavigation = workspaceNavigation(
-            "project-2",
-            null,
-            "pane-target",
-        );
-        const retainedTargetNavigation = {
-            ...targetNavigation,
-            contexts: [
-                ...targetNavigation.contexts,
-                {
-                    ...sourceNavigation.contexts[0],
-                    workspace: {
-                        ...sourceNavigation.contexts[0].workspace,
-                        activePaneId: "pane-stale",
-                        rootNode: {
-                            activeTabId: null,
-                            id: "pane-stale",
-                            tabIds: [],
-                            type: "pane" as const,
-                        },
-                    },
-                },
-            ],
-        };
-        await client.workspace.saveSnapshot(
-            targetWorkspaceId,
-            {
-                ...retainedTargetNavigation,
-                openContextKeys: [
-                    ...targetNavigation.openContextKeys,
-                    "project-1::__primary__",
-                ],
-            },
-        );
-        const sourceWithDuplicate = await client.workspace.loadSnapshot(
-            sourceWorkspaceId,
-        );
-        const targetWithDuplicate = await client.workspace.loadSnapshot(
-            targetWorkspaceId,
-        );
-        await expect(
-            client.workspace.transferContext({
-                contextKey: "project-1::__primary__",
-                sourceRevision: sourceWithDuplicate.revision,
-                sourceWorkspaceId,
-                targetRevision: targetWithDuplicate.revision,
-                targetWorkspaceId,
-            }),
-        ).rejects.toThrow("destination already contains this workspace");
-
-        // Closed contexts retain their layout but are not live duplicates.
-        await client.workspace.saveSnapshot(
-            targetWorkspaceId,
-            retainedTargetNavigation,
-        );
-        const sourceBefore = await client.workspace.loadSnapshot(
-            sourceWorkspaceId,
-        );
-        const targetBefore = await client.workspace.loadSnapshot(
-            targetWorkspaceId,
-        );
-
-        const transfer = await client.workspace.transferContext({
-            contextKey: "project-1::__primary__",
-            sourceRevision: sourceBefore.revision,
-            sourceWorkspaceId,
-            targetRevision: targetBefore.revision,
-            targetWorkspaceId,
-        });
-
-        expect(transfer.source).toMatchObject({
-            revision: sourceBefore.revision + 1,
-            snapshot: { activeContextKey: null, openContextKeys: [] },
-        });
-        expect(transfer.target).toMatchObject({
-            revision: targetBefore.revision + 1,
-            snapshot: {
-                activeContextKey: "project-1::__primary__",
-                openContextKeys: [
-                    "project-2::__primary__",
-                    "project-1::__primary__",
-                ],
-            },
-        });
-        const transferredContexts = transfer.target.snapshot.contexts.filter(
-            (context) => context.key === "project-1::__primary__",
-        );
-        expect(transferredContexts).toHaveLength(1);
-        expect(transferredContexts[0]?.workspace.activePaneId).toBe(
-            "pane-source",
-        );
-        await expect(
-            client.workspace.transferContext({
-                contextKey: "project-2::__primary__",
-                sourceRevision: targetBefore.revision,
-                sourceWorkspaceId: targetWorkspaceId,
-                targetRevision: sourceBefore.revision,
-                targetWorkspaceId: sourceWorkspaceId,
-            }),
-        ).rejects.toThrow("changed before it could be moved");
-        await client.close();
-
-        const restored = await createNativeAppDataClient({
-            client: native.requester,
-            databaseFile,
-        });
-        expect(
-            (await restored.workspace.loadSnapshot(sourceWorkspaceId)).snapshot
-                .openContextKeys,
-        ).toEqual([]);
-        expect(
-            (await restored.workspace.loadSnapshot(targetWorkspaceId)).snapshot
-                .openContextKeys,
-        ).toEqual([
-            "project-2::__primary__",
-            "project-1::__primary__",
-        ]);
-        await restored.close();
-    });
-
     it("migrates legacy SQLite app data into native app-data and keyring", async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
         tempDirs.push(tempDir);
@@ -538,6 +387,8 @@ describe("createNativeAppDataClient", () => {
             client.settings.loadProjectSettings("project-1");
         expect(projectSettings?.editor?.fontSize).toBe(15);
         expect(projectSettings?.appearance?.themeMode).toBe("light");
+        await client.settings.clearProjectSettings?.("project-1");
+        expect(client.settings.loadProjectSettings("project-1")).toBeNull();
 
         client.settings.saveAppAppearanceSettings({
             ...client.settings.loadAppAppearanceSettings(),
@@ -550,6 +401,132 @@ describe("createNativeAppDataClient", () => {
         };
         expect(snapshot.appearance?.themeMode).toBe("light");
         expect(native.appData.get("legacy.secretsMigrated.v1")).toBe(true);
+    });
+
+    it("reconciles downgrade writes once at startup without keeping v3 authoritative", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+        const seed = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const window = await seed.persistence.createMainWindowSession({
+            projectId: "project-1",
+        });
+        const workspaceId = window.windowContext?.workspaceId;
+        expect(workspaceId).toBeTruthy();
+        await seed.workspace.saveSnapshot(
+            workspaceId!,
+            navigationWithDraft("draft before migration"),
+        );
+        await seed.close();
+        native.appData.set(
+            "persistence.windows",
+            structuredClone(native.appData.get("persistence.mainWindow")),
+        );
+
+        const migrationRequests: {
+            readonly args: Record<string, unknown>;
+            readonly command: string;
+        }[] = [];
+        const requester: NativeBackendRequester = {
+            request: async <T = unknown>(
+                command: string,
+                args: Record<string, unknown> = {},
+            ): Promise<T> => {
+                if (command.startsWith("workspace_migration_")) {
+                    migrationRequests.push({ args, command });
+                    if (command === "workspace_migration_run") {
+                        return {
+                            applied: false,
+                            diagnostics: appDataMigrationDiagnostics(),
+                            navigation: appDataMigrationNavigation(),
+                        } as T;
+                    }
+                    return appDataMigrationNavigation() as T;
+                }
+                return native.requester.request<T>(command, args);
+            },
+        };
+        const onWorkspaceMigrationTelemetry = vi.fn();
+        const client = await createNativeAppDataClient({
+            applicationVersion: "0.2.1",
+            client: requester,
+            databaseFile,
+            onWorkspaceMigrationTelemetry,
+            publishWorkspaceRollout: true,
+        });
+        const runInput = migrationRequests.find(
+            (request) => request.command === "workspace_migration_run",
+        )?.args;
+        expect(runInput).toMatchObject({
+            applicationVersion: "0.2.1",
+            historicalLayoutCap: 30,
+            windows: [
+                {
+                    contexts: [
+                        {
+                            layoutSnapshot: {
+                                tabs: [
+                                    expect.objectContaining({
+                                        draft: "draft before migration",
+                                        sessionId: "session-1",
+                                    }),
+                                ],
+                            },
+                            scopeKey: "project-1::__primary__",
+                        },
+                    ],
+                },
+            ],
+        });
+        expect(onWorkspaceMigrationTelemetry).toHaveBeenCalledWith(
+            expect.objectContaining({
+                applicationVersion: "0.2.1",
+                migrationApplied: false,
+                rolloutStage: "stable_dual_write",
+                schemaVersion: 1,
+            }),
+        );
+
+        const syncInput = migrationRequests.find(
+            (request) => request.command === "workspace_migration_sync_legacy",
+        )?.args;
+        expect(syncInput).toMatchObject({
+            windows: [
+                {
+                    contexts: [
+                        {
+                            layoutSnapshot: {
+                                tabs: [
+                                    expect.objectContaining({
+                                    draft: "draft before migration",
+                                        sessionId: "session-1",
+                                    }),
+                                ],
+                            },
+                        },
+                    ],
+                },
+            ],
+        });
+        const syncCountBeforeV3Write = migrationRequests.filter(
+            (request) => request.command === "workspace_migration_sync_legacy",
+        ).length;
+        await client.workspace.saveSnapshot(
+            workspaceId!,
+            navigationWithDraft("draft after migration"),
+        );
+        expect(
+            migrationRequests.filter(
+                (request) => request.command === "workspace_migration_sync_legacy",
+            ),
+        ).toHaveLength(syncCountBeforeV3Write);
+        await client.close();
     });
 
     it("fills partial native runtime catalogs from legacy ACP catalogs", async () => {
@@ -779,6 +756,86 @@ function workspaceNavigation(
     };
 }
 
+function navigationWithDraft(draft: string): WorkspaceNavigationSnapshot {
+    return {
+        activeContextKey: "project-1::__primary__",
+        contexts: [
+            {
+                key: "project-1::__primary__",
+                lastActivatedAt: "2026-07-31T00:00:00.000Z",
+                projectId: "project-1",
+                workspace: {
+                    activePaneId: "pane-root",
+                    rootNode: {
+                        activeTabId: "chat-1",
+                        id: "pane-root",
+                        pinnedTabIds: ["chat-1"],
+                        tabIds: ["chat-1"],
+                        type: "pane",
+                    },
+                    tabs: [
+                        {
+                            createdAt: "2026-07-31T00:00:00.000Z",
+                            draft,
+                            id: "chat-1",
+                            kind: "chat",
+                            projectId: "project-1",
+                            runtimeId: "codex",
+                            sessionId: "session-1",
+                            title: "Chat",
+                            worktreeId: null,
+                        },
+                    ],
+                },
+                worktreeId: null,
+            },
+        ],
+        openContextKeys: ["project-1::__primary__"],
+        version: 3,
+    };
+}
+
+function appDataMigrationNavigation(): Record<string, unknown> {
+    return {
+        activeScopeKey: "project-1::__primary__",
+        recentScopeKeys: ["project-1::__primary__"],
+        revision: 1,
+        shellSnapshot: {},
+        updatedAt: "2026-07-31T00:00:00Z",
+    };
+}
+
+function appDataMigrationDiagnostics(): Record<string, unknown> {
+    return {
+        activeScopeKey: "project-1::__primary__",
+        activeSourceWindowId: "window-1",
+        applicationVersion: "0.2.1",
+        candidateCount: 1,
+        completedAt: "2026-07-31T00:00:00Z",
+        historicalLayoutCap: 30,
+        layoutSources: [
+            {
+                scopeKey: "project-1::__primary__",
+                sourceWindowId: "window-1",
+            },
+        ],
+        limitation: "Legacy closed layouts may already have been pruned.",
+        migrationId: "2026-07-31-workspaces-v3-to-v4",
+        normalizationDroppedContextCount: 0,
+        normalizationRepairedWindowCount: 0,
+        prunedLayoutsPossible: true,
+        recoveryLayoutCount: 0,
+        recoverySources: [],
+        rollbackAt: null,
+        sourceBackupRef: "workspace-migrations/v3-checksum.json",
+        sourceChecksum: "checksum",
+        sourceWindowCount: 1,
+        startedAt: "2026-07-31T00:00:00Z",
+        status: "complete",
+        workspaceCount: 1,
+    };
+}
+
 function createFakeNativeRequester(): {
     readonly appData: Map<string, unknown>;
     readonly requester: NativeBackendRequester;
@@ -786,12 +843,36 @@ function createFakeNativeRequester(): {
 } {
     const appData = new Map<string, unknown>();
     const secrets = new Map<string, string | null>();
+    let migrationReady = false;
+    let rollout = appDataRolloutStatus("internal");
     const request: NativeBackendRequester["request"] = <T = unknown>(
         command: string,
         args: Record<string, unknown> = {},
     ): Promise<T> => {
         let output: unknown;
         switch (command) {
+            case "workspace_migration_run": {
+                output = {
+                    applied: !migrationReady,
+                    diagnostics: appDataMigrationDiagnostics(),
+                    navigation: appDataMigrationNavigation(),
+                };
+                migrationReady = true;
+                break;
+            }
+            case "workspace_migration_sync_legacy": {
+                output = appDataMigrationNavigation();
+                break;
+            }
+            case "workspace_rollout_get_status": {
+                output = rollout;
+                break;
+            }
+            case "workspace_rollout_mark_stable": {
+                rollout = appDataRolloutStatus("stable_dual_write");
+                output = rollout;
+                break;
+            }
             case "app_data_get_json": {
                 const key = String(args.key);
                 output = {
@@ -834,6 +915,24 @@ function createFakeNativeRequester(): {
         appData,
         requester: { request },
         secrets,
+    };
+}
+
+function appDataRolloutStatus(
+    stage: "internal" | "stable_dual_write",
+): Record<string, unknown> {
+    const stable = stage === "stable_dual_write";
+    return {
+        dualWriteEnabled: true,
+        legacyCleanupCompletedAt: null,
+        legacyRetentionUntil: stable ? "2026-10-30T00:00:00Z" : null,
+        pendingRecoveryLayoutCount: 0,
+        rollbackAvailable: true,
+        sourceBackupRetained: true,
+        stableReleaseVerifiedAt: stable ? "2026-08-01T00:00:00Z" : null,
+        stableReleaseVersion: stable ? "0.2.1" : null,
+        stage,
+        v4OnlySince: null,
     };
 }
 

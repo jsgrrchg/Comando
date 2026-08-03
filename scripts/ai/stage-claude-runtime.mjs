@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -16,11 +15,13 @@ import {
     ensureDir,
     isExecutableFile,
     isFile,
-    nodeBinaryName,
     relativeToRepo,
-    resolveFromPath,
     resetDir,
 } from "./_shared.mjs";
+import {
+    prepareOfficialNodeRuntime,
+    readNodeVersion,
+} from "./node-runtime.mjs";
 
 const CLAUDE_VENDOR_DIST_DIR = path.join(claudeVendorDir, "dist");
 const CLAUDE_VENDOR_ENTRY = path.join(CLAUDE_VENDOR_DIST_DIR, "index.js");
@@ -46,39 +47,6 @@ function readClaudeRequiredNodeMajor() {
     return Number.parseInt(match[1], 10);
 }
 
-function readNodeVersion(binaryPath) {
-    const result = spawnSync(binaryPath, ["--version"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    if (result.error) {
-        throw new Error(
-            `Unable to run Node binary for Claude staging: ${binaryPath}. ${result.error.message}`,
-        );
-    }
-
-    if (result.status !== 0) {
-        throw new Error(
-            `Unable to read Node version from ${binaryPath}: ${result.stderr.trim()}`,
-        );
-    }
-
-    const version = result.stdout.trim();
-    const match = version.match(/^v?(\d+)\./);
-
-    if (!match) {
-        throw new Error(
-            `Unable to parse Node version "${version}" from ${binaryPath}.`,
-        );
-    }
-
-    return {
-        major: Number.parseInt(match[1], 10),
-        version,
-    };
-}
-
 function validateNodeSupportsClaudeRuntime(binaryPath) {
     const requiredMajor = readClaudeRequiredNodeMajor();
     const actual = readNodeVersion(binaryPath);
@@ -90,12 +58,12 @@ function validateNodeSupportsClaudeRuntime(binaryPath) {
     }
 }
 
-function resolveNodeBinary() {
+async function resolveNodeRuntime() {
     const override = process.env.COMANDO_EMBEDDED_NODE_BIN?.trim() ?? "";
     if (override) {
         const resolved = path.isAbsolute(override)
             ? override
-            : (resolveFromPath(override) ?? path.resolve(override));
+            : path.resolve(override);
 
         if (!isExecutableFile(resolved)) {
             throw new Error(
@@ -103,21 +71,19 @@ function resolveNodeBinary() {
             );
         }
 
-        return resolved;
+        return {
+            binaryPath: resolved,
+            runtimeRoot: null,
+            sourceLabel: resolved,
+        };
     }
 
-    const fromPath = resolveFromPath("node");
-    if (fromPath) {
-        return fromPath;
-    }
-
-    if (isExecutableFile(process.execPath)) {
-        return process.execPath;
-    }
-
-    throw new Error(
-        "No Node binary found for embedding Claude. Install Node or define COMANDO_EMBEDDED_NODE_BIN.",
-    );
+    const prepared = await prepareOfficialNodeRuntime();
+    return {
+        binaryPath: prepared.binaryPath,
+        runtimeRoot: prepared.runtimeRoot,
+        sourceLabel: prepared.binaryPath,
+    };
 }
 
 function ensureClaudeVendorExists() {
@@ -146,14 +112,28 @@ function ensureClaudeVendorExists() {
     }
 }
 
-function stageEmbeddedNodeRuntime() {
-    const sourceNode = resolveNodeBinary();
-    validateNodeSupportsClaudeRuntime(sourceNode);
+async function stageEmbeddedNodeRuntime() {
+    const source = await resolveNodeRuntime();
+    const sourceVersion = readNodeVersion(source.binaryPath);
+    validateNodeSupportsClaudeRuntime(source.binaryPath);
     resetDir(embeddedNodeRoot);
-    copyExecutable(sourceNode, embeddedNodeBin);
+
+    if (source.runtimeRoot) {
+        // Preserve the official license and cache metadata alongside the binary.
+        copyTree(source.runtimeRoot, embeddedNodeRoot);
+    } else {
+        copyExecutable(source.binaryPath, embeddedNodeBin);
+    }
+
+    const stagedVersion = readNodeVersion(embeddedNodeBin);
+    if (stagedVersion.version !== sourceVersion.version) {
+        throw new Error(
+            `Embedded Node version changed during staging: expected ${sourceVersion.version}, received ${stagedVersion.version}.`,
+        );
+    }
 
     console.log(
-        `[stage:claude-runtime] node ${relativeToRepo(sourceNode)} -> ${relativeToRepo(embeddedNodeBin)}`,
+        `[stage:claude-runtime] node ${relativeToRepo(source.sourceLabel)} -> ${relativeToRepo(embeddedNodeBin)} (${stagedVersion.version})`,
     );
 }
 
@@ -221,14 +201,14 @@ function validateStagedRuntime() {
     }
 }
 
-export function stageClaudeRuntime() {
+export async function stageClaudeRuntime() {
     ensureDir(path.dirname(embeddedNodeBin));
     removeLegacyStandaloneBundle();
-    stageEmbeddedNodeRuntime();
+    await stageEmbeddedNodeRuntime();
     stageEmbeddedClaudeProject();
     validateStagedRuntime();
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-    stageClaudeRuntime();
+    await stageClaudeRuntime();
 }

@@ -29,6 +29,8 @@ macro_rules! string_id {
 
 string_id!(WindowId);
 string_id!(WorkspaceId);
+string_id!(WorkspaceScopeKey);
+string_id!(WorkspaceRuntimeOwnerId);
 string_id!(ProjectId);
 string_id!(WorktreeId);
 string_id!(RuntimeId);

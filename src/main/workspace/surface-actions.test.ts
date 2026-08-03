@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import type {
     PersistedWorkspaceContext,
     WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceActiveFileState,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 import {
     doesWorkspaceSurfaceActionMatchContext,
+    isWorkspaceSurfaceActiveFileState,
     isWorkspaceSurfaceFileRevealRequest,
     isWorkspaceSurfaceActionRequest,
 } from "./surface-actions";
@@ -141,6 +143,34 @@ describe("workspace surface actions", () => {
             isWorkspaceSurfaceFileRevealRequest({
                 projectId: context.projectId,
                 relativePath: request.relativePath,
+                worktreeId: null,
+            }),
+        ).toBe(false);
+    });
+
+    it("accepts active file updates and an explicit clear", () => {
+        const state: WorkspaceSurfaceActiveFileState = {
+            ...context,
+            relativePath: "src/index.ts",
+        };
+
+        expect(isWorkspaceSurfaceActiveFileState(state)).toBe(true);
+        expect(
+            isWorkspaceSurfaceActiveFileState({
+                ...state,
+                relativePath: null,
+            }),
+        ).toBe(true);
+        expect(
+            isWorkspaceSurfaceActiveFileState({
+                ...state,
+                relativePath: "",
+            }),
+        ).toBe(false);
+        expect(
+            isWorkspaceSurfaceActiveFileState({
+                projectId: context.projectId,
+                relativePath: state.relativePath,
                 worktreeId: null,
             }),
         ).toBe(false);

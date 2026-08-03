@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import type { AiTranscriptBlock, AiTranscriptBlockMetadata } from "@shared/ipc";
+import type {
+    AiToolActivity,
+    AiTranscriptBlock,
+    AiTranscriptBlockMetadata,
+} from "@shared/ipc";
 import { resolveTranscriptPrefetchBlockId } from "@renderer/app/ai/transcriptWindowNavigation";
 import {
     getChatTimelineRowIdentityKey,
@@ -24,6 +28,7 @@ import {
 import type {
     ActivitySegmentItem,
     ChatTimelineActivitySegmentRow,
+    ToolActivitySegmentEntry,
 } from "./chatTimelineModel";
 
 const metadata: AiTranscriptBlockMetadata = {
@@ -172,6 +177,74 @@ describe("transcriptBlockVirtualization", () => {
             items.filter((item) => item.kind === "activity-entry"),
         ).toHaveLength(201);
         expect(items.at(-1)?.id).toBe("message:thinking-600");
+    });
+
+    it("windows real tools without exposing payloads outside expanded ranges", () => {
+        const collapsedSegment = createToolActivitySegment(401);
+        const collapsed = flattenTranscriptTimelineItems([collapsedSegment], {
+            defaultExpanded: false,
+            expansionByGroupId: {},
+        });
+        expect(collapsed).toEqual([
+            expect.objectContaining({
+                id: `activity-summary:${collapsedSegment.id}`,
+                kind: "activity-summary",
+            }),
+        ]);
+
+        const expandedHistorical = flattenTranscriptTimelineItems(
+            [collapsedSegment],
+            {
+                defaultExpanded: false,
+                expansionByGroupId: {
+                    [collapsedSegment.id]: {
+                        expanded: true,
+                        expandedRangeStarts: [0],
+                    },
+                },
+            },
+        );
+        const historicalEntries = expandedHistorical.filter(
+            (item) => item.kind === "activity-entry",
+        );
+        expect(historicalEntries).toHaveLength(200);
+        expect(visibleToolIds(historicalEntries)).toEqual(
+            Array.from({ length: 200 }, (_, index) => `tool-${index + 1}`),
+        );
+
+        const activeSegment = createToolActivitySegment(601);
+        const withHistoricalAndActive = flattenTranscriptTimelineItems(
+            [activeSegment],
+            {
+                activeGroupId: activeSegment.id,
+                defaultExpanded: false,
+                expansionByGroupId: {
+                    [activeSegment.id]: {
+                        expanded: true,
+                        expandedRangeStarts: [0],
+                    },
+                },
+            },
+        );
+        const visibleEntries = withHistoricalAndActive.filter(
+            (item) => item.kind === "activity-entry",
+        );
+        const visibleIds = visibleToolIds(visibleEntries);
+
+        expect(visibleEntries).toHaveLength(201);
+        expect(new Set(visibleIds).size).toBe(201);
+        expect(visibleIds).toEqual([
+            ...Array.from({ length: 200 }, (_, index) => `tool-${index + 1}`),
+            "tool-601",
+        ]);
+        expect(
+            activeSegment.entries
+                .map((entry) => entry.reviewEntry.activity.toolActivityDetailId)
+                .filter(
+                    (detailId): detailId is string => detailId !== undefined,
+                ),
+        ).toHaveLength(601);
+        expect(visibleIds).not.toContain("tool-201");
     });
 
     it("keeps block positions stable while resident blocks are loaded and evicted", () => {
@@ -377,4 +450,85 @@ function createActivitySegment(
             updatedAt: metadata.lastCreatedAt,
         },
     };
+}
+
+function createToolActivitySegment(
+    count: number,
+): ChatTimelineActivitySegmentRow {
+    const entries = Array.from({ length: count }, (_, index) => {
+        const toolNumber = index + 1;
+        const activity: AiToolActivity = {
+            changeStats: null,
+            createdAt: `2026-07-26T12:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+            diffs: [],
+            exitCode: null,
+            id: `tool-${toolNumber}`,
+            kind: toolNumber % 5 === 0 ? "search" : "read",
+            locations: [],
+            rawInputJson: JSON.stringify({
+                path: `src/generated/file-${toolNumber}.ts`,
+            }),
+            rawOutputJson: JSON.stringify({ result: toolNumber }),
+            sessionId: "session-tools",
+            status: "completed",
+            summary: `Synthetic tool ${toolNumber}`,
+            terminalOutput: null,
+            title: `Read src/generated/file-${toolNumber}.ts`,
+            toolActivityDetailId: `tool-detail:${toolNumber}`,
+            updatedAt: `2026-07-26T12:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+        };
+        return {
+            policy: "groupable",
+            reviewEntry: {
+                activity,
+                hasPendingTrackedFiles: false,
+                pendingTrackedFiles: [],
+                trackedFiles: [],
+            },
+        } satisfies ToolActivitySegmentEntry;
+    });
+    const items = entries.map(
+        (entry) => ({ entry, kind: "tool" }) satisfies ActivitySegmentItem,
+    );
+
+    return {
+        blockId: null,
+        changeStats: {
+            additions: 0,
+            approximate: false,
+            deletions: 0,
+        },
+        entries,
+        id: "activity-segment:session-tools:tool-1",
+        items,
+        kind: "activity-segment",
+        summary: {
+            actionCount: count,
+            changeCount: 0,
+            changedFileCount: 0,
+            commandCount: 0,
+            failureCount: 0,
+            fileCount: count,
+            hiddenActivityCount: count,
+            isInProgress: false,
+            latestActivityId: `tool-${count}`,
+            latestTitle: `Read src/generated/file-${count}.ts`,
+            searchCount: Math.floor(count / 5),
+            startedAt: entries[0]?.reviewEntry.activity.createdAt ?? metadata.firstCreatedAt,
+            updatedAt:
+                entries.at(-1)?.reviewEntry.activity.updatedAt ??
+                metadata.lastCreatedAt,
+        },
+    };
+}
+
+function visibleToolIds(
+    entries: readonly {
+        readonly item: ActivitySegmentItem;
+        readonly kind: "activity-entry";
+    }[],
+): string[] {
+    return entries.flatMap((entry) =>
+        entry.item.kind === "tool" ? [entry.item.entry.reviewEntry.activity.id] : [],
+    );
 }
