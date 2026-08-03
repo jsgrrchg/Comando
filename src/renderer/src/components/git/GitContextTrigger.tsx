@@ -27,6 +27,11 @@ export function GitContextTrigger({
 
     return (
         <SidebarGitScopePicker
+            onTitlebarMenuRequest={(anchor) => {
+                // The workspace is a separate WebContentsView above the host
+                // renderer, so its surface must own the visible popover.
+                void window.comando.openWorkspaceSurfaceGitScopeMenu(anchor);
+            }}
             onOpenWorkspace={onOpenWorkspace}
             projectId={projectId}
             titlebarContextKey={titlebarContextKey ?? undefined}
