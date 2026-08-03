@@ -38,7 +38,10 @@ import {
     buildHierarchicalGitTreeNodesFromProjectEntries,
     findProjectTreeNodeByPath,
 } from "./app/projects/git-tree";
-import { createGitProjectRefreshScheduler } from "./app/git/refresh-scheduler";
+import {
+    createGitProjectRefreshScheduler,
+    gitInvalidationAffectsHistory,
+} from "./app/git/refresh-scheduler";
 import { revalidateVisibleGitDiffs } from "./app/git/visible-diff-revalidation";
 import {
     areGitWorktreeIdsEquivalent,
@@ -1212,6 +1215,7 @@ export function WorkspaceHostApp() {
             useGitStore.getState().activeWorktreeIds[projectId] ??
             null;
         const projectRefreshScheduler = createGitProjectRefreshScheduler({
+            refreshHistory: refreshGitHistory,
             refreshProject: async (projectId, worktreeId) => {
                 const snapshot = await refreshGitProject(projectId, worktreeId);
                 if (snapshot) {
@@ -1232,18 +1236,8 @@ export function WorkspaceHostApp() {
                 projectRefreshScheduler.schedule(
                     payload.projectId,
                     preferredWorktreeId,
+                    { refreshHistory: gitInvalidationAffectsHistory(payload.reason) },
                 );
-                if (
-                    payload.reason === "branch" ||
-                    payload.reason === "remote" ||
-                    payload.reason === "worktree" ||
-                    payload.reason === "unknown"
-                ) {
-                    void refreshGitHistory(
-                        payload.projectId,
-                        preferredWorktreeId,
-                    );
-                }
             },
         );
         const unsubscribeSnapshot = comandoApi.onGitRepositorySnapshotUpdated(
