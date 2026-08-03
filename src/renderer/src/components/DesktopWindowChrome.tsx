@@ -1,6 +1,7 @@
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 
 interface DesktopWindowChromeProps {
+    readonly gitContextControl?: ReactNode;
     readonly inspectorControlsId: string;
     readonly inspectorExpanded: boolean;
     readonly navigatorControlsId: string;
@@ -13,6 +14,7 @@ interface DesktopWindowChromeProps {
 }
 
 export function DesktopWindowChrome({
+    gitContextControl,
     inspectorControlsId,
     inspectorExpanded,
     navigatorControlsId,
@@ -44,12 +46,14 @@ export function DesktopWindowChrome({
                 toggleRef={navigatorToggleRef}
                 side="left"
             />
-            {/* This draggable region is deliberately empty and reserved for future shell UI. */}
+            {/* The wrapper remains draggable; interactive context controls opt out locally. */}
             <div
-                aria-hidden="true"
+                aria-hidden={gitContextControl ? undefined : true}
                 className="desktop-window-chrome__reserved"
                 data-window-chrome-reserved="true"
-            />
+            >
+                {gitContextControl}
+            </div>
             <ChromePanelToggle
                 controlsId={inspectorControlsId}
                 expanded={inspectorExpanded}

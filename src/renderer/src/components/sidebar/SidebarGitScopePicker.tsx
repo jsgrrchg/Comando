@@ -2333,8 +2333,10 @@ export function SidebarGitScopePicker({
             ref={containerRef}
         >
             <button
-                aria-selected={
-                    triggerVariant === "titlebar" ? true : undefined
+                aria-expanded={isOpen}
+                aria-haspopup={triggerVariant === "titlebar" ? "dialog" : undefined}
+                aria-current={
+                    triggerVariant === "titlebar" ? "page" : undefined
                 }
                 className={[
                     "sidebar-git-scope-trigger",
@@ -2370,8 +2372,6 @@ export function SidebarGitScopePicker({
                 }}
                 onKeyDown={onTitlebarKeyDown}
                 ref={buttonRef}
-                role={triggerVariant === "titlebar" ? "tab" : undefined}
-                tabIndex={triggerVariant === "titlebar" ? 0 : undefined}
                 style={
                     triggerHidden
                         ? {

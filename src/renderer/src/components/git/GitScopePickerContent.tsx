@@ -58,6 +58,7 @@ export function GitScopePickerContent({
             data-animation-state={animationState}
             data-placement={menuPosition?.placement ?? "below"}
             inert={!isOpen}
+            aria-label="Git branches and worktrees"
             onAnimationEnd={onAnimationEnd}
             onKeyDown={(event) => {
                 if (event.key === "Escape") {
@@ -68,6 +69,7 @@ export function GitScopePickerContent({
                 onKeyDown(event);
             }}
             ref={menuRef}
+            role="dialog"
             style={{
                 height: menuPosition?.height,
                 left: menuPosition?.x ?? 8,

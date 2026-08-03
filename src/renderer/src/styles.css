@@ -415,6 +415,8 @@
 }
 
 .desktop-window-chrome__reserved {
+    display: flex;
+    align-items: stretch;
     min-width: 0;
     height: 100%;
     flex: 1 1 auto;
@@ -2724,7 +2726,8 @@ button {
 .sidebar-git-scope-picker--titlebar {
     display: flex;
     min-width: 0;
-    flex: 1;
+    width: min(360px, 44vw);
+    flex: 0 1 360px;
     align-self: stretch;
 }
 
