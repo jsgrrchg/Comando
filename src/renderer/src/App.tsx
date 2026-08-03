@@ -47,7 +47,6 @@ import {
 } from "./app/git/context-key";
 import {
     reconcileFileTreeSelection,
-    resolveActiveFileTreePath,
     resolveFileTreeNodeClickSelection,
 } from "./app/projects/file-tree-selection";
 import {
@@ -105,9 +104,10 @@ import {
     useWorkspaceStore,
 } from "./app/store/workspace-store";
 import {
-    findPaneById,
-    type RuntimeWorkspaceTab,
-} from "./app/workspace/tree";
+    updateWorkspaceActiveFilePaths,
+    type WorkspaceActiveFilePaths,
+} from "./app/workspace/surface-active-file";
+import { findPaneById } from "./app/workspace/tree";
 import {
     compactGitTreeEntriesByAncestor,
     compactGitTreeEntriesForDeletion,
@@ -255,17 +255,6 @@ function resolveStateAction<T>(action: SetStateAction<T>, current: T): T {
     return typeof action === "function"
         ? (action as (value: T) => T)(current)
         : action;
-}
-
-function selectActiveWorkspaceTab(
-    state: ReturnType<typeof useWorkspaceStore.getState>,
-): RuntimeWorkspaceTab | null {
-    const activePane = findPaneById(state.rootNode, state.activePaneId);
-    if (!activePane?.activeTabId) {
-        return null;
-    }
-
-    return state.tabsById[activePane.activeTabId] ?? null;
 }
 
 export function WorkspaceHostApp() {
@@ -528,7 +517,6 @@ export function WorkspaceHostApp() {
         (state) => state.renameTabsForProjectPath,
     );
     const workspaceError = useWorkspaceStore((state) => state.error);
-    const activeWorkspaceTab = useWorkspaceStore(selectActiveWorkspaceTab);
 
     const activeSurface = useShellStore((state) => state.activeSurface);
     const focusSurface = useShellStore((state) => state.focusSurface);
@@ -709,8 +697,12 @@ export function WorkspaceHostApp() {
     >(null);
     const [pendingFileTreeReveal, setPendingFileTreeReveal] =
         useState<PendingFileTreeReveal | null>(null);
-    const [revealedFilePathsByContext, setRevealedFilePathsByContext] =
-        useState<Record<string, string>>({});
+    const [fileTreeRevealTarget, setFileTreeRevealTarget] = useState<{
+        readonly relativePath: string;
+        readonly requestId: number;
+    } | null>(null);
+    const [activeFilePathsByContext, setActiveFilePathsByContext] =
+        useState<WorkspaceActiveFilePaths>({});
     const fileTreeRevealRequestIdRef = useRef(0);
     const fileTreeSearchInputRef = useRef<HTMLInputElement | null>(null);
     const fileTreeInlineSubmitPendingRef = useRef(false);
@@ -2034,24 +2026,9 @@ export function WorkspaceHostApp() {
     const isProjectRootExpanded =
         projectRootExpandedByContext[activeProjectContextKey] ?? true;
     void renameTabsForProjectPath;
-    const revealedActiveFilePath = workspaceActiveContextKey
-        ? (revealedFilePathsByContext[workspaceActiveContextKey] ?? null)
+    const activeFilePath = workspaceActiveContextKey
+        ? (activeFilePathsByContext[workspaceActiveContextKey] ?? null)
         : null;
-    const activeFilePath = useMemo(
-        () =>
-            revealedActiveFilePath ??
-            resolveActiveFileTreePath({
-                activeProjectId,
-                activeWorkspaceTab,
-                activeWorktreeId,
-            }),
-        [
-            activeProjectId,
-            activeWorkspaceTab,
-            activeWorktreeId,
-            revealedActiveFilePath,
-        ],
-    );
     const activeGitError = activeGitContextKey
         ? (gitErrors[activeGitContextKey] ?? null)
         : null;
@@ -3768,16 +3745,11 @@ export function WorkspaceHostApp() {
                 ...currentState,
                 [targetProjectContextKey]: true,
             }));
-            // The host cannot read the surface's selected tab, so retain the IPC
-            // path until the tree has rendered and scrolled to the requested row.
-            setRevealedFilePathsByContext((currentPaths) =>
-                currentPaths[request.contextKey] === request.relativePath
-                    ? currentPaths
-                    : {
-                          ...currentPaths,
-                          [request.contextKey]: request.relativePath,
-                      },
-            );
+            // Keep scrolling independent from the passive active-file highlight.
+            setFileTreeRevealTarget({
+                relativePath: request.relativePath,
+                requestId,
+            });
             setPendingFileTreeReveal({ ...request, requestId });
         },
         [setRightCollapsed, setSidebarView],
@@ -3816,6 +3788,11 @@ export function WorkspaceHostApp() {
             .catch((error) => {
                 if (!cancelled) {
                     console.error("[workspace-host] file reveal failed", error);
+                    setFileTreeRevealTarget((currentTarget) =>
+                        currentTarget?.requestId === reveal.requestId
+                            ? null
+                            : currentTarget,
+                    );
                 }
             });
 
@@ -3827,6 +3804,17 @@ export function WorkspaceHostApp() {
         revealPathInTree,
         workspaceActiveContextKey,
     ]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        return getComandoApi()?.onWorkspaceSurfaceActiveFileChanged((state) => {
+            setActiveFilePathsByContext((currentPaths) =>
+                updateWorkspaceActiveFilePaths(currentPaths, state),
+            );
+        });
+    }, []);
 
     useEffect(() => {
         if (!isWorkspaceHostRenderer) {
@@ -4216,8 +4204,9 @@ export function WorkspaceHostApp() {
                             void handleMoveTreeNode(dragData, destinationNode);
                         }}
                         onScroll={handleFileTreeScroll}
-                        onScrollToActivePathConsumed={() => {
+                        onScrollToPathConsumed={() => {
                             setFileTreeRevealSignal(null);
+                            setFileTreeRevealTarget(null);
                         }}
                         onToggleDirectory={(node) => {
                             if (node.isProjectRoot) {
@@ -4244,6 +4233,7 @@ export function WorkspaceHostApp() {
                             }
                         }}
                         project={activeProject}
+                        revealPath={fileTreeRevealTarget?.relativePath ?? null}
                         revealSignal={fileTreeRevealSignal}
                         scrollRef={setFileTreeScrollElement}
                         selectedPaths={selectedFileTreePathSet}

@@ -21,6 +21,7 @@ import type {
     WorkspaceSurfaceActionEnvelope,
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceActionStatus,
+    WorkspaceSurfaceActiveFileState,
     WorkspaceSurfaceActivationResult,
     WorkspaceSurfaceEnvironmentDiagnostic,
     WorkspaceSurfaceCloseResult,
@@ -633,6 +634,29 @@ export class WorkspaceSurfaceManager {
         webContents: WebContents,
         request: WorkspaceSurfaceFileRevealRequest,
     ): WorkspaceSurfaceActionDeliveryResult {
+        return this.#forwardActiveSurfaceContextEvent(
+            webContents,
+            request,
+            IPC_EVENTS.workspaceSurfaceFileRevealRequested,
+        );
+    }
+
+    publishSurfaceActiveFile(
+        webContents: WebContents,
+        state: WorkspaceSurfaceActiveFileState,
+    ): WorkspaceSurfaceActionDeliveryResult {
+        return this.#forwardActiveSurfaceContextEvent(
+            webContents,
+            state,
+            IPC_EVENTS.workspaceSurfaceActiveFileChanged,
+        );
+    }
+
+    #forwardActiveSurfaceContextEvent(
+        webContents: WebContents,
+        payload: WorkspaceSurfaceActionContext,
+        eventName: string,
+    ): WorkspaceSurfaceActionDeliveryResult {
         const surface = this.#getSurfaceByWebContents(webContents);
         const host = surface
             ? this.#hostsByWindowId.get(surface.hostWindowId)
@@ -640,16 +664,16 @@ export class WorkspaceSurfaceManager {
         if (!surface || !host || surface.webContents.isDestroyed()) {
             return { delivered: false, reason: "missing-surface" };
         }
-        if (host.activeScopeKey !== request.contextKey) {
+        if (host.activeScopeKey !== payload.contextKey) {
             return { delivered: false, reason: "inactive-context" };
         }
         const activeWorkspace = host.registry.workspaces.find(
             (workspace) => workspace.scopeKey === host.activeScopeKey,
         );
         if (
-            surface.contextKey !== request.contextKey ||
+            surface.contextKey !== payload.contextKey ||
             !activeWorkspace ||
-            !doesWorkspaceSurfaceContextMatchContext(request, {
+            !doesWorkspaceSurfaceContextMatchContext(payload, {
                 key: activeWorkspace.scopeKey,
                 projectId: activeWorkspace.projectId,
                 worktreeId: activeWorkspace.worktreeId,
@@ -661,10 +685,7 @@ export class WorkspaceSurfaceManager {
             return { delivered: false, reason: "missing-surface" };
         }
 
-        host.hostWindow.webContents.send(
-            IPC_EVENTS.workspaceSurfaceFileRevealRequested,
-            request,
-        );
+        host.hostWindow.webContents.send(eventName, payload);
         return { delivered: true };
     }
 

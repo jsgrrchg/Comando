@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
 import type {
     WorkspaceSurfaceActionEnvelope,
@@ -26,6 +27,7 @@ import {
     resolveCommittedProjectWorktreeId,
 } from "./app/git/context-key";
 import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
+import { resolveWorkspaceSurfaceActiveFileState } from "./app/workspace/surface-active-file";
 import { isWorkspaceSurfaceLifecycleCurrent } from "./app/workspace/surface-presentation-lifecycle";
 import {
     collectWorkspaceSurfaceStateLeases,
@@ -167,6 +169,16 @@ export function WorkspaceSurfaceApp() {
         state.activeContextKey
             ? (state.contextsByKey[state.activeContextKey] ?? null)
             : null,
+    );
+    const activeFileState = useWorkspaceStore(
+        useShallow((state) => {
+            const context = state.activeContextKey
+                ? (state.contextsByKey[state.activeContextKey] ?? null)
+                : null;
+            return context
+                ? resolveWorkspaceSurfaceActiveFileState(state, context)
+                : null;
+        }),
     );
     const workspaceError = useWorkspaceStore((state) => state.error);
     const projectsError = useProjectsStore((state) => state.error);
@@ -362,6 +374,34 @@ export function WorkspaceSurfaceApp() {
             unsubscribeRegistry();
         };
     }, [runtimeBinding]);
+
+    useEffect(() => {
+        if (
+            surfaceStatus !== "ready" ||
+            surfaceLifecycle !== "visible" ||
+            !activeFileState
+        ) {
+            return;
+        }
+
+        // The host owns the inspector, so publish only the minimal state it cannot derive.
+        void window.comando
+            .publishWorkspaceSurfaceActiveFile(activeFileState)
+            .then((result) => {
+                if (!result.delivered) {
+                    console.warn(
+                        "[workspace-surface] active file delivery failed",
+                        result,
+                    );
+                }
+            })
+            .catch((error: unknown) => {
+                console.error(
+                    "[workspace-surface] active file delivery failed",
+                    error,
+                );
+            });
+    }, [activeFileState, surfaceLifecycle, surfaceStatus]);
 
     useEffect(() => {
         const api = window.comando;

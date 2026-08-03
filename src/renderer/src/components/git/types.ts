@@ -193,10 +193,11 @@ export interface GitTreeViewProps {
     readonly onEditingCancel?: () => void;
     readonly onEditingDraftNameChange?: (value: string) => void;
     readonly onEditingSubmit?: () => void;
-    readonly onScrollToActivePathConsumed?: () => void;
+    readonly onScrollToPathConsumed?: () => void;
     readonly onToggleDirectory?: (node: GitTreeNode) => void;
     readonly renderNodeMeta?: (node: GitTreeNode) => ReactNode;
-    readonly scrollToActivePathSignal?: number;
+    readonly scrollToPath?: string | null;
+    readonly scrollToPathSignal?: number;
     readonly showStatusIndicator?: boolean;
     readonly stickyFolderPaths?: ReadonlySet<string>;
     readonly suppressKeyboardCursor?: boolean;

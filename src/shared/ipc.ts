@@ -166,6 +166,8 @@ export const IPC_CHANNELS = {
         "workspace:notify-surface-restore-failed",
     reportWorkspaceSurfaceLeases: "workspace:report-surface-leases",
     resyncWorkspaceSurfaceRuntime: "workspace:resync-surface-runtime",
+    publishWorkspaceSurfaceActiveFile:
+        "workspace:publish-surface-active-file",
     revealWorkspaceSurfaceFileInHostTree:
         "workspace:reveal-surface-file-in-host-tree",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
@@ -254,6 +256,8 @@ export const IPC_EVENTS = {
     workspaceSurfaceDrag: "workspace:surface-drag",
     workspaceSurfaceActionRequested: "workspace:surface-action-requested",
     workspaceSurfaceActionStatus: "workspace:surface-action-status",
+    workspaceSurfaceActiveFileChanged:
+        "workspace:surface-active-file-changed",
     workspaceSurfaceFileRevealRequested:
         "workspace:surface-file-reveal-requested",
     workspaceSurfaceGitScopeMenuRequested:
@@ -2659,6 +2663,12 @@ export interface WorkspaceSurfaceFileRevealRequest
     readonly relativePath: string;
 }
 
+/** The active file published by a surface; null clears the host highlight. */
+export interface WorkspaceSurfaceActiveFileState
+    extends WorkspaceSurfaceActionContext {
+    readonly relativePath: string | null;
+}
+
 export interface WorkspaceSurfaceGitHubComposerItem {
     readonly number: number;
     readonly title: string;
@@ -4229,6 +4239,9 @@ export interface ComandoApi {
     resyncWorkspaceSurfaceRuntime: (
         binding: WorkspaceSurfaceRuntimeBinding,
     ) => Promise<WorkspaceSurfaceRuntimeResync>;
+    publishWorkspaceSurfaceActiveFile: (
+        state: WorkspaceSurfaceActiveFileState,
+    ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
     revealWorkspaceSurfaceFileInHostTree: (
         request: WorkspaceSurfaceFileRevealRequest,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
@@ -4414,6 +4427,9 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceSurfaceActionStatus: (
         listener: (status: WorkspaceSurfaceActionStatus) => void,
+    ) => () => void;
+    onWorkspaceSurfaceActiveFileChanged: (
+        listener: (state: WorkspaceSurfaceActiveFileState) => void,
     ) => () => void;
     onWorkspaceSurfaceFileRevealRequested: (
         listener: (request: WorkspaceSurfaceFileRevealRequest) => void,

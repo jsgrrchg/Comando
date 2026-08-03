@@ -418,10 +418,11 @@ export function GitTreeView({
     onNodeClick,
     onNodeDrop,
     onNodeDragStart,
-    onScrollToActivePathConsumed,
+    onScrollToPathConsumed,
     onToggleDirectory,
     renderNodeMeta,
-    scrollToActivePathSignal,
+    scrollToPath = null,
+    scrollToPathSignal,
     selectedPaths,
     showStatusIndicator = true,
     stickyFolderPaths,
@@ -787,42 +788,45 @@ export function GitTreeView({
     }, [flatRows.length, refreshVirtualizationTarget]);
 
     useEffect(() => {
-        if (scrollToActivePathSignal === undefined || !activePath) {
+        const targetPath = scrollToPath ?? activePath;
+        if (scrollToPathSignal === undefined || !targetPath) {
             return;
         }
 
         const frameId = window.requestAnimationFrame(() => {
-            const activeIndex = flatRows.findIndex(
-                (row) => row.node.path === activePath,
+            const targetIndex = flatRows.findIndex(
+                (row) => row.node.path === targetPath,
             );
 
-            if (activeIndex >= 0 && shouldVirtualize) {
-                virtualListRef.current?.scrollToIndex(activeIndex, {
+            if (targetIndex >= 0 && shouldVirtualize) {
+                virtualListRef.current?.scrollToIndex(targetIndex, {
                     align: "center",
                     offset: treeScrollOffsetRef.current,
                 });
             }
 
-            const activeRow =
-                containerRef.current?.querySelector<HTMLElement>(
-                    '[data-active="true"]',
-                ) ?? null;
-            activeRow?.scrollIntoView({
+            const targetRow =
+                targetIndex >= 0
+                    ? document.getElementById(`${treeId}-row-${targetIndex}`)
+                    : null;
+            targetRow?.scrollIntoView({
                 block: "nearest",
                 inline: "nearest",
             });
-            onScrollToActivePathConsumed?.();
+            onScrollToPathConsumed?.();
         });
 
         return () => {
             window.cancelAnimationFrame(frameId);
         };
     }, [
-        activePath,
         flatRows,
-        onScrollToActivePathConsumed,
-        scrollToActivePathSignal,
+        onScrollToPathConsumed,
+        scrollToPath,
+        scrollToPathSignal,
         shouldVirtualize,
+        treeId,
+        activePath,
     ]);
 
     if (nodes.length === 0) {
