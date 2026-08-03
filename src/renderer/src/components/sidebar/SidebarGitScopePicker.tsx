@@ -12,7 +12,6 @@ import {
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
-import { createPortal } from "react-dom";
 
 import type {
     GitBranchSummary,
@@ -42,6 +41,7 @@ import {
     MeasuredVirtualList,
     type MeasuredVirtualListHandle,
 } from "@renderer/components/virtual/MeasuredVirtualList";
+import { GitScopePickerContent } from "@renderer/components/git/GitScopePickerContent";
 
 import { SidebarNodeRow, type SidebarBadge } from "./SidebarNodeRow";
 import {
@@ -2313,6 +2313,13 @@ export function SidebarGitScopePicker({
         ],
     );
 
+    const handleContentRequestClose = useCallback(() => {
+        setIsOpen(false);
+        setQuery("");
+        setActionError(null);
+        setFocusIndex(-1);
+    }, []);
+
     return (
         <div
             className={[
@@ -2411,25 +2418,19 @@ export function SidebarGitScopePicker({
                 <ChevronIcon open={isOpen} />
             </button>
 
-            {isMenuMounted
-                ? createPortal(
-                      <div
-                          className="sidebar-git-scope-menu"
-                          data-animation-state={menuAnimationState}
-                          data-placement={
-                              menuPosition?.placement ?? "below"
-                          }
-                          inert={!isOpen}
-                          onAnimationEnd={handleMenuAnimationEnd}
-                          onKeyDown={handleListKeyDown}
-                          ref={menuRef}
-                          style={{
-                              height: menuPosition?.height,
-                              left: menuPosition?.x ?? 8,
-                              top: menuPosition?.y ?? 8,
-                              width: menuPosition?.width ?? 280,
-                          }}
-                      >
+            <GitScopePickerContent
+                actionError={actionError}
+                animationState={menuAnimationState}
+                isBusy={isBusy}
+                isMounted={isMenuMounted}
+                isOpen={isOpen}
+                menuPosition={menuPosition}
+                menuRef={menuRef}
+                onAnimationEnd={handleMenuAnimationEnd}
+                onKeyDown={handleListKeyDown}
+                onRequestClose={handleContentRequestClose}
+                onResizeStart={handleMenuResizeStart}
+            >
                           <div className="sidebar-git-scope-menu__header">
                               <div className="sidebar-git-scope-menu__title">
                                   <span className="truncate">
@@ -2586,28 +2587,7 @@ export function SidebarGitScopePicker({
                               )}
                           </div>
 
-                          {actionError ? (
-                              <div className="sidebar-git-scope-menu__status sidebar-git-scope-menu__status--error">
-                                  {actionError}
-                              </div>
-                          ) : null}
-
-                          {isBusy ? (
-                              <div className="sidebar-git-scope-menu__status">
-                                  Updating git scope…
-                              </div>
-                          ) : null}
-
-                          <div
-                              aria-hidden="true"
-                              className="sidebar-git-scope-menu__resize-handle"
-                              onPointerDown={handleMenuResizeStart}
-                              title="Resize"
-                          />
-                      </div>,
-                      document.body,
-                  )
-                : null}
+            </GitScopePickerContent>
 
             {itemContextMenu && !overlayBounds ? (
                 <ContextMenu
