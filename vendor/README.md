@@ -30,8 +30,8 @@ Current scope in Comando:
     - `vendor/codex-acp/src/thread.rs`
     - `vendor/codex-acp/vendor/codex-utils-pty`
 - `Claude-agent-acp-upstream/`
-  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.63.0`
-  - synced against upstream commit `15979bba7907484ee22111cdc33b79b0bdcd452d`
+  - vendored snapshot is currently based on `@agentclientprotocol/claude-agent-acp` `0.64.2`
+  - synced against upstream commit `c98141201e50778d6679f2c578cbbebe1402d7e6`
   - uses `@agentclientprotocol/sdk` `1.3.0` and `@anthropic-ai/claude-agent-sdk` `0.3.220`
   - runs with the pinned official Node.js `22.23.1` distribution, verified by SHA-256 during preparation
   - matches the upstream source snapshot without Comando-specific source changes
@@ -79,11 +79,11 @@ Comando's primary ACP boundary lives in the Rust native backend. Electron main a
 
 ## Current Claude Delta
 
-The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.63.0` with no Comando-specific source delta. The Agent/Task trailer parser hardening that previously existed as a local patch is now provided by upstream commit `06c3d7bdbd8cc9415c8cabac060a50e0951c758b`, so it is no longer maintained separately. Claude PostToolUse structured patch responses are translated inside Comando's internal review adapter, which keeps review behavior out of the vendored runtime and allows future updates to remain direct upstream syncs.
+The Claude vendor is based on upstream `@agentclientprotocol/claude-agent-acp` `0.64.2` with no Comando-specific source delta. The Agent/Task trailer parser hardening that previously existed as a local patch is now provided by upstream commit `06c3d7bdbd8cc9415c8cabac060a50e0951c758b`, so it is no longer maintained separately. Claude PostToolUse structured patch responses are translated inside Comando's internal review adapter, which keeps review behavior out of the vendored runtime and allows future updates to remain direct upstream syncs. Structured ACP permission metadata and custom-answer companion fields are normalized at Comando's native boundary so approval scopes and `AskUserQuestion` forms remain clear without modifying the vendored runtime.
 
 The runtime includes the optional `providers/*`, `_session/steering`, and `subagent-transcript` capabilities, but Comando does not consume them. Prompt queuing and “Send now” continue to use Comando's shared queue and cancel-then-dispatch flow.
 
-When updating Claude again, compare against upstream commit `15979bba7907484ee22111cdc33b79b0bdcd452d` and review any ACP event-shape or Claude Agent SDK changes before replacing the vendor snapshot.
+When updating Claude again, compare against upstream commit `c98141201e50778d6679f2c578cbbebe1402d7e6` and review any ACP event-shape or Claude Agent SDK changes before replacing the vendor snapshot.
 
 ## Updating Vendored Runtimes
 

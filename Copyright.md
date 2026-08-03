@@ -169,7 +169,7 @@ was checked with `cargo metadata --format-version=1 --locked`.
 | Vendored path | `vendor/Claude-agent-acp-upstream` |
 | Staged path | `resources/ai/embedded/claude-agent-acp` |
 | Upstream package | `@agentclientprotocol/claude-agent-acp` |
-| Upstream baseline | `0.63.0`, commit `15979bba7907484ee22111cdc33b79b0bdcd452d` |
+| Upstream baseline | `0.64.2`, commit `c98141201e50778d6679f2c578cbbebe1402d7e6` |
 | Package license | Apache-2.0 |
 | ACP SDK dependency | `@agentclientprotocol/sdk` `1.3.0`, Apache-2.0, vendored inside the Claude runtime only |
 | Claude Agent SDK dependency | `@anthropic-ai/claude-agent-sdk` `0.3.220`, Anthropic legal terms |
@@ -230,7 +230,7 @@ The currently tracked local delta includes:
 
 ### `vendor/Claude-agent-acp-upstream` - Agent Client Protocol Claude ACP
 
-The vendored Claude ACP runtime is based on upstream `@agentclientprotocol/claude-agent-acp` `0.63.0` at commit `15979bba7907484ee22111cdc33b79b0bdcd452d`. The Claude vendor source matches upstream without Comando-specific changes; the Agent/Task trailer parser hardening is now part of upstream commit `06c3d7bdbd8cc9415c8cabac060a50e0951c758b`. Claude PostToolUse structured patch responses are translated inside Comando's internal review adapter so review snippets can retain real line anchors while keeping the vendored runtime aligned with upstream source.
+The vendored Claude ACP runtime is based on upstream `@agentclientprotocol/claude-agent-acp` `0.64.2` at commit `c98141201e50778d6679f2c578cbbebe1402d7e6`. The Claude vendor source matches upstream without Comando-specific changes; the Agent/Task trailer parser hardening is now part of upstream commit `06c3d7bdbd8cc9415c8cabac060a50e0951c758b`. Claude PostToolUse structured patch responses are translated inside Comando's internal review adapter so review snippets can retain real line anchors while keeping the vendored runtime aligned with upstream source. Structured ACP permission metadata and custom-answer companion fields are normalized at Comando's native boundary so approval scopes and `AskUserQuestion` forms remain clear without modifying the vendored runtime.
 
 This vendor directory should be reviewed intentionally whenever syncing against
 upstream.

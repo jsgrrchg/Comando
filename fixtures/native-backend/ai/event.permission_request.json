@@ -14,7 +14,8 @@
       {
         "optionId": "allow_once",
         "name": "Allow once",
-        "kind": "allow_once"
+        "kind": "allow_once",
+        "description": null
       }
     ]
   }

@@ -16,6 +16,7 @@
         "header": "Mode",
         "question": "Which mode?",
         "isOther": false,
+        "customAnswerId": null,
         "isSecret": false,
         "options": [
           {

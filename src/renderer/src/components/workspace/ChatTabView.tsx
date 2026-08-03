@@ -170,6 +170,7 @@ import {
 } from "./chat/transcriptBlockVirtualization";
 import { splitLongContentRows } from "./chat/longContentVirtualization";
 import { useChatStreamingFrameProbe } from "./chat/useChatStreamingFrameProbe";
+import { buildUserInputAnswers } from "./chat/userInputAnswers";
 import {
     requestCustomRuntimeChangeConfirmation,
     requestStopAgentSession,
@@ -3364,7 +3365,7 @@ function renderPermissionRequest(
                         opt.kind === "allow_always";
                     return (
                         <button
-                            className="app-no-drag rounded-md px-3 py-1 font-medium"
+                            className="app-no-drag max-w-full rounded-md px-3 py-1 font-medium"
                             key={opt.optionId}
                             onClick={() =>
                                 void respond({
@@ -3383,11 +3384,20 @@ function renderPermissionRequest(
                                     : "var(--color-text-secondary)",
                                 cursor: "pointer",
                                 fontSize: "0.79em",
+                                textAlign: opt.description ? "left" : "center",
                                 transitionProperty: "opacity",
                             }}
                             type="button"
                         >
-                            {opt.name}
+                            <span className="block">{opt.name}</span>
+                            {opt.description ? (
+                                <span
+                                    className="mt-0.5 block whitespace-pre-wrap font-normal opacity-80"
+                                    style={{ fontSize: "0.9em" }}
+                                >
+                                    {opt.description}
+                                </span>
+                            ) : null}
                         </button>
                     );
                 })}
@@ -4335,28 +4345,11 @@ function UserInputRequestCard({
 
     const answers = useMemo(
         () =>
-            request.questions
-                .map((question) => {
-                    const selectedOptions =
-                        selectedOptionsByQuestionId[question.id] ?? [];
-                    const freeText =
-                        freeTextByQuestionId[question.id]?.trim() ?? "";
-                    const nextAnswers = freeText
-                        ? [...selectedOptions, freeText]
-                        : [...selectedOptions];
-
-                    if (nextAnswers.length === 0) {
-                        return null;
-                    }
-
-                    return {
-                        answers: nextAnswers,
-                        questionId: question.id,
-                    };
-                })
-                .filter((answer): answer is NonNullable<typeof answer> =>
-                    Boolean(answer),
-                ),
+            buildUserInputAnswers(
+                request.questions,
+                selectedOptionsByQuestionId,
+                freeTextByQuestionId,
+            ),
         [freeTextByQuestionId, request.questions, selectedOptionsByQuestionId],
     );
 
@@ -4562,9 +4555,11 @@ function UserInputRequestCard({
                                                 )
                                             }
                                             placeholder={
-                                                question.options.length > 0
-                                                    ? "Add another answer"
-                                                    : "Type your answer"
+                                                question.customAnswerId
+                                                    ? "Type your own answer"
+                                                    : question.options.length > 0
+                                                      ? "Add another answer"
+                                                      : "Type your answer"
                                             }
                                             rows={
                                                 question.options.length > 0

@@ -846,6 +846,7 @@ function nativeAiPermissionRequestToIpc(
         request: {
             description: payload.description,
             options: payload.options.map((option) => ({
+                description: option.description,
                 kind: option.kind as AiPermissionOption["kind"],
                 name: option.name,
                 optionId: option.optionId,
@@ -867,6 +868,7 @@ function nativeAiUserInputRequestToIpc(
         kind: "user-input-request",
         request: {
             questions: payload.questions.map((question): AiUserInputQuestion => ({
+                customAnswerId: question.customAnswerId,
                 header: question.header,
                 id: question.id,
                 isOther: question.isOther,
