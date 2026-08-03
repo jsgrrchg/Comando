@@ -54,7 +54,6 @@ interface WorkspaceInspectorProps {
     readonly activeView: WorkspaceInspectorView;
     readonly error: string | null;
     readonly filter: string;
-    readonly gitScopePicker?: ReactNode;
     readonly hasCommittedWorkspace: boolean;
     readonly loading: boolean;
     readonly onChangeFilter: (value: string) => void;
@@ -66,7 +65,6 @@ export function WorkspaceInspector({
     activeView,
     error,
     filter,
-    gitScopePicker,
     hasCommittedWorkspace,
     loading,
     onChangeFilter,
@@ -171,12 +169,6 @@ export function WorkspaceInspector({
                         );
                     })}
                 </div>
-
-                {activeView === "git" && hasCommittedWorkspace ? (
-                    <div className="mt-1" data-workspace-inspector-git-scope>
-                        {gitScopePicker}
-                    </div>
-                ) : null}
 
                 <div className="sidebar-search app-no-drag mt-1">
                     <span aria-hidden="true" className="sidebar-search-icon">

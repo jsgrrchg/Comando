@@ -415,6 +415,8 @@
 }
 
 .desktop-window-chrome__reserved {
+    display: flex;
+    align-items: stretch;
     min-width: 0;
     height: 100%;
     flex: 1 1 auto;
@@ -2724,14 +2726,18 @@ button {
 .sidebar-git-scope-picker--titlebar {
     display: flex;
     min-width: 0;
-    flex: 1;
+    width: fit-content;
+    max-width: min(360px, 44vw);
+    flex: 0 1 auto;
     align-self: stretch;
 }
 
 .sidebar-git-scope-trigger--titlebar {
     min-width: 0;
+    width: fit-content;
+    max-width: 100%;
     height: 100%;
-    flex: 1;
+    flex: 0 1 auto;
     gap: 2px;
     border: 0;
     border-radius: inherit;
@@ -2755,7 +2761,10 @@ button {
 .sidebar-git-scope-trigger__titlebar-copy {
     display: block;
     min-width: 0;
-    flex: 1;
+    max-width: min(300px, 38vw);
+    flex: 0 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
 }
 

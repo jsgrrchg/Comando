@@ -12,7 +12,6 @@ import {
     type MouseEvent as ReactMouseEvent,
     type PointerEvent as ReactPointerEvent,
 } from "react";
-import { createPortal } from "react-dom";
 
 import type {
     GitBranchSummary,
@@ -42,6 +41,7 @@ import {
     MeasuredVirtualList,
     type MeasuredVirtualListHandle,
 } from "@renderer/components/virtual/MeasuredVirtualList";
+import { GitScopePickerContent } from "@renderer/components/git/GitScopePickerContent";
 
 import { SidebarNodeRow, type SidebarBadge } from "./SidebarNodeRow";
 import {
@@ -357,6 +357,15 @@ export function SidebarGitScopePicker({
     const pendingMenuSizeRef = useRef<GitScopeMenuSize | null>(null);
     const menuResizeEndRef = useRef<(() => void) | null>(null);
     const lastExternalMenuRequestIdRef = useRef(0);
+    const restoreTriggerFocusRef = useRef(false);
+
+    const requestMenuClose = useCallback(() => {
+        restoreTriggerFocusRef.current = true;
+        setIsOpen(false);
+        setQuery("");
+        setActionError(null);
+        setFocusIndex(-1);
+    }, []);
 
     const project = useProjectsStore((state) =>
         projectId
@@ -928,10 +937,15 @@ export function SidebarGitScopePicker({
         }
 
         lastExternalMenuRequestIdRef.current = externalMenuRequest.id;
-        setIsOpen(true);
+        if (isOpen) {
+            requestMenuClose();
+            return;
+        }
+
         setActionError(null);
         setQuery("");
-    }, [externalMenuRequest]);
+        setIsOpen(true);
+    }, [externalMenuRequest, isOpen, requestMenuClose]);
 
     const finishMenuAnimation = useCallback(() => {
         if (menuAnimationState === "opening" && isOpen) {
@@ -1121,17 +1135,12 @@ export function SidebarGitScopePicker({
             ) {
                 return;
             }
-            setIsOpen(false);
-            setQuery("");
-            setActionError(null);
+            requestMenuClose();
         };
 
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === "Escape") {
-                setIsOpen(false);
-                setQuery("");
-                setActionError(null);
-                setFocusIndex(-1);
+                requestMenuClose();
             }
         };
 
@@ -1141,6 +1150,15 @@ export function SidebarGitScopePicker({
             document.removeEventListener("mousedown", handlePointerDown);
             window.removeEventListener("keydown", handleKeyDown);
         };
+    }, [isOpen, requestMenuClose]);
+
+    useEffect(() => {
+        if (isOpen || !restoreTriggerFocusRef.current) {
+            return;
+        }
+
+        restoreTriggerFocusRef.current = false;
+        buttonRef.current?.focus();
     }, [isOpen]);
 
     useEffect(() => {
@@ -1213,9 +1231,7 @@ export function SidebarGitScopePicker({
                     normalizedWorktreeId,
                 )
             ) {
-                setIsOpen(false);
-                setQuery("");
-                setActionError(null);
+                requestMenuClose();
                 return;
             }
 
@@ -1226,8 +1242,7 @@ export function SidebarGitScopePicker({
                 await (onOpenWorkspace
                     ? onOpenWorkspace(projectId, normalizedWorktreeId)
                     : requestWorkspaceNavigation(projectId, normalizedWorktreeId));
-                setIsOpen(false);
-                setQuery("");
+                requestMenuClose();
             } catch (error) {
                 setActionError(
                     error instanceof Error
@@ -1243,6 +1258,7 @@ export function SidebarGitScopePicker({
             onOpenWorkspace,
             projectId,
             snapshot?.worktrees,
+            requestMenuClose,
             requestWorkspaceNavigation,
             worktreeId,
         ],
@@ -1295,9 +1311,7 @@ export function SidebarGitScopePicker({
             }
 
             if (targetBranch.name === snapshot?.branch?.name) {
-                setIsOpen(false);
-                setQuery("");
-                setActionError(null);
+                requestMenuClose();
                 return;
             }
 
@@ -1324,8 +1338,7 @@ export function SidebarGitScopePicker({
                     snapshot?.currentWorktreeId ??
                     null;
                 await refreshProjectTree(projectId, nextWorktreeId);
-                setIsOpen(false);
-                setQuery("");
+                requestMenuClose();
             } catch (error) {
                 setActionError(
                     error instanceof Error
@@ -1343,6 +1356,7 @@ export function SidebarGitScopePicker({
             isBusy,
             projectId,
             refreshProjectTree,
+            requestMenuClose,
             snapshot,
             worktreeId,
         ],
@@ -1386,8 +1400,7 @@ export function SidebarGitScopePicker({
                           emptyLayout: true,
                       }));
 
-                setIsOpen(false);
-                setQuery("");
+                requestMenuClose();
             } catch (error) {
                 setActionError(
                     error instanceof Error
@@ -1403,6 +1416,7 @@ export function SidebarGitScopePicker({
             createWorktree,
             isBusy,
             onOpenWorkspace,
+            requestMenuClose,
             requestWorkspaceNavigation,
             project,
             projectId,
@@ -1497,8 +1511,7 @@ export function SidebarGitScopePicker({
                     projectId,
                     result.currentWorktreeId ?? activeWorktreeId,
                 );
-                setIsOpen(false);
-                setQuery("");
+                requestMenuClose();
                 setBranchCreationDraft(null);
                 setBranchCreationName("");
                 setBranchCreationBaseName("");
@@ -1525,6 +1538,7 @@ export function SidebarGitScopePicker({
             isBusy,
             projectId,
             refreshProjectTree,
+            requestMenuClose,
             snapshot?.currentWorktreeId,
             worktreeId,
         ],
@@ -1703,8 +1717,7 @@ export function SidebarGitScopePicker({
                         nextSnapshot.currentWorktreeId ?? null,
                     ),
                 ]);
-                setIsOpen(false);
-                setQuery("");
+                requestMenuClose();
             } catch (error) {
                 setActionError(
                     error instanceof Error
@@ -1721,6 +1734,7 @@ export function SidebarGitScopePicker({
             refreshGitHistory,
             refreshGitProject,
             refreshProjectTree,
+            requestMenuClose,
             removeWorktreeTabs,
             removeWorktree,
             snapshot?.currentWorktreeId,
@@ -1742,8 +1756,7 @@ export function SidebarGitScopePicker({
                 projectId,
                 nextSnapshot.currentWorktreeId ?? worktreeId ?? null,
             );
-            setIsOpen(false);
-            setQuery("");
+            requestMenuClose();
         } catch (error) {
             setActionError(
                 error instanceof Error
@@ -1759,6 +1772,7 @@ export function SidebarGitScopePicker({
         isBusy,
         projectId,
         refreshProjectTree,
+        requestMenuClose,
         worktreeId,
     ]);
 
@@ -2326,8 +2340,10 @@ export function SidebarGitScopePicker({
             ref={containerRef}
         >
             <button
-                aria-selected={
-                    triggerVariant === "titlebar" ? true : undefined
+                aria-expanded={isOpen}
+                aria-haspopup={triggerVariant === "titlebar" ? "dialog" : undefined}
+                aria-current={
+                    triggerVariant === "titlebar" ? "page" : undefined
                 }
                 className={[
                     "sidebar-git-scope-trigger",
@@ -2363,8 +2379,6 @@ export function SidebarGitScopePicker({
                 }}
                 onKeyDown={onTitlebarKeyDown}
                 ref={buttonRef}
-                role={triggerVariant === "titlebar" ? "tab" : undefined}
-                tabIndex={triggerVariant === "titlebar" ? 0 : undefined}
                 style={
                     triggerHidden
                         ? {
@@ -2411,25 +2425,19 @@ export function SidebarGitScopePicker({
                 <ChevronIcon open={isOpen} />
             </button>
 
-            {isMenuMounted
-                ? createPortal(
-                      <div
-                          className="sidebar-git-scope-menu"
-                          data-animation-state={menuAnimationState}
-                          data-placement={
-                              menuPosition?.placement ?? "below"
-                          }
-                          inert={!isOpen}
-                          onAnimationEnd={handleMenuAnimationEnd}
-                          onKeyDown={handleListKeyDown}
-                          ref={menuRef}
-                          style={{
-                              height: menuPosition?.height,
-                              left: menuPosition?.x ?? 8,
-                              top: menuPosition?.y ?? 8,
-                              width: menuPosition?.width ?? 280,
-                          }}
-                      >
+            <GitScopePickerContent
+                actionError={actionError}
+                animationState={menuAnimationState}
+                isBusy={isBusy}
+                isMounted={isMenuMounted}
+                isOpen={isOpen}
+                menuPosition={menuPosition}
+                menuRef={menuRef}
+                onAnimationEnd={handleMenuAnimationEnd}
+                onKeyDown={handleListKeyDown}
+                onRequestClose={requestMenuClose}
+                onResizeStart={handleMenuResizeStart}
+            >
                           <div className="sidebar-git-scope-menu__header">
                               <div className="sidebar-git-scope-menu__title">
                                   <span className="truncate">
@@ -2586,28 +2594,7 @@ export function SidebarGitScopePicker({
                               )}
                           </div>
 
-                          {actionError ? (
-                              <div className="sidebar-git-scope-menu__status sidebar-git-scope-menu__status--error">
-                                  {actionError}
-                              </div>
-                          ) : null}
-
-                          {isBusy ? (
-                              <div className="sidebar-git-scope-menu__status">
-                                  Updating git scope…
-                              </div>
-                          ) : null}
-
-                          <div
-                              aria-hidden="true"
-                              className="sidebar-git-scope-menu__resize-handle"
-                              onPointerDown={handleMenuResizeStart}
-                              title="Resize"
-                          />
-                      </div>,
-                      document.body,
-                  )
-                : null}
+            </GitScopePickerContent>
 
             {itemContextMenu && !overlayBounds ? (
                 <ContextMenu

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DesktopWindowChrome } from "./DesktopWindowChrome";
 
 describe("DesktopWindowChrome", () => {
-    it("keeps the center empty and exposes only the two shell controls", () => {
+    it("keeps a draggable center region for optional context controls", () => {
         const markup = renderToStaticMarkup(
             <DesktopWindowChrome
                 inspectorControlsId="workspace-inspector"
@@ -27,5 +27,25 @@ describe("DesktopWindowChrome", () => {
         expect(markup).toContain('aria-expanded="false"');
         expect(markup).not.toContain('role="tablist"');
         expect(markup).not.toContain("breadcrumb");
+    });
+
+    it("renders a context control inside the reserved chrome region", () => {
+        const markup = renderToStaticMarkup(
+            <DesktopWindowChrome
+                gitContextControl={<button type="button">Git context</button>}
+                inspectorControlsId="workspace-inspector"
+                inspectorExpanded={false}
+                navigatorControlsId="workspace-navigator"
+                navigatorExpanded
+                onToggleInspector={vi.fn()}
+                onToggleNavigator={vi.fn()}
+                platform="darwin"
+            />,
+        );
+
+        expect(markup).toContain("Git context");
+        expect(markup).toContain(
+            'class="desktop-window-chrome__reserved" data-window-chrome-reserved="true"',
+        );
     });
 });
