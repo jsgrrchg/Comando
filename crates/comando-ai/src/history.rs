@@ -431,6 +431,12 @@ struct TranscriptOwnershipManifest {
     version: u32,
     ownership: TranscriptOwnership,
     updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_source_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_source_record_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_source_next_offset: Option<usize>,
 }
 
 impl AiHistoryStore {
@@ -1186,12 +1192,17 @@ impl AiHistoryStore {
             return Ok(());
         }
 
+        if !self.begin_legacy_transcript_migration(session_id, index, offset)? {
+            return Ok(());
+        }
         transcript_store.begin_legacy_transcript_backfill(session_id)?;
         let offset = transcript_store
             .legacy_transcript_backfill_next_offset(session_id)?
             .min(index.len());
         if offset == index.len() {
-            return transcript_store.advance_legacy_transcript_backfill(session_id, offset, true);
+            transcript_store.advance_legacy_transcript_backfill(session_id, offset, true)?;
+            self.advance_legacy_transcript_migration(session_id, index, offset)?;
+            return Ok(());
         }
         let end = (offset + LEGACY_TRANSCRIPT_BACKFILL_PAGE_SIZE).min(index.len());
         let messages = self.read_payloads_by_index(session_id, index, offset, end)?;
@@ -1211,14 +1222,23 @@ impl AiHistoryStore {
             .unzip();
         if !entries.is_empty() {
             // Native entries already cover their matching JSONL records.
-            transcript_store.seal_turn(
+            let result = transcript_store.seal_turn(
                 session_id,
                 &format!("legacy-transcript:{offset}"),
                 entries,
                 payloads,
-            )?;
+            );
+            if let Err(AiError::InvalidInput(message)) = &result
+                && message.contains("already sealed by another turn")
+            {
+                self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+                return Ok(());
+            }
+            result?;
         }
-        transcript_store.advance_legacy_transcript_backfill(session_id, end, end == index.len())
+        transcript_store.advance_legacy_transcript_backfill(session_id, end, end == index.len())?;
+        self.advance_legacy_transcript_migration(session_id, index, end)?;
+        Ok(())
     }
 
     fn has_current_block_native_transcript(
@@ -2002,18 +2022,29 @@ impl AiHistoryStore {
         &self,
         session_id: &SessionId,
     ) -> AiResult<Option<TranscriptOwnership>> {
+        match self.load_transcript_ownership_manifest(session_id) {
+            Ok(manifest) => Ok(manifest.map(|manifest| manifest.ownership)),
+            // A malformed or unknown manifest must not make a partial native
+            // transcript authoritative over the compatibility fallback.
+            Err(_) => Ok(Some(TranscriptOwnership::RepairRequired)),
+        }
+    }
+
+    fn load_transcript_ownership_manifest(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<Option<TranscriptOwnershipManifest>> {
         let path = self.transcript_ownership_path(session_id);
         if !path.exists() {
             return Ok(None);
         }
-        match read_json_file::<TranscriptOwnershipManifest>(&path) {
-            Ok(manifest) if manifest.version == HISTORY_FORMAT_VERSION => {
-                Ok(Some(manifest.ownership))
-            }
-            // A malformed or unknown manifest must not make a partial native
-            // transcript authoritative over the compatibility fallback.
-            Ok(_) | Err(_) => Ok(Some(TranscriptOwnership::RepairRequired)),
+        let manifest: TranscriptOwnershipManifest = read_json_file(&path)?;
+        if manifest.version != HISTORY_FORMAT_VERSION {
+            return Err(history_error(
+                "AI transcript ownership has an unsupported version.",
+            ));
         }
+        Ok(Some(manifest))
     }
 
     fn save_transcript_ownership(
@@ -2021,15 +2052,94 @@ impl AiHistoryStore {
         session_id: &SessionId,
         ownership: TranscriptOwnership,
     ) -> AiResult<()> {
-        self.ensure_session_dir(session_id)?;
-        self.atomic_write_json(
-            &self.transcript_ownership_path(session_id),
-            &TranscriptOwnershipManifest {
+        self.save_transcript_ownership_manifest(
+            session_id,
+            TranscriptOwnershipManifest {
                 version: HISTORY_FORMAT_VERSION,
                 ownership,
                 updated_at: now_iso8601(),
+                legacy_source_fingerprint: None,
+                legacy_source_record_count: None,
+                legacy_source_next_offset: None,
             },
         )
+    }
+
+    fn save_transcript_ownership_manifest(
+        &self,
+        session_id: &SessionId,
+        manifest: TranscriptOwnershipManifest,
+    ) -> AiResult<()> {
+        self.ensure_session_dir(session_id)?;
+        self.atomic_write_json(&self.transcript_ownership_path(session_id), &manifest)
+    }
+
+    fn begin_legacy_transcript_migration(
+        &self,
+        session_id: &SessionId,
+        index: &AiTranscriptIndex,
+        next_offset: usize,
+    ) -> AiResult<bool> {
+        let source_fingerprint = legacy_transcript_source_fingerprint(index);
+        let existing = match self.load_transcript_ownership_manifest(session_id) {
+            Ok(manifest) => manifest,
+            Err(_) => {
+                self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+                return Ok(false);
+            }
+        };
+        if existing.as_ref().is_some_and(|manifest| {
+            manifest
+                .legacy_source_fingerprint
+                .as_deref()
+                .is_some_and(|fingerprint| fingerprint != source_fingerprint)
+        }) {
+            // Never reuse a durable cursor against a different compatibility
+            // sequence; phase 6 can repair it without rewriting sealed blocks.
+            self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+            return Ok(false);
+        }
+        self.save_transcript_ownership_manifest(
+            session_id,
+            TranscriptOwnershipManifest {
+                version: HISTORY_FORMAT_VERSION,
+                ownership: TranscriptOwnership::Migrating,
+                updated_at: now_iso8601(),
+                legacy_source_fingerprint: Some(source_fingerprint),
+                legacy_source_record_count: Some(index.len()),
+                legacy_source_next_offset: Some(next_offset.min(index.len())),
+            },
+        )?;
+        Ok(true)
+    }
+
+    fn advance_legacy_transcript_migration(
+        &self,
+        session_id: &SessionId,
+        index: &AiTranscriptIndex,
+        next_offset: usize,
+    ) -> AiResult<bool> {
+        let source_fingerprint = legacy_transcript_source_fingerprint(index);
+        let Some(manifest) = self.load_transcript_ownership_manifest(session_id)? else {
+            self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+            return Ok(false);
+        };
+        if manifest.ownership != TranscriptOwnership::Migrating
+            || manifest.legacy_source_fingerprint.as_deref() != Some(source_fingerprint.as_str())
+            || manifest.legacy_source_record_count != Some(index.len())
+        {
+            self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+            return Ok(false);
+        }
+        self.save_transcript_ownership_manifest(
+            session_id,
+            TranscriptOwnershipManifest {
+                legacy_source_next_offset: Some(next_offset.min(index.len())),
+                updated_at: now_iso8601(),
+                ..manifest
+            },
+        )?;
+        Ok(true)
     }
 
     fn refresh_transcript_ownership(
@@ -2074,11 +2184,13 @@ impl AiHistoryStore {
             self.save_transcript_ownership(session_id, TranscriptOwnership::NativeVerified)?;
             return Ok(TranscriptOwnership::NativeVerified);
         }
-        let ownership = if self
-            .audit_transcript_coverage(session_id)?
-            .native_covers_legacy
-        {
+        let audit = self.audit_transcript_coverage(session_id)?;
+        let ownership = if audit.native_covers_legacy {
             TranscriptOwnership::NativeVerified
+        } else if backfill_progress.complete {
+            // A completed cursor without complete coverage is unsafe to retry
+            // automatically because it may require a new, unsealed block.
+            TranscriptOwnership::RepairRequired
         } else {
             TranscriptOwnership::Migrating
         };
@@ -3370,6 +3482,16 @@ fn transcript_sequence_fingerprint<'a>(
         let _ = write!(&mut fingerprint, "{byte:02x}");
     }
     fingerprint
+}
+
+fn legacy_transcript_source_fingerprint(index: &AiTranscriptIndex) -> String {
+    transcript_sequence_fingerprint(
+        index
+            .message_ids
+            .iter()
+            .zip(&index.message_hashes)
+            .map(|(message_id, hash)| (message_id, Some(hash))),
+    )
 }
 
 fn merge_tool_activity_detail(previous: &Value, mut next: Value) -> Value {
@@ -5914,6 +6036,45 @@ mod tests {
                 .map(|block| block.entry_count)
                 .sum::<usize>(),
             300
+        );
+    }
+
+    #[test]
+    fn legacy_migration_persists_its_source_fingerprint_before_resuming() {
+        let (temp, store) = store();
+        let session_id = SessionId("fingerprinted_legacy_transcript_backfill".to_string());
+        let messages = (0..300)
+            .map(|index| message(&format!("legacy-{index}"), "legacy content"))
+            .collect::<Vec<_>>();
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store.save_transcript_window(&session_id, messages).unwrap();
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::Migrating
+        );
+        let manifest = store
+            .load_transcript_ownership_manifest(&session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(manifest.ownership, TranscriptOwnership::Migrating);
+        assert!(manifest.legacy_source_fingerprint.is_some());
+        assert_eq!(manifest.legacy_source_record_count, Some(300));
+        assert_eq!(manifest.legacy_source_next_offset, Some(256));
+
+        drop(store);
+        let reopened = AiHistoryStore::new(temp.path()).unwrap();
+        assert_eq!(
+            reopened.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        assert!(
+            reopened
+                .load_transcript_ownership_manifest(&session_id)
+                .unwrap()
+                .unwrap()
+                .legacy_source_fingerprint
+                .is_none()
         );
     }
 
