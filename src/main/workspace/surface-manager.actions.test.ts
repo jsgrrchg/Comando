@@ -8,6 +8,7 @@ import type {
     WorkspaceSurfaceEnvironmentDiagnostic,
     WorkspaceSurfaceRegistrySnapshot,
     WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceActiveFileState,
     WorkspaceSurfaceDragEvent,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
@@ -1283,6 +1284,41 @@ describe("WorkspaceSurfaceManager action routing", () => {
         ).toEqual({ delivered: true });
     });
 
+    it("publishes and clears the active file through the current host context", () => {
+        const manager = createTestManager();
+        const host = createHostWindow();
+        manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
+        const [surfaceA] = electronMocks.views;
+        const activeFile = createActiveFileState(
+            "project-a::__primary__",
+            "project-a",
+            "src/index.ts",
+        );
+
+        expect(
+            manager.publishSurfaceActiveFile(
+                asWebContents(surfaceA.webContents),
+                activeFile,
+            ),
+        ).toEqual({ delivered: true });
+        expect(host.send).toHaveBeenCalledWith(
+            IPC_EVENTS.workspaceSurfaceActiveFileChanged,
+            activeFile,
+        );
+
+        const clearedFile = { ...activeFile, relativePath: null };
+        expect(
+            manager.publishSurfaceActiveFile(
+                asWebContents(surfaceA.webContents),
+                clearedFile,
+            ),
+        ).toEqual({ delivered: true });
+        expect(host.send).toHaveBeenLastCalledWith(
+            IPC_EVENTS.workspaceSurfaceActiveFileChanged,
+            clearedFile,
+        );
+    });
+
 
 });
 
@@ -1484,6 +1520,19 @@ function createFileRevealRequest(
         contextKey,
         projectId,
         relativePath: "README.md",
+        worktreeId: null,
+    };
+}
+
+function createActiveFileState(
+    contextKey: string,
+    projectId: string,
+    relativePath: string | null,
+): WorkspaceSurfaceActiveFileState {
+    return {
+        contextKey,
+        projectId,
+        relativePath,
         worktreeId: null,
     };
 }

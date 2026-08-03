@@ -200,6 +200,7 @@ import {
     type WriteTerminalInput,
     type WorkspaceSurfaceActionCompletion,
     type WorkspaceSurfaceActionEnvelope,
+    type WorkspaceSurfaceActiveFileState,
     type WorkspaceSurfaceFileRevealRequest,
     type WorkspaceSurfaceActionStatus,
     type WorkspaceSurfaceContentInsets,
@@ -1082,6 +1083,22 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfaceActiveFileChanged: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            state: WorkspaceSurfaceActiveFileState,
+        ) => listener(state);
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceActiveFileChanged,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceActiveFileChanged,
+                handleEvent,
+            );
+        };
+    },
     onWorkspaceSurfaceFileRevealRequested: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -1316,6 +1333,11 @@ const comandoApi: ComandoApi = {
                 IPC_CHANNELS.resyncWorkspaceSurfaceRuntime,
                 binding,
             ),
+        ),
+    publishWorkspaceSurfaceActiveFile: (state) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.publishWorkspaceSurfaceActiveFile,
+            state,
         ),
     revealWorkspaceSurfaceFileInHostTree: (request) =>
         ipcRenderer.invoke(

@@ -5,6 +5,7 @@ import type {
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceActionContext,
     WorkspaceSurfaceActionCompletion,
+    WorkspaceSurfaceActiveFileState,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 
@@ -101,6 +102,17 @@ export function isWorkspaceSurfaceFileRevealRequest(
         isRecord(input) &&
         hasValidContext(input) &&
         isNonEmptyString(input.relativePath, MAX_PATH_OR_URL_LENGTH)
+    );
+}
+
+export function isWorkspaceSurfaceActiveFileState(
+    input: unknown,
+): input is WorkspaceSurfaceActiveFileState {
+    return (
+        isRecord(input) &&
+        hasValidContext(input) &&
+        (input.relativePath === null ||
+            isNonEmptyString(input.relativePath, MAX_PATH_OR_URL_LENGTH))
     );
 }
 

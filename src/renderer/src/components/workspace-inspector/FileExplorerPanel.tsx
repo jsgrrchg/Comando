@@ -43,11 +43,12 @@ interface FileExplorerPanelProps {
     >;
     readonly onNodeDrop: NonNullable<GitTreeViewProps["onNodeDrop"]>;
     readonly onScroll: UIEventHandler<HTMLDivElement>;
-    readonly onScrollToActivePathConsumed: () => void;
+    readonly onScrollToPathConsumed: () => void;
     readonly onToggleDirectory: NonNullable<
         GitTreeViewProps["onToggleDirectory"]
     >;
     readonly project: ProjectSummary | null;
+    readonly revealPath: string | null;
     readonly revealSignal: number | null;
     readonly scrollRef: RefCallback<HTMLDivElement>;
     readonly selectedPaths: ReadonlySet<string>;
@@ -76,9 +77,10 @@ export function FileExplorerPanel({
     onNodeDragStart,
     onNodeDrop,
     onScroll,
-    onScrollToActivePathConsumed,
+    onScrollToPathConsumed,
     onToggleDirectory,
     project,
+    revealPath,
     revealSignal,
     scrollRef,
     selectedPaths,
@@ -143,13 +145,12 @@ export function FileExplorerPanel({
                         onNodeContextMenu={onNodeContextMenu}
                         onNodeDragStart={onNodeDragStart}
                         onNodeDrop={onNodeDrop}
-                        onScrollToActivePathConsumed={
-                            onScrollToActivePathConsumed
-                        }
+                        onScrollToPathConsumed={onScrollToPathConsumed}
                         onToggleDirectory={
                             isFiltering ? undefined : onToggleDirectory
                         }
-                        scrollToActivePathSignal={revealSignal ?? undefined}
+                        scrollToPath={revealPath}
+                        scrollToPathSignal={revealSignal ?? undefined}
                         selectedPaths={selectedPaths}
                         showStatusIndicator={false}
                         stickyFolderPaths={stickyFolderPaths}

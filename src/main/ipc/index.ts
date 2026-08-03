@@ -261,6 +261,7 @@ import { windowRegistry } from "@main/windows/registry";
 import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
 import { workspaceRuntimeOwnership } from "@main/workspace/runtime-ownership-coordinator";
 import {
+    isWorkspaceSurfaceActiveFileState,
     isWorkspaceSurfaceActionRequest,
     isWorkspaceSurfaceActionCompletion,
     isWorkspaceSurfaceFileRevealRequest,
@@ -453,6 +454,7 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceRestoreFailed);
     ipcMain.removeHandler(IPC_CHANNELS.reportWorkspaceSurfaceLeases);
     ipcMain.removeHandler(IPC_CHANNELS.resyncWorkspaceSurfaceRuntime);
+    ipcMain.removeHandler(IPC_CHANNELS.publishWorkspaceSurfaceActiveFile);
     ipcMain.removeHandler(IPC_CHANNELS.revealWorkspaceSurfaceFileInHostTree);
     ipcMain.removeHandler(IPC_CHANNELS.notifyWorkspaceSurfaceFocused);
     ipcMain.removeHandler(IPC_CHANNELS.requestWorkspaceScopeActivation);
@@ -2288,6 +2290,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
             workspaceSurfaceManager.completeSurfaceAction(
                 event.sender,
                 completion,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.publishWorkspaceSurfaceActiveFile,
+        (event, input) => {
+            if (!isWorkspaceSurfaceActiveFileState(input)) {
+                throw new Error("A valid workspace surface active file is required.");
+            }
+            return workspaceSurfaceManager.publishSurfaceActiveFile(
+                event.sender,
+                input,
             );
         },
     );
