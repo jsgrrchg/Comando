@@ -247,6 +247,7 @@ impl NativeBackend {
             | "ai_load_transcript_payload"
             | "ai_load_transcript_payloads"
             | "ai_get_transcript_storage_state"
+            | "ai_repair_transcript_storage"
             | "ai_load_session_snapshot"
             | "ai_list_session_runtime_mappings"
             | "ai_set_session_pinned"
@@ -421,6 +422,7 @@ impl NativeBackend {
             | "ai_load_transcript_payload"
             | "ai_load_transcript_payloads"
             | "ai_get_transcript_storage_state"
+            | "ai_repair_transcript_storage"
             | "ai_load_session_snapshot"
             | "ai_list_session_runtime_mappings"
             | "ai_set_session_pinned"
@@ -3022,6 +3024,25 @@ impl NativeBackend {
                         request.id,
                         serde_json::to_value(state)
                             .expect("AI transcript storage state serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
+            "ai_repair_transcript_storage" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiLoadSessionSnapshotInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.ai_history_store().and_then(|store| {
+                    store
+                        .repair_transcript_storage(&input.session_id)
+                        .map_err(|error| error.to_native_error())
+                }) {
+                    Ok(state) => response_only(
+                        request.id,
+                        serde_json::to_value(state)
+                            .expect("AI repaired transcript storage state serializes"),
                     ),
                     Err(error) => error_only(request.id, error),
                 }

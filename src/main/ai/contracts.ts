@@ -190,6 +190,7 @@ export interface NativeAiGateway {
     getHistoryStorageHealth?(): Promise<AiHistoryStorageHealth>;
     getTranscriptCapability?(): AiTranscriptCapability;
     getTranscriptStorageState?(sessionId: string): Promise<AiTranscriptStorageState>;
+    repairTranscriptStorage?(sessionId: string): Promise<AiTranscriptStorageState>;
     loadTranscriptBlockMetadata?(sessionId: string): Promise<AiTranscriptBlockMetadataOutput>;
     loadTranscriptPayload?(input: AiLoadTranscriptPayloadInput): Promise<AiTranscriptPayload>;
     loadTranscriptPayloads?(input: AiLoadTranscriptPayloadsInput): Promise<AiTranscriptPayloadsOutput>;

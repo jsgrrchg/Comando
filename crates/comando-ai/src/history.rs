@@ -1324,6 +1324,74 @@ impl AiHistoryStore {
         })
     }
 
+    pub fn repair_transcript_storage(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<NativeAiTranscriptStorageState> {
+        self.recover_if_needed(session_id)?;
+        if !self.has_session(session_id) {
+            return Err(AiError::SessionNotFound {
+                session_id: session_id.0.clone(),
+            });
+        }
+        if self.load_transcript_ownership(session_id)? != Some(TranscriptOwnership::RepairRequired)
+        {
+            return self.transcript_storage_state(session_id);
+        }
+
+        let index = self.load_or_repair_index(session_id)?;
+        let messages = self.read_payloads_by_index(session_id, &index, 0, index.len())?;
+        let expected = messages
+            .into_iter()
+            .map(|message| legacy_transcript_entry(session_id, message))
+            .collect::<AiResult<Vec<_>>>()?;
+        let transcript_store = self.transcript_store(session_id);
+        let sealed_ids = transcript_store.sealed_message_entry_ids(session_id)?;
+        let expected_ids = expected
+            .iter()
+            .map(|(entry, _)| entry.id.as_str())
+            .collect::<Vec<_>>();
+
+        if sealed_ids.len() > expected_ids.len()
+            || sealed_ids
+                .iter()
+                .map(String::as_str)
+                .zip(expected_ids.iter().copied())
+                .any(|(actual, expected)| actual != expected)
+        {
+            // A non-prefix would require changing historical sealed blocks, so
+            // retain compatibility as the reader until an operator can resolve it.
+            return self.transcript_storage_state(session_id);
+        }
+
+        transcript_store.discard_open_tail_for_repair(session_id)?;
+        if transcript_store.has_open_blocks(session_id)? {
+            return self.transcript_storage_state(session_id);
+        }
+
+        let (entries, payloads): (Vec<_>, Vec<_>) =
+            expected.into_iter().skip(sealed_ids.len()).unzip();
+        if !entries.is_empty() {
+            transcript_store.seal_turn(
+                session_id,
+                &format!("legacy-transcript:repair:{}", sealed_ids.len()),
+                entries,
+                payloads,
+            )?;
+        }
+
+        let audit = self.audit_transcript_coverage(session_id)?;
+        self.save_transcript_ownership(
+            session_id,
+            if audit.native_covers_legacy {
+                TranscriptOwnership::NativeVerified
+            } else {
+                TranscriptOwnership::RepairRequired
+            },
+        )?;
+        self.transcript_storage_state(session_id)
+    }
+
     fn backfill_legacy_transcript_page(
         &self,
         session_id: &SessionId,
@@ -2354,6 +2422,13 @@ impl AiHistoryStore {
         transcript_store: &TranscriptStore,
     ) -> AiResult<TranscriptOwnership> {
         if let Some(ownership) = self.load_transcript_ownership(session_id)? {
+            if ownership == TranscriptOwnership::NativeVerified
+                && transcript_store.load_open_tail(session_id)?.is_some()
+            {
+                // A recovery tail can leave native coverage incomplete; readers
+                // must keep the complete compatibility transcript visible.
+                return Ok(TranscriptOwnership::Migrating);
+            }
             return Ok(ownership);
         }
         if !transcript_store.has_data_source() {
@@ -6733,7 +6808,7 @@ mod tests {
     }
 
     #[test]
-    fn restart_reconciles_terminal_tail_so_history_and_block_native_chat_are_complete() {
+    fn repair_rebuilds_a_terminal_tail_conflict_without_reassigning_sealed_blocks() {
         let (temp, store) = store();
         let session_id = SessionId("restart_terminal_tail_reconciliation".to_string());
         let mut session_metadata = metadata(&session_id.0);
@@ -6752,14 +6827,21 @@ mod tests {
             )
             .unwrap();
 
-        let first = transcript_entry(&session_id, "message:assistant-a", "First durable answer.");
-        let second = transcript_entry(
+        let (first, first_payload) =
+            legacy_transcript_entry(&session_id, message("assistant-a", "First durable answer."))
+                .unwrap();
+        let (second, second_payload) = legacy_transcript_entry(
             &session_id,
-            "message:assistant-b",
-            "Completed answer awaiting recovery.",
-        );
+            message("assistant-b", "Completed answer awaiting recovery."),
+        )
+        .unwrap();
         store
-            .seal_transcript_turn(&session_id, "turn-a", vec![first.clone()], vec![])
+            .seal_transcript_turn(
+                &session_id,
+                "turn-a",
+                vec![first.clone()],
+                vec![first_payload.clone()],
+            )
             .unwrap();
         store
             .checkpoint_open_transcript_tail(NativeAiCheckpointOpenTranscriptTailInput {
@@ -6767,7 +6849,7 @@ mod tests {
                 turn_id: "turn-b".to_string(),
                 terminal_status: Some(NativeAiTranscriptTerminalStatus::Completed),
                 entries: vec![first.clone(), second.clone()],
-                payloads: vec![],
+                payloads: vec![first_payload, second_payload],
                 removed_entry_ids: vec![],
                 entry_order: vec![
                     NativeAiOpenTranscriptEntryRef {
@@ -6817,15 +6899,45 @@ mod tests {
             Some(NativeAiTranscriptTerminalStatus::Completed)
         );
 
-        let metadata = reopened
-            .reconcile_terminal_open_transcript_tail(&session_id, "turn-b")
-            .unwrap();
+        assert!(
+            reopened
+                .reconcile_terminal_open_transcript_tail(&session_id, "turn-b")
+                .is_err()
+        );
+        assert_eq!(
+            reopened.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::Migrating
+        );
+        assert_eq!(
+            reopened
+                .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                    session_id: session_id.clone(),
+                    offset: 0,
+                    limit: 10,
+                })
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            2
+        );
+
+        assert_eq!(
+            reopened
+                .repair_transcript_storage(&session_id)
+                .unwrap()
+                .mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
         assert!(
             reopened
                 .load_open_transcript_tail(&session_id)
                 .unwrap()
                 .is_none()
         );
+        let metadata = reopened
+            .load_transcript_block_metadata(&session_id)
+            .unwrap();
         assert_eq!(metadata.len(), 2);
 
         let block_entry_ids = metadata
@@ -6856,10 +6968,10 @@ mod tests {
 
         assert_eq!(
             reopened
-                .reconcile_terminal_open_transcript_tail(&session_id, "turn-b")
+                .repair_transcript_storage(&session_id)
                 .unwrap()
-                .len(),
-            2
+                .mode,
+            NativeAiTranscriptStorageMode::BlockNative
         );
     }
 

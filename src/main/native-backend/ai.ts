@@ -633,6 +633,20 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         );
     }
 
+    async repairTranscriptStorage(
+        sessionId: string,
+    ): Promise<AiTranscriptStorageState> {
+        const output = await this.#client.request<unknown>(
+            "ai_repair_transcript_storage",
+            { sessionId },
+        );
+        return requireTranscriptResponse<NativeAiTranscriptStorageState>(
+            output,
+            sessionId,
+            "repaired storage state",
+        );
+    }
+
     async getHistoryStorageHealth(): Promise<AiHistoryStorageHealth> {
         return await this.#client.request<NativeAiHistoryStorageHealth>(
             "ai_get_history_storage_health",
