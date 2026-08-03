@@ -194,6 +194,36 @@ impl TranscriptStore {
             .map_err(|error| transcript_sql("read native transcript entry", error))
     }
 
+    pub(crate) fn transcript_entry_ids(
+        &self,
+        session_id: &SessionId,
+        entry_ids: &[String],
+    ) -> AiResult<BTreeSet<String>> {
+        if !self.database_path.exists() || entry_ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let connection = self.open(session_id, false)?;
+        let placeholders = std::iter::repeat_n("?", entry_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT entry_id
+             FROM transcript_entries
+             WHERE session_id = ?
+                AND entry_id IN ({placeholders})"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| transcript_sql("prepare transcript entry lookup", error))?;
+        let parameters =
+            std::iter::once(session_id.0.as_str()).chain(entry_ids.iter().map(String::as_str));
+        statement
+            .query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))
+            .map_err(|error| transcript_sql("query transcript entries", error))?
+            .collect::<Result<BTreeSet<_>, _>>()
+            .map_err(|error| transcript_sql("read transcript entry", error))
+    }
+
     pub(crate) fn begin_legacy_transcript_backfill(&self, session_id: &SessionId) -> AiResult<()> {
         if !self.uses_legacy_transcript_backfill(session_id)? {
             return Err(AiError::InvalidInput(
