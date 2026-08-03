@@ -791,6 +791,42 @@ impl AiHistoryStore {
             return Ok(None);
         }
         self.recover_if_needed(&input.session_id)?;
+        let transcript_store = self.transcript_store(&input.session_id);
+        // History must use the same verified source as Chat without materializing every block.
+        if self.transcript_ownership_for_read(&input.session_id, &transcript_store)?
+            == TranscriptOwnership::NativeVerified
+        {
+            let limit = normalize_page_limit(input.limit);
+            let (total_messages, entries) = transcript_store.load_sealed_message_entries_page(
+                &input.session_id,
+                input.offset,
+                limit,
+            )?;
+            let messages = entries
+                .into_iter()
+                .map(|entry| {
+                    let payload_ref = entry.payload_ref.ok_or_else(|| {
+                        AiError::Internal("Sealed transcript message has no payload".to_string())
+                    })?;
+                    let payload = transcript_store.load_payload(
+                        &input.session_id,
+                        &payload_ref,
+                        comando_types::ai::AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX,
+                    )?;
+                    Ok(payload
+                        .value
+                        .get("message")
+                        .cloned()
+                        .unwrap_or(payload.value))
+                })
+                .collect::<AiResult<Vec<_>>>()?;
+            return Ok(Some(NativeAiSessionTranscriptPage {
+                session_id: input.session_id,
+                offset: input.offset.min(total_messages),
+                total_messages,
+                messages,
+            }));
+        }
         let index = self.load_or_repair_index(&input.session_id)?;
         let offset = input.offset.min(index.len());
         let limit = normalize_page_limit(input.limit);
@@ -5643,7 +5679,7 @@ mod tests {
                 .unwrap()
                 .messages
                 .len(),
-            1
+            3
         );
     }
 
@@ -5707,19 +5743,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(payload.value["message"]["content"], "complete");
-        assert_eq!(
-            store
-                .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
-                    session_id,
-                    offset: 0,
-                    limit: 10,
-                })
-                .unwrap()
-                .unwrap()
-                .messages
-                .len(),
-            1
-        );
+        let page = store
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id,
+                offset: 1,
+                limit: 1,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.total_messages, 2);
+        assert_eq!(page.messages, vec![message("native-2", "complete")]);
     }
 
     #[test]
@@ -5779,6 +5812,19 @@ mod tests {
         assert_eq!(
             store
                 .load_session_snapshot(&session_id)
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                    session_id,
+                    offset: 0,
+                    limit: 10,
+                })
                 .unwrap()
                 .unwrap()
                 .messages

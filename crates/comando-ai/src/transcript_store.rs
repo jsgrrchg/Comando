@@ -888,6 +888,60 @@ impl TranscriptStore {
         Ok(Some((metadata, entries)))
     }
 
+    pub(crate) fn load_sealed_message_entries_page(
+        &self,
+        session_id: &SessionId,
+        offset: usize,
+        limit: usize,
+    ) -> AiResult<(usize, Vec<NativeAiTranscriptEntryEnvelope>)> {
+        if !self.has_data_source() {
+            return Ok((0, Vec::new()));
+        }
+        let connection = self.open(session_id, false)?;
+        let total: i64 = connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM transcript_entries AS entries
+                 JOIN transcript_blocks AS blocks
+                    ON blocks.session_id = entries.session_id
+                    AND blocks.block_id = entries.block_id
+                 WHERE entries.session_id = ?1
+                    AND blocks.is_sealed = 1
+                    AND entries.kind IN ('\"message\"', '\"thinking\"')
+                    AND entries.payload_ref IS NOT NULL",
+                params![session_id.0],
+                |row| row.get(0),
+            )
+            .map_err(|error| transcript_sql("count sealed transcript messages", error))?;
+        let entries = query_entries(
+            &connection,
+            session_id,
+            "SELECT
+                entries.sequence,
+                entries.entry_id,
+                entries.kind,
+                entries.created_at,
+                entries.updated_at,
+                entries.summary_json,
+                entries.payload_ref
+             FROM transcript_entries AS entries
+             JOIN transcript_blocks AS blocks
+                ON blocks.session_id = entries.session_id
+                AND blocks.block_id = entries.block_id
+             WHERE entries.session_id = ?1
+                AND blocks.is_sealed = 1
+                AND entries.kind IN ('\"message\"', '\"thinking\"')
+                AND entries.payload_ref IS NOT NULL
+             ORDER BY entries.sequence ASC
+             LIMIT ?2 OFFSET ?3",
+            params![session_id.0, limit as i64, offset as i64],
+        )?;
+        Ok((
+            sql_to_usize(total, "sealed transcript message count")?,
+            entries,
+        ))
+    }
+
     fn prepare_payloads(
         &self,
         payloads: Vec<AiTranscriptPayloadWrite>,
