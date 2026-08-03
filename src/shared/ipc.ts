@@ -3332,13 +3332,28 @@ export interface AiHistoryMigrationResult {
 }
 
 export interface AiHistoryStorageHealth {
+    readonly compatibilityCleanupEligibleSessionCount: number;
     readonly healthy: boolean;
+    readonly legacySessionCount: number;
     readonly latestError: string | null;
     readonly legacyFallbackAvailable: boolean;
     readonly migrationManifestExists: boolean;
+    readonly migratingSessionCount: number;
     readonly nativeSessionCount: number;
+    readonly nativeVerifiedSessionCount: number;
     readonly orphanedSessionDirs: number;
+    readonly repairRequiredSessionCount: number;
     readonly storageVersion: number;
+}
+
+export interface AiTranscriptCompatibilityCleanupInput {
+    readonly retentionAuthorized: boolean;
+    readonly sessionId: string;
+}
+
+export interface AiTranscriptCompatibilityCleanupResult {
+    readonly removed: boolean;
+    readonly sessionId: string;
 }
 
 export type AiTranscriptTerminalStatus =

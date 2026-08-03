@@ -4,6 +4,8 @@ import type {
     AiHistoryMigrationInput,
     AiHistoryMigrationResult,
     AiHistoryStorageHealth,
+    AiTranscriptCompatibilityCleanupInput,
+    AiTranscriptCompatibilityCleanupResult,
     AiOpenTranscriptTail,
     AiOpenTranscriptTailCheckpoint,
     AiPromptResult,
@@ -188,6 +190,9 @@ export interface NativeAiGateway {
     ): Promise<AiSessionTranscriptPage | null>;
     loadTranscriptBlock?(sessionId: string, blockId: string): Promise<AiTranscriptBlock | null>;
     getHistoryStorageHealth?(): Promise<AiHistoryStorageHealth>;
+    cleanupVerifiedTranscriptCompatibility?(
+        input: AiTranscriptCompatibilityCleanupInput,
+    ): Promise<AiTranscriptCompatibilityCleanupResult>;
     getTranscriptCapability?(): AiTranscriptCapability;
     getTranscriptStorageState?(sessionId: string): Promise<AiTranscriptStorageState>;
     repairTranscriptStorage?(sessionId: string): Promise<AiTranscriptStorageState>;

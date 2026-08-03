@@ -545,13 +545,23 @@ export type NativeAiMigrateSessionHistoryOutput = {
 };
 
 export type NativeAiHistoryStorageHealth = {
+    readonly compatibilityCleanupEligibleSessionCount: number;
     readonly healthy: boolean;
+    readonly legacySessionCount: number;
     readonly storageVersion: number;
     readonly nativeSessionCount: number;
     readonly legacyFallbackAvailable: boolean;
     readonly migrationManifestExists: boolean;
+    readonly migratingSessionCount: number;
     readonly orphanedSessionDirs: number;
+    readonly nativeVerifiedSessionCount: number;
+    readonly repairRequiredSessionCount: number;
     readonly latestError: string | null;
+};
+
+export type NativeAiTranscriptCompatibilityCleanupResult = {
+    readonly removed: boolean;
+    readonly sessionId: NativeSessionId;
 };
 
 export type NativeAiEventBase = {
