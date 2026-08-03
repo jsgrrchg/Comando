@@ -748,6 +748,7 @@ export type NativeAiPermissionOptionPayload = {
     readonly optionId: string;
     readonly name: string;
     readonly kind: string;
+    readonly description: string | null;
 };
 
 export type NativeAiUserInputRequestPayload = NativeAiEventBase & {
@@ -763,6 +764,7 @@ export type NativeAiUserInputQuestionPayload = {
     readonly header: string;
     readonly question: string;
     readonly isOther: boolean;
+    readonly customAnswerId: string | null;
     readonly isSecret: boolean;
     readonly options: readonly NativeAiUserInputQuestionOptionPayload[];
 };

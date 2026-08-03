@@ -554,11 +554,19 @@ describe("native backend fixtures", () => {
         });
         expect(aiEvent("ai/event.permission_request.json")).toMatchObject({
             kind: "permission-request",
-            request: { requestId: "permission_1" },
+            request: {
+                options: [{ description: null, optionId: "allow_once" }],
+                requestId: "permission_1",
+            },
         });
         expect(aiEvent("ai/event.user_input_request.json")).toMatchObject({
             kind: "user-input-request",
-            request: { requestId: "input_1" },
+            request: {
+                questions: [
+                    { customAnswerId: null, id: "question_1" },
+                ],
+                requestId: "input_1",
+            },
         });
         expect(aiEvent("ai/event.token_usage.json")).toMatchObject({
             kind: "token-usage",

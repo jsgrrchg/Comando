@@ -34,7 +34,6 @@ import {
   stripLocalCommandMetadata,
   ClaudeAcpAgent,
   claudeCliPath,
-  describeAlwaysAllow,
   streamEventToAcpNotifications,
   messageIdForGrouping,
   buildConfigOptions,
@@ -43,6 +42,7 @@ import {
   runPromptWithCancellation,
   type AcpClient,
   type SDKMessageFilter,
+  type SteerRequest,
   type StreamedToolInputCache,
 } from "../acp-agent.js";
 import { Pushable } from "../utils.js";
@@ -1999,81 +1999,6 @@ describe("permission requests", () => {
       expect(Array.isArray(requestStructure.toolCall.content)).toBe(true);
     }
   });
-
-  describe("describeAlwaysAllow", () => {
-    it("falls back to naming the whole tool when no suggestions are provided", () => {
-      expect(describeAlwaysAllow(undefined, "Bash")).toBe("Always Allow all Bash");
-      expect(describeAlwaysAllow([], "Read")).toBe("Always Allow all Read");
-    });
-
-    it("includes the scoped rule content from a suggestion", () => {
-      const label = describeAlwaysAllow(
-        [
-          {
-            type: "addRules",
-            rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
-            behavior: "allow",
-            destination: "session",
-          },
-        ],
-        "Bash",
-      );
-      expect(label).toBe("Always Allow Bash(npm test:*)");
-    });
-
-    it("indicates a tool-wide rule when the suggestion has no ruleContent", () => {
-      const label = describeAlwaysAllow(
-        [
-          {
-            type: "addRules",
-            rules: [{ toolName: "Read" }],
-            behavior: "allow",
-            destination: "session",
-          },
-        ],
-        "Read",
-      );
-      expect(label).toBe("Always Allow all Read");
-    });
-
-    it("joins multiple rules and directory suggestions", () => {
-      const label = describeAlwaysAllow(
-        [
-          {
-            type: "addRules",
-            rules: [
-              { toolName: "Bash", ruleContent: "git status" },
-              { toolName: "Bash", ruleContent: "git diff:*" },
-            ],
-            behavior: "allow",
-            destination: "session",
-          },
-          {
-            type: "addDirectories",
-            directories: ["/tmp/work"],
-            destination: "session",
-          },
-        ],
-        "Bash",
-      );
-      expect(label).toBe("Always Allow Bash(git status), Bash(git diff:*) and access to /tmp/work");
-    });
-
-    it("ignores non-allow rules and falls back when nothing is left", () => {
-      const label = describeAlwaysAllow(
-        [
-          {
-            type: "addRules",
-            rules: [{ toolName: "Bash", ruleContent: "rm -rf:*" }],
-            behavior: "deny",
-            destination: "session",
-          },
-        ],
-        "Bash",
-      );
-      expect(label).toBe("Always Allow all Bash");
-    });
-  });
 });
 
 describe("permission request cancellation", () => {
@@ -2171,6 +2096,201 @@ describe("permission request cancellation", () => {
         toolUseID: "tool-1",
       } as any),
     ).rejects.toThrow("Tool use aborted");
+  });
+
+  it("offers the approval actions in deny, once, always order with human-readable labels", async () => {
+    let request: RequestPermissionRequest | undefined;
+    const mockClient = {
+      sessionUpdate: async () => {},
+      requestPermission: async (params: RequestPermissionRequest) => {
+        request = params;
+        return { outcome: { outcome: "selected", optionId: "reject" } };
+      },
+    } as unknown as AcpClient;
+    const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+    injectSession(agent, "session-1");
+
+    await agent.canUseTool("session-1")("Bash", { command: "ls" }, {
+      signal: new AbortController().signal,
+      suggestions: [],
+      toolUseID: "tool-1",
+    } as any);
+
+    expect(request?.options).toEqual([
+      { kind: "reject_once", name: "Deny", optionId: "reject" },
+      { kind: "allow_once", name: "Allow Once", optionId: "allow" },
+      {
+        kind: "allow_always",
+        name: "Always Allow",
+        optionId: "allow_always",
+        _meta: {
+          permission: {
+            version: 1,
+            changes: [
+              {
+                type: "policy_rule",
+                operation: "add",
+                ruleBehavior: "allow",
+                description: "Allow all Bash calls",
+                lifetime: { scope: "session" },
+                targets: [{ type: "tool", toolName: "Bash" }],
+              },
+            ],
+          },
+        },
+      },
+    ]);
+  });
+
+  it("attaches structured permission changes to the always-allow ACP option", async () => {
+    let request: RequestPermissionRequest | undefined;
+    const mockClient = {
+      sessionUpdate: async () => {},
+      requestPermission: async (params: RequestPermissionRequest) => {
+        request = params;
+        return { outcome: { outcome: "selected", optionId: "reject" } };
+      },
+    } as unknown as AcpClient;
+    const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+    injectSession(agent, "session-1");
+
+    await agent.canUseTool("session-1")("Bash", { command: "npm test" }, {
+      signal: new AbortController().signal,
+      suggestions: [
+        {
+          type: "addRules",
+          rules: [{ toolName: "Bash", ruleContent: "npm test:*" }],
+          behavior: "allow",
+          destination: "session",
+        },
+        {
+          type: "addDirectories",
+          directories: ["/tmp/work"],
+          destination: "session",
+        },
+      ],
+      toolUseID: "tool-1",
+    } as any);
+
+    expect(request?.options.find((option) => option.optionId === "allow_always")?._meta).toEqual({
+      permission: {
+        version: 1,
+        changes: [
+          {
+            type: "policy_rule",
+            operation: "add",
+            ruleBehavior: "allow",
+            description: "Allow Bash calls matching npm test:*",
+            lifetime: { scope: "session" },
+            targets: [
+              {
+                type: "tool",
+                toolName: "Bash",
+                matcher: {
+                  type: "provider_rule",
+                  provider: "claudeCode",
+                  value: "npm test:*",
+                },
+              },
+            ],
+          },
+          {
+            type: "policy_rule",
+            operation: "add",
+            ruleBehavior: "allow",
+            description: "Allow filesystem access under /tmp/work",
+            lifetime: { scope: "session" },
+            targets: [
+              {
+                type: "filesystem",
+                matcher: { type: "directory", path: "/tmp/work" },
+              },
+            ],
+          },
+        ],
+      },
+    });
+  });
+
+  it("preserves replace, remove, deny, destination, and mode suggestion semantics", async () => {
+    let request: RequestPermissionRequest | undefined;
+    const mockClient = {
+      sessionUpdate: async () => {},
+      requestPermission: async (params: RequestPermissionRequest) => {
+        request = params;
+        return { outcome: { outcome: "selected", optionId: "reject" } };
+      },
+    } as unknown as AcpClient;
+    const agent = new ClaudeAcpAgent(mockClient, { log: () => {}, error: () => {} });
+    injectSession(agent, "session-1");
+
+    await agent.canUseTool("session-1")("Bash", { command: "rm generated.txt" }, {
+      signal: new AbortController().signal,
+      suggestions: [
+        {
+          type: "replaceRules",
+          rules: [{ toolName: "Bash", ruleContent: "rm generated.txt" }],
+          behavior: "deny",
+          destination: "projectSettings",
+        },
+        {
+          type: "removeDirectories",
+          directories: ["/tmp/old"],
+          destination: "localSettings",
+        },
+        {
+          type: "setMode",
+          mode: "default",
+          destination: "session",
+        },
+      ],
+      toolUseID: "tool-1",
+    } as any);
+
+    expect(
+      (request?.options.find((option) => option.optionId === "allow_always")?._meta as any)
+        ?.permission.changes,
+    ).toEqual([
+      {
+        type: "policy_rule",
+        operation: "replace",
+        ruleBehavior: "deny",
+        description: "Replace deny rules with Bash calls matching rm generated.txt",
+        lifetime: { scope: "persistent", storage: "project" },
+        targets: [
+          {
+            type: "tool",
+            toolName: "Bash",
+            matcher: {
+              type: "provider_rule",
+              provider: "claudeCode",
+              value: "rm generated.txt",
+            },
+          },
+        ],
+      },
+      {
+        type: "policy_rule",
+        operation: "remove",
+        ruleBehavior: "allow",
+        description: "Remove additional filesystem access under /tmp/old",
+        lifetime: { scope: "persistent", storage: "project_local" },
+        targets: [
+          {
+            type: "filesystem",
+            matcher: { type: "directory", path: "/tmp/old" },
+          },
+        ],
+      },
+      {
+        type: "permission_mode",
+        operation: "set",
+        provider: "claudeCode",
+        mode: "default",
+        description: "Set Claude Code permission mode to default",
+        lifetime: { scope: "session" },
+      },
+    ]);
   });
 });
 
@@ -9691,6 +9811,29 @@ describe("turn steering (_session/steering)", () => {
     };
   }
 
+  // A minimal SDK assistant message carrying a single text block. Used by the
+  // promptRequired retry test to model the continuation turn's streamed reply.
+  function createAssistantText(text: string) {
+    return {
+      type: "assistant" as const,
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      session_id: "test-session",
+      message: {
+        role: "assistant",
+        model: "claude-sonnet-4-5",
+        stop_reason: "end_turn",
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+        content: [{ type: "text", text }],
+      },
+    };
+  }
+
   const waitFor = async (cond: () => boolean) => {
     for (let i = 0; i < 200; i++) {
       if (cond()) return;
@@ -9726,30 +9869,85 @@ describe("turn steering (_session/steering)", () => {
     ).rejects.toThrow();
   });
 
-  it("advertises steering support at _meta.steering.supported", async () => {
+  it("preserves the existing steering capability declaration", async () => {
     const agent = createMockAgent();
     const response = await agent.initialize({
       protocolVersion: 1,
       clientCapabilities: {},
     });
-    // Top-level _meta (sibling of agentCapabilities), per the wire protocol.
-    expect((response._meta as any)?.steering).toEqual({ supported: true });
+    // Top-level _meta (sibling of agentCapabilities), per the existing steering
+    // extension contract. Idle behavior is selected per steering request.
+    expect((response._meta as any)?.steering).toEqual({
+      supported: true,
+    });
   });
 
-  it("starts a new turn (outcome 'startedNewTurn') when no turn is in flight (race)", async () => {
+  it("preserves startedNewTurn by default when no turn is in flight", async () => {
     const agent = createMockAgent();
+    const prompt = vi.spyOn(agent, "prompt").mockResolvedValue({ stopReason: "end_turn" });
+    agent.sessions["test-session"] = mockSessionState({
+      input: new Pushable<any>(),
+      turnQueue: [],
+    });
+
+    const request: SteerRequest = {
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "late follow-up" }],
+    };
+
+    await expect(agent.steer(request)).resolves.toEqual({ outcome: "startedNewTurn" });
+    expect(prompt).toHaveBeenCalledWith(request);
+  });
+
+  it("returns promptRequired without consuming an opted-in prompt", async () => {
+    const agent = createMockAgent();
+    const input = new Pushable<any>();
+    const inputPush = vi.spyOn(input, "push");
+    const prompt = vi.spyOn(agent, "prompt").mockResolvedValue({ stopReason: "end_turn" });
+    // Idle session: turnQueue is empty, so the turn we meant to steer has (from
+    // the agent's view) already finished. The content must stay Host-owned.
+    agent.sessions["test-session"] = mockSessionState({
+      input,
+      turnQueue: [],
+    });
+
+    const response = await agent.steer({
+      sessionId: "test-session",
+      prompt: [{ type: "text", text: "late follow-up" }],
+      _meta: { steering: { idleBehavior: "promptRequired" } },
+    });
+
+    expect(response).toEqual({
+      outcome: "promptRequired",
+      reason: "noRunningTurn",
+    });
+    // The idle branch must not start a detached turn, push SDK input, or mutate
+    // the queue — the Host retries the exact same content via session/prompt.
+    expect(prompt).not.toHaveBeenCalled();
+    expect(inputPush).not.toHaveBeenCalled();
+    expect(agent.sessions["test-session"].turnQueue).toEqual([]);
+  });
+
+  it("lets the host retry promptRequired content through session/prompt exactly once", async () => {
+    const updates: string[] = [];
+    const client = {
+      sessionUpdate: async (notification: any) => {
+        if (notification.update?.sessionUpdate === "agent_message_chunk") {
+          updates.push(notification.update.content?.text);
+        }
+      },
+    } as unknown as AcpClient;
+    const agent = new ClaudeAcpAgent(client, { log: () => {}, error: () => {} });
     const captured: any[] = [];
-    // Idle session: turnQueue starts empty, so the turn we meant to steer has
-    // (from the agent's view) already finished. Steering must not error — it
-    // starts a fresh turn with the message.
     injectGeneratorSession(
       agent,
       (input) => {
         async function* messageGenerator() {
           const iter = input[Symbol.asyncIterator]();
-          const u1 = await iter.next();
-          captured.push(u1.value);
-          yield userEcho(u1.value); // activates the new turn
+          const continuation = await iter.next();
+          captured.push(continuation.value);
+          yield userEcho(continuation.value);
+          yield createAssistantText("continuation response");
           yield createResultMessage();
           yield { type: "system", subtype: "session_state_changed", state: "idle" };
         }
@@ -9757,19 +9955,31 @@ describe("turn steering (_session/steering)", () => {
       },
       { turnQueue: [] },
     );
-
-    const res = await agent.steer({
+    const request: SteerRequest = {
       sessionId: "test-session",
       prompt: [{ type: "text", text: "late follow-up" }],
-    });
-    expect(res.outcome).toBe("startedNewTurn");
+      _meta: { steering: { idleBehavior: "promptRequired" } },
+    };
 
-    // A real turn was enqueued and drains like any normal prompt.
-    await waitFor(() => (agent.sessions["test-session"].turnQueue ?? []).length === 0);
+    // Steering an idle session leaves the content unconsumed...
+    await expect(agent.steer(request)).resolves.toEqual({
+      outcome: "promptRequired",
+      reason: "noRunningTurn",
+    });
+    await Promise.resolve();
+    expect(captured).toHaveLength(0);
+
+    // ...so the Host can submit the same content through a normal session/prompt,
+    // which owns the continuation's updates and terminal response.
+    await expect(agent.prompt(request)).resolves.toEqual(
+      expect.objectContaining({ stopReason: "end_turn" }),
+    );
     expect(captured).toHaveLength(1);
-    // It went through the normal prompt() path — no steering delivery priority.
     expect(captured[0].priority).toBeUndefined();
     expect(JSON.stringify(captured[0].message.content)).toContain("late follow-up");
+    expect(updates).toContain("continuation response");
+    expect(agent.sessions["test-session"].turnQueue).toHaveLength(0);
+    await agent.sessions["test-session"]?.consumer;
   });
 
   it("injects (outcome 'injected') a priority:'now' message into the running turn without spawning a new turn", async () => {

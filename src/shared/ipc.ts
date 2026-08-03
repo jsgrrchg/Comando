@@ -3052,6 +3052,7 @@ export interface AiPermissionOption {
         | "reject_once";
     readonly name: string;
     readonly optionId: string;
+    readonly description: string | null;
 }
 
 export interface AiPermissionRequest {
@@ -3070,6 +3071,7 @@ export interface AiUserInputQuestionOption {
 }
 
 export interface AiUserInputQuestion {
+    readonly customAnswerId: string | null;
     readonly header: string;
     readonly id: string;
     readonly isOther: boolean;

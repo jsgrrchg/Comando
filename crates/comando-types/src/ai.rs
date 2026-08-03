@@ -1199,6 +1199,7 @@ pub struct NativeAiPermissionOptionPayload {
     pub option_id: String,
     pub name: String,
     pub kind: String,
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1220,6 +1221,7 @@ pub struct NativeAiUserInputQuestionPayload {
     pub header: String,
     pub question: String,
     pub is_other: bool,
+    pub custom_answer_id: Option<String>,
     pub is_secret: bool,
     pub options: Vec<NativeAiUserInputQuestionOptionPayload>,
 }

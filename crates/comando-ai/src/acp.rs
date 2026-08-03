@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1697,7 +1697,26 @@ fn permission_option_payload(option: &PermissionOption) -> NativeAiPermissionOpt
         option_id: option.option_id.to_string(),
         name: option.name.clone(),
         kind: serde_label(&option.kind),
+        description: permission_option_description(option),
     }
+}
+
+fn permission_option_description(option: &PermissionOption) -> Option<String> {
+    let permission = option.meta.as_ref()?.get("permission")?.as_object()?;
+    if permission.get("version")?.as_u64() != Some(1) {
+        return None;
+    }
+
+    // Keep policy semantics agent-owned while surfacing the descriptions supplied by the producer.
+    let descriptions = permission
+        .get("changes")?
+        .as_array()?
+        .iter()
+        .filter_map(|change| change.get("description")?.as_str())
+        .map(str::trim)
+        .filter(|description| !description.is_empty())
+        .collect::<Vec<_>>();
+    (!descriptions.is_empty()).then(|| descriptions.join("\n"))
 }
 
 fn acp_config_value(value: NativeAiConfigValue) -> SessionConfigOptionValue {
@@ -1721,11 +1740,27 @@ fn runtime_session_id_from_elicitation(
 fn elicitation_questions(
     form: &agent_client_protocol::schema::v1::ElicitationFormMode,
 ) -> Vec<NativeAiUserInputQuestionPayload> {
+    let custom_answer_ids = form
+        .requested_schema
+        .properties
+        .iter()
+        .filter_map(|(id, property)| {
+            let question_id = custom_answer_question_id(property)?;
+            form.requested_schema
+                .properties
+                .contains_key(question_id)
+                .then(|| (question_id.to_string(), id.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let custom_answer_fields = custom_answer_ids.values().cloned().collect::<BTreeSet<_>>();
     let questions = form
         .requested_schema
         .properties
         .iter()
-        .map(|(id, property)| elicitation_question(id, property))
+        .filter(|(id, _)| !custom_answer_fields.contains(*id))
+        .map(|(id, property)| {
+            elicitation_question(id, property, custom_answer_ids.get(id).map(String::as_str))
+        })
         .collect::<Vec<_>>();
 
     if questions.is_empty() {
@@ -1742,6 +1777,7 @@ fn elicitation_questions(
                 .clone()
                 .unwrap_or_else(|| "Provide the requested input.".to_string()),
             is_other: false,
+            custom_answer_id: None,
             is_secret: false,
             options: Vec::new(),
         }];
@@ -1773,16 +1809,33 @@ fn elicitation_answer_kind(property: &ElicitationPropertySchema) -> ElicitationA
 fn elicitation_question(
     id: &str,
     property: &ElicitationPropertySchema,
+    custom_answer_id: Option<&str>,
 ) -> NativeAiUserInputQuestionPayload {
     let metadata = elicitation_property_metadata(id, property);
     NativeAiUserInputQuestionPayload {
         id: id.to_string(),
         header: metadata.header,
         question: metadata.question,
-        is_other: false,
+        is_other: custom_answer_id.is_some(),
+        custom_answer_id: custom_answer_id.map(str::to_string),
         is_secret: metadata.is_secret,
         options: metadata.options,
     }
+}
+
+fn custom_answer_question_id(property: &ElicitationPropertySchema) -> Option<&str> {
+    let ElicitationPropertySchema::String(schema) = property else {
+        return None;
+    };
+    let marker = schema
+        .meta
+        .as_ref()?
+        .get("_askUserQuestionCustomAnswer")?
+        .as_object()?;
+    if marker.get("isCustomAnswer")?.as_bool() != Some(true) {
+        return None;
+    }
+    marker.get("questionId")?.as_str()
 }
 
 struct ElicitationQuestionMetadata {
@@ -5255,7 +5308,7 @@ mod tests {
     use super::*;
     use crate::runtime::RuntimeRegistry;
     use agent_client_protocol::schema::v1::{
-        ToolCallLocation, ToolCallStatus, ToolCallUpdateFields, ToolKind,
+        PermissionOptionKind, ToolCallLocation, ToolCallStatus, ToolCallUpdateFields, ToolKind,
     };
     use comando_types::ai::{
         NativeAiAuthHandshakeSpec, NativeAiDesiredSelections, NativeAiImageAttachment,
@@ -5341,6 +5394,54 @@ mod tests {
                 config_options: BTreeMap::new(),
             },
         }
+    }
+
+    #[test]
+    fn permission_option_payload_surfaces_structured_change_descriptions() {
+        let mut meta = Meta::default();
+        meta.insert(
+            "permission".to_string(),
+            serde_json::json!({
+                "version": 1,
+                "changes": [
+                    { "description": "Allow Bash calls matching pnpm test:*" },
+                    { "description": "Store this rule for the project" }
+                ]
+            }),
+        );
+        let option = PermissionOption::new(
+            "allow_always",
+            "Always Allow",
+            PermissionOptionKind::AllowAlways,
+        )
+        .meta(meta);
+
+        let payload = permission_option_payload(&option);
+
+        assert_eq!(
+            payload.description.as_deref(),
+            Some("Allow Bash calls matching pnpm test:*\nStore this rule for the project")
+        );
+    }
+
+    #[test]
+    fn permission_option_payload_ignores_unknown_metadata_versions() {
+        let mut meta = Meta::default();
+        meta.insert(
+            "permission".to_string(),
+            serde_json::json!({
+                "version": 2,
+                "changes": [{ "description": "Future contract" }]
+            }),
+        );
+        let option = PermissionOption::new(
+            "allow_always",
+            "Always Allow",
+            PermissionOptionKind::AllowAlways,
+        )
+        .meta(meta);
+
+        assert_eq!(permission_option_payload(&option).description, None);
     }
 
     #[test]
@@ -8554,6 +8655,40 @@ mod tests {
 
         assert_eq!(options[0].label, "safe");
         assert_eq!(options[0].description, None);
+    }
+
+    #[test]
+    fn acp_elicitation_attaches_custom_answer_fields_to_their_question() {
+        let question = agent_client_protocol::schema::v1::StringPropertySchema::new().one_of(vec![
+            agent_client_protocol::schema::v1::EnumOption::new("safe", "Safe"),
+        ]);
+        let mut custom_meta = Meta::default();
+        custom_meta.insert(
+            "_askUserQuestionCustomAnswer".to_string(),
+            serde_json::json!({
+                "questionId": "question_0",
+                "isCustomAnswer": true
+            }),
+        );
+        let custom =
+            agent_client_protocol::schema::v1::StringPropertySchema::new().meta(custom_meta);
+        let schema = agent_client_protocol::schema::v1::ElicitationSchema::new()
+            .property("question_0", question, false)
+            .property("question_0_custom", custom, false);
+        let form = agent_client_protocol::schema::v1::ElicitationFormMode::new(
+            agent_client_protocol::schema::v1::ElicitationSessionScope::new("session-1"),
+            schema,
+        );
+
+        let questions = elicitation_questions(&form);
+
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].id, "question_0");
+        assert!(questions[0].is_other);
+        assert_eq!(
+            questions[0].custom_answer_id.as_deref(),
+            Some("question_0_custom")
+        );
     }
 
     #[test]
