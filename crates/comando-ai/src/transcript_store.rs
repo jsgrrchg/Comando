@@ -48,6 +48,13 @@ pub(crate) struct TranscriptStoreHealth {
     pub schema_version: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Invoked by the internal coverage diagnostic during incident investigation.
+pub(crate) struct LegacyTranscriptBackfillProgress {
+    pub complete: bool,
+    pub next_offset: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct TranscriptStore {
     database_path: PathBuf,
@@ -239,6 +246,35 @@ impl TranscriptStore {
             return Ok(false);
         }
         Ok(self.legacy_transcript_backfill_next_offset(session_id)? >= legacy_record_count)
+    }
+
+    #[allow(dead_code)] // Kept read-only so diagnostics cannot create or advance a backfill.
+    pub(crate) fn legacy_transcript_backfill_progress(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<LegacyTranscriptBackfillProgress> {
+        if !self.database_path.exists() {
+            return Ok(LegacyTranscriptBackfillProgress {
+                complete: false,
+                next_offset: 0,
+            });
+        }
+        let connection = self.open(session_id, false)?;
+        let progress = connection
+            .query_row(
+                "SELECT legacy_transcript_backfill_complete, legacy_transcript_backfill_next_offset
+                 FROM transcript_sessions
+                 WHERE session_id = ?1",
+                params![session_id.0],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| transcript_sql("load legacy transcript backfill progress", error))?;
+        let (complete, next_offset) = progress.unwrap_or((1, 0));
+        Ok(LegacyTranscriptBackfillProgress {
+            complete: complete == 1,
+            next_offset: next_offset.max(0) as usize,
+        })
     }
 
     pub(crate) fn invalidate_legacy_transcript_backfill_from(

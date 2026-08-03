@@ -29,7 +29,9 @@ use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
 use crate::storage_work_metrics::{AiStorageWorkMetricsSnapshot, StorageWorkMetrics};
 pub use crate::transcript_store::{AiTranscriptPayload, AiTranscriptPayloadWrite};
-use crate::transcript_store::{TRANSCRIPT_SCHEMA_VERSION, TranscriptStore};
+use crate::transcript_store::{
+    LegacyTranscriptBackfillProgress, TRANSCRIPT_SCHEMA_VERSION, TranscriptStore,
+};
 
 pub const HISTORY_FORMAT_VERSION: u32 = 1;
 const AI_DIR: &str = "ai";
@@ -252,6 +254,30 @@ pub struct AiTranscriptIndex {
     pub message_roles: Vec<Option<String>>,
     pub updated_at: String,
     pub indexed_transcript_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Internal incident diagnostic; it is intentionally not part of the app API.
+pub(crate) struct AiTranscriptCoverageAudit {
+    pub session_fingerprint: String,
+    pub legacy_record_count: usize,
+    pub legacy_sequence_fingerprint: String,
+    pub legacy_index_valid: bool,
+    pub sealed_block_count: usize,
+    pub sealed_entry_count: usize,
+    pub native_sequence_fingerprint: String,
+    pub unavailable_payload_count: usize,
+    pub missing_legacy_entry_count: usize,
+    pub out_of_order_legacy_entry_count: usize,
+    pub mismatched_legacy_payload_count: usize,
+    pub open_tail_present: bool,
+    pub open_tail_entry_count: usize,
+    pub open_tail_terminal: bool,
+    pub backfill_uses_legacy: bool,
+    pub backfill_complete: bool,
+    pub backfill_next_offset: usize,
+    pub native_covers_legacy: bool,
 }
 
 impl AiTranscriptIndex {
@@ -895,6 +921,124 @@ impl AiHistoryStore {
             payloads,
             transcript_revision,
         })
+    }
+
+    #[allow(dead_code)] // Explicit-only to avoid an O(history) scan during normal restoration.
+    pub(crate) fn audit_transcript_coverage(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<AiTranscriptCoverageAudit> {
+        let index = if self.index_path(session_id).exists() {
+            // Coverage diagnostics must remain read-only: rebuilding an invalid
+            // compatibility index would hide the condition being investigated.
+            read_json_file(&self.index_path(session_id))?
+        } else {
+            AiTranscriptIndex::empty()
+        };
+        let legacy_index_valid = index
+            .validate(file_len(&self.transcript_path(session_id)).unwrap_or(0))
+            .is_ok();
+        let legacy_entries = index
+            .message_ids
+            .iter()
+            .zip(&index.message_hashes)
+            .map(|(message_id, hash)| (format!("message:{message_id}"), hash.clone()))
+            .collect::<Vec<_>>();
+        let transcript_store = self.transcript_store(session_id);
+        let blocks = transcript_store.load_block_metadata(session_id)?;
+        let mut native_entries = Vec::new();
+        let mut unavailable_payload_count = 0;
+        for block in &blocks {
+            let Some((_, entries)) = transcript_store.load_block(session_id, &block.block_id)?
+            else {
+                continue;
+            };
+            for entry in entries {
+                let payload_hash = match entry.payload_ref.as_deref() {
+                    Some(payload_ref) => transcript_store
+                        .load_payload(
+                            session_id,
+                            payload_ref,
+                            comando_types::ai::AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX,
+                        )
+                        .ok()
+                        .and_then(|payload| payload.value.get("message").cloned())
+                        .and_then(|message| hash_message_payload(&message).ok()),
+                    None => None,
+                };
+                if payload_hash.is_none() {
+                    unavailable_payload_count += 1;
+                }
+                native_entries.push((entry.id, payload_hash));
+            }
+        }
+        let native_ids = native_entries
+            .iter()
+            .map(|(entry_id, _)| entry_id.as_str())
+            .collect::<HashSet<_>>();
+        let missing_legacy_entry_count = legacy_entries
+            .iter()
+            .filter(|(entry_id, _)| !native_ids.contains(entry_id.as_str()))
+            .count();
+        let out_of_order_legacy_entry_count = legacy_entries
+            .iter()
+            .zip(&native_entries)
+            .filter(|((expected_id, _), (actual_id, _))| expected_id != actual_id)
+            .count()
+            + legacy_entries.len().abs_diff(native_entries.len());
+        let mismatched_legacy_payload_count = legacy_entries
+            .iter()
+            .zip(&native_entries)
+            .filter(|((expected_id, expected_hash), (actual_id, actual_hash))| {
+                expected_id == actual_id && actual_hash.as_deref() != Some(expected_hash)
+            })
+            .count();
+        let open_tail = transcript_store.load_open_tail(session_id)?;
+        let backfill_uses_legacy = transcript_store.uses_legacy_transcript_backfill(session_id)?;
+        let LegacyTranscriptBackfillProgress {
+            complete: backfill_complete,
+            next_offset: backfill_next_offset,
+        } = transcript_store.legacy_transcript_backfill_progress(session_id)?;
+        let native_covers_legacy = legacy_index_valid
+            && legacy_entries.len() == native_entries.len()
+            && missing_legacy_entry_count == 0
+            && out_of_order_legacy_entry_count == 0
+            && mismatched_legacy_payload_count == 0
+            && unavailable_payload_count == 0;
+        let audit = AiTranscriptCoverageAudit {
+            session_fingerprint: sha256_hex(session_id.0.as_bytes()),
+            legacy_record_count: legacy_entries.len(),
+            legacy_sequence_fingerprint: transcript_sequence_fingerprint(
+                legacy_entries
+                    .iter()
+                    .map(|(entry_id, hash)| (entry_id, Some(hash))),
+            ),
+            legacy_index_valid,
+            sealed_block_count: blocks.len(),
+            sealed_entry_count: native_entries.len(),
+            native_sequence_fingerprint: transcript_sequence_fingerprint(
+                native_entries
+                    .iter()
+                    .map(|(entry_id, hash)| (entry_id, hash.as_ref())),
+            ),
+            unavailable_payload_count,
+            missing_legacy_entry_count,
+            out_of_order_legacy_entry_count,
+            mismatched_legacy_payload_count,
+            open_tail_present: open_tail.is_some(),
+            open_tail_entry_count: open_tail.as_ref().map_or(0, |tail| tail.entries.len()),
+            open_tail_terminal: open_tail
+                .as_ref()
+                .is_some_and(|tail| tail.terminal_status.is_some()),
+            backfill_uses_legacy,
+            backfill_complete,
+            backfill_next_offset,
+            native_covers_legacy,
+        };
+        if let Ok(audit_json) = serde_json::to_string(&audit) {
+            eprintln!("ai_transcript_coverage_audit {audit_json}");
+        }
+        Ok(audit)
     }
 
     pub fn transcript_storage_state(
@@ -3037,6 +3181,26 @@ fn hash_message_payload(payload: &Value) -> AiResult<String> {
     Ok(sha256_hex(&bytes))
 }
 
+#[allow(dead_code)] // Used only by the explicit transcript coverage diagnostic.
+fn transcript_sequence_fingerprint<'a>(
+    entries: impl IntoIterator<Item = (&'a String, Option<&'a String>)>,
+) -> String {
+    let mut hasher = Sha256::new();
+    for (entry_id, payload_hash) in entries {
+        hasher.update(entry_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(payload_hash.map_or(b"<unavailable>".as_slice(), |hash| hash.as_bytes()));
+        hasher.update([b'\n']);
+    }
+    let digest = hasher.finalize();
+    let mut fingerprint = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut fingerprint, "{byte:02x}");
+    }
+    fingerprint
+}
+
 fn merge_tool_activity_detail(previous: &Value, mut next: Value) -> Value {
     let (Some(previous), Some(next_object)) = (previous.as_object(), next.as_object_mut()) else {
         return next;
@@ -5041,6 +5205,31 @@ mod tests {
         let snapshot = store.load_session_snapshot(&session_id).unwrap().unwrap();
         assert_eq!(snapshot.messages.len(), 3);
         assert_eq!(snapshot.messages[2]["id"], "legacy-3");
+    }
+
+    #[test]
+    fn transcript_coverage_audit_detects_legacy_records_missing_from_sealed_blocks() {
+        let (_temp, store) = store();
+        let session_id = SessionId("partial_native_transcript_coverage".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        let first = message("legacy-1", "first");
+        let second = message("legacy-2", "second");
+        store
+            .save_transcript_window(&session_id, vec![first.clone(), second])
+            .unwrap();
+
+        let (entry, payload) = legacy_transcript_entry(&session_id, first).unwrap();
+        store
+            .seal_transcript_turn(&session_id, "native-turn", vec![entry], vec![payload])
+            .unwrap();
+
+        let audit = store.audit_transcript_coverage(&session_id).unwrap();
+
+        assert_eq!(audit.legacy_record_count, 2);
+        assert_eq!(audit.sealed_entry_count, 1);
+        assert_eq!(audit.missing_legacy_entry_count, 1);
+        assert!(!audit.native_covers_legacy);
+        assert_ne!(audit.session_fingerprint, session_id.0);
     }
 
     #[test]
