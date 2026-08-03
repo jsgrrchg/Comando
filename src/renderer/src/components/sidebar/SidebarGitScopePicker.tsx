@@ -937,10 +937,15 @@ export function SidebarGitScopePicker({
         }
 
         lastExternalMenuRequestIdRef.current = externalMenuRequest.id;
-        setIsOpen(true);
+        if (isOpen) {
+            requestMenuClose();
+            return;
+        }
+
         setActionError(null);
         setQuery("");
-    }, [externalMenuRequest]);
+        setIsOpen(true);
+    }, [externalMenuRequest, isOpen, requestMenuClose]);
 
     const finishMenuAnimation = useCallback(() => {
         if (menuAnimationState === "opening" && isOpen) {
