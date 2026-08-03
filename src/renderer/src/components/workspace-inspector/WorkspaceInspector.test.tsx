@@ -107,12 +107,11 @@ describe("WorkspaceInspector", () => {
         expect(container?.textContent).not.toContain("Files panel");
     });
 
-    it("renders the Git scope control only in the committed Git view", () => {
+    it("does not reserve sidebar space for the Git scope control", () => {
         mountInspector({ activeView: "git" });
         expect(
-            container?.querySelector("[data-workspace-inspector-git-scope]")
-                ?.textContent,
-        ).toContain("Scope picker");
+            container?.querySelector("[data-workspace-inspector-git-scope]"),
+        ).toBeNull();
     });
 });
 
@@ -149,7 +148,6 @@ function mountInspector({
                 activeView={activeView}
                 error={error}
                 filter={filter}
-                gitScopePicker={<button>Scope picker</button>}
                 hasCommittedWorkspace={hasCommittedWorkspace}
                 loading={loading}
                 onChangeFilter={onChangeFilter}

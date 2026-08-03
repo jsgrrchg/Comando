@@ -158,7 +158,6 @@ import {
 import { DesktopWindowChrome } from "./components/DesktopWindowChrome";
 import { GitContextTrigger } from "./components/git/GitContextTrigger";
 import { WorkspaceSwitcher } from "./components/WorkspaceSwitcher";
-import { SidebarGitScopePicker } from "./components/sidebar/SidebarGitScopePicker";
 import { WorkspaceNavigatorPanel } from "./components/workspace-navigator/WorkspaceNavigatorPanel";
 import {
     FileExplorerPanel,
@@ -4087,26 +4086,11 @@ export function WorkspaceHostApp() {
                 : sidebarView === "pull_requests"
                   ? pullRequestsFilter
                   : agentsFilter;
-    const inspectorOverlayBounds = useMemo(
-        () => ({
-            left: shellViewportWidth - rightEffectiveWidth,
-            width: rightEffectiveWidth,
-        }),
-        [rightEffectiveWidth, shellViewportWidth],
-    );
     const workspaceInspectorContent = (
         <WorkspaceInspector
             activeView={sidebarView}
             error={projectsError}
             filter={sidebarSearchValue}
-            gitScopePicker={
-                <SidebarGitScopePicker
-                    onOpenWorkspace={openWorkspaceFromInspector}
-                    overlayBounds={inspectorOverlayBounds}
-                    projectId={activeProjectId}
-                    worktreeId={activeWorktreeId}
-                />
-            }
             hasCommittedWorkspace={Boolean(
                 workspaceActiveContextKey && activeProjectId,
             )}
