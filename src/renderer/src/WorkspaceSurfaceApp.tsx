@@ -11,7 +11,10 @@ import type {
 import { useSystemTheme } from "./app/hooks/use-system-theme";
 import { parseWorkspaceSurfaceRendererDescriptor } from "./app/renderer-mode";
 import { setCachedAppEditorSettings } from "./app/settings/client";
-import { createGitProjectRefreshScheduler } from "./app/git/refresh-scheduler";
+import {
+    createGitProjectRefreshScheduler,
+    gitInvalidationAffectsHistoryForScope,
+} from "./app/git/refresh-scheduler";
 import { revalidateVisibleGitDiffs } from "./app/git/visible-diff-revalidation";
 import { useAiStore } from "./app/store/ai-store";
 import { useAppStore } from "./app/store/app-store";
@@ -156,6 +159,7 @@ export function WorkspaceSurfaceApp() {
     const addProjects = useProjectsStore((state) => state.addProjects);
     const gitHydrate = useGitStore((state) => state.hydrate);
     const ingestGitSnapshot = useGitStore((state) => state.ingestSnapshot);
+    const refreshGitHistory = useGitStore((state) => state.refreshHistory);
     const refreshGitProject = useGitStore((state) => state.refreshProject);
     const hydrateSurfaceLayout = useWorkspaceStore(
         (state) => state.hydrateSurfaceLayout,
@@ -535,6 +539,7 @@ export function WorkspaceSurfaceApp() {
                 workspace: useWorkspaceStore.getState(),
             });
         const projectRefreshScheduler = createGitProjectRefreshScheduler({
+            refreshHistory: refreshGitHistory,
             refreshProject: async (projectId, worktreeId) => {
                 const snapshot = await refreshGitProject(projectId, worktreeId);
                 if (snapshot) {
@@ -565,6 +570,13 @@ export function WorkspaceSurfaceApp() {
                 projectRefreshScheduler.schedule(
                     payload.projectId,
                     payload.worktreeId ?? activeWorktreeId,
+                    {
+                        // One surface represents one scope, so avoid redundant history loads.
+                        refreshHistory: gitInvalidationAffectsHistoryForScope(
+                            payload,
+                            activeWorktreeId,
+                        ),
+                    },
                 );
             },
         );
@@ -600,6 +612,7 @@ export function WorkspaceSurfaceApp() {
         activeWorktreeId,
         hydrateProjects,
         ingestGitSnapshot,
+        refreshGitHistory,
         refreshGitProject,
         refreshProjectTabs,
         surfaceLifecycle,

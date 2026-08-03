@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createGitProjectRefreshScheduler } from "./refresh-scheduler";
+import {
+    createGitProjectRefreshScheduler,
+    gitInvalidationAffectsHistory,
+    gitInvalidationAffectsHistoryForScope,
+} from "./refresh-scheduler";
 
 describe("createGitProjectRefreshScheduler", () => {
     afterEach(() => {
@@ -80,5 +84,63 @@ describe("createGitProjectRefreshScheduler", () => {
         await Promise.resolve();
 
         expect(refreshProject).toHaveBeenCalledTimes(2);
+    });
+
+    it("coalesces history refreshes with the project refresh", async () => {
+        vi.useFakeTimers();
+        const refreshHistory = vi.fn().mockResolvedValue(undefined);
+        const refreshProject = vi.fn().mockResolvedValue(undefined);
+        const scheduler = createGitProjectRefreshScheduler({
+            refreshHistory,
+            refreshProject,
+        });
+
+        scheduler.schedule("project-1", "worktree-1", {
+            refreshHistory: true,
+        });
+        scheduler.schedule("project-1", "worktree-1");
+        vi.runAllTimers();
+        await Promise.resolve();
+
+        expect(refreshProject).toHaveBeenCalledTimes(1);
+        expect(refreshHistory).toHaveBeenCalledTimes(1);
+        expect(refreshHistory).toHaveBeenCalledWith("project-1", "worktree-1");
+    });
+
+    it("does not invalidate history for status-only changes", () => {
+        expect(gitInvalidationAffectsHistory("status")).toBe(false);
+        expect(gitInvalidationAffectsHistory("branch")).toBe(true);
+        expect(gitInvalidationAffectsHistory("remote")).toBe(true);
+        expect(gitInvalidationAffectsHistory("worktree")).toBe(true);
+        expect(gitInvalidationAffectsHistory("unknown")).toBe(true);
+    });
+
+    it("refreshes History only in the invalidated workspace scope", () => {
+        const invalidation = {
+            occurredAt: "2026-08-03T12:00:00.000Z",
+            projectId: "project-1",
+            reason: "branch" as const,
+            rootPath: "/tmp/project-worktree",
+            worktreeId: "project-1:worktree:feature",
+        };
+
+        expect(
+            gitInvalidationAffectsHistoryForScope(
+                invalidation,
+                "project-1:worktree:feature",
+            ),
+        ).toBe(true);
+        expect(
+            gitInvalidationAffectsHistoryForScope(
+                invalidation,
+                "project-1:primary",
+            ),
+        ).toBe(false);
+        expect(
+            gitInvalidationAffectsHistoryForScope(
+                { ...invalidation, worktreeId: null },
+                "project-1:primary",
+            ),
+        ).toBe(true);
     });
 });
