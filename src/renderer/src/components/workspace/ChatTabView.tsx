@@ -935,7 +935,6 @@ export const ChatTabView = memo(function ChatTabView({
     )
         ? snapshot.plan
         : null;
-    const runtimeDisplayName = getRuntimeDisplayName(tab.runtimeId);
     const closedSubagentMessage =
         snapshot.parentSessionId &&
         snapshot.parentSessionId !== snapshot.sessionId &&
@@ -3280,7 +3279,7 @@ export const ChatTabView = memo(function ChatTabView({
                                     onRemove={removeDraftAttachment}
                                 />
                             )}
-                            runtimeName={runtimeDisplayName}
+                            runtimeName={catalogRuntimeDisplayName}
                             status={snapshot.status}
                         />
                 </ChatComposerShell>
@@ -4720,24 +4719,6 @@ function StreamingIndicator({
 }
 
 /* ─── Utility functions ─── */
-
-function getRuntimeDisplayName(
-    runtimeId: RuntimeWorkspaceChatTab["runtimeId"],
-) {
-    switch (runtimeId) {
-        case "claude":
-            return "Claude";
-        case "grok":
-            return "Grok";
-        case "kilo":
-            return "Kilo";
-        case "opencode":
-            return "OpenCode";
-        case "codex":
-        default:
-            return "Codex";
-    }
-}
 
 function createEmptySnapshot(
     tab: RuntimeWorkspaceChatTab,
