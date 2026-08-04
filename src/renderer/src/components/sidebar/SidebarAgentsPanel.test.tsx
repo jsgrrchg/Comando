@@ -8,12 +8,8 @@ import type {
     AiHistorySessionSummary,
     AiSessionSnapshot,
     ComandoApi,
-    WorkspaceChatTab,
+    WorkspaceSurfaceAgentPresenceState,
 } from "@shared/ipc";
-import {
-    registerClaudeCodeSidebarSession,
-    resetClaudeCodeSidebarSessionsForTests,
-} from "@renderer/features/terminal/claudeCodeSidebarSession";
 import {
     resetAiStoreRuntimeBuffersForTests,
     useAiStore,
@@ -144,6 +140,7 @@ async function mountSidebarAgentsPanel(
         readonly onRequestWorkspaceAction?: Parameters<
             typeof SidebarAgentsPanel
         >[0]["onRequestWorkspaceAction"];
+        readonly agentPresence?: WorkspaceSurfaceAgentPresenceState;
         readonly workspaceContextKey?: string;
     } = {},
 ): Promise<HTMLDivElement> {
@@ -175,6 +172,7 @@ async function mountSidebarAgentsPanel(
     await act(async () => {
         root.render(
             <SidebarAgentsPanel
+                agentPresence={options.agentPresence}
                 onRequestWorkspaceAction={options.onRequestWorkspaceAction}
                 projectId="project-1"
                 workspaceContextKey={options.workspaceContextKey}
@@ -320,7 +318,6 @@ function dispatchPointerEvent(
 describe("SidebarAgentsPanel history cache", () => {
     beforeEach(() => {
         clearSidebarAgentsHistoryCache();
-        resetClaudeCodeSidebarSessionsForTests();
         resetAiStoreRuntimeBuffersForTests();
         useAiStore.setState((state) => ({
             ...state,
@@ -355,32 +352,75 @@ describe("SidebarAgentsPanel history cache", () => {
         expect(markup).not.toContain("Loading...");
     });
 
-    it("renders an open chat even before it appears in history", async () => {
-        const openTab: WorkspaceChatTab = {
-            createdAt: "2026-04-19T11:00:00.000Z",
-            draft: "",
-            id: "open-tab",
-            kind: "chat",
-            projectId: "project-1",
-            runtimeId: "claude",
-            sessionId: "open-session",
-            title: "Open Session",
-            worktreeId: "worktree-1",
-        };
-        useWorkspaceStore.setState((state) => ({
-            ...state,
-            tabsById: {
-                [openTab.id]: openTab,
+    it("renders an open chat from surface presence before it appears in history", async () => {
+        const container = await mountSidebarAgentsPanel([], {
+            agentPresence: {
+                activeSessionId: "open-session",
+                contextKey: "project-1::worktree-1",
+                projectId: "project-1",
+                sessions: [
+                    {
+                        createdAt: "2026-04-19T11:00:00.000Z",
+                        kind: "ai",
+                        parentSessionId: null,
+                        runtimeId: "claude",
+                        runtimeSessionId: null,
+                        sessionId: "open-session",
+                        status: "idle",
+                        title: "Open Session",
+                        updatedAt: "2026-04-19T11:00:00.000Z",
+                    },
+                ],
+                worktreeId: "worktree-1",
             },
-        }));
-
-        const container = await mountSidebarAgentsPanel([]);
+        });
 
         expect(
             container.querySelector(
                 '.sidebar-agents-row[title="Open Session"]',
             ),
         ).not.toBeNull();
+    });
+
+    it("uses live surface presence for titles, open state, and activity", async () => {
+        const container = await mountSidebarAgentsPanel(
+            [
+                createSummary({ title: "Stale title" }),
+                createSummary({
+                    sessionId: "closed-session",
+                    title: "Closed session",
+                }),
+            ],
+            {
+                agentPresence: {
+                    activeSessionId: "session-1",
+                    contextKey: "project-1::worktree-1",
+                    projectId: "project-1",
+                    sessions: [
+                        {
+                            createdAt: "2026-04-19T09:00:00.000Z",
+                            kind: "ai",
+                            parentSessionId: null,
+                            runtimeId: "codex",
+                            runtimeSessionId: "runtime-session-1",
+                            sessionId: "session-1",
+                            status: "streaming",
+                            title: "Live title",
+                            updatedAt: "2026-04-19T10:05:00.000Z",
+                        },
+                    ],
+                    worktreeId: "worktree-1",
+                },
+            },
+        );
+
+        const row = container.querySelector<HTMLElement>(
+            '.sidebar-agents-row[title="Live title"]',
+        );
+        expect(row).not.toBeNull();
+        expect(row?.dataset.active).toBe("true");
+        expect(row?.textContent).toContain("Working…");
+        expect(container.textContent).toContain("Open");
     });
 
     it("queries the canonical primary worktree supplied by the host", async () => {
@@ -688,7 +728,7 @@ describe("SidebarAgentsPanel history cache", () => {
         ).not.toBeNull();
     });
 
-    it("renders live Claude Code terminal agents alongside real history", () => {
+    it("renders centralized Claude Code terminal presence alongside real history", () => {
         writeSidebarAgentsHistoryCache(
             "project-1",
             "worktree-1",
@@ -701,18 +741,28 @@ describe("SidebarAgentsPanel history cache", () => {
             ],
             100,
         );
-        registerClaudeCodeSidebarSession({
-            cwd: "/workspace",
-            projectId: "project-1",
-            terminalId: "terminal-1",
-            terminalTabId: "terminal-tab-1",
-            title: "Claude Code 1",
-            transcriptSessionId: null,
-            worktreeId: "worktree-1",
-        });
-
         const markup = renderToStaticMarkup(
             <SidebarAgentsPanel
+                agentPresence={{
+                    activeSessionId: null,
+                    contextKey: "project-1::worktree-1",
+                    projectId: "project-1",
+                    sessions: [
+                        {
+                            createdAt: "2026-04-19T09:00:00.000Z",
+                            kind: "terminal",
+                            preview: null,
+                            runtimeId: "claude-code-terminal",
+                            runtimeSessionId: null,
+                            sessionId: "claude-code-terminal:terminal-1",
+                            status: null,
+                            terminalId: "terminal-1",
+                            title: "Claude Code 1",
+                            updatedAt: "2026-04-19T10:00:00.000Z",
+                        },
+                    ],
+                    worktreeId: "worktree-1",
+                }}
                 projectId="project-1"
                 worktreeId="worktree-1"
             />,
@@ -728,7 +778,6 @@ describe("SidebarAgentsPanel history cache", () => {
 describe("SidebarAgentsPanel folders", () => {
     beforeEach(() => {
         clearSidebarAgentsHistoryCache();
-        resetClaudeCodeSidebarSessionsForTests();
         resetAiStoreRuntimeBuffersForTests();
         useAiStore.setState((state) => ({
             ...state,

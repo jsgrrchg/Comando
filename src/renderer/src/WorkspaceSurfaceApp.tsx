@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import type {
+    WorkspaceSurfaceAgentPresenceState,
     WorkspaceSurfaceActionEnvelope,
     WorkspaceSurfaceHardLease,
     WorkspaceSurfaceLifecycleState,
@@ -30,6 +31,7 @@ import {
     resolveCommittedProjectWorktreeId,
 } from "./app/git/context-key";
 import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
+import { collectWorkspaceSurfaceAiAgentPresence } from "./app/workspace/surface-agent-presence";
 import { resolveWorkspaceSurfaceActiveFileState } from "./app/workspace/surface-active-file";
 import { isWorkspaceSurfaceLifecycleCurrent } from "./app/workspace/surface-presentation-lifecycle";
 import {
@@ -49,6 +51,12 @@ import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { findPaneById } from "./app/workspace/tree";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 import { useTerminalRuntimeStore } from "./features/terminal/terminalRuntimeStore";
+import {
+    getClaudeCodeSidebarSessions,
+    reconcileClaudeCodeSidebarSessions,
+    refreshClaudeCodeSidebarSessionTranscript,
+    subscribeClaudeCodeSidebarSessions,
+} from "./features/terminal/claudeCodeSidebarSession";
 
 const descriptor = parseWorkspaceSurfaceRendererDescriptor(
     window.location.search,
@@ -154,6 +162,7 @@ export function WorkspaceSurfaceApp() {
     const applyAiPromptQueueSnapshot = useAiStore(
         (state) => state.applyPromptQueueSnapshot,
     );
+    const aiSessions = useAiStore((state) => state.sessions);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
     const projects = useProjectsStore((state) => state.projects);
     const addProjects = useProjectsStore((state) => state.addProjects);
@@ -169,6 +178,11 @@ export function WorkspaceSurfaceApp() {
     );
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
     const activePaneId = useWorkspaceStore((state) => state.activePaneId);
+    const rootNode = useWorkspaceStore((state) => state.rootNode);
+    const tabsById = useWorkspaceStore((state) => state.tabsById);
+    const [terminalAgentSessions, setTerminalAgentSessions] = useState(() =>
+        getClaudeCodeSidebarSessions(),
+    );
     const activeContext = useWorkspaceStore((state) =>
         state.activeContextKey
             ? (state.contextsByKey[state.activeContextKey] ?? null)
@@ -206,6 +220,68 @@ export function WorkspaceSurfaceApp() {
               activeContext?.worktreeId ?? descriptor?.worktreeId ?? null,
           )
         : null;
+    const agentPresence = useMemo<WorkspaceSurfaceAgentPresenceState | null>(
+        () => {
+            if (!activeContext || !activeProjectId) {
+                return null;
+            }
+
+            const terminalSessionsByTerminalId = new Map(
+                terminalAgentSessions.map((session) => [
+                    session.terminalId,
+                    session,
+                ]),
+            );
+            const activePane = findPaneById(rootNode, activePaneId);
+            const activeTab = activePane?.activeTabId
+                ? tabsById[activePane.activeTabId]
+                : null;
+            const aiSessionPresence = collectWorkspaceSurfaceAiAgentPresence({
+                aiSessions,
+                projectId: activeProjectId,
+                tabsById,
+                worktreeId: activeWorktreeId,
+            });
+            const terminalSessions = terminalAgentSessions.map((session) => ({
+                createdAt: session.createdAt,
+                kind: "terminal" as const,
+                preview: session.preview,
+                runtimeId: session.runtimeId,
+                runtimeSessionId: session.runtimeSessionId ?? null,
+                sessionId: session.sessionId,
+                status: null,
+                terminalId: session.terminalId,
+                title: session.title,
+                updatedAt: session.updatedAt,
+            }));
+
+            return {
+                activeSessionId:
+                    activeTab?.kind === "chat" || activeTab?.kind === "review"
+                        ? activeTab.sessionId
+                        : activeTab?.kind === "terminal"
+                          ? (terminalSessionsByTerminalId.get(
+                                activeTab.terminalId,
+                            )?.sessionId ?? null)
+                        : null,
+                contextKey: activeContext.key,
+                projectId: activeProjectId,
+                sessions: [...aiSessionPresence, ...terminalSessions],
+                worktreeId: activeWorktreeId,
+            };
+        },
+        [
+            activeContext,
+            activePaneId,
+            activeProjectId,
+            activeWorktreeId,
+            aiSessions,
+            rootNode,
+            tabsById,
+            terminalAgentSessions,
+        ],
+    );
+    const publishedAgentPresenceSignatureRef = useRef("");
     const runtimeBinding = useMemo<WorkspaceSurfaceRuntimeBinding | null>(
         () =>
             descriptor
@@ -511,6 +587,57 @@ export function WorkspaceSurfaceApp() {
             unsubscribeGitMenu();
         };
     }, [surfaceLifecycle]);
+
+    useEffect(() => {
+        return subscribeClaudeCodeSidebarSessions(() => {
+            setTerminalAgentSessions(getClaudeCodeSidebarSessions());
+        });
+    }, []);
+
+    useEffect(() => {
+        reconcileClaudeCodeSidebarSessions(Object.values(tabsById));
+    }, [tabsById]);
+
+    useEffect(() => {
+        if (
+            surfaceLifecycle !== "visible" ||
+            terminalAgentSessions.length === 0
+        ) {
+            return;
+        }
+
+        const refresh = () => {
+            for (const session of getClaudeCodeSidebarSessions()) {
+                void refreshClaudeCodeSidebarSessionTranscript(session).catch(
+                    () => undefined,
+                );
+            }
+        };
+        refresh();
+        const intervalId = window.setInterval(refresh, 4_000);
+        return () => {
+            window.clearInterval(intervalId);
+        };
+    }, [surfaceLifecycle, terminalAgentSessions]);
+
+    useEffect(() => {
+        if (surfaceStatus !== "ready" || !agentPresence) {
+            return;
+        }
+        const signature = JSON.stringify(agentPresence);
+        if (publishedAgentPresenceSignatureRef.current === signature) {
+            return;
+        }
+        // Keep the host informed without duplicating message or transcript payloads.
+        void window.comando
+            .publishWorkspaceSurfaceAgentPresence(agentPresence)
+            .then((result) => {
+                if (result.delivered) {
+                    publishedAgentPresenceSignatureRef.current = signature;
+                }
+            })
+            .catch(() => undefined);
+    }, [agentPresence, surfaceLifecycle, surfaceStatus]);
 
     useEffect(() => {
         if (surfaceLifecycle !== "visible") {

@@ -187,6 +187,7 @@ import {
     type WorkspaceScopeActivationRequest,
     type WorkspaceSurfaceDragEvent,
     type WorkspaceSurfaceLeaseReport,
+    type WorkspaceSurfaceAgentPresenceState,
     type WorkspaceSurfaceRuntimeBinding,
     type WorkspaceSurfaceRuntimeResync,
     type WorkspaceSurfaceRegistrySnapshot,
@@ -262,6 +263,7 @@ import { workspaceSurfaceManager } from "@main/workspace/surface-manager";
 import { workspaceRuntimeOwnership } from "@main/workspace/runtime-ownership-coordinator";
 import {
     isWorkspaceSurfaceActiveFileState,
+    isWorkspaceSurfaceAgentPresenceState,
     isWorkspaceSurfaceActionRequest,
     isWorkspaceSurfaceActionCompletion,
     isWorkspaceSurfaceFileRevealRequest,
@@ -2300,6 +2302,18 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                 throw new Error("A valid workspace surface active file is required.");
             }
             return workspaceSurfaceManager.publishSurfaceActiveFile(
+                event.sender,
+                input,
+            );
+        },
+    );
+    ipcMain.handle(
+        IPC_CHANNELS.publishWorkspaceSurfaceAgentPresence,
+        (event, input: WorkspaceSurfaceAgentPresenceState) => {
+            if (!isWorkspaceSurfaceAgentPresenceState(input)) {
+                throw new Error("A valid workspace surface agent presence is required.");
+            }
+            return workspaceSurfaceManager.publishSurfaceAgentPresence(
                 event.sender,
                 input,
             );

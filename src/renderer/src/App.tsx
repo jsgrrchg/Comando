@@ -24,6 +24,7 @@ import type {
     SettingsWindowCategory,
     SettingsSnapshot,
     WorkspaceSurfaceActionRequest,
+    WorkspaceSurfaceAgentPresenceState,
     WorkspaceSurfaceFileRevealRequest,
     WorkspaceInspectorView,
 } from "@shared/ipc";
@@ -304,6 +305,12 @@ export function WorkspaceHostApp() {
         (workspaceNavigationHydrated ? null : persistedActiveProjectId);
     const [workspaceSurfaceActionError, setWorkspaceSurfaceActionError] =
         useState<string | null>(null);
+    const [agentPresenceByContext, setAgentPresenceByContext] = useState<
+        Readonly<Record<string, WorkspaceSurfaceAgentPresenceState>>
+    >({});
+    const activeAgentPresence = workspaceActiveContextKey
+        ? (agentPresenceByContext[workspaceActiveContextKey] ?? null)
+        : null;
     const workspaceSurfaceActionErrorTimerRef = useRef<number | null>(null);
     const workspaceSurfaceDragBindingRef = useRef<{
         readonly contextKey: string;
@@ -941,6 +948,27 @@ export function WorkspaceHostApp() {
             );
         });
     }, [reportWorkspaceSurfaceActionError]);
+
+    useEffect(() => {
+        if (!isWorkspaceHostRenderer) {
+            return;
+        }
+        const api = getComandoApi();
+        if (!api) {
+            return;
+        }
+        return api.onWorkspaceSurfaceAgentPresenceChanged((presence) => {
+            setAgentPresenceByContext((current) => {
+                if (current[presence.contextKey] === presence) {
+                    return current;
+                }
+                return {
+                    ...current,
+                    [presence.contextKey]: presence,
+                };
+            });
+        });
+    }, []);
 
     useEffect(() => {
         if (!isWorkspaceHostRenderer) {
@@ -4094,6 +4122,7 @@ export function WorkspaceHostApp() {
             panels={{
                 agents: (
                     <SidebarAgentsPanel
+                        agentPresence={activeAgentPresence}
                         filter={agentsFilter}
                         onRequestWorkspaceAction={requestWorkspaceSurfaceAction}
                         projectId={activeProjectId}

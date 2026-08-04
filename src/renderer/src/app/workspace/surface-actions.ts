@@ -17,6 +17,11 @@ import {
     createEmptyComposerParts,
 } from "@renderer/components/workspace/chat/composerParts";
 import { launchClaudeCodeTerminal } from "@renderer/features/terminal/claudeCodeTerminal";
+import {
+    closeClaudeCodeSidebarSession,
+    getClaudeCodeSidebarSessionByTerminalId,
+    renameClaudeCodeSidebarSession,
+} from "@renderer/features/terminal/claudeCodeSidebarSession";
 
 type AiState = ReturnType<typeof useAiStore.getState>;
 type WorkspaceState = ReturnType<typeof useWorkspaceStore.getState>;
@@ -88,6 +93,12 @@ export async function executeWorkspaceSurfaceAction(
         case "focus-terminal":
             await focusTerminal(request.terminalId, workspace);
             return;
+        case "rename-terminal":
+            await renameTerminal(request.terminalId, request.title);
+            return;
+        case "close-terminal":
+            await closeTerminal(request.terminalId, workspace);
+            return;
         case "new-claude-terminal":
             await dependencies.launchClaudeTerminal({
                 projectId: request.projectId,
@@ -147,6 +158,37 @@ async function focusTerminal(
     }
 
     await workspace.selectTab(pane.id, tab.id);
+}
+
+async function renameTerminal(terminalId: string, title: string): Promise<void> {
+    const session = getClaudeCodeSidebarSessionByTerminalId(terminalId);
+    if (!session) {
+        throw new Error("The requested terminal is no longer open.");
+    }
+
+    // The surface owns the terminal registry, including manual-title precedence.
+    await renameClaudeCodeSidebarSession(session, title);
+}
+
+async function closeTerminal(
+    terminalId: string,
+    workspace: WorkspaceState,
+): Promise<void> {
+    const session = getClaudeCodeSidebarSessionByTerminalId(terminalId);
+    if (session) {
+        await closeClaudeCodeSidebarSession(session);
+        return;
+    }
+
+    const tab = Object.values(workspace.tabsById).find(
+        (candidate) =>
+            candidate.kind === "terminal" &&
+            candidate.terminalId === terminalId,
+    );
+    if (!tab) {
+        throw new Error("The requested terminal is no longer open.");
+    }
+    await workspace.closeTab(tab.id);
 }
 
 async function addFilesToChat(

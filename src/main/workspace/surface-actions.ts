@@ -6,6 +6,7 @@ import type {
     WorkspaceSurfaceActionContext,
     WorkspaceSurfaceActionCompletion,
     WorkspaceSurfaceActiveFileState,
+    WorkspaceSurfaceAgentPresenceState,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 
@@ -47,7 +48,13 @@ export function isWorkspaceSurfaceActionRequest(
         case "new-chat":
             return isKnownAiRuntimeId(input.runtimeId);
         case "focus-terminal":
+        case "close-terminal":
             return isNonEmptyString(input.terminalId, MAX_SHORT_TEXT_LENGTH);
+        case "rename-terminal":
+            return (
+                isNonEmptyString(input.terminalId, MAX_SHORT_TEXT_LENGTH) &&
+                isNonEmptyString(input.title, MAX_SHORT_TEXT_LENGTH)
+            );
         case "github-list":
             return (
                 (input.listKind === "issues" ||
@@ -116,6 +123,25 @@ export function isWorkspaceSurfaceActiveFileState(
     );
 }
 
+export function isWorkspaceSurfaceAgentPresenceState(
+    input: unknown,
+): input is WorkspaceSurfaceAgentPresenceState {
+    if (!isRecord(input) || !hasValidContext(input)) {
+        return false;
+    }
+    if (
+        input.activeSessionId !== null &&
+        !isNonEmptyString(input.activeSessionId, MAX_SHORT_TEXT_LENGTH)
+    ) {
+        return false;
+    }
+    if (!Array.isArray(input.sessions) || input.sessions.length > MAX_ACTION_ITEMS) {
+        return false;
+    }
+
+    return input.sessions.every(isWorkspaceSurfaceAgentPresence);
+}
+
 export function isWorkspaceSurfaceActionCompletion(
     input: unknown,
 ): input is WorkspaceSurfaceActionCompletion {
@@ -155,6 +181,47 @@ function hasValidContext(input: Record<string, unknown>): boolean {
         isNonEmptyString(input.contextKey, MAX_SHORT_TEXT_LENGTH) &&
         isNonEmptyString(input.projectId, MAX_SHORT_TEXT_LENGTH) &&
         isNullableString(input.worktreeId, MAX_SHORT_TEXT_LENGTH)
+    );
+}
+
+function isAiSessionStatusOrNull(input: unknown): boolean {
+    return (
+        input === null ||
+        input === "idle" ||
+        input === "starting" ||
+        input === "streaming" ||
+        input === "waiting_permission" ||
+        input === "waiting_user_input" ||
+        input === "error"
+    );
+}
+
+function isWorkspaceSurfaceAgentPresence(input: unknown): boolean {
+    if (
+        !isRecord(input) ||
+        !isNonEmptyString(input.sessionId, MAX_SHORT_TEXT_LENGTH) ||
+        !isNonEmptyString(input.title, MAX_SHORT_TEXT_LENGTH) ||
+        !isNonEmptyString(input.createdAt, MAX_SHORT_TEXT_LENGTH) ||
+        !isNonEmptyString(input.updatedAt, MAX_SHORT_TEXT_LENGTH) ||
+        !isNullableString(input.runtimeSessionId, MAX_SHORT_TEXT_LENGTH)
+    ) {
+        return false;
+    }
+
+    if (input.kind === "ai") {
+        return (
+            isKnownAiRuntimeId(input.runtimeId) &&
+            isNullableString(input.parentSessionId, MAX_SHORT_TEXT_LENGTH) &&
+            isAiSessionStatusOrNull(input.status)
+        );
+    }
+
+    return (
+        input.kind === "terminal" &&
+        input.runtimeId === "claude-code-terminal" &&
+        input.status === null &&
+        isNonEmptyString(input.terminalId, MAX_SHORT_TEXT_LENGTH) &&
+        isNullableString(input.preview, MAX_SHORT_TEXT_LENGTH)
     );
 }
 
