@@ -24,18 +24,18 @@ export type SidebarAgentSessionSummary = Omit<
 
 export interface ClaudeCodeSidebarSessionSummary
     extends Omit<AiHistorySessionSummary, "runtimeId"> {
+    readonly cwd: string;
+    readonly defaultTitle: string;
     readonly isTerminalAgent: true;
     readonly runtimeId: typeof CLAUDE_CODE_TERMINAL_RUNTIME_ID;
     readonly terminalId: string;
+    readonly terminalTabId: string;
     readonly transcriptMtimeMs: number | null;
+    readonly transcriptSessionId: string | null;
 }
 
 type MutableClaudeCodeSidebarSession = ClaudeCodeSidebarSessionSummary & {
-    readonly cwd: string;
     readonly customTitle: string | null;
-    readonly defaultTitle: string;
-    readonly terminalTabId: string;
-    readonly transcriptSessionId: string | null;
 };
 
 export interface RegisterClaudeCodeSidebarSessionInput {
@@ -286,19 +286,8 @@ function notifyClaudeCodeSidebarSessionListeners(): void {
 function toPublicSession(
     session: MutableClaudeCodeSidebarSession,
 ): ClaudeCodeSidebarSessionSummary {
-    const {
-        cwd,
-        customTitle,
-        defaultTitle,
-        terminalTabId,
-        transcriptSessionId,
-        ...publicSession
-    } = session;
-    void cwd;
+    const { customTitle, ...publicSession } = session;
     void customTitle;
-    void defaultTitle;
-    void terminalTabId;
-    void transcriptSessionId;
     return publicSession;
 }
 
