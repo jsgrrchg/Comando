@@ -31,6 +31,7 @@ import {
     resolveCommittedProjectWorktreeId,
 } from "./app/git/context-key";
 import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
+import { collectWorkspaceSurfaceAiAgentPresence } from "./app/workspace/surface-agent-presence";
 import { resolveWorkspaceSurfaceActiveFileState } from "./app/workspace/surface-active-file";
 import { isWorkspaceSurfaceLifecycleCurrent } from "./app/workspace/surface-presentation-lifecycle";
 import {
@@ -56,7 +57,6 @@ import {
     refreshClaudeCodeSidebarSessionTranscript,
     subscribeClaudeCodeSidebarSessions,
 } from "./features/terminal/claudeCodeSidebarSession";
-import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
 
 const descriptor = parseWorkspaceSurfaceRendererDescriptor(
     window.location.search,
@@ -236,26 +236,11 @@ export function WorkspaceSurfaceApp() {
             const activeTab = activePane?.activeTabId
                 ? tabsById[activePane.activeTabId]
                 : null;
-            const aiSessionsInTabs = Object.values(tabsById).flatMap((tab) => {
-                if (tab.kind !== "chat" && tab.kind !== "review") {
-                    return [];
-                }
-                const snapshot = aiSessions[tab.sessionId]?.snapshot ?? null;
-                return [
-                    {
-                        createdAt: tab.createdAt,
-                        kind: "ai" as const,
-                        parentSessionId: snapshot?.parentSessionId ?? null,
-                        runtimeId: snapshot?.runtimeId ?? tab.runtimeId,
-                        runtimeSessionId: snapshot?.runtimeSessionId ?? null,
-                        sessionId: tab.sessionId,
-                        status: snapshot?.status ?? null,
-                        title: snapshot
-                            ? getAiSessionDisplayTitle(snapshot)
-                            : tab.title,
-                        updatedAt: snapshot?.updatedAt ?? tab.createdAt,
-                    },
-                ];
+            const aiSessionPresence = collectWorkspaceSurfaceAiAgentPresence({
+                aiSessions,
+                projectId: activeProjectId,
+                tabsById,
+                worktreeId: activeWorktreeId,
             });
             const terminalSessions = terminalAgentSessions.map((session) => ({
                 createdAt: session.createdAt,
@@ -281,7 +266,7 @@ export function WorkspaceSurfaceApp() {
                         : null,
                 contextKey: activeContext.key,
                 projectId: activeProjectId,
-                sessions: [...aiSessionsInTabs, ...terminalSessions],
+                sessions: [...aiSessionPresence, ...terminalSessions],
                 worktreeId: activeWorktreeId,
             };
         },
