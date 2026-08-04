@@ -4,11 +4,13 @@ import type {
     PersistedWorkspaceContext,
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceActiveFileState,
+    WorkspaceSurfaceAgentPresenceState,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 import {
     doesWorkspaceSurfaceActionMatchContext,
     isWorkspaceSurfaceActiveFileState,
+    isWorkspaceSurfaceAgentPresenceState,
     isWorkspaceSurfaceFileRevealRequest,
     isWorkspaceSurfaceActionRequest,
 } from "./surface-actions";
@@ -144,6 +146,39 @@ describe("workspace surface actions", () => {
                 projectId: context.projectId,
                 relativePath: request.relativePath,
                 worktreeId: null,
+            }),
+        ).toBe(false);
+    });
+
+    it("accepts compact, scoped agent presence without transcript data", () => {
+        const presence: WorkspaceSurfaceAgentPresenceState = {
+            ...context,
+            activeSessionId: "session-1",
+            sessions: [
+                {
+                    createdAt: "2026-08-04T12:00:00.000Z",
+                    parentSessionId: null,
+                    runtimeId: "codex",
+                    runtimeSessionId: "runtime-1",
+                    sessionId: "session-1",
+                    status: "streaming",
+                    title: "Live session",
+                    updatedAt: "2026-08-04T12:00:01.000Z",
+                },
+            ],
+        };
+
+        expect(isWorkspaceSurfaceAgentPresenceState(presence)).toBe(true);
+        expect(
+            isWorkspaceSurfaceAgentPresenceState({
+                ...presence,
+                sessions: [{ ...presence.sessions[0], title: "" }],
+            }),
+        ).toBe(false);
+        expect(
+            isWorkspaceSurfaceAgentPresenceState({
+                ...presence,
+                sessions: Array.from({ length: 101 }, () => presence.sessions[0]),
             }),
         ).toBe(false);
     });

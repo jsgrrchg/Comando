@@ -6,6 +6,7 @@ import type {
     WorkspaceSurfaceActionContext,
     WorkspaceSurfaceActionCompletion,
     WorkspaceSurfaceActiveFileState,
+    WorkspaceSurfaceAgentPresenceState,
     WorkspaceSurfaceFileRevealRequest,
 } from "@shared/ipc";
 
@@ -116,6 +117,36 @@ export function isWorkspaceSurfaceActiveFileState(
     );
 }
 
+export function isWorkspaceSurfaceAgentPresenceState(
+    input: unknown,
+): input is WorkspaceSurfaceAgentPresenceState {
+    if (!isRecord(input) || !hasValidContext(input)) {
+        return false;
+    }
+    if (
+        input.activeSessionId !== null &&
+        !isNonEmptyString(input.activeSessionId, MAX_SHORT_TEXT_LENGTH)
+    ) {
+        return false;
+    }
+    if (!Array.isArray(input.sessions) || input.sessions.length > MAX_ACTION_ITEMS) {
+        return false;
+    }
+
+    return input.sessions.every(
+        (session) =>
+            isRecord(session) &&
+            isNonEmptyString(session.sessionId, MAX_SHORT_TEXT_LENGTH) &&
+            isKnownAiRuntimeId(session.runtimeId) &&
+            isNonEmptyString(session.title, MAX_SHORT_TEXT_LENGTH) &&
+            isNonEmptyString(session.createdAt, MAX_SHORT_TEXT_LENGTH) &&
+            isNonEmptyString(session.updatedAt, MAX_SHORT_TEXT_LENGTH) &&
+            isNullableString(session.parentSessionId, MAX_SHORT_TEXT_LENGTH) &&
+            isNullableString(session.runtimeSessionId, MAX_SHORT_TEXT_LENGTH) &&
+            isAiSessionStatusOrNull(session.status),
+    );
+}
+
 export function isWorkspaceSurfaceActionCompletion(
     input: unknown,
 ): input is WorkspaceSurfaceActionCompletion {
@@ -155,6 +186,18 @@ function hasValidContext(input: Record<string, unknown>): boolean {
         isNonEmptyString(input.contextKey, MAX_SHORT_TEXT_LENGTH) &&
         isNonEmptyString(input.projectId, MAX_SHORT_TEXT_LENGTH) &&
         isNullableString(input.worktreeId, MAX_SHORT_TEXT_LENGTH)
+    );
+}
+
+function isAiSessionStatusOrNull(input: unknown): boolean {
+    return (
+        input === null ||
+        input === "idle" ||
+        input === "starting" ||
+        input === "streaming" ||
+        input === "waiting_permission" ||
+        input === "waiting_user_input" ||
+        input === "error"
     );
 }
 

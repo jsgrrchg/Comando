@@ -168,6 +168,8 @@ export const IPC_CHANNELS = {
     resyncWorkspaceSurfaceRuntime: "workspace:resync-surface-runtime",
     publishWorkspaceSurfaceActiveFile:
         "workspace:publish-surface-active-file",
+    publishWorkspaceSurfaceAgentPresence:
+        "workspace:publish-surface-agent-presence",
     revealWorkspaceSurfaceFileInHostTree:
         "workspace:reveal-surface-file-in-host-tree",
     notifyWorkspaceSurfaceFocused: "workspace:notify-surface-focused",
@@ -258,6 +260,8 @@ export const IPC_EVENTS = {
     workspaceSurfaceActionStatus: "workspace:surface-action-status",
     workspaceSurfaceActiveFileChanged:
         "workspace:surface-active-file-changed",
+    workspaceSurfaceAgentPresenceChanged:
+        "workspace:surface-agent-presence-changed",
     workspaceSurfaceFileRevealRequested:
         "workspace:surface-file-reveal-requested",
     workspaceSurfaceGitScopeMenuRequested:
@@ -2669,6 +2673,27 @@ export interface WorkspaceSurfaceActiveFileState
     readonly relativePath: string | null;
 }
 
+/**
+ * A small live projection sent to the host so its inspector can reflect tabs
+ * that live inside an isolated workspace surface without receiving transcripts.
+ */
+export interface WorkspaceSurfaceAgentPresence {
+    readonly createdAt: string;
+    readonly parentSessionId: string | null;
+    readonly runtimeId: AiRuntimeId;
+    readonly runtimeSessionId: string | null;
+    readonly sessionId: string;
+    readonly status: AiSessionStatus | null;
+    readonly title: string;
+    readonly updatedAt: string;
+}
+
+export interface WorkspaceSurfaceAgentPresenceState
+    extends WorkspaceSurfaceActionContext {
+    readonly activeSessionId: string | null;
+    readonly sessions: readonly WorkspaceSurfaceAgentPresence[];
+}
+
 export interface WorkspaceSurfaceGitHubComposerItem {
     readonly number: number;
     readonly title: string;
@@ -4259,6 +4284,9 @@ export interface ComandoApi {
     publishWorkspaceSurfaceActiveFile: (
         state: WorkspaceSurfaceActiveFileState,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
+    publishWorkspaceSurfaceAgentPresence: (
+        state: WorkspaceSurfaceAgentPresenceState,
+    ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
     revealWorkspaceSurfaceFileInHostTree: (
         request: WorkspaceSurfaceFileRevealRequest,
     ) => Promise<WorkspaceSurfaceActionDeliveryResult>;
@@ -4447,6 +4475,9 @@ export interface ComandoApi {
     ) => () => void;
     onWorkspaceSurfaceActiveFileChanged: (
         listener: (state: WorkspaceSurfaceActiveFileState) => void,
+    ) => () => void;
+    onWorkspaceSurfaceAgentPresenceChanged: (
+        listener: (state: WorkspaceSurfaceAgentPresenceState) => void,
     ) => () => void;
     onWorkspaceSurfaceFileRevealRequested: (
         listener: (request: WorkspaceSurfaceFileRevealRequest) => void,

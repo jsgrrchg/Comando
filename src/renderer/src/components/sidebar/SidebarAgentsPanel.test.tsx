@@ -9,6 +9,7 @@ import type {
     AiSessionSnapshot,
     ComandoApi,
     WorkspaceChatTab,
+    WorkspaceSurfaceAgentPresenceState,
 } from "@shared/ipc";
 import {
     registerClaudeCodeSidebarSession,
@@ -144,6 +145,7 @@ async function mountSidebarAgentsPanel(
         readonly onRequestWorkspaceAction?: Parameters<
             typeof SidebarAgentsPanel
         >[0]["onRequestWorkspaceAction"];
+        readonly agentPresence?: WorkspaceSurfaceAgentPresenceState;
         readonly workspaceContextKey?: string;
     } = {},
 ): Promise<HTMLDivElement> {
@@ -175,6 +177,7 @@ async function mountSidebarAgentsPanel(
     await act(async () => {
         root.render(
             <SidebarAgentsPanel
+                agentPresence={options.agentPresence}
                 onRequestWorkspaceAction={options.onRequestWorkspaceAction}
                 projectId="project-1"
                 workspaceContextKey={options.workspaceContextKey}
@@ -381,6 +384,46 @@ describe("SidebarAgentsPanel history cache", () => {
                 '.sidebar-agents-row[title="Open Session"]',
             ),
         ).not.toBeNull();
+    });
+
+    it("uses live surface presence for titles, open state, and activity", async () => {
+        const container = await mountSidebarAgentsPanel(
+            [
+                createSummary({ title: "Stale title" }),
+                createSummary({
+                    sessionId: "closed-session",
+                    title: "Closed session",
+                }),
+            ],
+            {
+                agentPresence: {
+                    activeSessionId: "session-1",
+                    contextKey: "project-1::worktree-1",
+                    projectId: "project-1",
+                    sessions: [
+                        {
+                            createdAt: "2026-04-19T09:00:00.000Z",
+                            parentSessionId: null,
+                            runtimeId: "codex",
+                            runtimeSessionId: "runtime-session-1",
+                            sessionId: "session-1",
+                            status: "streaming",
+                            title: "Live title",
+                            updatedAt: "2026-04-19T10:05:00.000Z",
+                        },
+                    ],
+                    worktreeId: "worktree-1",
+                },
+            },
+        );
+
+        const row = container.querySelector<HTMLElement>(
+            '.sidebar-agents-row[title="Live title"]',
+        );
+        expect(row).not.toBeNull();
+        expect(row?.dataset.active).toBe("true");
+        expect(row?.textContent).toContain("Working…");
+        expect(container.textContent).toContain("Open");
     });
 
     it("queries the canonical primary worktree supplied by the host", async () => {

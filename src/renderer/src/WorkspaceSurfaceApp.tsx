@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import type {
+    WorkspaceSurfaceAgentPresenceState,
     WorkspaceSurfaceActionEnvelope,
     WorkspaceSurfaceHardLease,
     WorkspaceSurfaceLifecycleState,
@@ -49,6 +50,7 @@ import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { findPaneById } from "./app/workspace/tree";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 import { useTerminalRuntimeStore } from "./features/terminal/terminalRuntimeStore";
+import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
 
 const descriptor = parseWorkspaceSurfaceRendererDescriptor(
     window.location.search,
@@ -154,6 +156,7 @@ export function WorkspaceSurfaceApp() {
     const applyAiPromptQueueSnapshot = useAiStore(
         (state) => state.applyPromptQueueSnapshot,
     );
+    const aiSessions = useAiStore((state) => state.sessions);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
     const projects = useProjectsStore((state) => state.projects);
     const addProjects = useProjectsStore((state) => state.addProjects);
@@ -169,6 +172,8 @@ export function WorkspaceSurfaceApp() {
     );
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
     const activePaneId = useWorkspaceStore((state) => state.activePaneId);
+    const rootNode = useWorkspaceStore((state) => state.rootNode);
+    const tabsById = useWorkspaceStore((state) => state.tabsById);
     const activeContext = useWorkspaceStore((state) =>
         state.activeContextKey
             ? (state.contextsByKey[state.activeContextKey] ?? null)
@@ -206,6 +211,59 @@ export function WorkspaceSurfaceApp() {
               activeContext?.worktreeId ?? descriptor?.worktreeId ?? null,
           )
         : null;
+    const agentPresence = useMemo<WorkspaceSurfaceAgentPresenceState | null>(
+        () => {
+            if (!activeContext || !activeProjectId) {
+                return null;
+            }
+
+            const activePane = findPaneById(rootNode, activePaneId);
+            const activeTab = activePane?.activeTabId
+                ? tabsById[activePane.activeTabId]
+                : null;
+            const sessions = Object.values(tabsById).flatMap((tab) => {
+                if (tab.kind !== "chat" && tab.kind !== "review") {
+                    return [];
+                }
+                const snapshot = aiSessions[tab.sessionId]?.snapshot ?? null;
+                return [
+                    {
+                        createdAt: tab.createdAt,
+                        parentSessionId: snapshot?.parentSessionId ?? null,
+                        runtimeId: snapshot?.runtimeId ?? tab.runtimeId,
+                        runtimeSessionId: snapshot?.runtimeSessionId ?? null,
+                        sessionId: tab.sessionId,
+                        status: snapshot?.status ?? null,
+                        title: snapshot
+                            ? getAiSessionDisplayTitle(snapshot)
+                            : tab.title,
+                        updatedAt: snapshot?.updatedAt ?? tab.createdAt,
+                    },
+                ];
+            });
+
+            return {
+                activeSessionId:
+                    activeTab?.kind === "chat" || activeTab?.kind === "review"
+                        ? activeTab.sessionId
+                        : null,
+                contextKey: activeContext.key,
+                projectId: activeProjectId,
+                sessions,
+                worktreeId: activeWorktreeId,
+            };
+        },
+        [
+            activeContext,
+            activePaneId,
+            activeProjectId,
+            activeWorktreeId,
+            aiSessions,
+            rootNode,
+            tabsById,
+        ],
+    );
+    const publishedAgentPresenceSignatureRef = useRef("");
     const runtimeBinding = useMemo<WorkspaceSurfaceRuntimeBinding | null>(
         () =>
             descriptor
@@ -511,6 +569,25 @@ export function WorkspaceSurfaceApp() {
             unsubscribeGitMenu();
         };
     }, [surfaceLifecycle]);
+
+    useEffect(() => {
+        if (surfaceStatus !== "ready" || !agentPresence) {
+            return;
+        }
+        const signature = JSON.stringify(agentPresence);
+        if (publishedAgentPresenceSignatureRef.current === signature) {
+            return;
+        }
+        // Keep the host informed without duplicating message or transcript payloads.
+        void window.comando
+            .publishWorkspaceSurfaceAgentPresence(agentPresence)
+            .then((result) => {
+                if (result.delivered) {
+                    publishedAgentPresenceSignatureRef.current = signature;
+                }
+            })
+            .catch(() => undefined);
+    }, [agentPresence, surfaceLifecycle, surfaceStatus]);
 
     useEffect(() => {
         if (surfaceLifecycle !== "visible") {

@@ -201,6 +201,7 @@ import {
     type WorkspaceSurfaceActionCompletion,
     type WorkspaceSurfaceActionEnvelope,
     type WorkspaceSurfaceActiveFileState,
+    type WorkspaceSurfaceAgentPresenceState,
     type WorkspaceSurfaceFileRevealRequest,
     type WorkspaceSurfaceActionStatus,
     type WorkspaceSurfaceContentInsets,
@@ -1099,6 +1100,22 @@ const comandoApi: ComandoApi = {
             );
         };
     },
+    onWorkspaceSurfaceAgentPresenceChanged: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            state: WorkspaceSurfaceAgentPresenceState,
+        ) => listener(state);
+        ipcRenderer.on(
+            IPC_EVENTS.workspaceSurfaceAgentPresenceChanged,
+            handleEvent,
+        );
+        return () => {
+            ipcRenderer.removeListener(
+                IPC_EVENTS.workspaceSurfaceAgentPresenceChanged,
+                handleEvent,
+            );
+        };
+    },
     onWorkspaceSurfaceFileRevealRequested: (listener) => {
         const handleEvent = (
             _event: Electron.IpcRendererEvent,
@@ -1337,6 +1354,11 @@ const comandoApi: ComandoApi = {
     publishWorkspaceSurfaceActiveFile: (state) =>
         ipcRenderer.invoke(
             IPC_CHANNELS.publishWorkspaceSurfaceActiveFile,
+            state,
+        ),
+    publishWorkspaceSurfaceAgentPresence: (state) =>
+        ipcRenderer.invoke(
+            IPC_CHANNELS.publishWorkspaceSurfaceAgentPresence,
             state,
         ),
     revealWorkspaceSurfaceFileInHostTree: (request) =>

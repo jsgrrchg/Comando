@@ -14,7 +14,9 @@ import type {
     AiHistorySessionSummary,
     AiRuntimeDescriptor,
     AiRuntimeId,
+    AiSessionStatus,
     ComandoApi,
+    WorkspaceSurfaceAgentPresenceState,
     WorkspaceSurfaceActionRequest,
 } from "@shared/ipc";
 import {
@@ -155,6 +157,7 @@ const CLAUDE_CODE_NOT_FOUND_MESSAGE =
     "The claude command was not found in Comando's PATH. Your shell may still resolve it.";
 
 export function SidebarAgentsPanel({
+    agentPresence,
     filter,
     onRequestWorkspaceAction,
     projectId,
@@ -164,6 +167,7 @@ export function SidebarAgentsPanel({
     workspaceContextKey,
     worktreeId,
 }: {
+    readonly agentPresence?: WorkspaceSurfaceAgentPresenceState | null;
     readonly filter?: string;
     readonly onRequestWorkspaceAction?: (
         request: WorkspaceSurfaceActionRequest,
@@ -214,6 +218,8 @@ export function SidebarAgentsPanel({
         }
         return null;
     });
+    const activeSessionId =
+        agentPresence?.activeSessionId ?? activePaneSessionId;
     const historyScopeKey = useMemo(
         () => getSidebarAgentsHistoryCacheKey(projectId, worktreeId),
         [projectId, worktreeId],
@@ -305,7 +311,7 @@ export function SidebarAgentsPanel({
         loadedHistoryScopeKey === historyScopeKey
             ? sessions
             : pendingHistoryCache?.sessions ?? EMPTY_AGENTS_SESSIONS;
-    const openSessionFallbacks = useMemo(() => {
+    const localOpenSessionFallbacks = useMemo(() => {
         const fallbacks = new Map<string, AiHistorySessionSummary>();
         const sourceKinds = new Map<string, "chat" | "review">();
 
@@ -359,16 +365,82 @@ export function SidebarAgentsPanel({
 
         return [...fallbacks.values()];
     }, [aiSessions, projectId, tabsById, worktreeId]);
+    const presenceOpenSessionFallbacks = useMemo(() => {
+        if (!agentPresence) {
+            return [];
+        }
+        return agentPresence.sessions.map((session) => ({
+            createdAt: session.createdAt,
+            messageCount: 0,
+            parentSessionId: session.parentSessionId,
+            pinnedAt: null,
+            preview: null,
+            projectId: agentPresence.projectId,
+            runtimeId: session.runtimeId,
+            runtimeSessionId: session.runtimeSessionId,
+            sessionId: session.sessionId,
+            title: session.title,
+            updatedAt: session.updatedAt,
+            worktreeId: agentPresence.worktreeId,
+        }));
+    }, [agentPresence]);
+    const openSessionFallbacks = useMemo(() => {
+        const sessionsById = new Map<string, AiHistorySessionSummary>(
+            presenceOpenSessionFallbacks.map((session) => [
+                session.sessionId,
+                session,
+            ]),
+        );
+        for (const session of localOpenSessionFallbacks) {
+            if (!sessionsById.has(session.sessionId)) {
+                sessionsById.set(session.sessionId, session);
+            }
+        }
+        return [...sessionsById.values()];
+    }, [localOpenSessionFallbacks, presenceOpenSessionFallbacks]);
+    const agentPresenceStatusBySessionId = useMemo(
+        () =>
+            new Map<string, AiSessionStatus | null>(
+                (agentPresence?.sessions ?? []).map((session) => [
+                    session.sessionId,
+                    session.status,
+                ]),
+            ),
+        [agentPresence],
+    );
+    const historySessionsWithLivePresence = useMemo(() => {
+        const liveSessionsById = new Map(
+            presenceOpenSessionFallbacks.map((session) => [
+                session.sessionId,
+                session,
+            ]),
+        );
+        return cachedHistorySessions.map((session) => {
+            const liveSession = liveSessionsById.get(session.sessionId);
+            if (!liveSession) {
+                return session;
+            }
+            // The active surface has newer title and hierarchy metadata than history.
+            return {
+                ...session,
+                parentSessionId: liveSession.parentSessionId,
+                runtimeId: liveSession.runtimeId,
+                runtimeSessionId: liveSession.runtimeSessionId,
+                title: liveSession.title,
+                updatedAt: liveSession.updatedAt,
+            };
+        });
+    }, [cachedHistorySessions, presenceOpenSessionFallbacks]);
     const visibleHistorySessions = useMemo(
         () =>
             mergeOpenSessionFallbacks(
-                cachedHistorySessions,
+                historySessionsWithLivePresence,
                 openSessionFallbacks.filter(
                     (session) =>
                         !deletedSessionIdsRef.current.has(session.sessionId),
                 ),
             ),
-        [cachedHistorySessions, openSessionFallbacks],
+        [historySessionsWithLivePresence, openSessionFallbacks],
     );
     const scopedTerminalAgentSessions = useMemo(
         () =>
@@ -1320,7 +1392,9 @@ export function SidebarAgentsPanel({
     ]);
 
     const openSessionIds = useMemo(() => {
-        const ids = new Set<string>();
+        const ids = new Set(
+            (agentPresence?.sessions ?? []).map((session) => session.sessionId),
+        );
         for (const tab of Object.values(tabsById)) {
             if (tab.kind === "chat" || tab.kind === "review") {
                 ids.add(tab.sessionId);
@@ -1334,7 +1408,7 @@ export function SidebarAgentsPanel({
             }
         }
         return ids;
-    }, [tabsById, terminalAgentSessionByTerminalId]);
+    }, [agentPresence, tabsById, terminalAgentSessionByTerminalId]);
 
     const workingOrderRef = useRef<Map<string, number>>(new Map());
     const workingCounterRef = useRef(0);
@@ -1373,8 +1447,12 @@ export function SidebarAgentsPanel({
         const map = workingOrderRef.current;
         let changed = false;
 
-        for (const [sessionId, entry] of Object.entries(aiSessions)) {
-            const working = isSessionWorking(entry);
+        for (const session of visibleSessions) {
+            const sessionId = session.sessionId;
+            const working = isSessionWorking(
+                aiSessions[sessionId],
+                agentPresenceStatusBySessionId.get(sessionId),
+            );
             const tracked = map.has(sessionId);
             if (working && !tracked) {
                 workingCounterRef.current += 1;
@@ -1387,7 +1465,7 @@ export function SidebarAgentsPanel({
         }
 
         for (const trackedId of Array.from(map.keys())) {
-            if (!(trackedId in aiSessions)) {
+            if (!visibleSessions.some((session) => session.sessionId === trackedId)) {
                 map.delete(trackedId);
                 changed = true;
             }
@@ -1396,7 +1474,7 @@ export function SidebarAgentsPanel({
         if (changed) {
             setWorkingOrderRevision((value) => value + 1);
         }
-    }, [aiSessions]);
+    }, [agentPresenceStatusBySessionId, aiSessions, visibleSessions]);
 
     useEffect(() => {
         if (hasQuery || loadedHistoryScopeKey !== historyScopeKey) {
@@ -1708,7 +1786,8 @@ export function SidebarAgentsPanel({
                         onRenameDraftChange={setRenameDraft}
                         onToggleCollapsed={handleToggleCollapsed}
                         onTogglePinned={handleTogglePinned}
-                        activeSessionId={activePaneSessionId}
+                        activeSessionId={activeSessionId}
+                        activityStatusBySessionId={agentPresenceStatusBySessionId}
                         collapsedSessionIds={collapsedSessionIds}
                         collapseEnabled={!hasQuery}
                         renameDraft={renameDraft}
@@ -1731,7 +1810,8 @@ export function SidebarAgentsPanel({
                         onRenameDraftChange={setRenameDraft}
                         onToggleCollapsed={handleToggleCollapsed}
                         onTogglePinned={handleTogglePinned}
-                        activeSessionId={activePaneSessionId}
+                        activeSessionId={activeSessionId}
+                        activityStatusBySessionId={agentPresenceStatusBySessionId}
                         collapsedSessionIds={collapsedSessionIds}
                         collapseEnabled={!hasQuery}
                         renameDraft={renameDraft}
@@ -1761,7 +1841,8 @@ export function SidebarAgentsPanel({
                         onToggleFolder={handleToggleFolder}
                         renderFolderContents={(folder) => (
                             <SidebarAgentsSection
-                                activeSessionId={activePaneSessionId}
+                                activeSessionId={activeSessionId}
+                                activityStatusBySessionId={agentPresenceStatusBySessionId}
                                 cancelRename={cancelRename}
                                 collapsedSessionIds={collapsedSessionIds}
                                 collapseEnabled={!hasQuery}
@@ -1806,7 +1887,8 @@ export function SidebarAgentsPanel({
                             onRenameDraftChange={setRenameDraft}
                             onToggleCollapsed={handleToggleCollapsed}
                             onTogglePinned={handleTogglePinned}
-                            activeSessionId={activePaneSessionId}
+                            activeSessionId={activeSessionId}
+                            activityStatusBySessionId={agentPresenceStatusBySessionId}
                             collapsedSessionIds={collapsedSessionIds}
                             collapseEnabled={!hasQuery}
                             renameDraft={renameDraft}
@@ -1884,6 +1966,7 @@ export function buildSidebarAgentsNewAgentMenuEntries({
 
 function SidebarAgentsSection({
     activeSessionId,
+    activityStatusBySessionId,
     cancelRename,
     collapsedSessionIds,
     collapseEnabled,
@@ -1903,6 +1986,10 @@ function SidebarAgentsSection({
     title,
 }: {
     readonly activeSessionId: string | null;
+    readonly activityStatusBySessionId: ReadonlyMap<
+        string,
+        AiSessionStatus | null
+    >;
     readonly cancelRename: () => void;
     readonly collapsedSessionIds: ReadonlySet<string>;
     readonly collapseEnabled: boolean;
@@ -1971,6 +2058,9 @@ function SidebarAgentsSection({
                             }
                         >
                             <SidebarAgentsItem
+                                activityStatus={activityStatusBySessionId.get(
+                                    row.session.sessionId,
+                                )}
                                 depth={row.depth}
                                 hasChildren={row.hasChildren}
                                 isActive={
@@ -2017,6 +2107,7 @@ function SidebarAgentsSection({
 }
 
 function SidebarAgentsItem({
+    activityStatus,
     depth,
     hasChildren,
     isActive,
@@ -2037,6 +2128,7 @@ function SidebarAgentsItem({
     renameDraft,
     session,
 }: {
+    readonly activityStatus: AiSessionStatus | null | undefined;
     readonly depth: number;
     readonly hasChildren: boolean;
     readonly isActive: boolean;
@@ -2078,7 +2170,10 @@ function SidebarAgentsItem({
     const isPinned = isSessionPinned(session);
     const isTerminalAgent = isClaudeCodeSidebarSession(session);
     const canOpenInPane = !isTerminalAgent;
-    const activityState = useAgentActivityIndicator(session.sessionId);
+    const activityState = useAgentActivityIndicator(
+        session.sessionId,
+        activityStatus,
+    );
     const activity = activityState?.indicator ?? null;
     const indentStyle =
         depth > 0
@@ -2542,13 +2637,15 @@ function getSidebarAgentInternalDropTargetAtPoint(
 
 function useAgentActivityIndicator(
     sessionId: string,
+    liveStatus: AiSessionStatus | null | undefined,
 ): SidebarAgentActivity {
     const localError = useAiStore(
         (state) => state.sessions[sessionId]?.localError ?? null,
     );
-    const status = useAiStore(
+    const storedStatus = useAiStore(
         (state) => state.sessions[sessionId]?.snapshot?.status ?? null,
     );
+    const status = liveStatus ?? storedStatus;
     return useMemo(
         () => {
             const indicator = resolveWorkspaceChatTabActivityIndicator({
@@ -2679,13 +2776,16 @@ function PinIcon({ active }: { readonly active: boolean }) {
 
 function isSessionWorking(
     entry: ReturnType<typeof useAiStore.getState>["sessions"][string] | undefined,
+    liveStatus: AiSessionStatus | null | undefined,
 ): boolean {
-    if (!entry) {
+    if (!entry && liveStatus === undefined) {
         return false;
     }
     const indicator = resolveWorkspaceChatTabActivityIndicator({
-        localError: entry.localError ?? null,
-        snapshot: entry.snapshot ? { status: entry.snapshot.status } : null,
+        localError: entry?.localError ?? null,
+        snapshot: (liveStatus ?? entry?.snapshot?.status)
+            ? { status: liveStatus ?? entry?.snapshot?.status ?? "idle" }
+            : null,
     });
     return indicator?.tone === "working";
 }

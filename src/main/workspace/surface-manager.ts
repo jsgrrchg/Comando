@@ -22,6 +22,7 @@ import type {
     WorkspaceSurfaceActionRequest,
     WorkspaceSurfaceActionStatus,
     WorkspaceSurfaceActiveFileState,
+    WorkspaceSurfaceAgentPresenceState,
     WorkspaceSurfaceActivationResult,
     WorkspaceSurfaceEnvironmentDiagnostic,
     WorkspaceSurfaceCloseResult,
@@ -649,6 +650,17 @@ export class WorkspaceSurfaceManager {
             webContents,
             state,
             IPC_EVENTS.workspaceSurfaceActiveFileChanged,
+        );
+    }
+
+    publishSurfaceAgentPresence(
+        webContents: WebContents,
+        state: WorkspaceSurfaceAgentPresenceState,
+    ): WorkspaceSurfaceActionDeliveryResult {
+        return this.#forwardActiveSurfaceContextEvent(
+            webContents,
+            state,
+            IPC_EVENTS.workspaceSurfaceAgentPresenceChanged,
         );
     }
 
