@@ -3,6 +3,8 @@ import type {
     AiHistoryMigrationInput,
     AiHistoryMigrationResult,
     AiHistoryStorageHealth,
+    AiTranscriptCompatibilityCleanupInput,
+    AiTranscriptCompatibilityCleanupResult,
     AiMessage,
     AiOpenTranscriptTail,
     AiOpenTranscriptTailCheckpoint,
@@ -59,6 +61,7 @@ import {
     type NativeAiCloseSessionOutput,
     type NativeAiHistorySessionSummary,
     type NativeAiHistoryStorageHealth,
+    type NativeAiTranscriptCompatibilityCleanupResult,
     type NativeAiMigrateSessionHistoryOutput,
     type NativeAiLaunchRuntimeAuthOutput,
     type NativeAiReviewCaptureOutput,
@@ -633,9 +636,35 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         );
     }
 
+    async repairTranscriptStorage(
+        sessionId: string,
+    ): Promise<AiTranscriptStorageState> {
+        const output = await this.#client.request<unknown>(
+            "ai_repair_transcript_storage",
+            { sessionId },
+        );
+        return requireTranscriptResponse<NativeAiTranscriptStorageState>(
+            output,
+            sessionId,
+            "repaired storage state",
+        );
+    }
+
     async getHistoryStorageHealth(): Promise<AiHistoryStorageHealth> {
         return await this.#client.request<NativeAiHistoryStorageHealth>(
             "ai_get_history_storage_health",
+        );
+    }
+
+    async cleanupVerifiedTranscriptCompatibility(
+        input: AiTranscriptCompatibilityCleanupInput,
+    ): Promise<AiTranscriptCompatibilityCleanupResult> {
+        return await this.#client.request<NativeAiTranscriptCompatibilityCleanupResult>(
+            "ai_cleanup_verified_transcript_compatibility",
+            {
+                retentionAuthorized: input.retentionAuthorized,
+                sessionId: input.sessionId,
+            },
         );
     }
 

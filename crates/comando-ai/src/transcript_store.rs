@@ -48,6 +48,13 @@ pub(crate) struct TranscriptStoreHealth {
     pub schema_version: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)] // Invoked by the internal coverage diagnostic during incident investigation.
+pub(crate) struct LegacyTranscriptBackfillProgress {
+    pub complete: bool,
+    pub next_offset: usize,
+}
+
 #[derive(Clone)]
 pub(crate) struct TranscriptStore {
     database_path: PathBuf,
@@ -187,6 +194,36 @@ impl TranscriptStore {
             .map_err(|error| transcript_sql("read native transcript entry", error))
     }
 
+    pub(crate) fn transcript_entry_ids(
+        &self,
+        session_id: &SessionId,
+        entry_ids: &[String],
+    ) -> AiResult<BTreeSet<String>> {
+        if !self.database_path.exists() || entry_ids.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+        let connection = self.open(session_id, false)?;
+        let placeholders = std::iter::repeat_n("?", entry_ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT entry_id
+             FROM transcript_entries
+             WHERE session_id = ?
+                AND entry_id IN ({placeholders})"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| transcript_sql("prepare transcript entry lookup", error))?;
+        let parameters =
+            std::iter::once(session_id.0.as_str()).chain(entry_ids.iter().map(String::as_str));
+        statement
+            .query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))
+            .map_err(|error| transcript_sql("query transcript entries", error))?
+            .collect::<Result<BTreeSet<_>, _>>()
+            .map_err(|error| transcript_sql("read transcript entry", error))
+    }
+
     pub(crate) fn begin_legacy_transcript_backfill(&self, session_id: &SessionId) -> AiResult<()> {
         if !self.uses_legacy_transcript_backfill(session_id)? {
             return Err(AiError::InvalidInput(
@@ -239,6 +276,35 @@ impl TranscriptStore {
             return Ok(false);
         }
         Ok(self.legacy_transcript_backfill_next_offset(session_id)? >= legacy_record_count)
+    }
+
+    #[allow(dead_code)] // Kept read-only so diagnostics cannot create or advance a backfill.
+    pub(crate) fn legacy_transcript_backfill_progress(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<LegacyTranscriptBackfillProgress> {
+        if !self.database_path.exists() {
+            return Ok(LegacyTranscriptBackfillProgress {
+                complete: false,
+                next_offset: 0,
+            });
+        }
+        let connection = self.open(session_id, false)?;
+        let progress = connection
+            .query_row(
+                "SELECT legacy_transcript_backfill_complete, legacy_transcript_backfill_next_offset
+                 FROM transcript_sessions
+                 WHERE session_id = ?1",
+                params![session_id.0],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()
+            .map_err(|error| transcript_sql("load legacy transcript backfill progress", error))?;
+        let (complete, next_offset) = progress.unwrap_or((1, 0));
+        Ok(LegacyTranscriptBackfillProgress {
+            complete: complete == 1,
+            next_offset: next_offset.max(0) as usize,
+        })
     }
 
     pub(crate) fn invalidate_legacy_transcript_backfill_from(
@@ -558,10 +624,26 @@ impl TranscriptStore {
                     })?;
                 if is_sealed == 0 {
                     open_block_ids.push(block_id.clone());
+                } else {
+                    let sealed_turn_id: Option<String> = transaction
+                        .query_row(
+                            "SELECT turn_id FROM transcript_blocks
+                             WHERE session_id = ?1 AND block_id = ?2",
+                            params![session_id.0, block_id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|error| {
+                            transcript_sql("load sealed transcript block turn", error)
+                        })?;
+                    if sealed_turn_id.as_deref() != Some(turn_id) {
+                        return Err(AiError::InvalidInput(
+                            "Transcript block is already sealed by another turn".to_string(),
+                        ));
+                    }
                 }
             }
 
-            // Blocks already sealed by another turn are durable and must not be reassigned.
+            // Only blocks still owned by this terminal tail may be sealed here.
             seal_blocks(&transaction, session_id, turn_id, &open_block_ids)?;
             let metadata = load_block_metadata_by_ids(&transaction, session_id, &block_ids)?;
             transaction
@@ -820,6 +902,144 @@ impl TranscriptStore {
             params![session_id.0, block_id],
         )?;
         Ok(Some((metadata, entries)))
+    }
+
+    pub(crate) fn load_sealed_message_entries_page(
+        &self,
+        session_id: &SessionId,
+        offset: usize,
+        limit: usize,
+    ) -> AiResult<(usize, Vec<NativeAiTranscriptEntryEnvelope>)> {
+        if !self.has_data_source() {
+            return Ok((0, Vec::new()));
+        }
+        let connection = self.open(session_id, false)?;
+        let total: i64 = connection
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM transcript_entries AS entries
+                 JOIN transcript_blocks AS blocks
+                    ON blocks.session_id = entries.session_id
+                    AND blocks.block_id = entries.block_id
+                 WHERE entries.session_id = ?1
+                    AND blocks.is_sealed = 1
+                    AND entries.kind IN ('\"message\"', '\"thinking\"')
+                    AND entries.payload_ref IS NOT NULL",
+                params![session_id.0],
+                |row| row.get(0),
+            )
+            .map_err(|error| transcript_sql("count sealed transcript messages", error))?;
+        let entries = query_entries(
+            &connection,
+            session_id,
+            "SELECT
+                entries.sequence,
+                entries.entry_id,
+                entries.kind,
+                entries.created_at,
+                entries.updated_at,
+                entries.summary_json,
+                entries.payload_ref
+             FROM transcript_entries AS entries
+             JOIN transcript_blocks AS blocks
+                ON blocks.session_id = entries.session_id
+                AND blocks.block_id = entries.block_id
+             WHERE entries.session_id = ?1
+                AND blocks.is_sealed = 1
+                AND entries.kind IN ('\"message\"', '\"thinking\"')
+                AND entries.payload_ref IS NOT NULL
+             ORDER BY entries.sequence ASC
+             LIMIT ?2 OFFSET ?3",
+            params![session_id.0, limit as i64, offset as i64],
+        )?;
+        Ok((
+            sql_to_usize(total, "sealed transcript message count")?,
+            entries,
+        ))
+    }
+
+    pub(crate) fn sealed_message_entry_ids(&self, session_id: &SessionId) -> AiResult<Vec<String>> {
+        if !self.has_data_source() {
+            return Ok(Vec::new());
+        }
+        let connection = self.open(session_id, false)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT entries.entry_id
+                 FROM transcript_entries AS entries
+                 JOIN transcript_blocks AS blocks
+                    ON blocks.session_id = entries.session_id
+                    AND blocks.block_id = entries.block_id
+                 WHERE entries.session_id = ?1
+                    AND blocks.is_sealed = 1
+                    AND entries.kind IN ('\"message\"', '\"thinking\"')
+                    AND entries.payload_ref IS NOT NULL
+                 ORDER BY entries.sequence ASC",
+            )
+            .map_err(|error| transcript_sql("prepare sealed transcript message IDs", error))?;
+        statement
+            .query_map(params![session_id.0], |row| row.get::<_, String>(0))
+            .map_err(|error| transcript_sql("query sealed transcript message IDs", error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| transcript_sql("read sealed transcript message ID", error))
+    }
+
+    pub(crate) fn has_open_blocks(&self, session_id: &SessionId) -> AiResult<bool> {
+        if !self.has_data_source() {
+            return Ok(false);
+        }
+        let connection = self.open(session_id, false)?;
+        connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM transcript_blocks
+                    WHERE session_id = ?1 AND is_sealed = 0
+                 )",
+                params![session_id.0],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|exists| exists == 1)
+            .map_err(|error| transcript_sql("detect open transcript blocks", error))
+    }
+
+    pub(crate) fn discard_open_tail_for_repair(&self, session_id: &SessionId) -> AiResult<()> {
+        if !self.has_data_source() {
+            return Ok(());
+        }
+        let mut connection = self.open(session_id, true)?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| transcript_sql("start transcript repair cleanup", error))?;
+        // Open rows are provisional. Removing them prevents a repair from
+        // attaching compatibility entries to a block owned by another turn.
+        transaction
+            .execute(
+                "DELETE FROM transcript_open_tails WHERE session_id = ?1",
+                params![session_id.0],
+            )
+            .map_err(|error| transcript_sql("clear transcript repair tail", error))?;
+        transaction
+            .execute(
+                "DELETE FROM transcript_entries
+                 WHERE session_id = ?1
+                    AND block_id IN (
+                        SELECT block_id FROM transcript_blocks
+                        WHERE session_id = ?1 AND is_sealed = 0
+                    )",
+                params![session_id.0],
+            )
+            .map_err(|error| transcript_sql("clear provisional transcript entries", error))?;
+        transaction
+            .execute(
+                "DELETE FROM transcript_blocks
+                 WHERE session_id = ?1 AND is_sealed = 0",
+                params![session_id.0],
+            )
+            .map_err(|error| transcript_sql("clear provisional transcript blocks", error))?;
+        transaction
+            .commit()
+            .map_err(|error| transcript_sql("commit transcript repair cleanup", error))?;
+        Ok(())
     }
 
     fn prepare_payloads(
@@ -2950,7 +3170,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_open_tail_reconciles_a_foreign_sealed_block() {
+    fn terminal_open_tail_rejects_a_foreign_sealed_block() {
         let temp = tempfile::tempdir().unwrap();
         let session_id = SessionId("foreign-sealed-tail".to_string());
         let store = TranscriptStore::new(temp.path());
@@ -2986,20 +3206,11 @@ mod tests {
             })
             .unwrap();
 
-        let metadata = store
+        let error = store
             .reconcile_terminal_open_tail(&session_id, "turn-b")
-            .unwrap();
-
-        assert!(store.load_open_tail(&session_id).unwrap().is_none());
-        assert_eq!(metadata.len(), 2);
-        assert_eq!(store.load_block_metadata(&session_id).unwrap().len(), 2);
-        assert_eq!(
-            store
-                .reconcile_terminal_open_tail(&session_id, "turn-b")
-                .unwrap()
-                .len(),
-            2
-        );
+            .unwrap_err();
+        assert!(error.to_string().contains("already sealed by another turn"));
+        assert!(store.load_open_tail(&session_id).unwrap().is_some());
 
         let connection = store.open(&session_id, false).unwrap();
         let (sealed, open): (i64, i64) = connection
@@ -3013,7 +3224,7 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!((sealed, open), (2, 0));
+        assert_eq!((sealed, open), (1, 1));
         let owners = connection
             .prepare(
                 "SELECT turn_id
@@ -3026,10 +3237,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(
-            owners,
-            vec![Some("turn-a".to_string()), Some("turn-b".to_string())]
-        );
+        assert_eq!(owners, vec![Some("turn-a".to_string()), None]);
     }
 
     #[test]

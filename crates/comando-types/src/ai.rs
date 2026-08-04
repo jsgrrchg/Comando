@@ -912,10 +912,30 @@ pub struct NativeAiHistoryStorageHealth {
     pub healthy: bool,
     pub storage_version: u32,
     pub native_session_count: usize,
+    pub legacy_session_count: usize,
+    pub migrating_session_count: usize,
+    pub repair_required_session_count: usize,
+    pub native_verified_session_count: usize,
+    pub compatibility_cleanup_eligible_session_count: usize,
     pub legacy_fallback_available: bool,
     pub migration_manifest_exists: bool,
     pub orphaned_session_dirs: usize,
     pub latest_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptCompatibilityCleanupInput {
+    pub session_id: SessionId,
+    /// The caller's retention policy must opt in after a stable migration release.
+    pub retention_authorized: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiTranscriptCompatibilityCleanupResult {
+    pub session_id: SessionId,
+    pub removed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -609,7 +609,7 @@ describe("AiService history", () => {
         }
     });
 
-    it("does not mark a terminal tail as recovered when reconciliation fails", async () => {
+    it("keeps a readable snapshot available when terminal-tail repair fails", async () => {
         const snapshot = createSnapshot({
             activeTurnStartedAt: null,
             status: "idle",
@@ -643,15 +643,14 @@ describe("AiService history", () => {
         });
 
         try {
-            await expect(service.getSessionSnapshot(snapshot.sessionId)).rejects.toThrow(
-                "reconciliation unavailable",
-            );
-            await expect(service.getSessionSnapshot(snapshot.sessionId)).rejects.toThrow(
-                "reconciliation unavailable",
+            await expect(service.getSessionSnapshot(snapshot.sessionId)).resolves.toMatchObject({
+                sessionId: snapshot.sessionId,
+            });
+            await vi.waitFor(() =>
+                expect(reconcileTerminalOpenTranscriptTail).toHaveBeenCalled(),
             );
 
-            expect(loadOpenTranscriptTail).toHaveBeenCalledTimes(2);
-            expect(reconcileTerminalOpenTranscriptTail).toHaveBeenCalled();
+            expect(loadOpenTranscriptTail).toHaveBeenCalledOnce();
         } finally {
             service.close();
         }

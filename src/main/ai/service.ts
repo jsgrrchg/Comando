@@ -1385,11 +1385,14 @@ export class AiService {
         });
         if (this.#usesBlockNativeTranscript(sessionId)) {
             // Historical sessions cannot receive the terminal event that
-            // would normally seal an interrupted tail after a restart.
-            await this.#recoverTranscriptTail(sessionId, {
+            // would normally seal an interrupted tail after a restart. Repair
+            // runs independently so a retry cannot hide a readable snapshot.
+            void this.#recoverTranscriptTail(sessionId, {
                 sealInterruptedTail: !isResyncEligibleAiSessionStatus(
                     persistedSnapshot.status,
                 ),
+            }).catch((error: unknown) => {
+                debugBenignError("ai.service.recoverTranscriptTailForSnapshot", error);
             });
         }
         return this.#toRendererSessionSnapshot(

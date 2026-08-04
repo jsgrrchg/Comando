@@ -220,6 +220,8 @@ pub const AI_COMMANDS: &[&str] = &[
     "ai_load_transcript_payload",
     "ai_load_transcript_payloads",
     "ai_get_transcript_storage_state",
+    "ai_repair_transcript_storage",
+    "ai_cleanup_verified_transcript_compatibility",
     "ai_load_session_snapshot",
     "ai_list_session_runtime_mappings",
     "ai_set_session_pinned",

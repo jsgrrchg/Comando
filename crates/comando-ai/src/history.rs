@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -12,10 +12,10 @@ use comando_types::ai::{
     NativeAiLoadSessionTranscriptPageInput, NativeAiOpenTranscriptTail,
     NativeAiRuntimeSessionMapping, NativeAiSessionSnapshot, NativeAiSessionStatus,
     NativeAiSessionTranscriptPage, NativeAiTranscriptBlock, NativeAiTranscriptBlockMetadata,
-    NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptEntryEnvelope,
-    NativeAiTranscriptEntryKind, NativeAiTranscriptEntrySummary, NativeAiTranscriptPayload,
-    NativeAiTranscriptPayloadsOutput, NativeAiTranscriptStorageMode,
-    NativeAiTranscriptStorageState,
+    NativeAiTranscriptBlockMetadataOutput, NativeAiTranscriptCompatibilityCleanupResult,
+    NativeAiTranscriptEntryEnvelope, NativeAiTranscriptEntryKind, NativeAiTranscriptEntrySummary,
+    NativeAiTranscriptPayload, NativeAiTranscriptPayloadsOutput, NativeAiTranscriptStorageMode,
+    NativeAiTranscriptStorageState, NativeAiTranscriptTerminalStatus,
 };
 use comando_types::ids::{ProjectId, RuntimeId, RuntimeSessionId, SessionId, WorktreeId};
 use rusqlite::{Connection, OptionalExtension};
@@ -29,7 +29,9 @@ use crate::error::{AiError, AiResult};
 use crate::events::now_iso8601;
 use crate::storage_work_metrics::{AiStorageWorkMetricsSnapshot, StorageWorkMetrics};
 pub use crate::transcript_store::{AiTranscriptPayload, AiTranscriptPayloadWrite};
-use crate::transcript_store::{TRANSCRIPT_SCHEMA_VERSION, TranscriptStore};
+use crate::transcript_store::{
+    LegacyTranscriptBackfillProgress, TRANSCRIPT_SCHEMA_VERSION, TranscriptStore,
+};
 
 pub const HISTORY_FORMAT_VERSION: u32 = 1;
 const AI_DIR: &str = "ai";
@@ -40,11 +42,13 @@ const SESSION_TRANSCRIPT_FILE: &str = "transcript.jsonl";
 const SESSION_INDEX_FILE: &str = "index.json";
 const SESSION_COMPACT_STATE_FILE: &str = "compact-state.json";
 const SESSION_TRANSCRIPT_WRITE_STATE_FILE: &str = "transcript-write-state.json";
+const SESSION_TRANSCRIPT_OWNERSHIP_FILE: &str = "transcript-ownership.json";
 const SESSION_TOOL_DETAILS_FILE: &str = "tool-details.json";
 const SESSION_TOOL_DETAILS_DIR: &str = "tool-details";
 const DEFAULT_PAGE_LIMIT: usize = 50;
 const MAX_PAGE_LIMIT: usize = 200;
 const LEGACY_TRANSCRIPT_BACKFILL_PAGE_SIZE: usize = 256;
+const NATIVE_WINDOW_TRANSCRIPT_TURN_ID: &str = "native-history-window";
 const SESSION_PREVIEW_MAX_BYTES: usize = 280;
 const SESSION_PREVIEW_SUFFIX: &str = "...";
 const MB: u64 = 1024 * 1024;
@@ -254,6 +258,30 @@ pub struct AiTranscriptIndex {
     pub indexed_transcript_bytes: u64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Internal incident diagnostic; it is intentionally not part of the app API.
+pub(crate) struct AiTranscriptCoverageAudit {
+    pub session_fingerprint: String,
+    pub legacy_record_count: usize,
+    pub legacy_sequence_fingerprint: String,
+    pub legacy_index_valid: bool,
+    pub sealed_block_count: usize,
+    pub sealed_entry_count: usize,
+    pub native_sequence_fingerprint: String,
+    pub unavailable_payload_count: usize,
+    pub missing_legacy_entry_count: usize,
+    pub out_of_order_legacy_entry_count: usize,
+    pub mismatched_legacy_payload_count: usize,
+    pub open_tail_present: bool,
+    pub open_tail_entry_count: usize,
+    pub open_tail_terminal: bool,
+    pub backfill_uses_legacy: bool,
+    pub backfill_complete: bool,
+    pub backfill_next_offset: usize,
+    pub native_covers_legacy: bool,
+}
+
 impl AiTranscriptIndex {
     fn empty() -> Self {
         Self {
@@ -389,6 +417,29 @@ struct TranscriptWriteSessionMetadata {
     updated_at: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TranscriptOwnership {
+    Legacy,
+    Migrating,
+    NativeVerified,
+    RepairRequired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptOwnershipManifest {
+    version: u32,
+    ownership: TranscriptOwnership,
+    updated_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_source_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_source_record_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_source_next_offset: Option<usize>,
+}
+
 impl AiHistoryStore {
     pub fn new(app_data_dir: impl Into<PathBuf>) -> AiResult<Self> {
         let app_data_dir = app_data_dir.into();
@@ -459,6 +510,12 @@ impl AiHistoryStore {
         }
         if !self.transcript_path(&metadata.session_id).exists() {
             self.create_empty_transcript(&metadata.session_id)?;
+        }
+        if !self
+            .transcript_ownership_path(&metadata.session_id)
+            .exists()
+        {
+            self.save_transcript_ownership(&metadata.session_id, TranscriptOwnership::Legacy)?;
         }
         Ok(())
     }
@@ -594,6 +651,10 @@ impl AiHistoryStore {
         messages: Vec<Value>,
     ) -> AiResult<()> {
         self.recover_if_needed(session_id)?;
+        if self.load_transcript_ownership(session_id)? == Some(TranscriptOwnership::NativeVerified)
+        {
+            return self.save_native_transcript_window(session_id, messages);
+        }
         let mut metadata = self.load_metadata(session_id)?;
         self.ensure_session_dir(session_id)?;
         let transcript_path = self.transcript_path(session_id);
@@ -708,6 +769,12 @@ impl AiHistoryStore {
                     reuse_len,
                     &stale_legacy_entry_ids,
                 )?;
+            let ownership = if self.transcript_store(session_id).has_data_source() {
+                TranscriptOwnership::Migrating
+            } else {
+                TranscriptOwnership::Legacy
+            };
+            self.save_transcript_ownership(session_id, ownership)?;
         }
         self.save_index(session_id, &next_index)?;
         self.save_metadata(&metadata)?;
@@ -724,6 +791,42 @@ impl AiHistoryStore {
             return Ok(None);
         }
         self.recover_if_needed(&input.session_id)?;
+        let transcript_store = self.transcript_store(&input.session_id);
+        // History must use the same verified source as Chat without materializing every block.
+        if self.transcript_ownership_for_read(&input.session_id, &transcript_store)?
+            == TranscriptOwnership::NativeVerified
+        {
+            let limit = normalize_page_limit(input.limit);
+            let (total_messages, entries) = transcript_store.load_sealed_message_entries_page(
+                &input.session_id,
+                input.offset,
+                limit,
+            )?;
+            let messages = entries
+                .into_iter()
+                .map(|entry| {
+                    let payload_ref = entry.payload_ref.ok_or_else(|| {
+                        AiError::Internal("Sealed transcript message has no payload".to_string())
+                    })?;
+                    let payload = transcript_store.load_payload(
+                        &input.session_id,
+                        &payload_ref,
+                        comando_types::ai::AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX,
+                    )?;
+                    Ok(payload
+                        .value
+                        .get("message")
+                        .cloned()
+                        .unwrap_or(payload.value))
+                })
+                .collect::<AiResult<Vec<_>>>()?;
+            return Ok(Some(NativeAiSessionTranscriptPage {
+                session_id: input.session_id,
+                offset: input.offset.min(total_messages),
+                total_messages,
+                messages,
+            }));
+        }
         let index = self.load_or_repair_index(&input.session_id)?;
         let offset = input.offset.min(index.len());
         let limit = normalize_page_limit(input.limit);
@@ -756,8 +859,21 @@ impl AiHistoryStore {
         payloads: Vec<AiTranscriptPayloadWrite>,
     ) -> AiResult<Vec<NativeAiTranscriptBlockMetadata>> {
         self.ensure_session_dir(session_id)?;
-        self.transcript_store(session_id)
-            .seal_turn(session_id, turn_id, entries, payloads)
+        let result = self
+            .transcript_store(session_id)
+            .seal_turn(session_id, turn_id, entries, payloads);
+        match &result {
+            Ok(_) => {
+                self.refresh_transcript_ownership(session_id)?;
+            }
+            Err(AiError::InvalidInput(message))
+                if message.contains("already sealed by another turn") =>
+            {
+                self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+            }
+            Err(_) => {}
+        }
+        result
     }
 
     pub fn reconcile_terminal_open_transcript_tail(
@@ -765,8 +881,21 @@ impl AiHistoryStore {
         session_id: &SessionId,
         turn_id: &str,
     ) -> AiResult<Vec<NativeAiTranscriptBlockMetadata>> {
-        self.transcript_store(session_id)
-            .reconcile_terminal_open_tail(session_id, turn_id)
+        let result = self
+            .transcript_store(session_id)
+            .reconcile_terminal_open_tail(session_id, turn_id);
+        match &result {
+            Ok(_) => {
+                self.refresh_transcript_ownership(session_id)?;
+            }
+            Err(AiError::InvalidInput(message))
+                if message.contains("already sealed by another turn") =>
+            {
+                self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+            }
+            Err(_) => {}
+        }
+        result
     }
 
     pub fn checkpoint_open_transcript_tail(
@@ -897,13 +1026,251 @@ impl AiHistoryStore {
         })
     }
 
+    fn save_native_transcript_window(
+        &self,
+        session_id: &SessionId,
+        messages: Vec<Value>,
+    ) -> AiResult<()> {
+        let entries_and_payloads = messages
+            .iter()
+            .cloned()
+            .map(|message| legacy_transcript_entry(session_id, message))
+            .collect::<AiResult<Vec<_>>>()?;
+        let candidate_entry_ids = entries_and_payloads
+            .iter()
+            .map(|(entry, _)| entry.id.clone())
+            .collect::<Vec<_>>();
+        let transcript_store = self.transcript_store(session_id);
+        let open_tail = transcript_store.load_open_tail(session_id)?;
+        if open_tail
+            .as_ref()
+            .is_some_and(|tail| tail.turn_id != NATIVE_WINDOW_TRANSCRIPT_TURN_ID)
+        {
+            // A different runtime-owned tail cannot be safely merged with a
+            // full compatibility window, so preserve that window as fallback.
+            self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+            return self.save_transcript_window(session_id, messages);
+        }
+        let mut persisted_entry_ids = BTreeSet::new();
+        for entry_ids in candidate_entry_ids.chunks(500) {
+            persisted_entry_ids
+                .extend(transcript_store.transcript_entry_ids(session_id, entry_ids)?);
+        }
+        let open_entry_ids = open_tail
+            .as_ref()
+            .map(|tail| {
+                tail.entries
+                    .iter()
+                    .map(|entry| entry.id.as_str())
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let mut entries_by_id = BTreeMap::new();
+        let mut payloads_by_id = BTreeMap::new();
+        if let Some(tail) = &open_tail {
+            for entry in &tail.entries {
+                entries_by_id.insert(entry.id.clone(), entry.clone());
+            }
+            for payload in &tail.payloads {
+                payloads_by_id.insert(payload.payload_ref.clone(), payload.clone());
+            }
+        }
+        let mut entry_order = Vec::new();
+        let mut terminal_status = Some(NativeAiTranscriptTerminalStatus::Completed);
+        for ((entry, payload), message) in entries_and_payloads.into_iter().zip(&messages) {
+            let is_open = open_entry_ids.contains(entry.id.as_str());
+            if !is_open && persisted_entry_ids.contains(&entry.id) {
+                continue;
+            }
+            terminal_status = terminal_status.and_then(|_| transcript_terminal_status(message));
+            entry_order.push(entry.id.clone());
+            payloads_by_id.insert(payload.payload_ref.clone(), payload);
+            entries_by_id.insert(entry.id.clone(), entry);
+        }
+        for entry_id in entries_by_id.keys() {
+            if !entry_order.contains(entry_id) {
+                entry_order.push(entry_id.clone());
+                terminal_status = None;
+            }
+        }
+        if !entry_order.is_empty() {
+            let entries = entry_order
+                .iter()
+                .filter_map(|entry_id| entries_by_id.get(entry_id).cloned())
+                .collect::<Vec<_>>();
+            let payloads = entries
+                .iter()
+                .filter_map(|entry| entry.payload_ref.as_ref())
+                .filter_map(|payload_ref| payloads_by_id.get(payload_ref).cloned())
+                .collect::<Vec<_>>();
+            let entry_revisions = entry_order
+                .iter()
+                .enumerate()
+                .map(
+                    |(ordinal, entry_id)| comando_types::ai::NativeAiOpenTranscriptEntryRef {
+                        entry_id: entry_id.clone(),
+                        entry_revision: 1,
+                        ordinal,
+                    },
+                )
+                .collect();
+            transcript_store.checkpoint_open_tail(NativeAiCheckpointOpenTranscriptTailInput {
+                session_id: session_id.clone(),
+                turn_id: NATIVE_WINDOW_TRANSCRIPT_TURN_ID.to_string(),
+                terminal_status: terminal_status.clone(),
+                entries,
+                payloads,
+                removed_entry_ids: Vec::new(),
+                entry_order: entry_revisions,
+            })?;
+            if terminal_status.is_some() {
+                transcript_store
+                    .reconcile_terminal_open_tail(session_id, NATIVE_WINDOW_TRANSCRIPT_TURN_ID)?;
+            }
+        }
+        let mut metadata = self.load_metadata(session_id)?;
+        metadata.message_count = messages.len();
+        metadata.preview = derive_session_preview(messages.iter());
+        metadata.updated_at = now_iso8601();
+        self.save_metadata(&metadata)
+    }
+
+    #[allow(dead_code)] // Explicit-only to avoid an O(history) scan during normal restoration.
+    pub(crate) fn audit_transcript_coverage(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<AiTranscriptCoverageAudit> {
+        let index = if self.index_path(session_id).exists() {
+            // Coverage diagnostics must remain read-only: rebuilding an invalid
+            // compatibility index would hide the condition being investigated.
+            read_json_file(&self.index_path(session_id))?
+        } else {
+            AiTranscriptIndex::empty()
+        };
+        let legacy_index_valid = index
+            .validate(file_len(&self.transcript_path(session_id)).unwrap_or(0))
+            .is_ok();
+        let legacy_entries = index
+            .message_ids
+            .iter()
+            .zip(&index.message_hashes)
+            .map(|(message_id, hash)| (format!("message:{message_id}"), hash.clone()))
+            .collect::<Vec<_>>();
+        let transcript_store = self.transcript_store(session_id);
+        let blocks = transcript_store.load_block_metadata(session_id)?;
+        let mut native_entries = Vec::new();
+        let mut unavailable_payload_count = 0;
+        for block in &blocks {
+            let Some((_, entries)) = transcript_store.load_block(session_id, &block.block_id)?
+            else {
+                continue;
+            };
+            for entry in entries {
+                let payload_hash = match entry.payload_ref.as_deref() {
+                    Some(payload_ref) => transcript_store
+                        .load_payload(
+                            session_id,
+                            payload_ref,
+                            comando_types::ai::AI_TRANSCRIPT_PAYLOAD_LIMIT_MAX,
+                        )
+                        .ok()
+                        .and_then(|payload| payload.value.get("message").cloned())
+                        .and_then(|message| hash_message_payload(&message).ok()),
+                    None => None,
+                };
+                if payload_hash.is_none() {
+                    unavailable_payload_count += 1;
+                }
+                native_entries.push((entry.id, payload_hash));
+            }
+        }
+        let native_ids = native_entries
+            .iter()
+            .map(|(entry_id, _)| entry_id.as_str())
+            .collect::<HashSet<_>>();
+        let missing_legacy_entry_count = legacy_entries
+            .iter()
+            .filter(|(entry_id, _)| !native_ids.contains(entry_id.as_str()))
+            .count();
+        let out_of_order_legacy_entry_count = legacy_entries
+            .iter()
+            .zip(&native_entries)
+            .filter(|((expected_id, _), (actual_id, _))| expected_id != actual_id)
+            .count()
+            + legacy_entries.len().abs_diff(native_entries.len());
+        let mismatched_legacy_payload_count = legacy_entries
+            .iter()
+            .zip(&native_entries)
+            .filter(|((expected_id, expected_hash), (actual_id, actual_hash))| {
+                expected_id == actual_id && actual_hash.as_deref() != Some(expected_hash)
+            })
+            .count();
+        let open_tail = transcript_store.load_open_tail(session_id)?;
+        let backfill_uses_legacy = transcript_store.uses_legacy_transcript_backfill(session_id)?;
+        let LegacyTranscriptBackfillProgress {
+            complete: backfill_complete,
+            next_offset: backfill_next_offset,
+        } = transcript_store.legacy_transcript_backfill_progress(session_id)?;
+        let native_covers_legacy = legacy_index_valid
+            && legacy_entries.len() == native_entries.len()
+            && missing_legacy_entry_count == 0
+            && out_of_order_legacy_entry_count == 0
+            && mismatched_legacy_payload_count == 0
+            && unavailable_payload_count == 0;
+        let audit = AiTranscriptCoverageAudit {
+            session_fingerprint: sha256_hex(session_id.0.as_bytes()),
+            legacy_record_count: legacy_entries.len(),
+            legacy_sequence_fingerprint: transcript_sequence_fingerprint(
+                legacy_entries
+                    .iter()
+                    .map(|(entry_id, hash)| (entry_id, Some(hash))),
+            ),
+            legacy_index_valid,
+            sealed_block_count: blocks.len(),
+            sealed_entry_count: native_entries.len(),
+            native_sequence_fingerprint: transcript_sequence_fingerprint(
+                native_entries
+                    .iter()
+                    .map(|(entry_id, hash)| (entry_id, hash.as_ref())),
+            ),
+            unavailable_payload_count,
+            missing_legacy_entry_count,
+            out_of_order_legacy_entry_count,
+            mismatched_legacy_payload_count,
+            open_tail_present: open_tail.is_some(),
+            open_tail_entry_count: open_tail.as_ref().map_or(0, |tail| tail.entries.len()),
+            open_tail_terminal: open_tail
+                .as_ref()
+                .is_some_and(|tail| tail.terminal_status.is_some()),
+            backfill_uses_legacy,
+            backfill_complete,
+            backfill_next_offset,
+            native_covers_legacy,
+        };
+        if let Ok(audit_json) = serde_json::to_string(&audit) {
+            eprintln!("ai_transcript_coverage_audit {audit_json}");
+        }
+        Ok(audit)
+    }
+
     pub fn transcript_storage_state(
         &self,
         session_id: &SessionId,
     ) -> AiResult<NativeAiTranscriptStorageState> {
-        let transcript_store = self.transcript_store(session_id);
         let migration_manifest_exists = self.history_root().join("migrations").exists();
         let legacy_fallback_available = self.transcript_path(session_id).exists();
+        if self.load_transcript_ownership(session_id)? == Some(TranscriptOwnership::RepairRequired)
+        {
+            return Ok(NativeAiTranscriptStorageState {
+                capability_version: AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION,
+                session_id: session_id.clone(),
+                mode: NativeAiTranscriptStorageMode::Migrating,
+                storage_version: TRANSCRIPT_SCHEMA_VERSION,
+                legacy_fallback_available,
+                migration_manifest_exists,
+            });
+        }
+        let transcript_store = self.transcript_store(session_id);
         let uses_legacy_transcript_backfill =
             transcript_store.uses_legacy_transcript_backfill(session_id)?;
         let legacy_transcript_pending = uses_legacy_transcript_backfill
@@ -931,17 +1298,20 @@ impl AiHistoryStore {
                 Ok(!transcript_store
                     .legacy_transcript_backfill_is_current(session_id, index.len())?)
             })?;
-        let mode = if transcript_store.has_data_source()
-            && (!uses_legacy_transcript_backfill
-                || transcript_store.legacy_transcript_backfill_complete(session_id)?)
-        {
-            NativeAiTranscriptStorageMode::BlockNative
-        } else if legacy_transcript_pending || migration_manifest_exists {
-            NativeAiTranscriptStorageMode::Migrating
-        } else {
-            NativeAiTranscriptStorageMode::Legacy
+        let ownership = self.refresh_transcript_ownership(session_id)?;
+        let mode = match ownership {
+            TranscriptOwnership::NativeVerified => NativeAiTranscriptStorageMode::BlockNative,
+            TranscriptOwnership::Migrating | TranscriptOwnership::RepairRequired => {
+                NativeAiTranscriptStorageMode::Migrating
+            }
+            TranscriptOwnership::Legacy
+                if legacy_transcript_pending || migration_manifest_exists =>
+            {
+                NativeAiTranscriptStorageMode::Migrating
+            }
+            TranscriptOwnership::Legacy => NativeAiTranscriptStorageMode::Legacy,
         };
-        if mode == NativeAiTranscriptStorageMode::BlockNative {
+        if ownership == TranscriptOwnership::NativeVerified {
             self.clear_legacy_transcript_backfill_index(session_id)?;
         }
         Ok(NativeAiTranscriptStorageState {
@@ -951,6 +1321,127 @@ impl AiHistoryStore {
             storage_version: TRANSCRIPT_SCHEMA_VERSION,
             legacy_fallback_available,
             migration_manifest_exists,
+        })
+    }
+
+    pub fn repair_transcript_storage(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<NativeAiTranscriptStorageState> {
+        self.recover_if_needed(session_id)?;
+        if !self.has_session(session_id) {
+            return Err(AiError::SessionNotFound {
+                session_id: session_id.0.clone(),
+            });
+        }
+        if self.load_transcript_ownership(session_id)? != Some(TranscriptOwnership::RepairRequired)
+        {
+            return self.transcript_storage_state(session_id);
+        }
+
+        let index = self.load_or_repair_index(session_id)?;
+        let messages = self.read_payloads_by_index(session_id, &index, 0, index.len())?;
+        let expected = messages
+            .into_iter()
+            .map(|message| legacy_transcript_entry(session_id, message))
+            .collect::<AiResult<Vec<_>>>()?;
+        let transcript_store = self.transcript_store(session_id);
+        let sealed_ids = transcript_store.sealed_message_entry_ids(session_id)?;
+        let expected_ids = expected
+            .iter()
+            .map(|(entry, _)| entry.id.as_str())
+            .collect::<Vec<_>>();
+
+        if sealed_ids.len() > expected_ids.len()
+            || sealed_ids
+                .iter()
+                .map(String::as_str)
+                .zip(expected_ids.iter().copied())
+                .any(|(actual, expected)| actual != expected)
+        {
+            // A non-prefix would require changing historical sealed blocks, so
+            // retain compatibility as the reader until an operator can resolve it.
+            return self.transcript_storage_state(session_id);
+        }
+
+        transcript_store.discard_open_tail_for_repair(session_id)?;
+        if transcript_store.has_open_blocks(session_id)? {
+            return self.transcript_storage_state(session_id);
+        }
+
+        let (entries, payloads): (Vec<_>, Vec<_>) =
+            expected.into_iter().skip(sealed_ids.len()).unzip();
+        if !entries.is_empty() {
+            transcript_store.seal_turn(
+                session_id,
+                &format!("legacy-transcript:repair:{}", sealed_ids.len()),
+                entries,
+                payloads,
+            )?;
+        }
+
+        let audit = self.audit_transcript_coverage(session_id)?;
+        self.save_transcript_ownership(
+            session_id,
+            if audit.native_covers_legacy {
+                TranscriptOwnership::NativeVerified
+            } else {
+                TranscriptOwnership::RepairRequired
+            },
+        )?;
+        self.transcript_storage_state(session_id)
+    }
+
+    pub fn cleanup_verified_transcript_compatibility(
+        &self,
+        session_id: &SessionId,
+        retention_authorized: bool,
+    ) -> AiResult<NativeAiTranscriptCompatibilityCleanupResult> {
+        if !retention_authorized || !self.transcript_path(session_id).exists() {
+            return Ok(NativeAiTranscriptCompatibilityCleanupResult {
+                session_id: session_id.clone(),
+                removed: false,
+            });
+        }
+        let Some(manifest) = self.load_transcript_ownership_manifest(session_id)? else {
+            return Ok(NativeAiTranscriptCompatibilityCleanupResult {
+                session_id: session_id.clone(),
+                removed: false,
+            });
+        };
+        if manifest.ownership != TranscriptOwnership::NativeVerified {
+            return Ok(NativeAiTranscriptCompatibilityCleanupResult {
+                session_id: session_id.clone(),
+                removed: false,
+            });
+        }
+        let audit = self.audit_transcript_coverage(session_id)?;
+        if !audit.native_covers_legacy {
+            return Ok(NativeAiTranscriptCompatibilityCleanupResult {
+                session_id: session_id.clone(),
+                removed: false,
+            });
+        }
+
+        // Cleanup is explicit and only removes compatibility artifacts after
+        // the immutable native projection has passed an independent audit.
+        for path in [
+            self.transcript_path(session_id),
+            self.index_path(session_id),
+            self.compaction_marker_path(session_id),
+            self.transcript_write_marker_path(session_id),
+            self.sidecar_path(session_id, "transcript.bak"),
+        ] {
+            if path.exists() {
+                fs::remove_file(&path).map_err(|error| {
+                    history_io("remove AI transcript compatibility file", &path, error)
+                })?;
+            }
+        }
+        self.clear_legacy_transcript_backfill_index(session_id)?;
+        Ok(NativeAiTranscriptCompatibilityCleanupResult {
+            session_id: session_id.clone(),
+            removed: true,
         })
     }
 
@@ -972,12 +1463,17 @@ impl AiHistoryStore {
             return Ok(());
         }
 
+        if !self.begin_legacy_transcript_migration(session_id, index, offset)? {
+            return Ok(());
+        }
         transcript_store.begin_legacy_transcript_backfill(session_id)?;
         let offset = transcript_store
             .legacy_transcript_backfill_next_offset(session_id)?
             .min(index.len());
         if offset == index.len() {
-            return transcript_store.advance_legacy_transcript_backfill(session_id, offset, true);
+            transcript_store.advance_legacy_transcript_backfill(session_id, offset, true)?;
+            self.advance_legacy_transcript_migration(session_id, index, offset)?;
+            return Ok(());
         }
         let end = (offset + LEGACY_TRANSCRIPT_BACKFILL_PAGE_SIZE).min(index.len());
         let messages = self.read_payloads_by_index(session_id, index, offset, end)?;
@@ -997,14 +1493,23 @@ impl AiHistoryStore {
             .unzip();
         if !entries.is_empty() {
             // Native entries already cover their matching JSONL records.
-            transcript_store.seal_turn(
+            let result = transcript_store.seal_turn(
                 session_id,
                 &format!("legacy-transcript:{offset}"),
                 entries,
                 payloads,
-            )?;
+            );
+            if let Err(AiError::InvalidInput(message)) = &result
+                && message.contains("already sealed by another turn")
+            {
+                self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+                return Ok(());
+            }
+            result?;
         }
-        transcript_store.advance_legacy_transcript_backfill(session_id, end, end == index.len())
+        transcript_store.advance_legacy_transcript_backfill(session_id, end, end == index.len())?;
+        self.advance_legacy_transcript_migration(session_id, index, end)?;
+        Ok(())
     }
 
     fn has_current_block_native_transcript(
@@ -1012,23 +1517,9 @@ impl AiHistoryStore {
         session_id: &SessionId,
         transcript_store: &TranscriptStore,
     ) -> AiResult<bool> {
-        if !transcript_store.has_data_source() {
-            return Ok(false);
-        }
-        if !transcript_store.uses_legacy_transcript_backfill(session_id)? {
-            return Ok(true);
-        }
-        if !transcript_store.legacy_transcript_backfill_complete(session_id)? {
-            return Ok(false);
-        }
-        if !self.transcript_path(session_id).exists() {
-            return Ok(true);
-        }
-
-        // A completed flag alone is stale when the compatibility transcript
-        // continues growing after its initial backfill.
-        let index = self.load_or_repair_index(session_id)?;
-        transcript_store.legacy_transcript_backfill_is_current(session_id, index.len())
+        Ok(transcript_store.has_data_source()
+            && self.transcript_ownership_for_read(session_id, transcript_store)?
+                == TranscriptOwnership::NativeVerified)
     }
 
     pub fn load_session_snapshot(
@@ -1329,6 +1820,11 @@ impl AiHistoryStore {
     pub fn storage_health(&self) -> AiResult<NativeAiHistoryStorageHealth> {
         let sessions_dir = self.sessions_dir();
         let mut native_session_count = 0;
+        let mut legacy_session_count = 0;
+        let mut migrating_session_count = 0;
+        let mut repair_required_session_count = 0;
+        let mut native_verified_session_count = 0;
+        let mut compatibility_cleanup_eligible_session_count = 0;
         let mut orphaned_session_dirs = 0;
         let mut healthy = true;
         let mut latest_error = None;
@@ -1353,6 +1849,26 @@ impl AiHistoryStore {
                     native_session_count += 1;
                     if let Ok(metadata) = read_json_file::<AiHistorySessionMetadata>(&metadata_path)
                     {
+                        let ownership = self
+                            .load_transcript_ownership(&metadata.session_id)
+                            .unwrap_or(Some(TranscriptOwnership::RepairRequired));
+                        match ownership.unwrap_or(TranscriptOwnership::Legacy) {
+                            TranscriptOwnership::Legacy => legacy_session_count += 1,
+                            TranscriptOwnership::Migrating => migrating_session_count += 1,
+                            TranscriptOwnership::RepairRequired => {
+                                repair_required_session_count += 1
+                            }
+                            TranscriptOwnership::NativeVerified => {
+                                native_verified_session_count += 1;
+                                if self.transcript_path(&metadata.session_id).exists()
+                                    && self
+                                        .audit_transcript_coverage(&metadata.session_id)
+                                        .is_ok_and(|audit| audit.native_covers_legacy)
+                                {
+                                    compatibility_cleanup_eligible_session_count += 1;
+                                }
+                            }
+                        }
                         match TranscriptStore::new(&entry.path()).health(&metadata.session_id) {
                             Ok(transcript_health) => {
                                 storage_version =
@@ -1377,6 +1893,11 @@ impl AiHistoryStore {
             healthy,
             storage_version,
             native_session_count,
+            legacy_session_count,
+            migrating_session_count,
+            repair_required_session_count,
+            native_verified_session_count,
+            compatibility_cleanup_eligible_session_count,
             legacy_fallback_available: false,
             migration_manifest_exists: self.history_root().join("migrations").exists(),
             orphaned_session_dirs,
@@ -1651,6 +2172,7 @@ impl AiHistoryStore {
                     state.first_changed_offset,
                     &state.stale_legacy_entry_ids,
                 )?;
+            self.save_transcript_ownership(session_id, TranscriptOwnership::Migrating)?;
             self.save_index(session_id, &state.next_index)?;
             let recovered_metadata = state.session_metadata.unwrap_or_else(|| {
                 // Markers created before session metadata was included still
@@ -1790,6 +2312,219 @@ impl AiHistoryStore {
     }
     fn transcript_path(&self, session_id: &SessionId) -> PathBuf {
         self.session_dir(session_id).join(SESSION_TRANSCRIPT_FILE)
+    }
+
+    fn transcript_ownership_path(&self, session_id: &SessionId) -> PathBuf {
+        self.session_dir(session_id)
+            .join(SESSION_TRANSCRIPT_OWNERSHIP_FILE)
+    }
+
+    fn load_transcript_ownership(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<Option<TranscriptOwnership>> {
+        match self.load_transcript_ownership_manifest(session_id) {
+            Ok(manifest) => Ok(manifest.map(|manifest| manifest.ownership)),
+            // A malformed or unknown manifest must not make a partial native
+            // transcript authoritative over the compatibility fallback.
+            Err(_) => Ok(Some(TranscriptOwnership::RepairRequired)),
+        }
+    }
+
+    fn load_transcript_ownership_manifest(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<Option<TranscriptOwnershipManifest>> {
+        let path = self.transcript_ownership_path(session_id);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let manifest: TranscriptOwnershipManifest = read_json_file(&path)?;
+        if manifest.version != HISTORY_FORMAT_VERSION {
+            return Err(history_error(
+                "AI transcript ownership has an unsupported version.",
+            ));
+        }
+        Ok(Some(manifest))
+    }
+
+    fn save_transcript_ownership(
+        &self,
+        session_id: &SessionId,
+        ownership: TranscriptOwnership,
+    ) -> AiResult<()> {
+        self.save_transcript_ownership_manifest(
+            session_id,
+            TranscriptOwnershipManifest {
+                version: HISTORY_FORMAT_VERSION,
+                ownership,
+                updated_at: now_iso8601(),
+                legacy_source_fingerprint: None,
+                legacy_source_record_count: None,
+                legacy_source_next_offset: None,
+            },
+        )
+    }
+
+    fn save_transcript_ownership_manifest(
+        &self,
+        session_id: &SessionId,
+        manifest: TranscriptOwnershipManifest,
+    ) -> AiResult<()> {
+        self.ensure_session_dir(session_id)?;
+        self.atomic_write_json(&self.transcript_ownership_path(session_id), &manifest)
+    }
+
+    fn begin_legacy_transcript_migration(
+        &self,
+        session_id: &SessionId,
+        index: &AiTranscriptIndex,
+        next_offset: usize,
+    ) -> AiResult<bool> {
+        let source_fingerprint = legacy_transcript_source_fingerprint(index);
+        let existing = match self.load_transcript_ownership_manifest(session_id) {
+            Ok(manifest) => manifest,
+            Err(_) => {
+                self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+                return Ok(false);
+            }
+        };
+        if existing.as_ref().is_some_and(|manifest| {
+            manifest
+                .legacy_source_fingerprint
+                .as_deref()
+                .is_some_and(|fingerprint| fingerprint != source_fingerprint)
+        }) {
+            // Never reuse a durable cursor against a different compatibility
+            // sequence; phase 6 can repair it without rewriting sealed blocks.
+            self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+            return Ok(false);
+        }
+        self.save_transcript_ownership_manifest(
+            session_id,
+            TranscriptOwnershipManifest {
+                version: HISTORY_FORMAT_VERSION,
+                ownership: TranscriptOwnership::Migrating,
+                updated_at: now_iso8601(),
+                legacy_source_fingerprint: Some(source_fingerprint),
+                legacy_source_record_count: Some(index.len()),
+                legacy_source_next_offset: Some(next_offset.min(index.len())),
+            },
+        )?;
+        Ok(true)
+    }
+
+    fn advance_legacy_transcript_migration(
+        &self,
+        session_id: &SessionId,
+        index: &AiTranscriptIndex,
+        next_offset: usize,
+    ) -> AiResult<bool> {
+        let source_fingerprint = legacy_transcript_source_fingerprint(index);
+        let Some(manifest) = self.load_transcript_ownership_manifest(session_id)? else {
+            self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+            return Ok(false);
+        };
+        if manifest.ownership != TranscriptOwnership::Migrating
+            || manifest.legacy_source_fingerprint.as_deref() != Some(source_fingerprint.as_str())
+            || manifest.legacy_source_record_count != Some(index.len())
+        {
+            self.save_transcript_ownership(session_id, TranscriptOwnership::RepairRequired)?;
+            return Ok(false);
+        }
+        self.save_transcript_ownership_manifest(
+            session_id,
+            TranscriptOwnershipManifest {
+                legacy_source_next_offset: Some(next_offset.min(index.len())),
+                updated_at: now_iso8601(),
+                ..manifest
+            },
+        )?;
+        Ok(true)
+    }
+
+    fn refresh_transcript_ownership(
+        &self,
+        session_id: &SessionId,
+    ) -> AiResult<TranscriptOwnership> {
+        let current = self.load_transcript_ownership(session_id)?;
+        if current == Some(TranscriptOwnership::RepairRequired) {
+            return Ok(TranscriptOwnership::RepairRequired);
+        }
+        let transcript_store = self.transcript_store(session_id);
+        if !transcript_store.has_data_source() {
+            self.save_transcript_ownership(session_id, TranscriptOwnership::Legacy)?;
+            return Ok(TranscriptOwnership::Legacy);
+        }
+        if current == Some(TranscriptOwnership::NativeVerified) {
+            return Ok(TranscriptOwnership::NativeVerified);
+        }
+        let backfill_progress = transcript_store.legacy_transcript_backfill_progress(session_id)?;
+        if current == Some(TranscriptOwnership::Migrating)
+            && transcript_store.uses_legacy_transcript_backfill(session_id)?
+            && !backfill_progress.complete
+        {
+            return Ok(TranscriptOwnership::Migrating);
+        }
+        if !self.index_path(session_id).exists() {
+            // Native-only callers may seal a turn before creating the legacy
+            // compatibility files. There is no fallback transcript to verify.
+            self.save_transcript_ownership(session_id, TranscriptOwnership::NativeVerified)?;
+            return Ok(TranscriptOwnership::NativeVerified);
+        }
+        let index = match self.load_or_repair_index(session_id) {
+            Ok(index) => index,
+            // An unreadable compatibility index prevents coverage verification.
+            // Keep its readable transcript as the fallback until it is repaired.
+            Err(_) => {
+                self.save_transcript_ownership(session_id, TranscriptOwnership::Migrating)?;
+                return Ok(TranscriptOwnership::Migrating);
+            }
+        };
+        if index.len() == 0 {
+            self.save_transcript_ownership(session_id, TranscriptOwnership::NativeVerified)?;
+            return Ok(TranscriptOwnership::NativeVerified);
+        }
+        let audit = self.audit_transcript_coverage(session_id)?;
+        let ownership = if audit.native_covers_legacy {
+            TranscriptOwnership::NativeVerified
+        } else if backfill_progress.complete {
+            // A completed cursor without complete coverage is unsafe to retry
+            // automatically because it may require a new, unsealed block.
+            TranscriptOwnership::RepairRequired
+        } else {
+            TranscriptOwnership::Migrating
+        };
+        self.save_transcript_ownership(session_id, ownership)?;
+        Ok(ownership)
+    }
+
+    fn transcript_ownership_for_read(
+        &self,
+        session_id: &SessionId,
+        transcript_store: &TranscriptStore,
+    ) -> AiResult<TranscriptOwnership> {
+        if let Some(ownership) = self.load_transcript_ownership(session_id)? {
+            if ownership == TranscriptOwnership::NativeVerified
+                && transcript_store.load_open_tail(session_id)?.is_some()
+            {
+                // A recovery tail can leave native coverage incomplete; readers
+                // must keep the complete compatibility transcript visible.
+                return Ok(TranscriptOwnership::Migrating);
+            }
+            return Ok(ownership);
+        }
+        if !transcript_store.has_data_source() {
+            return Ok(TranscriptOwnership::Legacy);
+        }
+        // Older native sessions predate the ownership manifest. An empty
+        // compatibility transcript cannot mask their sealed native history.
+        let index = self.load_or_repair_index(session_id)?;
+        Ok(if index.len() == 0 {
+            TranscriptOwnership::NativeVerified
+        } else {
+            TranscriptOwnership::Legacy
+        })
     }
 
     fn transcript_store(&self, session_id: &SessionId) -> TranscriptStore {
@@ -3037,6 +3772,45 @@ fn hash_message_payload(payload: &Value) -> AiResult<String> {
     Ok(sha256_hex(&bytes))
 }
 
+#[allow(dead_code)] // Used only by the explicit transcript coverage diagnostic.
+fn transcript_sequence_fingerprint<'a>(
+    entries: impl IntoIterator<Item = (&'a String, Option<&'a String>)>,
+) -> String {
+    let mut hasher = Sha256::new();
+    for (entry_id, payload_hash) in entries {
+        hasher.update(entry_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(payload_hash.map_or(b"<unavailable>".as_slice(), |hash| hash.as_bytes()));
+        hasher.update([b'\n']);
+    }
+    let digest = hasher.finalize();
+    let mut fingerprint = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut fingerprint, "{byte:02x}");
+    }
+    fingerprint
+}
+
+fn legacy_transcript_source_fingerprint(index: &AiTranscriptIndex) -> String {
+    transcript_sequence_fingerprint(
+        index
+            .message_ids
+            .iter()
+            .zip(&index.message_hashes)
+            .map(|(message_id, hash)| (message_id, Some(hash))),
+    )
+}
+
+fn transcript_terminal_status(message: &Value) -> Option<NativeAiTranscriptTerminalStatus> {
+    match message.get("status").and_then(Value::as_str) {
+        Some("completed") => Some(NativeAiTranscriptTerminalStatus::Completed),
+        Some("cancelled" | "canceled") => Some(NativeAiTranscriptTerminalStatus::Cancelled),
+        Some("failed" | "error") => Some(NativeAiTranscriptTerminalStatus::Failed),
+        _ => None,
+    }
+}
+
 fn merge_tool_activity_detail(previous: &Value, mut next: Value) -> Value {
     let (Some(previous), Some(next_object)) = (previous.as_object(), next.as_object_mut()) else {
         return next;
@@ -3638,6 +4412,9 @@ mod tests {
             .save_transcript_window(&session_id, vec![message("message-1", "first")])
             .unwrap();
         base_store.transcript_storage_state(&session_id).unwrap();
+        base_store
+            .save_transcript_ownership(&session_id, TranscriptOwnership::Migrating)
+            .unwrap();
 
         let store = base_store.with_durable_operation_interceptor(Arc::new(
             FaultInjector::failing(DurableOperation::SqliteTransaction, 1),
@@ -5039,8 +5816,227 @@ mod tests {
             .unwrap();
 
         let snapshot = store.load_session_snapshot(&session_id).unwrap().unwrap();
-        assert_eq!(snapshot.messages.len(), 3);
-        assert_eq!(snapshot.messages[2]["id"], "legacy-3");
+        assert!(snapshot.messages.is_empty());
+        assert_eq!(
+            store
+                .load_transcript_block_metadata(&session_id)
+                .unwrap()
+                .iter()
+                .map(|block| block.entry_count)
+                .sum::<usize>(),
+            3
+        );
+        assert_eq!(
+            store
+                .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                    session_id: session_id.clone(),
+                    offset: 0,
+                    limit: 10,
+                })
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn native_verified_window_updates_an_open_tail_without_writing_compatibility() {
+        let (_temp, store) = store();
+        let session_id = SessionId("native_verified_window_streaming".to_string());
+        let first = message("legacy-1", "first");
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, vec![first.clone()])
+            .unwrap();
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+
+        let mut streaming = message("native-2", "draft");
+        streaming["status"] = Value::String("streaming".to_string());
+        store
+            .save_transcript_window(&session_id, vec![first.clone(), streaming])
+            .unwrap();
+        assert!(
+            store
+                .load_open_transcript_tail(&session_id)
+                .unwrap()
+                .is_some()
+        );
+
+        let completed = message("native-2", "complete");
+        store
+            .save_transcript_window(&session_id, vec![first, completed])
+            .unwrap();
+        assert!(
+            store
+                .load_open_transcript_tail(&session_id)
+                .unwrap()
+                .is_none()
+        );
+        let entries = store
+            .load_transcript_block_metadata(&session_id)
+            .unwrap()
+            .into_iter()
+            .flat_map(|block| {
+                store
+                    .load_transcript_block(&session_id, &block.block_id)
+                    .unwrap()
+                    .unwrap()
+                    .entries
+            })
+            .collect::<Vec<_>>();
+        let entry = entries
+            .iter()
+            .find(|entry| entry.id == "message:native-2")
+            .unwrap();
+        let payload = store
+            .load_native_transcript_payload(
+                &session_id,
+                entry.payload_ref.as_deref().unwrap(),
+                1024,
+            )
+            .unwrap();
+        assert_eq!(payload.value["message"]["content"], "complete");
+        let page = store
+            .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                session_id,
+                offset: 1,
+                limit: 1,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.total_messages, 2);
+        assert_eq!(page.messages, vec![message("native-2", "complete")]);
+    }
+
+    #[test]
+    fn transcript_coverage_audit_detects_legacy_records_missing_from_sealed_blocks() {
+        let (_temp, store) = store();
+        let session_id = SessionId("partial_native_transcript_coverage".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        let first = message("legacy-1", "first");
+        let second = message("legacy-2", "second");
+        store
+            .save_transcript_window(&session_id, vec![first.clone(), second])
+            .unwrap();
+
+        let (entry, payload) = legacy_transcript_entry(&session_id, first).unwrap();
+        store
+            .seal_transcript_turn(&session_id, "native-turn", vec![entry], vec![payload])
+            .unwrap();
+
+        let audit = store.audit_transcript_coverage(&session_id).unwrap();
+
+        assert_eq!(audit.legacy_record_count, 2);
+        assert_eq!(audit.sealed_entry_count, 1);
+        assert_eq!(audit.missing_legacy_entry_count, 1);
+        assert!(!audit.native_covers_legacy);
+        assert_ne!(audit.session_fingerprint, session_id.0);
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::Migrating
+        );
+        let snapshot = store.load_session_snapshot(&session_id).unwrap().unwrap();
+        assert_eq!(snapshot.messages.len(), 2);
+    }
+
+    #[test]
+    fn repair_required_keeps_compatibility_history_without_running_backfill() {
+        let (_temp, store) = store();
+        let session_id = SessionId("repair_required_transcript".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, vec![message("legacy-1", "first")])
+            .unwrap();
+        store
+            .save_transcript_ownership(&session_id, TranscriptOwnership::RepairRequired)
+            .unwrap();
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::Migrating
+        );
+        assert!(
+            store
+                .load_transcript_block_metadata(&session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .load_session_snapshot(&session_id)
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                    session_id,
+                    offset: 0,
+                    limit: 10,
+                })
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn explicit_cleanup_removes_only_a_verified_compatibility_transcript() {
+        let (_temp, store) = store();
+        let session_id = SessionId("verified_compatibility_cleanup".to_string());
+        let messages = vec![message("legacy-1", "first")];
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store
+            .save_transcript_window(&session_id, messages.clone())
+            .unwrap();
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        let health = store.storage_health().unwrap();
+        assert_eq!(health.native_verified_session_count, 1);
+        assert_eq!(health.compatibility_cleanup_eligible_session_count, 1);
+        assert_eq!(health.legacy_session_count, 0);
+        assert_eq!(health.migrating_session_count, 0);
+        assert_eq!(health.repair_required_session_count, 0);
+        assert!(
+            !store
+                .cleanup_verified_transcript_compatibility(&session_id, false)
+                .unwrap()
+                .removed
+        );
+        assert!(store.transcript_path(&session_id).exists());
+
+        assert!(
+            store
+                .cleanup_verified_transcript_compatibility(&session_id, true)
+                .unwrap()
+                .removed
+        );
+        assert!(!store.transcript_path(&session_id).exists());
+        assert_eq!(
+            store
+                .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                    session_id,
+                    offset: 0,
+                    limit: 10,
+                })
+                .unwrap()
+                .unwrap()
+                .messages,
+            messages
+        );
     }
 
     #[test]
@@ -5055,6 +6051,9 @@ mod tests {
             store.transcript_storage_state(&session_id).unwrap().mode,
             NativeAiTranscriptStorageMode::BlockNative
         );
+        store
+            .save_transcript_ownership(&session_id, TranscriptOwnership::Migrating)
+            .unwrap();
 
         store
             .save_transcript_window(
@@ -5101,6 +6100,9 @@ mod tests {
             store.transcript_storage_state(&session_id).unwrap().mode,
             NativeAiTranscriptStorageMode::BlockNative
         );
+        store
+            .save_transcript_ownership(&session_id, TranscriptOwnership::Migrating)
+            .unwrap();
 
         store
             .save_transcript_window(&session_id, vec![message("legacy-1", "complete")])
@@ -5287,6 +6289,9 @@ mod tests {
             .save_transcript_window(&session_id, vec![message("legacy-1", "draft")])
             .unwrap();
         store.transcript_storage_state(&session_id).unwrap();
+        store
+            .save_transcript_ownership(&session_id, TranscriptOwnership::Migrating)
+            .unwrap();
 
         let database_path = store.session_dir(&session_id).join("transcript-v2.sqlite3");
         let original_permissions = fs::metadata(&database_path).unwrap().permissions();
@@ -5355,6 +6360,10 @@ mod tests {
             .unwrap();
 
         store
+            .save_transcript_ownership(&session_id, TranscriptOwnership::Migrating)
+            .unwrap();
+
+        store
             .save_transcript_window(&session_id, vec![message("legacy-1", "first")])
             .unwrap();
         assert_eq!(
@@ -5394,6 +6403,9 @@ mod tests {
             store.transcript_storage_state(&session_id).unwrap().mode,
             NativeAiTranscriptStorageMode::BlockNative
         );
+        store
+            .save_transcript_ownership(&session_id, TranscriptOwnership::Migrating)
+            .unwrap();
 
         store
             .save_transcript_window(&session_id, Vec::new())
@@ -5438,6 +6450,10 @@ mod tests {
             .find(|entry| entry.id == "message:legacy-2")
             .unwrap()
             .payload_ref
+            .unwrap();
+
+        store
+            .save_transcript_ownership(&session_id, TranscriptOwnership::Migrating)
             .unwrap();
 
         store
@@ -5514,6 +6530,45 @@ mod tests {
                 .map(|block| block.entry_count)
                 .sum::<usize>(),
             300
+        );
+    }
+
+    #[test]
+    fn legacy_migration_persists_its_source_fingerprint_before_resuming() {
+        let (temp, store) = store();
+        let session_id = SessionId("fingerprinted_legacy_transcript_backfill".to_string());
+        let messages = (0..300)
+            .map(|index| message(&format!("legacy-{index}"), "legacy content"))
+            .collect::<Vec<_>>();
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store.save_transcript_window(&session_id, messages).unwrap();
+
+        assert_eq!(
+            store.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::Migrating
+        );
+        let manifest = store
+            .load_transcript_ownership_manifest(&session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(manifest.ownership, TranscriptOwnership::Migrating);
+        assert!(manifest.legacy_source_fingerprint.is_some());
+        assert_eq!(manifest.legacy_source_record_count, Some(300));
+        assert_eq!(manifest.legacy_source_next_offset, Some(256));
+
+        drop(store);
+        let reopened = AiHistoryStore::new(temp.path()).unwrap();
+        assert_eq!(
+            reopened.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
+        assert!(
+            reopened
+                .load_transcript_ownership_manifest(&session_id)
+                .unwrap()
+                .unwrap()
+                .legacy_source_fingerprint
+                .is_none()
         );
     }
 
@@ -5625,7 +6680,7 @@ mod tests {
 
         assert_eq!(
             store.transcript_storage_state(&session_id).unwrap().mode,
-            NativeAiTranscriptStorageMode::BlockNative
+            NativeAiTranscriptStorageMode::Migrating
         );
         let entry_count = store
             .load_transcript_block_metadata(&session_id)
@@ -5653,7 +6708,7 @@ mod tests {
         let completed_state = store.transcript_storage_state(&session_id).unwrap();
         assert_eq!(
             completed_state.mode,
-            NativeAiTranscriptStorageMode::BlockNative
+            NativeAiTranscriptStorageMode::Migrating
         );
         let metadata = store.load_transcript_block_metadata(&session_id).unwrap();
         assert_eq!(metadata.len(), 2);
@@ -5860,9 +6915,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        // The native snapshot delegates history to sealed blocks, but an
-        // interrupted tail has not produced one yet.
-        assert!(snapshot.messages.is_empty());
+        // An interrupted tail cannot make the partial block projection
+        // authoritative over the complete compatibility transcript.
+        assert_eq!(snapshot.messages, vec![legacy_message]);
         assert_eq!(page.messages.len(), 1);
         assert!(
             reopened
@@ -5884,7 +6939,7 @@ mod tests {
     }
 
     #[test]
-    fn restart_reconciles_terminal_tail_so_history_and_block_native_chat_are_complete() {
+    fn repair_rebuilds_a_terminal_tail_conflict_without_reassigning_sealed_blocks() {
         let (temp, store) = store();
         let session_id = SessionId("restart_terminal_tail_reconciliation".to_string());
         let mut session_metadata = metadata(&session_id.0);
@@ -5903,14 +6958,21 @@ mod tests {
             )
             .unwrap();
 
-        let first = transcript_entry(&session_id, "message:assistant-a", "First durable answer.");
-        let second = transcript_entry(
+        let (first, first_payload) =
+            legacy_transcript_entry(&session_id, message("assistant-a", "First durable answer."))
+                .unwrap();
+        let (second, second_payload) = legacy_transcript_entry(
             &session_id,
-            "message:assistant-b",
-            "Completed answer awaiting recovery.",
-        );
+            message("assistant-b", "Completed answer awaiting recovery."),
+        )
+        .unwrap();
         store
-            .seal_transcript_turn(&session_id, "turn-a", vec![first.clone()], vec![])
+            .seal_transcript_turn(
+                &session_id,
+                "turn-a",
+                vec![first.clone()],
+                vec![first_payload.clone()],
+            )
             .unwrap();
         store
             .checkpoint_open_transcript_tail(NativeAiCheckpointOpenTranscriptTailInput {
@@ -5918,7 +6980,7 @@ mod tests {
                 turn_id: "turn-b".to_string(),
                 terminal_status: Some(NativeAiTranscriptTerminalStatus::Completed),
                 entries: vec![first.clone(), second.clone()],
-                payloads: vec![],
+                payloads: vec![first_payload, second_payload],
                 removed_entry_ids: vec![],
                 entry_order: vec![
                     NativeAiOpenTranscriptEntryRef {
@@ -5942,7 +7004,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(startup_snapshot.status, NativeAiSessionStatus::Streaming);
-        assert!(startup_snapshot.messages.is_empty());
+        assert_eq!(startup_snapshot.messages.len(), 2);
         let history = reopened
             .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
                 session_id: session_id.clone(),
@@ -5968,15 +7030,45 @@ mod tests {
             Some(NativeAiTranscriptTerminalStatus::Completed)
         );
 
-        let metadata = reopened
-            .reconcile_terminal_open_transcript_tail(&session_id, "turn-b")
-            .unwrap();
+        assert!(
+            reopened
+                .reconcile_terminal_open_transcript_tail(&session_id, "turn-b")
+                .is_err()
+        );
+        assert_eq!(
+            reopened.transcript_storage_state(&session_id).unwrap().mode,
+            NativeAiTranscriptStorageMode::Migrating
+        );
+        assert_eq!(
+            reopened
+                .load_transcript_page(NativeAiLoadSessionTranscriptPageInput {
+                    session_id: session_id.clone(),
+                    offset: 0,
+                    limit: 10,
+                })
+                .unwrap()
+                .unwrap()
+                .messages
+                .len(),
+            2
+        );
+
+        assert_eq!(
+            reopened
+                .repair_transcript_storage(&session_id)
+                .unwrap()
+                .mode,
+            NativeAiTranscriptStorageMode::BlockNative
+        );
         assert!(
             reopened
                 .load_open_transcript_tail(&session_id)
                 .unwrap()
                 .is_none()
         );
+        let metadata = reopened
+            .load_transcript_block_metadata(&session_id)
+            .unwrap();
         assert_eq!(metadata.len(), 2);
 
         let block_entry_ids = metadata
@@ -6007,10 +7099,10 @@ mod tests {
 
         assert_eq!(
             reopened
-                .reconcile_terminal_open_transcript_tail(&session_id, "turn-b")
+                .repair_transcript_storage(&session_id)
                 .unwrap()
-                .len(),
-            2
+                .mode,
+            NativeAiTranscriptStorageMode::BlockNative
         );
     }
 
