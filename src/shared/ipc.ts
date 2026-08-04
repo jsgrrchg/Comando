@@ -2677,8 +2677,9 @@ export interface WorkspaceSurfaceActiveFileState
  * A small live projection sent to the host so its inspector can reflect tabs
  * that live inside an isolated workspace surface without receiving transcripts.
  */
-export interface WorkspaceSurfaceAgentPresence {
+export interface WorkspaceSurfaceAiAgentPresence {
     readonly createdAt: string;
+    readonly kind: "ai";
     readonly parentSessionId: string | null;
     readonly runtimeId: AiRuntimeId;
     readonly runtimeSessionId: string | null;
@@ -2687,6 +2688,23 @@ export interface WorkspaceSurfaceAgentPresence {
     readonly title: string;
     readonly updatedAt: string;
 }
+
+export interface WorkspaceSurfaceTerminalAgentPresence {
+    readonly createdAt: string;
+    readonly kind: "terminal";
+    readonly preview: string | null;
+    readonly runtimeId: "claude-code-terminal";
+    readonly runtimeSessionId: string | null;
+    readonly sessionId: string;
+    readonly status: null;
+    readonly terminalId: string;
+    readonly title: string;
+    readonly updatedAt: string;
+}
+
+export type WorkspaceSurfaceAgentPresence =
+    | WorkspaceSurfaceAiAgentPresence
+    | WorkspaceSurfaceTerminalAgentPresence;
 
 export interface WorkspaceSurfaceAgentPresenceState
     extends WorkspaceSurfaceActionContext {
@@ -2727,6 +2745,15 @@ export type WorkspaceSurfaceActionRequest = WorkspaceSurfaceActionContext &
           }
         | {
               readonly kind: "focus-terminal";
+              readonly terminalId: string;
+          }
+        | {
+              readonly kind: "rename-terminal";
+              readonly terminalId: string;
+              readonly title: string;
+          }
+        | {
+              readonly kind: "close-terminal";
               readonly terminalId: string;
           }
         | {

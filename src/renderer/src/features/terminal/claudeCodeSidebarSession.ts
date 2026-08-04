@@ -24,15 +24,19 @@ export type SidebarAgentSessionSummary = Omit<
 
 export interface ClaudeCodeSidebarSessionSummary
     extends Omit<AiHistorySessionSummary, "runtimeId"> {
-    readonly cwd: string;
-    readonly defaultTitle: string;
     readonly isTerminalAgent: true;
     readonly runtimeId: typeof CLAUDE_CODE_TERMINAL_RUNTIME_ID;
     readonly terminalId: string;
-    readonly terminalTabId: string;
     readonly transcriptMtimeMs: number | null;
-    readonly transcriptSessionId: string | null;
 }
+
+type MutableClaudeCodeSidebarSession = ClaudeCodeSidebarSessionSummary & {
+    readonly cwd: string;
+    readonly customTitle: string | null;
+    readonly defaultTitle: string;
+    readonly terminalTabId: string;
+    readonly transcriptSessionId: string | null;
+};
 
 export interface RegisterClaudeCodeSidebarSessionInput {
     readonly cwd: string;
@@ -42,10 +46,6 @@ export interface RegisterClaudeCodeSidebarSessionInput {
     readonly title: string;
     readonly transcriptSessionId: string | null;
     readonly worktreeId: string | null;
-}
-
-type MutableClaudeCodeSidebarSession = ClaudeCodeSidebarSessionSummary & {
-    readonly customTitle: string | null;
 };
 
 const sessionsByTerminalId = new Map<string, MutableClaudeCodeSidebarSession>();
@@ -201,12 +201,8 @@ export function reconcileClaudeCodeSidebarSessions(
 export async function refreshClaudeCodeSidebarSessionTranscript(
     session: ClaudeCodeSidebarSessionSummary,
 ): Promise<void> {
-    if (!session.transcriptSessionId || !session.cwd) {
-        return;
-    }
-
     const current = sessionsByTerminalId.get(session.terminalId);
-    if (!current) {
+    if (!current?.transcriptSessionId || !current.cwd) {
         return;
     }
 
@@ -217,7 +213,7 @@ export async function refreshClaudeCodeSidebarSessionTranscript(
 
     const result = await api.readClaudeCodeTranscript({
         cwd: current.cwd,
-        sessionId: session.transcriptSessionId,
+        sessionId: current.transcriptSessionId,
         sinceMtimeMs: current.transcriptMtimeMs,
     });
     if (!result.found || !result.changed) {
@@ -261,12 +257,15 @@ export function resetClaudeCodeSidebarSessionsForTests(): void {
 function findTerminalTabForSession(
     session: ClaudeCodeSidebarSessionSummary,
 ): RuntimeWorkspaceTerminalTab | null {
+    const terminalTabId = sessionsByTerminalId.get(
+        session.terminalId,
+    )?.terminalTabId;
     const tabs = Object.values(useWorkspaceStore.getState().tabsById);
     return (
         tabs.find(
             (tab): tab is RuntimeWorkspaceTerminalTab =>
                 tab.kind === "terminal" &&
-                (tab.id === session.terminalTabId ||
+                (tab.id === terminalTabId ||
                     tab.terminalId === session.terminalId),
         ) ?? null
     );
@@ -287,8 +286,19 @@ function notifyClaudeCodeSidebarSessionListeners(): void {
 function toPublicSession(
     session: MutableClaudeCodeSidebarSession,
 ): ClaudeCodeSidebarSessionSummary {
-    const { customTitle, ...publicSession } = session;
+    const {
+        cwd,
+        customTitle,
+        defaultTitle,
+        terminalTabId,
+        transcriptSessionId,
+        ...publicSession
+    } = session;
+    void cwd;
     void customTitle;
+    void defaultTitle;
+    void terminalTabId;
+    void transcriptSessionId;
     return publicSession;
 }
 

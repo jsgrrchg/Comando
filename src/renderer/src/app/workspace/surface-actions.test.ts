@@ -127,7 +127,7 @@ describe("executeWorkspaceSurfaceAction", () => {
         });
     });
 
-    it("focuses existing terminals and launches Claude locally", async () => {
+    it("focuses, closes, and launches terminals on the owning surface", async () => {
         const harness = createHarness({ terminal: true });
 
         await executeWorkspaceSurfaceAction(
@@ -136,6 +136,10 @@ describe("executeWorkspaceSurfaceAction", () => {
         );
         await executeWorkspaceSurfaceAction(
             { ...context, kind: "new-claude-terminal" },
+            harness.dependencies,
+        );
+        await executeWorkspaceSurfaceAction(
+            { ...context, kind: "close-terminal", terminalId: "terminal-1" },
             harness.dependencies,
         );
 
@@ -147,6 +151,7 @@ describe("executeWorkspaceSurfaceAction", () => {
             projectId: "project-1",
             worktreeId: null,
         });
+        expect(harness.workspace.closeTab).toHaveBeenCalledWith("terminal-tab-1");
     });
 
     it("adds multiple files to the best matching local chat", async () => {
@@ -287,6 +292,7 @@ function createHarness(
 
     const workspace = {
         activePaneId: "pane-1",
+        closeTab: vi.fn(() => Promise.resolve()),
         createChatTab: vi.fn(() => {
             if (!options.createChatOnDemand) return Promise.resolve();
             tabsById["created-chat"] = {

@@ -50,6 +50,12 @@ import { WorkspaceView } from "./components/workspace/WorkspaceView";
 import { findPaneById } from "./app/workspace/tree";
 import { WorkspaceTerminalHost } from "./features/terminal/WorkspaceTerminalHost";
 import { useTerminalRuntimeStore } from "./features/terminal/terminalRuntimeStore";
+import {
+    getClaudeCodeSidebarSessions,
+    reconcileClaudeCodeSidebarSessions,
+    refreshClaudeCodeSidebarSessionTranscript,
+    subscribeClaudeCodeSidebarSessions,
+} from "./features/terminal/claudeCodeSidebarSession";
 import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
 
 const descriptor = parseWorkspaceSurfaceRendererDescriptor(
@@ -174,6 +180,9 @@ export function WorkspaceSurfaceApp() {
     const activePaneId = useWorkspaceStore((state) => state.activePaneId);
     const rootNode = useWorkspaceStore((state) => state.rootNode);
     const tabsById = useWorkspaceStore((state) => state.tabsById);
+    const [terminalAgentSessions, setTerminalAgentSessions] = useState(() =>
+        getClaudeCodeSidebarSessions(),
+    );
     const activeContext = useWorkspaceStore((state) =>
         state.activeContextKey
             ? (state.contextsByKey[state.activeContextKey] ?? null)
@@ -217,11 +226,17 @@ export function WorkspaceSurfaceApp() {
                 return null;
             }
 
+            const terminalSessionsByTerminalId = new Map(
+                terminalAgentSessions.map((session) => [
+                    session.terminalId,
+                    session,
+                ]),
+            );
             const activePane = findPaneById(rootNode, activePaneId);
             const activeTab = activePane?.activeTabId
                 ? tabsById[activePane.activeTabId]
                 : null;
-            const sessions = Object.values(tabsById).flatMap((tab) => {
+            const aiSessionsInTabs = Object.values(tabsById).flatMap((tab) => {
                 if (tab.kind !== "chat" && tab.kind !== "review") {
                     return [];
                 }
@@ -229,6 +244,7 @@ export function WorkspaceSurfaceApp() {
                 return [
                     {
                         createdAt: tab.createdAt,
+                        kind: "ai" as const,
                         parentSessionId: snapshot?.parentSessionId ?? null,
                         runtimeId: snapshot?.runtimeId ?? tab.runtimeId,
                         runtimeSessionId: snapshot?.runtimeSessionId ?? null,
@@ -241,15 +257,31 @@ export function WorkspaceSurfaceApp() {
                     },
                 ];
             });
+            const terminalSessions = terminalAgentSessions.map((session) => ({
+                createdAt: session.createdAt,
+                kind: "terminal" as const,
+                preview: session.preview,
+                runtimeId: session.runtimeId,
+                runtimeSessionId: session.runtimeSessionId ?? null,
+                sessionId: session.sessionId,
+                status: null,
+                terminalId: session.terminalId,
+                title: session.title,
+                updatedAt: session.updatedAt,
+            }));
 
             return {
                 activeSessionId:
                     activeTab?.kind === "chat" || activeTab?.kind === "review"
                         ? activeTab.sessionId
+                        : activeTab?.kind === "terminal"
+                          ? (terminalSessionsByTerminalId.get(
+                                activeTab.terminalId,
+                            )?.sessionId ?? null)
                         : null,
                 contextKey: activeContext.key,
                 projectId: activeProjectId,
-                sessions,
+                sessions: [...aiSessionsInTabs, ...terminalSessions],
                 worktreeId: activeWorktreeId,
             };
         },
@@ -261,6 +293,7 @@ export function WorkspaceSurfaceApp() {
             aiSessions,
             rootNode,
             tabsById,
+            terminalAgentSessions,
         ],
     );
     const publishedAgentPresenceSignatureRef = useRef("");
@@ -569,6 +602,35 @@ export function WorkspaceSurfaceApp() {
             unsubscribeGitMenu();
         };
     }, [surfaceLifecycle]);
+
+    useEffect(() => {
+        return subscribeClaudeCodeSidebarSessions(() => {
+            setTerminalAgentSessions(getClaudeCodeSidebarSessions());
+        });
+    }, []);
+
+    useEffect(() => {
+        reconcileClaudeCodeSidebarSessions(Object.values(tabsById));
+    }, [tabsById]);
+
+    useEffect(() => {
+        if (terminalAgentSessions.length === 0) {
+            return;
+        }
+
+        const refresh = () => {
+            for (const session of getClaudeCodeSidebarSessions()) {
+                void refreshClaudeCodeSidebarSessionTranscript(session).catch(
+                    () => undefined,
+                );
+            }
+        };
+        refresh();
+        const intervalId = window.setInterval(refresh, 4_000);
+        return () => {
+            window.clearInterval(intervalId);
+        };
+    }, [terminalAgentSessions]);
 
     useEffect(() => {
         if (surfaceStatus !== "ready" || !agentPresence) {

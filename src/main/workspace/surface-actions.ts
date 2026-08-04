@@ -48,7 +48,13 @@ export function isWorkspaceSurfaceActionRequest(
         case "new-chat":
             return isKnownAiRuntimeId(input.runtimeId);
         case "focus-terminal":
+        case "close-terminal":
             return isNonEmptyString(input.terminalId, MAX_SHORT_TEXT_LENGTH);
+        case "rename-terminal":
+            return (
+                isNonEmptyString(input.terminalId, MAX_SHORT_TEXT_LENGTH) &&
+                isNonEmptyString(input.title, MAX_SHORT_TEXT_LENGTH)
+            );
         case "github-list":
             return (
                 (input.listKind === "issues" ||
@@ -133,18 +139,7 @@ export function isWorkspaceSurfaceAgentPresenceState(
         return false;
     }
 
-    return input.sessions.every(
-        (session) =>
-            isRecord(session) &&
-            isNonEmptyString(session.sessionId, MAX_SHORT_TEXT_LENGTH) &&
-            isKnownAiRuntimeId(session.runtimeId) &&
-            isNonEmptyString(session.title, MAX_SHORT_TEXT_LENGTH) &&
-            isNonEmptyString(session.createdAt, MAX_SHORT_TEXT_LENGTH) &&
-            isNonEmptyString(session.updatedAt, MAX_SHORT_TEXT_LENGTH) &&
-            isNullableString(session.parentSessionId, MAX_SHORT_TEXT_LENGTH) &&
-            isNullableString(session.runtimeSessionId, MAX_SHORT_TEXT_LENGTH) &&
-            isAiSessionStatusOrNull(session.status),
-    );
+    return input.sessions.every(isWorkspaceSurfaceAgentPresence);
 }
 
 export function isWorkspaceSurfaceActionCompletion(
@@ -198,6 +193,35 @@ function isAiSessionStatusOrNull(input: unknown): boolean {
         input === "waiting_permission" ||
         input === "waiting_user_input" ||
         input === "error"
+    );
+}
+
+function isWorkspaceSurfaceAgentPresence(input: unknown): boolean {
+    if (
+        !isRecord(input) ||
+        !isNonEmptyString(input.sessionId, MAX_SHORT_TEXT_LENGTH) ||
+        !isNonEmptyString(input.title, MAX_SHORT_TEXT_LENGTH) ||
+        !isNonEmptyString(input.createdAt, MAX_SHORT_TEXT_LENGTH) ||
+        !isNonEmptyString(input.updatedAt, MAX_SHORT_TEXT_LENGTH) ||
+        !isNullableString(input.runtimeSessionId, MAX_SHORT_TEXT_LENGTH)
+    ) {
+        return false;
+    }
+
+    if (input.kind === "ai") {
+        return (
+            isKnownAiRuntimeId(input.runtimeId) &&
+            isNullableString(input.parentSessionId, MAX_SHORT_TEXT_LENGTH) &&
+            isAiSessionStatusOrNull(input.status)
+        );
+    }
+
+    return (
+        input.kind === "terminal" &&
+        input.runtimeId === "claude-code-terminal" &&
+        input.status === null &&
+        isNonEmptyString(input.terminalId, MAX_SHORT_TEXT_LENGTH) &&
+        isNullableString(input.preview, MAX_SHORT_TEXT_LENGTH)
     );
 }
 

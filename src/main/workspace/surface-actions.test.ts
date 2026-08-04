@@ -50,6 +50,13 @@ describe("workspace surface actions", () => {
             { ...context, kind: "chat-history" },
             { ...context, kind: "new-chat", runtimeId: "claude" },
             { ...context, kind: "focus-terminal", terminalId: "terminal-1" },
+            {
+                ...context,
+                kind: "rename-terminal",
+                terminalId: "terminal-1",
+                title: "Claude Code",
+            },
+            { ...context, kind: "close-terminal", terminalId: "terminal-1" },
             { ...context, kind: "new-claude-terminal" },
             {
                 ...context,
@@ -157,6 +164,7 @@ describe("workspace surface actions", () => {
             sessions: [
                 {
                     createdAt: "2026-08-04T12:00:00.000Z",
+                    kind: "ai",
                     parentSessionId: null,
                     runtimeId: "codex",
                     runtimeSessionId: "runtime-1",
@@ -181,6 +189,25 @@ describe("workspace surface actions", () => {
                 sessions: Array.from({ length: 101 }, () => presence.sessions[0]),
             }),
         ).toBe(false);
+        expect(
+            isWorkspaceSurfaceAgentPresenceState({
+                ...presence,
+                sessions: [
+                    {
+                        createdAt: "2026-08-04T12:00:00.000Z",
+                        kind: "terminal",
+                        preview: null,
+                        runtimeId: "claude-code-terminal",
+                        runtimeSessionId: "terminal-session-1",
+                        sessionId: "claude-code-terminal:terminal-1",
+                        status: null,
+                        terminalId: "terminal-1",
+                        title: "Claude Code",
+                        updatedAt: "2026-08-04T12:00:01.000Z",
+                    },
+                ],
+            }),
+        ).toBe(true);
     });
 
     it("accepts active file updates and an explicit clear", () => {
