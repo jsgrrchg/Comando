@@ -599,7 +599,10 @@ export function WorkspaceSurfaceApp() {
     }, [tabsById]);
 
     useEffect(() => {
-        if (terminalAgentSessions.length === 0) {
+        if (
+            surfaceLifecycle !== "visible" ||
+            terminalAgentSessions.length === 0
+        ) {
             return;
         }
 
@@ -615,7 +618,7 @@ export function WorkspaceSurfaceApp() {
         return () => {
             window.clearInterval(intervalId);
         };
-    }, [terminalAgentSessions]);
+    }, [surfaceLifecycle, terminalAgentSessions]);
 
     useEffect(() => {
         if (surfaceStatus !== "ready" || !agentPresence) {
