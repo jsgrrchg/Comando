@@ -1,5 +1,7 @@
 import {
     memo,
+    Suspense,
+    use,
     useCallback,
     useEffect,
     useMemo,
@@ -24,7 +26,7 @@ import {
     type MarkdownListItem,
 } from "../../app/editor/markdownLists";
 import { HighlightedCodeText } from "../../app/editor/staticCodeHighlight";
-import { useMarkdownCodeLanguageSupport } from "../../app/editor/useCodeLanguageSupport";
+import { loadMarkdownCodeLanguageSupport } from "../../app/editor/codeLanguage";
 import {
     ContextMenu,
     type ContextMenuEntry,
@@ -1672,16 +1674,35 @@ function parseList(
 
 /* ─── Code block ─── */
 
+function ResolvedHighlightedCodeText({
+    block,
+}: {
+    readonly block: MarkdownBlock;
+}) {
+    // The language promise is cached by grammar, allowing Suspense to resume
+    // an open fence as soon as its parser finishes loading.
+    const languageSupport = use(loadMarkdownCodeLanguageSupport(block.info));
+
+    return (
+        <HighlightedCodeText
+            text={block.content}
+            language={languageSupport}
+            segmentKeyPrefix={`chat-code:${block.id}`}
+        />
+    );
+}
+
 const CodeBlock = memo(function CodeBlock({
     block,
     chatFontSize = 14,
-    live,
 }: {
     readonly block: MarkdownBlock;
     readonly chatFontSize?: number;
-    readonly live: boolean;
 }) {
-    const languageSupport = useMarkdownCodeLanguageSupport(block.info);
+    useEffect(() => {
+        // Preload the precise parser without delaying the mutable fence fallback.
+        void loadMarkdownCodeLanguageSupport(block.info);
+    }, [block.info]);
     const languageToken = extractFenceLanguageToken(block.info ?? "");
     const isDiffBlock =
         languageToken?.toLowerCase() === "diff" ||
@@ -1740,12 +1761,27 @@ const CodeBlock = memo(function CodeBlock({
                             wordBreak: "inherit",
                         }}
                     >
-                        <HighlightedCodeText
-                            deferHighlighting={live && block.isMutable}
-                            text={block.content}
-                            language={languageSupport}
-                            segmentKeyPrefix={`chat-code:${block.id}`}
-                        />
+                        {block.isMutable ? (
+                            <HighlightedCodeText
+                                fallbackHighlighting
+                                text={block.content}
+                                language={null}
+                                segmentKeyPrefix={`chat-code:${block.id}`}
+                            />
+                        ) : (
+                            <Suspense
+                                fallback={
+                                    <HighlightedCodeText
+                                        fallbackHighlighting
+                                        text={block.content}
+                                        language={null}
+                                        segmentKeyPrefix={`chat-code:${block.id}`}
+                                    />
+                                }
+                            >
+                                <ResolvedHighlightedCodeText block={block} />
+                            </Suspense>
+                        )}
                     </code>
                 )}
             </pre>
@@ -2131,7 +2167,6 @@ export const MarkdownContent = memo(function MarkdownContent({
                         block={block}
                         chatFontSize={chatFontSize}
                         key={block.id}
-                        live={live}
                     />
                 ) : (
                     <TextBlock

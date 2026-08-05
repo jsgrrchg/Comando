@@ -1220,12 +1220,16 @@ export function resolveCodeLanguageKeyFromPath(
     return resolveCodeLanguageKey(filePath, null, probeContent);
 }
 
-export async function loadMarkdownCodeLanguageSupport(
+const noMarkdownLanguageSupportPromise: Promise<LanguageSupport | null> =
+    Promise.resolve(null);
+
+export function loadMarkdownCodeLanguageSupport(
     info: string,
 ): Promise<LanguageSupport | null> {
     const key = resolveMarkdownCodeLanguageKey(info);
     if (!key) {
-        return null;
+        // Suspense requires a stable promise even when the fence has no grammar.
+        return noMarkdownLanguageSupportPromise;
     }
     return loadCachedLanguageByKey(key);
 }
