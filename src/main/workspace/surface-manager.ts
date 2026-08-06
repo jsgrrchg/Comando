@@ -104,6 +104,7 @@ interface WorkspaceSurfaceHostRecord {
     context: WindowContextSnapshot;
     isClosing: boolean;
     hostOverlayVisible: boolean;
+    isDisposed: boolean;
     pendingLayoutTimer: NodeJS.Timeout | null;
     pendingDurableScopeKey: string | null;
     durableScopeRetryTimer: NodeJS.Timeout | null;
@@ -928,6 +929,8 @@ export class WorkspaceSurfaceManager {
     }
 
     #disposeHostNow(host: WorkspaceSurfaceHostRecord): void {
+        host.isDisposed = true;
+        host.durableScopeEpoch += 1;
         const isCurrentHost =
             this.#hostsByWindowId.get(host.hostWindowId) === host;
         if (isCurrentHost) {
@@ -1123,6 +1126,7 @@ export class WorkspaceSurfaceManager {
             hasPendingDurableScopeCommit: false,
             context: hostContext,
             isClosing: false,
+            isDisposed: false,
             pendingLayoutTimer: null,
             pendingDurableScopeKey: null,
             performance: surfacePerformance,
@@ -1143,6 +1147,9 @@ export class WorkspaceSurfaceManager {
         scopeKey: string | null,
         epoch?: number,
     ): void {
+        if (host.isDisposed) {
+            return;
+        }
         const commitEpoch = epoch ?? host.durableScopeEpoch + 1;
         if (commitEpoch < host.durableScopeEpoch) {
             return;
@@ -1159,7 +1166,7 @@ export class WorkspaceSurfaceManager {
         }
 
         const commit = (async () => {
-            while (host.hasPendingDurableScopeCommit) {
+            while (!host.isDisposed && host.hasPendingDurableScopeCommit) {
                 host.hasPendingDurableScopeCommit = false;
                 const pendingScopeKey = host.pendingDurableScopeKey;
                 const pendingEpoch = host.durableScopeEpoch;
@@ -1170,6 +1177,10 @@ export class WorkspaceSurfaceManager {
                         pendingScopeKey,
                     );
                 } catch (error) {
+                    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Disposal can race the rejected async commit.
+                    if (host.isDisposed) {
+                        return;
+                    }
                     host.performance.recordFailure();
                     console.error(
                         "[workspace] Failed to persist active workspace navigation",
@@ -1180,6 +1191,9 @@ export class WorkspaceSurfaceManager {
                     }
                     host.durableScopeRetryTimer ??= setTimeout(() => {
                         host.durableScopeRetryTimer = null;
+                        if (host.isDisposed) {
+                            return;
+                        }
                         this.#scheduleDurableScopeCommit(
                             host,
                             host.pendingDurableScopeKey,
@@ -1199,6 +1213,7 @@ export class WorkspaceSurfaceManager {
             }
             host.durableScopeCommit = null;
             if (
+                !host.isDisposed &&
                 host.hasPendingDurableScopeCommit &&
                 host.durableScopeRetryTimer === null
             ) {

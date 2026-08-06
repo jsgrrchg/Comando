@@ -332,6 +332,35 @@ describe("WorkspaceSurfaceManager action routing", () => {
         }
     });
 
+    it("does not retry persistence owned by a disposed host", async () => {
+        vi.useFakeTimers();
+        try {
+            const manager = createTestManager();
+            const host = createHostWindow();
+            manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
+            await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+            let rejectCommit: ((error: Error) => void) | undefined;
+            const commit = new Promise<void>((_resolve, reject) => {
+                rejectCommit = reject;
+            });
+            const commitActiveScope = vi.fn(() => commit);
+            manager.setLifecycleHandlers({ commitActiveScope });
+
+            const activation = manager.activate("host-1", "project-b::__primary__");
+            await finishActiveSurface(manager, "host-1", "project-b::__primary__");
+            await activation;
+            manager.disposeHost("host-1", host.window);
+            rejectCommit?.(new Error("durable navigation is unavailable"));
+            await Promise.resolve();
+
+            expect(vi.getTimerCount()).toBe(0);
+            await vi.runAllTimersAsync();
+            expect(commitActiveScope).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("delegates workspace shortcuts from the surface to singleton navigation", () => {
         const manager = createTestManager();
         const host = createHostWindow();
