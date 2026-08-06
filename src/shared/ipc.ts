@@ -336,6 +336,7 @@ export interface AppAiChatSettings {
 export interface AppAppearanceSettings {
     readonly agentsSidebarScale: number;
     readonly boostCodeContrast: boolean;
+    readonly chatContentWidth: number;
     readonly chromeTransparency: number;
     readonly fileTreeScale: number;
     readonly stickyFoldersEnabled: boolean;

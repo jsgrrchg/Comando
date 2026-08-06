@@ -8,6 +8,10 @@ import { APP_ZOOM_FACTOR_DEFAULT } from "@shared/app-zoom";
 import { AGENTS_SIDEBAR_SCALE_DEFAULT } from "@shared/agents-sidebar-scale";
 import { FILE_TREE_SCALE_DEFAULT } from "@shared/file-tree-scale";
 import {
+    CHAT_CONTENT_WIDTH_DEFAULT,
+    clampChatContentWidth,
+} from "@shared/chat-content-width";
+import {
     DEFAULT_APP_TERMINAL_SETTINGS,
     normalizeWindowsTerminalShell,
 } from "@shared/terminal-settings";
@@ -1454,6 +1458,9 @@ function createLegacySettingsSnapshot(
                     settings,
                     "appearance.boost_code_contrast",
                 ) ?? defaults.appearance.boostCodeContrast,
+            chatContentWidth:
+                readLegacyNumberSetting(settings, "appearance.chat_content_width") ??
+                defaults.appearance.chatContentWidth,
             fileTreeScale:
                 readLegacyNumberSetting(settings, "appearance.file_tree_scale") ??
                 defaults.appearance.fileTreeScale,
@@ -2139,6 +2146,7 @@ function createDefaultSettingsSnapshot(): CompleteSettingsSnapshot {
         appearance: {
             agentsSidebarScale: AGENTS_SIDEBAR_SCALE_DEFAULT,
             boostCodeContrast: true,
+            chatContentWidth: CHAT_CONTENT_WIDTH_DEFAULT,
             chromeTransparency: 45,
             fileTreeScale: FILE_TREE_SCALE_DEFAULT,
             stickyFoldersEnabled: true,
@@ -2188,6 +2196,10 @@ function normalizeSettingsSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot
         appearance: {
             ...defaults.appearance,
             ...(snapshot.appearance ?? {}),
+            chatContentWidth: clampChatContentWidth(
+                snapshot.appearance?.chatContentWidth ??
+                    defaults.appearance.chatContentWidth,
+            ),
         },
         customAcpRuntimes: normalizeCustomAcpRuntimesSettings(
             snapshot.customAcpRuntimes,

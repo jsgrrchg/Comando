@@ -50,6 +50,7 @@ function createSettingsWindowProps(
         },
         appAppearance: {
             boostCodeContrast: false,
+            chatContentWidth: 600,
             chromeTransparency: 45,
             mode: "system",
             presetId: "default",

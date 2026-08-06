@@ -50,6 +50,7 @@ describe("broadcastSettingsUpdated", () => {
             {
                 agentsSidebarScale: 1,
                 boostCodeContrast: true,
+                chatContentWidth: 600,
                 chromeTransparency: 45,
                 fileTreeScale: 1,
                 stickyFoldersEnabled: true,
@@ -99,6 +100,7 @@ describe("broadcastSettingsUpdated", () => {
             appearance: {
                 agentsSidebarScale: 1,
                 boostCodeContrast: true,
+                chatContentWidth: 600,
                 chromeTransparency: 45,
                 fileTreeScale: 1,
                 stickyFoldersEnabled: true,

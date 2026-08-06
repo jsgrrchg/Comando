@@ -27,6 +27,11 @@ import {
     formatFileTreeScalePercent,
 } from "@shared/file-tree-scale";
 import {
+    CHAT_CONTENT_WIDTH_MAX,
+    CHAT_CONTENT_WIDTH_MIN,
+    CHAT_CONTENT_WIDTH_STEP,
+} from "@shared/chat-content-width";
+import {
     AI_CHAT_FONT_SIZE_MAX,
     AI_CHAT_FONT_SIZE_MIN,
     AI_COMPOSER_FONT_SIZE_MAX,
@@ -144,6 +149,8 @@ const STATIC_CATEGORY_SEARCH_VALUES: Record<Category, readonly SearchValue[]> = 
         "Scale text and rows in the Agents, Issues, and Pull Requests sidebars.",
         "Sticky folders",
         "Keep parent folders pinned while scrolling the file tree.",
+        "Chat content width",
+        "Set the maximum width of AI chat messages and composer.",
         "Window transparency",
         "Use native acrylic transparency on Windows and vibrancy on macOS.",
         "Mode",
@@ -1742,6 +1749,22 @@ function AppearanceContent({
                         onChange={(v) =>
                             state.onAgentsSidebarScaleChange?.(v)
                         }
+                    />
+                }
+            />
+            <SearchableRow
+                searchQuery={searchQuery}
+                section="Workspace"
+                label="Chat content width"
+                description="Set the maximum width of AI chat messages and composer."
+                control={
+                    <SliderField
+                        value={state.chatContentWidth}
+                        min={CHAT_CONTENT_WIDTH_MIN}
+                        max={CHAT_CONTENT_WIDTH_MAX}
+                        step={CHAT_CONTENT_WIDTH_STEP}
+                        onChange={(v) => state.onChatContentWidthChange?.(v)}
+                        formatValue={(v) => `${v}px`}
                     />
                 }
             />
