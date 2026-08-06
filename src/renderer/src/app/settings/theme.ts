@@ -15,6 +15,10 @@ import {
     FILE_TREE_SCALE_DEFAULT,
     clampFileTreeScale,
 } from "@shared/file-tree-scale";
+import {
+    CHAT_CONTENT_WIDTH_DEFAULT,
+    clampChatContentWidth,
+} from "@shared/chat-content-width";
 import type {
     AppAiChatSettings,
     AppAppearanceSettings,
@@ -1757,6 +1761,7 @@ export function getDefaultAppAppearance(): AppAppearanceSettings {
     return {
         agentsSidebarScale: AGENTS_SIDEBAR_SCALE_DEFAULT,
         boostCodeContrast: true,
+        chatContentWidth: CHAT_CONTENT_WIDTH_DEFAULT,
         chromeTransparency: CHROME_TRANSPARENCY_DEFAULT,
         fileTreeScale: FILE_TREE_SCALE_DEFAULT,
         stickyFoldersEnabled: true,
@@ -1823,6 +1828,9 @@ export function resolveAppearance(
         ),
         boostCodeContrast:
             appAppearance?.boostCodeContrast ?? defaults.boostCodeContrast,
+        chatContentWidth: clampChatContentWidth(
+            appAppearance?.chatContentWidth ?? defaults.chatContentWidth,
+        ),
         chromeTransparency: clampChromeTransparency(
             appAppearance?.chromeTransparency ?? defaults.chromeTransparency,
         ),

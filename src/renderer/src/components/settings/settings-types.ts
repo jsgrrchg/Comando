@@ -32,6 +32,7 @@ export interface ThemePresetOption {
 export interface SettingsThemeControlState {
     readonly agentsSidebarScale?: number;
     readonly boostCodeContrast: boolean;
+    readonly chatContentWidth: number;
     readonly chromeTransparency: number;
     readonly fileTreeScale?: number;
     readonly mode: ThemeMode;
@@ -43,6 +44,7 @@ export interface SettingsThemeControlState {
     readonly disabled?: boolean;
     readonly onAgentsSidebarScaleChange?: (agentsSidebarScale: number) => void;
     readonly onBoostCodeContrastChange?: (enabled: boolean) => void;
+    readonly onChatContentWidthChange?: (chatContentWidth: number) => void;
     readonly onChromeTransparencyChange?: (chromeTransparency: number) => void;
     readonly onFileTreeScaleChange?: (fileTreeScale: number) => void;
     readonly onModeChange?: (mode: ThemeMode) => void;

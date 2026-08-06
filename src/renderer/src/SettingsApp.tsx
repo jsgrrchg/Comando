@@ -489,6 +489,13 @@ export function SettingsApp({
         commitAppAppearance(nextAppearance);
     };
 
+    const handleAppChatContentWidthChange = (chatContentWidth: number) => {
+        commitAppAppearance({
+            ...appAppearance,
+            chatContentWidth,
+        });
+    };
+
     const handleAppFileTreeScaleChange = (fileTreeScale: number) => {
         const nextAppearance = {
             ...appAppearance,
@@ -932,12 +939,14 @@ export function SettingsApp({
             appAppearance={{
                 agentsSidebarScale: appAppearance.agentsSidebarScale,
                 boostCodeContrast: appAppearance.boostCodeContrast,
+                chatContentWidth: appAppearance.chatContentWidth,
                 chromeTransparency: appAppearance.chromeTransparency,
                 fileTreeScale: appAppearance.fileTreeScale,
                 mode: appAppearance.themeMode,
                 onAgentsSidebarScaleChange:
                     handleAppAgentsSidebarScaleChange,
                 onBoostCodeContrastChange: handleAppBoostCodeContrastChange,
+                onChatContentWidthChange: handleAppChatContentWidthChange,
                 onChromeTransparencyChange: handleAppChromeTransparencyChange,
                 onFileTreeScaleChange: handleAppFileTreeScaleChange,
                 onModeChange: handleAppThemeModeChange,

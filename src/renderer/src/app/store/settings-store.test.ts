@@ -38,6 +38,7 @@ function createAppearanceSettings(
     return {
         agentsSidebarScale: 1,
         boostCodeContrast: true,
+        chatContentWidth: 600,
         chromeTransparency: 45,
         fileTreeScale: 1,
         stickyFoldersEnabled: true,
