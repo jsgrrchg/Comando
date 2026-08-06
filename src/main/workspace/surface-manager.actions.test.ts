@@ -192,6 +192,69 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
     });
 
+    it("reveals a warm workspace without waiting for navigation persistence", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        const activateBackground = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        await finishActiveSurface(manager, "host-1", "project-b::__primary__");
+        await activateBackground;
+
+        let resolvePersistence: (() => void) | undefined;
+        const persistence = new Promise<void>((resolve) => {
+            resolvePersistence = resolve;
+        });
+        const commitActiveScope = vi.fn(() => persistence);
+        manager.setLifecycleHandlers({ commitActiveScope });
+
+        await expect(
+            manager.activate("host-1", "project-a::__primary__"),
+        ).resolves.toMatchObject({ status: "activated", warm: true });
+        await vi.waitFor(() =>
+            expect(commitActiveScope).toHaveBeenCalledWith(
+                "host-1",
+                "project-a::__primary__",
+            ),
+        );
+        expect(
+            manager.getSurfaceDiagnostics("host-1").activeScopeKey,
+        ).toBe("project-a::__primary__");
+
+        resolvePersistence?.();
+    });
+
+    it("keeps the active surface when clearing durable navigation fails", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        manager.setLifecycleHandlers({
+            commitActiveScope: () =>
+                Promise.reject(new Error("durable navigation is unavailable")),
+            prepareSurfaceHibernate: () => Promise.resolve(),
+        });
+
+        await expect(
+            manager.closeWorkspaceSurface("host-1", "project-a::__primary__"),
+        ).resolves.toMatchObject({ status: "failed" });
+        expect(
+            manager.getSurfaceDiagnostics("host-1").activeScopeKey,
+        ).toBe("project-a::__primary__");
+        expect(
+            manager.getSurfaceWebContents("host-1", "project-a::__primary__"),
+        ).not.toBeNull();
+    });
+
     it("delegates workspace shortcuts from the surface to singleton navigation", () => {
         const manager = createTestManager();
         const host = createHostWindow();

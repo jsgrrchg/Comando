@@ -31,7 +31,7 @@ export interface WorkspaceActivationAdapter {
     readonly commitActiveScope: (
         scopeKey: string | null,
         generation: string | null,
-    ) => Promise<void>;
+    ) => Promise<void> | void;
     readonly destroy: (scopeKey: string, generation: string) => Promise<void> | void;
     readonly prepareHibernate: (
         scopeKey: string,

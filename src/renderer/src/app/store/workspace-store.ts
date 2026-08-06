@@ -19,6 +19,7 @@ import type {
     WorkspaceReviewTab,
     WorkspaceSurfaceNavigationState,
     WorkspaceSurfaceRegistrySnapshot,
+    WorkspaceSurfaceActivationResult,
 } from "@shared/ipc";
 import {
     getAiRuntimeDisplayName,
@@ -147,6 +148,9 @@ interface WorkspaceStore extends WorkspaceTreeState {
     readonly contextsByKey: Record<string, RuntimeWorkspaceLayout>;
     readonly deferredPaneIds: ReadonlySet<string>;
     getWorkspaceSurfaceRegistry: () => WorkspaceSurfaceRegistrySnapshot;
+    activateWorkspaceSurface: (
+        contextKey: string,
+    ) => Promise<WorkspaceSurfaceActivationResult>;
     applyWorkspaceSurfaceNavigation: (
         navigation: WorkspaceSurfaceNavigationState,
     ) => void;
@@ -436,6 +440,26 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     scopeEpoch: 0,
 
     getWorkspaceSurfaceRegistry: () => workspaceStoreToSurfaceRegistry(get()),
+
+    activateWorkspaceSurface: async (contextKey) => {
+        const api = getComandoApi();
+        if (!api) {
+            throw new Error("The desktop bridge is unavailable.");
+        }
+
+        let result = await api.activateWorkspaceSurface(contextKey);
+        if (
+            result.status === "failed" &&
+            result.message === "The workspace is not available in this host."
+        ) {
+            // A new scope may race React's topology-sync effect on its first open.
+            await api.initializeWorkspaceSurfaces(
+                get().getWorkspaceSurfaceRegistry(),
+            );
+            result = await api.activateWorkspaceSurface(contextKey);
+        }
+        return result;
+    },
 
     applyWorkspaceSurfaceNavigation: (navigation) => {
         const { activeScopeKey, projectId, worktreeId } = navigation;

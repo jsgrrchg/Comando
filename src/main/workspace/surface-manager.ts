@@ -95,6 +95,8 @@ interface WorkspaceSurfaceHostRecord {
     activeScopeKey: string | null;
     readonly environment: WorkspaceSurfaceEnvironmentDiagnostic;
     contentInsets: WorkspaceSurfaceContentInsets;
+    durableScopeCommit: Promise<void> | null;
+    hasPendingDurableScopeCommit: boolean;
     disposalScheduled: boolean;
     readonly hostWindow: BrowserWindow;
     readonly hostWindowId: string;
@@ -102,6 +104,8 @@ interface WorkspaceSurfaceHostRecord {
     isClosing: boolean;
     hostOverlayVisible: boolean;
     pendingLayoutTimer: NodeJS.Timeout | null;
+    pendingDurableScopeKey: string | null;
+    durableScopeRetryTimer: NodeJS.Timeout | null;
     readonly recentOperations: WorkspaceSurfaceOperationDiagnostic[];
     readonly performance: WorkspaceSurfacePerformanceMonitor;
     readonly surfacePool: WorkspaceSurfacePool;
@@ -890,7 +894,7 @@ export class WorkspaceSurfaceManager {
             return Promise.resolve();
         }
         host.isClosing = true;
-        return Promise.resolve();
+        return this.#flushDurableScopeCommit(host, host.activeScopeKey);
     }
 
     cancelHostClose(hostWindowId: string, hostWindow?: BrowserWindow): void {
@@ -930,6 +934,9 @@ export class WorkspaceSurfaceManager {
         }
         if (host.pendingLayoutTimer) {
             clearTimeout(host.pendingLayoutTimer);
+        }
+        if (host.durableScopeRetryTimer) {
+            clearTimeout(host.durableScopeRetryTimer);
         }
         for (const surfaceId of [...host.surfaceIdsByContextKey.values()]) {
             this.#destroySurface(host, surfaceId);
@@ -999,14 +1006,10 @@ export class WorkspaceSurfaceManager {
                         reused: false,
                     });
                 },
-                commitActiveScope: async (scopeKey, generation) => {
+                commitActiveScope: (scopeKey, generation) => {
                     if (host.isClosing) {
                         throw new Error("The workspace host is closing.");
                     }
-                    await this.#lifecycleHandlers.commitActiveScope?.(
-                        host.hostWindowId,
-                        scopeKey,
-                    );
                     if (
                         scopeKey &&
                         (!generation ||
@@ -1030,6 +1033,10 @@ export class WorkspaceSurfaceManager {
                     };
                     this.#rejectInactiveActions(host);
                     this.#applyVisibility(host, { focusActive: Boolean(scopeKey) });
+                    if (scopeKey === null) {
+                        return this.#flushDurableScopeCommit(host, null);
+                    }
+                    this.#scheduleDurableScopeCommit(host, scopeKey);
                 },
                 destroy: (scopeKey, generation) => {
                     if (host.surfaceIdsByContextKey.get(scopeKey) === generation) {
@@ -1105,13 +1112,17 @@ export class WorkspaceSurfaceManager {
                 right: 0,
                 top: DESKTOP_TITLE_BAR_HEIGHT,
             },
+            durableScopeCommit: null,
+            durableScopeRetryTimer: null,
             disposalScheduled: false,
             hostWindow,
             hostWindowId: hostContext.windowId,
             hostOverlayVisible: false,
+            hasPendingDurableScopeCommit: false,
             context: hostContext,
             isClosing: false,
             pendingLayoutTimer: null,
+            pendingDurableScopeKey: null,
             performance: surfacePerformance,
             recentOperations: [],
             registry: {
@@ -1123,6 +1134,80 @@ export class WorkspaceSurfaceManager {
             warmingContextKey: null,
         });
         return host;
+    }
+
+    #scheduleDurableScopeCommit(
+        host: WorkspaceSurfaceHostRecord,
+        scopeKey: string | null,
+    ): void {
+        host.pendingDurableScopeKey = scopeKey;
+        host.hasPendingDurableScopeCommit = true;
+        if (host.durableScopeCommit) {
+            return;
+        }
+
+        const commit = (async () => {
+            while (host.hasPendingDurableScopeCommit) {
+                host.hasPendingDurableScopeCommit = false;
+                const pendingScopeKey = host.pendingDurableScopeKey;
+                try {
+                    // Navigation persistence must not delay a resident surface swap.
+                    await this.#lifecycleHandlers.commitActiveScope?.(
+                        host.hostWindowId,
+                        pendingScopeKey,
+                    );
+                } catch (error) {
+                    host.performance.recordFailure();
+                    console.error(
+                        "[workspace] Failed to persist active workspace navigation",
+                        error,
+                    );
+                    host.pendingDurableScopeKey = pendingScopeKey;
+                    host.hasPendingDurableScopeCommit = true;
+                    host.durableScopeRetryTimer ??= setTimeout(() => {
+                        host.durableScopeRetryTimer = null;
+                        this.#scheduleDurableScopeCommit(
+                            host,
+                            host.pendingDurableScopeKey,
+                        );
+                    }, 1_000);
+                }
+            }
+        })();
+        host.durableScopeCommit = commit;
+        void commit.finally(() => {
+            if (host.durableScopeCommit !== commit) {
+                return;
+            }
+            host.durableScopeCommit = null;
+            if (
+                host.hasPendingDurableScopeCommit &&
+                host.durableScopeRetryTimer === null
+            ) {
+                this.#scheduleDurableScopeCommit(
+                    host,
+                    host.pendingDurableScopeKey,
+                );
+            }
+        });
+    }
+
+    async #flushDurableScopeCommit(
+        host: WorkspaceSurfaceHostRecord,
+        scopeKey: string | null,
+    ): Promise<void> {
+        if (host.durableScopeRetryTimer) {
+            clearTimeout(host.durableScopeRetryTimer);
+            host.durableScopeRetryTimer = null;
+        }
+        host.hasPendingDurableScopeCommit = false;
+        await host.durableScopeCommit;
+        // A close must not leave durable navigation pointing to a renderer
+        // that is about to be destroyed.
+        await this.#lifecycleHandlers.commitActiveScope?.(
+            host.hostWindowId,
+            scopeKey,
+        );
     }
 
     #waitUntilSurfaceReady(

@@ -598,10 +598,9 @@ export function WorkspaceHostApp() {
             const contextKey = await useWorkspaceStore
                 .getState()
                 .registerWorkspaceScope(workspace.projectId, workspace.worktreeId);
-            await comandoApi.initializeWorkspaceSurfaces(
-                useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
-            );
-            const result = await comandoApi.activateWorkspaceSurface(contextKey);
+            const result = await useWorkspaceStore
+                .getState()
+                .activateWorkspaceSurface(contextKey);
             if (result.status === "failed") {
                 throw new Error(result.message);
             }
@@ -882,7 +881,6 @@ export function WorkspaceHostApp() {
             useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
         );
     }, [
-        workspaceActiveContextKey,
         workspaceNavigationHydrated,
         workspaceSurfaceTopologyKey,
     ]);
@@ -919,10 +917,7 @@ export function WorkspaceHostApp() {
                         { emptyLayout: true },
                     );
                 }
-                await api.initializeWorkspaceSurfaces(
-                    useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
-                );
-                const result = await api.activateWorkspaceSurface(contextKey);
+                const result = await store.activateWorkspaceSurface(contextKey);
                 if (result.status === "failed") {
                     throw new Error(result.message);
                 }
@@ -1179,10 +1174,9 @@ export function WorkspaceHostApp() {
                 const contextKey = await useWorkspaceStore
                     .getState()
                     .registerWorkspaceScope(payload.projectId, requestedWorktreeId);
-                await comandoApi.initializeWorkspaceSurfaces(
-                    useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
-                );
-                await comandoApi.activateWorkspaceSurface(contextKey);
+                await useWorkspaceStore
+                    .getState()
+                    .activateWorkspaceSurface(contextKey);
 
                 if (payload.branchName !== undefined) {
                     selectGitBranch(
@@ -3882,10 +3876,9 @@ export function WorkspaceHostApp() {
             const contextKey = await useWorkspaceStore
                 .getState()
                 .registerWorkspaceScope(projectId, worktreeId);
-            await api.initializeWorkspaceSurfaces(
-                useWorkspaceStore.getState().getWorkspaceSurfaceRegistry(),
-            );
-            const result = await api.activateWorkspaceSurface(contextKey);
+            const result = await useWorkspaceStore
+                .getState()
+                .activateWorkspaceSurface(contextKey);
             if (result.status === "failed") {
                 throw new Error(result.message);
             }
