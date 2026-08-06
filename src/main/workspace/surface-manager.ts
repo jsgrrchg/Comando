@@ -96,6 +96,7 @@ interface WorkspaceSurfaceHostRecord {
     readonly environment: WorkspaceSurfaceEnvironmentDiagnostic;
     contentInsets: WorkspaceSurfaceContentInsets;
     durableScopeCommit: Promise<void> | null;
+    durableScopeEpoch: number;
     hasPendingDurableScopeCommit: boolean;
     disposalScheduled: boolean;
     readonly hostWindow: BrowserWindow;
@@ -1113,6 +1114,7 @@ export class WorkspaceSurfaceManager {
                 top: DESKTOP_TITLE_BAR_HEIGHT,
             },
             durableScopeCommit: null,
+            durableScopeEpoch: 0,
             durableScopeRetryTimer: null,
             disposalScheduled: false,
             hostWindow,
@@ -1139,11 +1141,17 @@ export class WorkspaceSurfaceManager {
     #scheduleDurableScopeCommit(
         host: WorkspaceSurfaceHostRecord,
         scopeKey: string | null,
+        epoch?: number,
     ): void {
+        const commitEpoch = epoch ?? host.durableScopeEpoch + 1;
+        if (commitEpoch < host.durableScopeEpoch) {
+            return;
+        }
         if (host.durableScopeRetryTimer !== null) {
             clearTimeout(host.durableScopeRetryTimer);
             host.durableScopeRetryTimer = null;
         }
+        host.durableScopeEpoch = commitEpoch;
         host.pendingDurableScopeKey = scopeKey;
         host.hasPendingDurableScopeCommit = true;
         if (host.durableScopeCommit) {
@@ -1154,6 +1162,7 @@ export class WorkspaceSurfaceManager {
             while (host.hasPendingDurableScopeCommit) {
                 host.hasPendingDurableScopeCommit = false;
                 const pendingScopeKey = host.pendingDurableScopeKey;
+                const pendingEpoch = host.durableScopeEpoch;
                 try {
                     // Navigation persistence must not delay a resident surface swap.
                     await this.#lifecycleHandlers.commitActiveScope?.(
@@ -1166,13 +1175,15 @@ export class WorkspaceSurfaceManager {
                         "[workspace] Failed to persist active workspace navigation",
                         error,
                     );
-                    host.pendingDurableScopeKey = pendingScopeKey;
-                    host.hasPendingDurableScopeCommit = true;
+                    if (host.durableScopeEpoch !== pendingEpoch) {
+                        continue;
+                    }
                     host.durableScopeRetryTimer ??= setTimeout(() => {
                         host.durableScopeRetryTimer = null;
                         this.#scheduleDurableScopeCommit(
                             host,
                             host.pendingDurableScopeKey,
+                            pendingEpoch,
                         );
                     }, 1_000);
                     // The retry timer owns the next attempt; continuing here
@@ -1207,6 +1218,8 @@ export class WorkspaceSurfaceManager {
             clearTimeout(host.durableScopeRetryTimer);
             host.durableScopeRetryTimer = null;
         }
+        host.durableScopeEpoch += 1;
+        host.pendingDurableScopeKey = scopeKey;
         host.hasPendingDurableScopeCommit = false;
         await host.durableScopeCommit;
         // A close must not leave durable navigation pointing to a renderer
