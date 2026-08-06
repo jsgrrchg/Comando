@@ -158,6 +158,15 @@ describe("SettingsWindow terminal settings", () => {
         expect(markup).not.toContain('height:100vh');
     });
 
+    it("centers the settings content inside the main-window pane", () => {
+        const markup = renderToStaticMarkup(
+            <SettingsWindow {...createSettingsWindowProps()} embedded />,
+        );
+
+        expect(markup).toContain("margin-inline:auto");
+        expect(markup).toContain("max-width:600px");
+    });
+
     it("warns when the autosave delay can overlap with agent edits", () => {
         const highDelayMarkup = renderToStaticMarkup(
             <SettingsWindow

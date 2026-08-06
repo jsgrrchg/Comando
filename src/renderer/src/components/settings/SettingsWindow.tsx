@@ -828,7 +828,13 @@ export function SettingsWindow({
                             padding: "8px 48px 48px",
                         }}
                     >
-                        <div style={{ maxWidth: 600 }}>
+                        <div
+                            style={{
+                                marginInline: "auto",
+                                maxWidth: 600,
+                                width: "100%",
+                            }}
+                        >
                             {filteredCategories.length === 0 && hasSearch ? (
                                 <EmptySettingsSearch search={search} />
                             ) : null}
