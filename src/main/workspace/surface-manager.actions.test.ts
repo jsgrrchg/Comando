@@ -255,6 +255,35 @@ describe("WorkspaceSurfaceManager action routing", () => {
         ).not.toBeNull();
     });
 
+    it("waits before retrying failed background navigation persistence", async () => {
+        vi.useFakeTimers();
+        try {
+            const manager = createTestManager();
+            manager.syncWorkspaceRegistry(
+                createHostWindow().window,
+                createHostContext(),
+                createSnapshot(),
+            );
+            await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+            const commitActiveScope = vi.fn(() =>
+                Promise.reject(new Error("durable navigation is unavailable")),
+            );
+            manager.setLifecycleHandlers({ commitActiveScope });
+
+            const activation = manager.activate("host-1", "project-b::__primary__");
+            await finishActiveSurface(manager, "host-1", "project-b::__primary__");
+            await activation;
+            vi.runAllTicks();
+            expect(commitActiveScope).toHaveBeenCalledTimes(1);
+            expect(vi.getTimerCount()).toBe(1);
+
+            await vi.advanceTimersToNextTimerAsync();
+            expect(commitActiveScope).toHaveBeenCalledTimes(2);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("delegates workspace shortcuts from the surface to singleton navigation", () => {
         const manager = createTestManager();
         const host = createHostWindow();

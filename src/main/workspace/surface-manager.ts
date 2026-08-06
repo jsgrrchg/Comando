@@ -935,7 +935,7 @@ export class WorkspaceSurfaceManager {
         if (host.pendingLayoutTimer) {
             clearTimeout(host.pendingLayoutTimer);
         }
-        if (host.durableScopeRetryTimer) {
+        if (host.durableScopeRetryTimer !== null) {
             clearTimeout(host.durableScopeRetryTimer);
         }
         for (const surfaceId of [...host.surfaceIdsByContextKey.values()]) {
@@ -1140,6 +1140,10 @@ export class WorkspaceSurfaceManager {
         host: WorkspaceSurfaceHostRecord,
         scopeKey: string | null,
     ): void {
+        if (host.durableScopeRetryTimer !== null) {
+            clearTimeout(host.durableScopeRetryTimer);
+            host.durableScopeRetryTimer = null;
+        }
         host.pendingDurableScopeKey = scopeKey;
         host.hasPendingDurableScopeCommit = true;
         if (host.durableScopeCommit) {
@@ -1171,6 +1175,9 @@ export class WorkspaceSurfaceManager {
                             host.pendingDurableScopeKey,
                         );
                     }, 1_000);
+                    // The retry timer owns the next attempt; continuing here
+                    // would turn a durable outage into a busy loop.
+                    break;
                 }
             }
         })();
@@ -1196,7 +1203,7 @@ export class WorkspaceSurfaceManager {
         host: WorkspaceSurfaceHostRecord,
         scopeKey: string | null,
     ): Promise<void> {
-        if (host.durableScopeRetryTimer) {
+        if (host.durableScopeRetryTimer !== null) {
             clearTimeout(host.durableScopeRetryTimer);
             host.durableScopeRetryTimer = null;
         }
