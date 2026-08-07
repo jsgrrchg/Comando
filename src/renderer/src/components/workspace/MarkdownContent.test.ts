@@ -14,8 +14,6 @@ import {
     readChatPerformanceCounters,
     resetChatPerformanceCounters,
 } from "@renderer/app/debug/chatPerformanceCounters";
-import { loadMarkdownCodeLanguageSupport } from "@renderer/app/editor/codeLanguage";
-
 import {
     MarkdownContent,
     parseMarkdownBlocksProgressively,
@@ -59,24 +57,6 @@ function renderInteractiveMarkdownContent(
 
     act(() => {
         root.render(createElement(MarkdownContent, props));
-    });
-
-    return container;
-}
-
-async function renderInteractiveMarkdownContentAsync(
-    props: Parameters<typeof MarkdownContent>[0],
-): Promise<HTMLElement> {
-    const container = document.createElement("div");
-    document.body.appendChild(container);
-
-    const root = createRoot(container);
-    mountedRoots.push(root);
-    mountedContainers.push(container);
-
-    await act(async () => {
-        root.render(createElement(MarkdownContent, props));
-        await Promise.resolve();
     });
 
     return container;
@@ -194,8 +174,8 @@ describe("MarkdownContent", () => {
         expect(next.stableBlocks.at(-1)).toBe(completed.stableBlocks.at(-1));
     });
 
-    it("seals a closed fence and highlights an open fence while streaming", async () => {
-        const openFence = "Before the fence.\n\n```cpp\nint answer = 42;";
+    it("seals a closed fence and defers highlighting only while it is open", () => {
+        const openFence = "Before the fence.\n\n```ts\nconst answer = 42;";
         const streamingMarkup = renderToStaticMarkup(
             createElement(MarkdownContent, {
                 content: openFence,
@@ -213,19 +193,10 @@ describe("MarkdownContent", () => {
             (block) => block.type === "code",
         );
 
-        expect(streamingMarkup).toContain("cm-static-token-type");
-        const container = await renderInteractiveMarkdownContentAsync({
-            content: openFence,
-            live: true,
-        });
-        await act(async () => {
-            await loadMarkdownCodeLanguageSupport("cpp");
-            await new Promise((resolve) => window.setTimeout(resolve, 0));
-        });
-
-        expect(
-            container.querySelector("span[class*='cm-static-token-']"),
-        ).not.toBeNull();
+        expect(streamingMarkup).toContain(
+            'data-code-highlight-deferred="true"',
+        );
+        expect(streamingMarkup).not.toContain("cm-static-token-");
         expect(completedFence?.isMutable).toBe(false);
         expect(next.stableBlocks.find((block) => block.type === "code")).toBe(
             completedFence,

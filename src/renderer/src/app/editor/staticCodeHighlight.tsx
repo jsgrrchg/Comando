@@ -9,9 +9,6 @@ type HighlightSegment = {
     readonly className: string | null;
 };
 
-const FALLBACK_CODE_TOKEN_RE =
-    /\/\*[\s\S]*?\*\/|\/\/[^\n]*|#[^\n]*|`(?:\\.|[^`\\])*`|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b\d+(?:\.\d+)?\b|\b(?:class|const|else|enum|export|for|from|function|if|import|in|let|namespace|new|private|protected|public|return|static|switch|template|throw|try|using|while)\b|\b(?:auto|bool|char|double|float|int|long|short|string|void)\b/g;
-
 const staticTokenHighlighter = tagHighlighter([
     {
         tag: [
@@ -199,43 +196,6 @@ function buildLanguageHighlightSegments(
     return segments;
 }
 
-function buildFallbackHighlightSegments(text: string): HighlightSegment[] {
-    const segments: HighlightSegment[] = [];
-    let cursor = 0;
-
-    for (const match of text.matchAll(FALLBACK_CODE_TOKEN_RE)) {
-        const token = match[0];
-        const from = match.index ?? cursor;
-        if (from > cursor) {
-            segments.push({ text: text.slice(cursor, from), className: null });
-        }
-
-        const className = token.startsWith("//") ||
-            token.startsWith("/*") ||
-            token.startsWith("#")
-            ? "cm-static-token-comment"
-            : token.startsWith('"') ||
-                token.startsWith("'") ||
-                token.startsWith("`")
-              ? "cm-static-token-string"
-              : /^\d/.test(token)
-                ? "cm-static-token-number"
-                : /^(?:auto|bool|char|double|float|int|long|short|string|void)$/.test(
-                      token,
-                  )
-                  ? "cm-static-token-type"
-                  : "cm-static-token-keyword";
-        segments.push({ text: token, className });
-        cursor = from + token.length;
-    }
-
-    if (cursor < text.length) {
-        segments.push({ text: text.slice(cursor), className: null });
-    }
-
-    return segments;
-}
-
 function renderHighlightSegments(
     segments: readonly HighlightSegment[],
     keyPrefix: string,
@@ -252,30 +212,29 @@ function renderHighlightSegments(
 }
 
 export function HighlightedCodeText({
-    fallbackHighlighting = false,
+    deferHighlighting = false,
     text,
     language,
     segmentKeyPrefix = "cm-static",
 }: {
-    /** Gives a loading streaming parser an immediate lightweight token pass. */
-    readonly fallbackHighlighting?: boolean;
+    /** Keeps an open streaming fence responsive until its syntax is sealed. */
+    readonly deferHighlighting?: boolean;
     readonly text: string;
     readonly language: LanguageSupport | Language | null;
     readonly segmentKeyPrefix?: string;
 }) {
     const segments = useMemo(
         () =>
-            language
-                ? buildHighlightSegments(text, toLanguage(language))
-                : fallbackHighlighting
-                  ? buildFallbackHighlightSegments(text)
-                  : [{ className: null, text }],
-        [fallbackHighlighting, language, text],
+            deferHighlighting
+                ? [{ className: null, text }]
+                : buildHighlightSegments(text, toLanguage(language)),
+        [deferHighlighting, language, text],
     );
 
     return (
         <span
             className="cm-static-code"
+            data-code-highlight-deferred={deferHighlighting ? "true" : undefined}
         >
             {renderHighlightSegments(segments, segmentKeyPrefix)}
         </span>
