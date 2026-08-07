@@ -192,6 +192,175 @@ describe("WorkspaceSurfaceManager action routing", () => {
         );
     });
 
+    it("reveals a warm workspace without waiting for navigation persistence", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        const activateBackground = manager.activate(
+            "host-1",
+            "project-b::__primary__",
+        );
+        await finishActiveSurface(manager, "host-1", "project-b::__primary__");
+        await activateBackground;
+
+        let resolvePersistence: (() => void) | undefined;
+        const persistence = new Promise<void>((resolve) => {
+            resolvePersistence = resolve;
+        });
+        const commitActiveScope = vi.fn(() => persistence);
+        manager.setLifecycleHandlers({ commitActiveScope });
+
+        await expect(
+            manager.activate("host-1", "project-a::__primary__"),
+        ).resolves.toMatchObject({ status: "activated", warm: true });
+        await vi.waitFor(() =>
+            expect(commitActiveScope).toHaveBeenCalledWith(
+                "host-1",
+                "project-a::__primary__",
+            ),
+        );
+        expect(
+            manager.getSurfaceDiagnostics("host-1").activeScopeKey,
+        ).toBe("project-a::__primary__");
+
+        resolvePersistence?.();
+    });
+
+    it("keeps the active surface when clearing durable navigation fails", async () => {
+        const manager = createTestManager();
+        manager.syncWorkspaceRegistry(
+            createHostWindow().window,
+            createHostContext(),
+            createSnapshot(),
+        );
+        await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+        manager.setLifecycleHandlers({
+            commitActiveScope: () =>
+                Promise.reject(new Error("durable navigation is unavailable")),
+            prepareSurfaceHibernate: () => Promise.resolve(),
+        });
+
+        await expect(
+            manager.closeWorkspaceSurface("host-1", "project-a::__primary__"),
+        ).resolves.toMatchObject({ status: "failed" });
+        expect(
+            manager.getSurfaceDiagnostics("host-1").activeScopeKey,
+        ).toBe("project-a::__primary__");
+        expect(
+            manager.getSurfaceWebContents("host-1", "project-a::__primary__"),
+        ).not.toBeNull();
+    });
+
+    it("waits before retrying failed background navigation persistence", async () => {
+        vi.useFakeTimers();
+        try {
+            const manager = createTestManager();
+            manager.syncWorkspaceRegistry(
+                createHostWindow().window,
+                createHostContext(),
+                createSnapshot(),
+            );
+            await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+            const commitActiveScope = vi.fn(() =>
+                Promise.reject(new Error("durable navigation is unavailable")),
+            );
+            manager.setLifecycleHandlers({
+                commitActiveScope,
+                prepareSurfaceHibernate: () => Promise.resolve(),
+            });
+
+            const activation = manager.activate("host-1", "project-b::__primary__");
+            await finishActiveSurface(manager, "host-1", "project-b::__primary__");
+            await activation;
+            vi.runAllTicks();
+            expect(commitActiveScope).toHaveBeenCalledTimes(1);
+            expect(vi.getTimerCount()).toBe(1);
+
+            await vi.advanceTimersToNextTimerAsync();
+            expect(commitActiveScope).toHaveBeenCalledTimes(2);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("invalidates a failed background retry when its active workspace closes", async () => {
+        vi.useFakeTimers();
+        try {
+            const manager = createTestManager();
+            manager.syncWorkspaceRegistry(
+                createHostWindow().window,
+                createHostContext(),
+                createSnapshot(),
+            );
+            await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+            const activateBackground = manager.activate(
+                "host-1",
+                "project-b::__primary__",
+            );
+            await finishActiveSurface(manager, "host-1", "project-b::__primary__");
+            await activateBackground;
+
+            let rejectFirstCommit: ((error: Error) => void) | undefined;
+            const firstCommit = new Promise<void>((_resolve, reject) => {
+                rejectFirstCommit = reject;
+            });
+            const commitActiveScope = vi
+                .fn()
+                .mockImplementationOnce(() => firstCommit)
+                .mockResolvedValue(undefined);
+            manager.setLifecycleHandlers({
+                commitActiveScope,
+                prepareSurfaceHibernate: () => Promise.resolve(),
+            });
+
+            await manager.activate("host-1", "project-a::__primary__");
+            const close = manager.closeWorkspaceSurface(
+                "host-1",
+                "project-a::__primary__",
+            );
+            rejectFirstCommit?.(new Error("durable navigation is unavailable"));
+
+            await expect(close).resolves.toMatchObject({ status: "closed" });
+            expect(commitActiveScope).toHaveBeenCalledTimes(2);
+            expect(vi.getTimerCount()).toBe(0);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it("does not retry persistence owned by a disposed host", async () => {
+        vi.useFakeTimers();
+        try {
+            const manager = createTestManager();
+            const host = createHostWindow();
+            manager.syncWorkspaceRegistry(host.window, createHostContext(), createSnapshot());
+            await finishActiveSurface(manager, "host-1", "project-a::__primary__");
+            let rejectCommit: ((error: Error) => void) | undefined;
+            const commit = new Promise<void>((_resolve, reject) => {
+                rejectCommit = reject;
+            });
+            const commitActiveScope = vi.fn(() => commit);
+            manager.setLifecycleHandlers({ commitActiveScope });
+
+            const activation = manager.activate("host-1", "project-b::__primary__");
+            await finishActiveSurface(manager, "host-1", "project-b::__primary__");
+            await activation;
+            manager.disposeHost("host-1", host.window);
+            rejectCommit?.(new Error("durable navigation is unavailable"));
+            await Promise.resolve();
+
+            expect(vi.getTimerCount()).toBe(0);
+            await vi.runAllTimersAsync();
+            expect(commitActiveScope).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("delegates workspace shortcuts from the surface to singleton navigation", () => {
         const manager = createTestManager();
         const host = createHostWindow();
