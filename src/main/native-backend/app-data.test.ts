@@ -429,31 +429,14 @@ describe("createNativeAppDataClient", () => {
             structuredClone(native.appData.get("persistence.mainWindow")),
         );
 
-        const migrationRequests: {
-            readonly args: Record<string, unknown>;
-            readonly command: string;
-        }[] = [];
-        const requester: NativeBackendRequester = {
-            request: async <T = unknown>(
-                command: string,
-                args: Record<string, unknown> = {},
-            ): Promise<T> => {
-                if (command.startsWith("workspace_migration_")) {
-                    migrationRequests.push({ args, command });
-                }
-                return native.requester.request<T>(command, args);
-            },
-        };
         const client = await createNativeAppDataClient({
-            client: requester,
+            client: native.requester,
             databaseFile,
         });
-        expect(migrationRequests).toEqual([]);
         await client.workspace.saveSnapshot(
             workspaceId!,
             navigationWithDraft("draft after migration"),
         );
-        expect(migrationRequests).toEqual([]);
         await client.close();
     });
 

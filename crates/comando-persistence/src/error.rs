@@ -33,9 +33,6 @@ pub enum PersistenceError {
     #[error("The durable workspace already exists: {0}")]
     WorkspaceAlreadyExists(String),
 
-    #[error("The workspace recovery layout was not found: {0}")]
-    WorkspaceRecoveryNotFound(String),
-
     #[error("The workspace reassociation target was not found: {0}")]
     WorkspaceReassociationTargetNotFound(String),
 
@@ -44,9 +41,6 @@ pub enum PersistenceError {
 
     #[error("The workspace deletion transition is invalid: {from} -> {to}.")]
     InvalidWorkspaceDeletionTransition { from: String, to: String },
-
-    #[error("The workspace migration was not found: {0}")]
-    WorkspaceMigrationNotFound(String),
 
     #[error("The immutable workspace backup checksum does not match: {0}")]
     WorkspaceBackupChecksumMismatch(PathBuf),
@@ -85,10 +79,8 @@ impl PersistenceError {
             }
             Self::DatabaseNotFound(_)
             | Self::WorkspaceNotFound(_)
-            | Self::WorkspaceRecoveryNotFound(_)
             | Self::WorkspaceReassociationTargetNotFound(_)
-            | Self::WorkspaceDeletionNotFound(_)
-            | Self::WorkspaceMigrationNotFound(_) => NativeErrorCode::NotFound,
+            | Self::WorkspaceDeletionNotFound(_) => NativeErrorCode::NotFound,
             Self::WorkspaceAlreadyExists(_)
             | Self::InvalidWorkspaceDeletionTransition { .. }
             | Self::RevisionConflict { .. } => NativeErrorCode::Conflict,

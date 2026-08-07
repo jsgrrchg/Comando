@@ -217,10 +217,6 @@ impl SqlitePersistenceStore {
         }
 
         transaction.execute(
-            "DELETE FROM workspace_layout_recovery WHERE scope_key = ?1",
-            [&input.scope_key.0],
-        )?;
-        transaction.execute(
             "DELETE FROM durable_workspaces WHERE scope_key = ?1",
             [&input.scope_key.0],
         )?;
@@ -849,20 +845,6 @@ mod tests {
             .connection_mut()
             .execute(
                 "
-                INSERT INTO workspace_layout_recovery (
-                    id, scope_key, source_window_id, source_workspace_id,
-                    source_revision, source_updated_at, snapshot_hash,
-                    layout_snapshot_json, created_at
-                ) VALUES ('recovery-a', ?1, 'legacy-window', 'legacy-workspace', 1,
-                          'now', 'hash', '{}', 'now')
-                ",
-                [&purged.scope_key.0],
-            )
-            .expect("recovery row");
-        store
-            .connection_mut()
-            .execute(
-                "
                 INSERT INTO workspace_layouts (
                     id, root_node_json, active_pane_id, created_at, updated_at
                 ) VALUES ('legacy-layout', '{}', 'pane', 'now', 'now')
@@ -892,10 +874,6 @@ mod tests {
                 .load_durable_workspace(&sibling.scope_key)
                 .expect("sibling lookup")
                 .is_some()
-        );
-        assert_eq!(
-            count_rows(store.connection(), "workspace_layout_recovery"),
-            0
         );
         assert_eq!(count_rows(store.connection(), "workspace_layouts"), 1);
     }

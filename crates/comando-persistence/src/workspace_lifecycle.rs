@@ -5,8 +5,6 @@ use comando_types::workspace::{
     NativeWorkspaceDeletionKind, NativeWorkspaceDeletionOperationInput,
     NativeWorkspaceDeletionStatus, NativeWorkspaceDeletionUpdateInput,
     NativeWorkspaceForgetSessionInput, NativeWorkspaceReassociateInput,
-    NativeWorkspaceRecoveryApplyInput, NativeWorkspaceRecoveryDiscardInput,
-    NativeWorkspaceRecoveryLayoutSummary,
 };
 use rusqlite::types::Type;
 use rusqlite::{OptionalExtension, Row, Transaction, TransactionBehavior, params};
@@ -29,96 +27,6 @@ impl SqlitePersistenceStore {
             ));
         }
         scope_session_ids(self.connection(), scope_key, &workspace.layout_snapshot)
-    }
-
-    pub fn list_workspace_recovery_layouts(
-        &self,
-    ) -> Result<Vec<NativeWorkspaceRecoveryLayoutSummary>, PersistenceError> {
-        let mut statement = self.connection().prepare(
-            "
-            SELECT id, scope_key, source_window_id, source_workspace_id,
-                   source_revision, source_updated_at, snapshot_hash, created_at
-            FROM workspace_layout_recovery
-            ORDER BY created_at DESC, id ASC
-            ",
-        )?;
-        Ok(statement
-            .query_map([], |row| {
-                Ok(NativeWorkspaceRecoveryLayoutSummary {
-                    id: row.get(0)?,
-                    scope_key: WorkspaceScopeKey(row.get(1)?),
-                    source_window_id: row.get(2)?,
-                    source_workspace_id: row.get(3)?,
-                    source_revision: revision_from_sql(row.get(4)?, 4)?,
-                    source_updated_at: row.get(5)?,
-                    snapshot_hash: row.get(6)?,
-                    created_at: row.get(7)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?)
-    }
-
-    pub fn apply_workspace_recovery_layout(
-        &mut self,
-        input: NativeWorkspaceRecoveryApplyInput,
-    ) -> Result<NativeDurableWorkspace, PersistenceError> {
-        let transaction = self
-            .connection_mut()
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let snapshot: String = transaction
-            .query_row(
-                "SELECT layout_snapshot_json FROM workspace_layout_recovery WHERE id = ?1 AND scope_key = ?2",
-                params![input.recovery_id, input.scope_key.0],
-                |row| row.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| PersistenceError::WorkspaceRecoveryNotFound(input.recovery_id.clone()))?;
-        let changed = transaction.execute(
-            "
-            UPDATE durable_workspaces
-            SET layout_snapshot_json = ?1,
-                layout_revision = layout_revision + 1,
-                updated_at = ?2
-            WHERE scope_key = ?3 AND layout_revision = ?4
-            ",
-            params![
-                snapshot,
-                crate::store::now_rfc3339(),
-                input.scope_key.0,
-                revision_to_sql(input.expected_revision)?,
-            ],
-        )?;
-        if changed == 0 {
-            return Err(workspace_revision_error(
-                &transaction,
-                &input.scope_key,
-                input.expected_revision,
-            )?);
-        }
-        let workspace = load_workspace(&transaction, &input.scope_key)?
-            .ok_or_else(|| PersistenceError::WorkspaceNotFound(input.scope_key.0.clone()))?;
-        transaction.execute(
-            "DELETE FROM workspace_layout_recovery WHERE id = ?1 AND scope_key = ?2",
-            params![input.recovery_id, input.scope_key.0],
-        )?;
-        transaction.commit()?;
-        Ok(workspace)
-    }
-
-    pub fn discard_workspace_recovery_layout(
-        &mut self,
-        input: NativeWorkspaceRecoveryDiscardInput,
-    ) -> Result<(), PersistenceError> {
-        let changed = self.connection_mut().execute(
-            "DELETE FROM workspace_layout_recovery WHERE id = ?1 AND scope_key = ?2",
-            params![input.recovery_id, input.scope_key.0],
-        )?;
-        if changed == 0 {
-            return Err(PersistenceError::WorkspaceRecoveryNotFound(
-                input.recovery_id,
-            ));
-        }
-        Ok(())
     }
 
     pub fn reassociate_workspace(
@@ -222,13 +130,6 @@ impl SqlitePersistenceStore {
             &transaction,
             &input.source_scope_key,
             Some(&input.target_scope_key),
-        )?;
-        rewrite_recovery_scope(
-            &transaction,
-            &input.source_scope_key,
-            &input.target_scope_key,
-            &input.project_id.0,
-            &input.target_worktree_id.0,
         )?;
         reassociate_chat_sessions(
             &transaction,
@@ -464,10 +365,6 @@ fn purge_worktree_scope(
     )?;
     rewrite_navigation_scope(transaction, &operation.scope_key, None)?;
     transaction.execute(
-        "DELETE FROM workspace_layout_recovery WHERE scope_key = ?1",
-        [&operation.scope_key.0],
-    )?;
-    transaction.execute(
         "DELETE FROM durable_workspaces WHERE scope_key = ?1",
         [&operation.scope_key.0],
     )?;
@@ -535,10 +432,6 @@ fn purge_project_data(
     )?;
     rewrite_navigation_project(transaction, project_id)?;
     transaction.execute(
-        "DELETE FROM workspace_layout_recovery WHERE scope_key IN (SELECT scope_key FROM durable_workspaces WHERE project_id = ?1)",
-        [project_id],
-    )?;
-    transaction.execute(
         "DELETE FROM durable_workspaces WHERE project_id = ?1",
         [project_id],
     )?;
@@ -601,26 +494,6 @@ fn forget_session_references(
         }
     }
 
-    let recoveries = {
-        let mut statement = transaction
-            .prepare("SELECT id, layout_snapshot_json FROM workspace_layout_recovery")?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-    for (id, snapshot_json) in recoveries {
-        let mut snapshot: Value = serde_json::from_str(&snapshot_json).map_err(|error| {
-            PersistenceError::InvalidWorkspaceInput(format!("recovery JSON is invalid: {error}"))
-        })?;
-        if remove_session_tabs(&mut snapshot, &session_ids) {
-            let snapshot_hash = crate::workspace_migration::hash_json(&snapshot)?;
-            transaction.execute(
-                "UPDATE workspace_layout_recovery SET layout_snapshot_json = ?1, snapshot_hash = ?2 WHERE id = ?3",
-                params![encode_json(&snapshot)?, snapshot_hash, id],
-            )?;
-        }
-    }
     Ok(changed)
 }
 
@@ -734,19 +607,6 @@ fn scope_session_ids(
     layout_snapshot: &Value,
 ) -> Result<Vec<String>, PersistenceError> {
     let mut session_ids = layout_session_ids(layout_snapshot);
-    let recovery_snapshots = {
-        let mut statement = connection.prepare(
-            "SELECT layout_snapshot_json FROM workspace_layout_recovery WHERE scope_key = ?1",
-        )?;
-        let rows = statement.query_map([&scope_key.0], |row| row.get::<_, String>(0))?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-    for snapshot_json in recovery_snapshots {
-        let snapshot: Value = serde_json::from_str(&snapshot_json).map_err(|error| {
-            PersistenceError::InvalidWorkspaceInput(format!("recovery JSON is invalid: {error}"))
-        })?;
-        session_ids.extend(layout_session_ids(&snapshot));
-    }
     let tombstoned_sessions = {
         let mut statement = connection.prepare(
             "SELECT session_id FROM workspace_scope_session_tombstones WHERE scope_key = ?1",
@@ -758,36 +618,6 @@ fn scope_session_ids(
     session_ids.sort_unstable();
     session_ids.dedup();
     Ok(session_ids)
-}
-
-fn rewrite_recovery_scope(
-    transaction: &Transaction<'_>,
-    source: &WorkspaceScopeKey,
-    target: &WorkspaceScopeKey,
-    project_id: &str,
-    worktree_id: &str,
-) -> Result<(), PersistenceError> {
-    let records = {
-        let mut statement = transaction.prepare(
-            "SELECT id, layout_snapshot_json FROM workspace_layout_recovery WHERE scope_key = ?1",
-        )?;
-        let rows = statement.query_map([&source.0], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })?;
-        rows.collect::<Result<Vec<_>, _>>()?
-    };
-    for (id, snapshot) in records {
-        let snapshot: Value = serde_json::from_str(&snapshot).map_err(|error| {
-            PersistenceError::InvalidWorkspaceInput(format!("recovery JSON is invalid: {error}"))
-        })?;
-        let rewritten = rewrite_layout_scope(snapshot, project_id, worktree_id);
-        let snapshot_hash = crate::workspace_migration::hash_json(&rewritten)?;
-        transaction.execute(
-            "UPDATE workspace_layout_recovery SET scope_key = ?1, layout_snapshot_json = ?2, snapshot_hash = ?3 WHERE id = ?4",
-            params![target.0, encode_json(&rewritten)?, snapshot_hash, id],
-        )?;
-    }
-    Ok(())
 }
 
 fn rewrite_navigation_scope(
@@ -1072,7 +902,7 @@ mod tests {
         NativeWorkspaceDeletionKind, NativeWorkspaceDeletionOperationInput,
         NativeWorkspaceDeletionStatus, NativeWorkspaceDeletionUpdateInput,
         NativeWorkspaceForgetSessionInput, NativeWorkspaceReassociateInput,
-        NativeWorkspaceRecoveryApplyInput, canonical_workspace_scope_key,
+        canonical_workspace_scope_key,
     };
     use serde_json::json;
     use tempfile::TempDir;
@@ -1259,31 +1089,6 @@ mod tests {
     }
 
     #[test]
-    fn recovery_apply_replaces_layout_without_removing_transcripts() {
-        let temp = TempDir::new().expect("temp dir");
-        let mut store = open_store(&temp);
-        seed_project(&mut store);
-        let workspace = create_workspace(&mut store, "worktree-a", json!({"tabs": []}));
-        seed_chat(&mut store, "session-a", "worktree-a");
-        store.connection_mut().execute(
-            "INSERT INTO workspace_layout_recovery (id, scope_key, source_window_id, source_workspace_id, source_revision, source_updated_at, snapshot_hash, layout_snapshot_json, created_at) VALUES ('recovery-a', ?1, 'window-a', 'legacy-a', 3, 'now', 'hash-a', ?2, 'now')",
-            params![workspace.scope_key.0, json!({"tabs": [{"id": "chat-a", "kind": "chat", "sessionId": "session-a", "draft": "keep", "title": "Recovered"}]}).to_string()],
-        ).expect("recovery row");
-
-        let applied = store
-            .apply_workspace_recovery_layout(NativeWorkspaceRecoveryApplyInput {
-                recovery_id: "recovery-a".to_string(),
-                scope_key: workspace.scope_key,
-                expected_revision: workspace.revision,
-            })
-            .expect("recovery applied");
-
-        assert_eq!(applied.layout_snapshot["tabs"][0]["draft"], "keep");
-        assert_eq!(chat_count(&store, "session-a"), 1);
-        assert!(store.list_workspace_recovery_layouts().unwrap().is_empty());
-    }
-
-    #[test]
     fn reset_replaces_only_layout_and_preserves_transcripts() {
         let temp = TempDir::new().expect("temp dir");
         let mut store = open_store(&temp);
@@ -1308,7 +1113,7 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_deleted_session_repairs_live_and_recovery_layouts() {
+    fn forgetting_deleted_session_repairs_live_layouts() {
         let temp = TempDir::new().expect("temp dir");
         let mut store = open_store(&temp);
         seed_project(&mut store);
@@ -1321,11 +1126,6 @@ mod tests {
             ]
         });
         let workspace = create_workspace(&mut store, "worktree-a", layout.clone());
-        store.connection_mut().execute(
-            "INSERT INTO workspace_layout_recovery (id, scope_key, source_window_id, source_workspace_id, source_revision, source_updated_at, snapshot_hash, layout_snapshot_json, created_at) VALUES ('recovery-a', ?1, NULL, NULL, 1, 'now', 'hash-a', ?2, 'now')",
-            params![workspace.scope_key.0, layout.to_string()],
-        ).expect("recovery row");
-
         store
             .forget_workspace_session_references(NativeWorkspaceForgetSessionInput {
                 session_id: "session-a".to_string(),
@@ -1348,29 +1148,10 @@ mod tests {
             repaired.layout_snapshot["rootNode"]["activeTabId"],
             "file-a"
         );
-        let recovery_json: String = store.connection().query_row(
-            "SELECT layout_snapshot_json FROM workspace_layout_recovery WHERE id = 'recovery-a'",
-            [],
-            |row| row.get(0),
-        ).expect("recovery snapshot");
-        let recovery: Value = serde_json::from_str(&recovery_json).unwrap();
-        assert_eq!(recovery["tabs"].as_array().unwrap().len(), 1);
-        let recovery_hash: String = store
-            .connection()
-            .query_row(
-                "SELECT snapshot_hash FROM workspace_layout_recovery WHERE id = 'recovery-a'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("recovery hash");
-        assert_eq!(
-            recovery_hash,
-            crate::workspace_migration::hash_json(&recovery).unwrap()
-        );
     }
 
     #[test]
-    fn explicit_reassociation_moves_layout_recovery_navigation_and_chat_scope() {
+    fn explicit_reassociation_moves_layout_navigation_and_chat_scope() {
         let temp = TempDir::new().expect("temp dir");
         let mut store = open_store(&temp);
         seed_project(&mut store);
@@ -1381,15 +1162,10 @@ mod tests {
         );
         seed_chat(&mut store, "session-a", "worktree-a");
         seed_chat(&mut store, "session-closed", "worktree-a");
-        seed_chat(&mut store, "session-recovery", "worktree-a");
         store.connection_mut().execute(
             "INSERT INTO workspace_scope_session_tombstones (scope_key, session_id, project_id, created_at) VALUES (?1, 'session-closed', 'project-a', 'now')",
             [&source.scope_key.0],
         ).expect("closed session tombstone");
-        store.connection_mut().execute(
-            "INSERT INTO workspace_layout_recovery (id, scope_key, source_window_id, source_workspace_id, source_revision, source_updated_at, snapshot_hash, layout_snapshot_json, created_at) VALUES ('recovery-a', ?1, NULL, NULL, 1, 'now', 'hash-a', '{\"tabs\":[{\"id\":\"chat-recovery\",\"kind\":\"chat\",\"sessionId\":\"session-recovery\"}]}', 'now')",
-            [&source.scope_key.0],
-        ).expect("recovery row");
         store
             .connection_mut()
             .execute("DELETE FROM project_worktrees WHERE id = 'worktree-a'", [])
@@ -1401,7 +1177,7 @@ mod tests {
                 [&source.scope_key.0],
             )
             .expect("workspace orphaned");
-        for session_id in ["session-a", "session-closed", "session-recovery"] {
+        for session_id in ["session-a", "session-closed"] {
             assert_eq!(chat_worktree(&store, session_id), None);
         }
         let target_scope = canonical_workspace_scope_key("project-a", Some("worktree-b"));
@@ -1424,26 +1200,12 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        for session_id in ["session-a", "session-closed", "session-recovery"] {
+        for session_id in ["session-a", "session-closed"] {
             assert_eq!(
                 chat_worktree(&store, session_id),
                 Some("worktree-b".to_string())
             );
         }
-        assert_eq!(
-            store.list_workspace_recovery_layouts().unwrap()[0].scope_key,
-            target.scope_key,
-        );
-        let (recovery_json, recovery_hash): (String, String) = store.connection().query_row(
-            "SELECT layout_snapshot_json, snapshot_hash FROM workspace_layout_recovery WHERE id = 'recovery-a'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        ).expect("rewritten recovery");
-        let recovery: Value = serde_json::from_str(&recovery_json).unwrap();
-        assert_eq!(
-            recovery_hash,
-            crate::workspace_migration::hash_json(&recovery).unwrap()
-        );
     }
 
     fn open_store(temp: &TempDir) -> SqlitePersistenceStore {

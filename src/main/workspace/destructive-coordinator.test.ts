@@ -211,7 +211,6 @@ describe("WorkspaceDestructiveCoordinator", () => {
                     durableWorkspace(),
                 ]),
                 listIncompleteWorkspaceDeletions: vi.fn().mockResolvedValue([]),
-                listWorkspaceRecoveryLayouts: vi.fn().mockResolvedValue([]),
                 updateWorkspaceDeletion,
             },
             projectService: {
@@ -274,7 +273,6 @@ function createCoordinator(overrides: {
         completeWorkspaceDeletion: vi.fn(),
         listDurableWorkspaces: vi.fn().mockResolvedValue([durableWorkspace()]),
         listIncompleteWorkspaceDeletions: vi.fn().mockResolvedValue([]),
-        listWorkspaceRecoveryLayouts: vi.fn().mockResolvedValue([]),
         updateWorkspaceDeletion: vi.fn(),
         ...overrides.persistence,
     } as unknown as NativePersistenceGateway;
