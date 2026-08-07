@@ -1487,13 +1487,39 @@ export function WorkspaceHostApp() {
 
     useEffect(() => {
         const comandoApi = getComandoApi();
-        if (!comandoApi) {
+        if (!persistenceReady || !comandoApi) {
             return;
         }
         return comandoApi.onWorkspaceFlushRequested(
-            flushWorkspacePersistenceNow,
+            async () => {
+                await comandoApi.saveShellState(
+                    createPersistedShellState({
+                        activeSurface,
+                        expandedProjectIds,
+                        leftCollapsed: leftCollapsedPreference,
+                        leftWidth,
+                        preferredDrawer,
+                        projectOrder,
+                        rightCollapsed,
+                        rightInspectorView: sidebarView,
+                        rightWidth,
+                    }),
+                );
+                await flushWorkspacePersistenceNow();
+            },
         );
-    }, []);
+    }, [
+        activeSurface,
+        expandedProjectIds,
+        leftCollapsedPreference,
+        leftWidth,
+        persistenceReady,
+        preferredDrawer,
+        projectOrder,
+        rightCollapsed,
+        rightWidth,
+        sidebarView,
+    ]);
 
     useLayoutEffect(() => {
         syncViewport(window.innerWidth);
@@ -1507,44 +1533,6 @@ export function WorkspaceHostApp() {
             window.removeEventListener("resize", handleResize);
         };
     }, [syncViewport]);
-
-    useEffect(() => {
-        const comandoApi = getComandoApi();
-        if (!persistenceReady || !comandoApi) {
-            return;
-        }
-
-        const timeout = window.setTimeout(() => {
-            void comandoApi.saveShellState(
-                createPersistedShellState({
-                    activeSurface,
-                    expandedProjectIds,
-                    leftCollapsed: leftCollapsedPreference,
-                    leftWidth,
-                    preferredDrawer,
-                    projectOrder,
-                    rightCollapsed,
-                    rightInspectorView: sidebarView,
-                    rightWidth,
-                }),
-            );
-        }, 120);
-
-        return () => {
-            window.clearTimeout(timeout);
-        };
-    }, [
-        activeSurface,
-        expandedProjectIds,
-        leftCollapsedPreference,
-        leftWidth,
-        persistenceReady,
-        preferredDrawer,
-        projectOrder,
-        rightCollapsed,
-        rightWidth,
-        sidebarView,
-    ]);
 
     const gitActiveWorktreeId = useGitStore((state) =>
         activeProjectId
