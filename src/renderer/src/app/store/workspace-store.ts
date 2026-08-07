@@ -2119,7 +2119,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
             error: null,
             rootNode: resizeSplit(state.rootNode, splitId, nextSizes),
         }));
-        await flushWorkspacePersistence(get, { force: true });
+        await persistWorkspaceState(get);
     },
 
     restartTerminalTab: async (tabId) => {
@@ -2549,7 +2549,7 @@ if (import.meta.hot) {
 
 type WorkspaceSetState = typeof useWorkspaceStore.setState;
 
-const WORKSPACE_PERSIST_DEBOUNCE_MS = 180;
+const WORKSPACE_PERSIST_DEBOUNCE_MS = 10_000;
 const MAX_RECENTLY_CLOSED_TABS = 20;
 
 let pendingWorkspacePersistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2557,6 +2557,7 @@ let workspacePersistDirty = false;
 let workspacePersistGet: GetWorkspaceState | null = null;
 let workspacePersistInFlight: Promise<void> | null = null;
 let workspacePersistFailureCount = 0;
+let workspacePersistBlocked = false;
 const pendingFileDocumentLoads = new Map<string, Promise<ProjectFileDocument>>();
 const latestFileLoadRequestIds = new Map<string, number>();
 
@@ -3733,6 +3734,7 @@ export function resetWorkspacePersistenceForTests(): void {
     workspacePersistGet = null;
     workspacePersistInFlight = null;
     workspacePersistFailureCount = 0;
+    workspacePersistBlocked = false;
     pendingFileDocumentLoads.clear();
     latestFileLoadRequestIds.clear();
 }
@@ -3742,6 +3744,7 @@ function scheduleWorkspacePersistence(get: GetWorkspaceState): void {
     workspacePersistDirty = true;
 
     if (
+        workspacePersistBlocked ||
         pendingWorkspacePersistTimer !== null ||
         workspacePersistInFlight !== null
     ) {
@@ -3773,6 +3776,7 @@ async function flushWorkspacePersistence(
 
     if (options.force) {
         workspacePersistDirty = true;
+        workspacePersistBlocked = false;
     }
 
     if (pendingWorkspacePersistTimer !== null) {
@@ -3832,6 +3836,7 @@ async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
             );
         }
         workspacePersistFailureCount = 0;
+        workspacePersistBlocked = false;
     } catch (error) {
         // Workspace persistence failure silently loses layout/tabs on restart;
         // surface it at error level so diagnostics don't start from scratch.
@@ -3841,15 +3846,9 @@ async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
         );
         workspacePersistDirty = true;
         workspacePersistFailureCount += 1;
-        if (
-            pendingWorkspacePersistTimer === null &&
-            workspacePersistFailureCount <= 3
-        ) {
-            pendingWorkspacePersistTimer = setTimeout(() => {
-                pendingWorkspacePersistTimer = null;
-                void flushWorkspacePersistence();
-            }, Math.min(1_000 * workspacePersistFailureCount, 3_000));
-        }
+        // A stale revision cannot recover by retrying the same snapshot. Keep
+        // the change for an explicit close flush or a future surface hydrate.
+        workspacePersistBlocked = true;
     }
 }
 
