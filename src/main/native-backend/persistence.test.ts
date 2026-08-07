@@ -202,28 +202,12 @@ describe("NativePersistenceGateway", () => {
         ).rejects.toThrow("non-negative safe integer");
     });
 
-    it("routes recovery, reassociation and deletion journal commands", async () => {
+    it("routes reassociation and deletion journal commands", async () => {
         const workspace = durableWorkspaceFixture();
-        const recovery = {
-            createdAt: "2026-08-01T00:00:00Z",
-            id: "recovery-a",
-            scopeKey: "project-a::worktree-a",
-            snapshotHash: "hash-a",
-            sourceRevision: 2,
-            sourceUpdatedAt: "2026-07-31T23:59:00Z",
-            sourceWindowId: "window-a",
-            sourceWorkspaceId: null,
-        };
         const operation = deletionOperationFixture();
         const requestMock = vi.fn(
             (command: string, args?: Record<string, unknown>) => {
                 void args;
-                if (command === "workspace_recovery_list") {
-                    return Promise.resolve({ layouts: [recovery] });
-                }
-                if (command === "workspace_recovery_discard") {
-                    return Promise.resolve({ discarded: true });
-                }
                 if (command === "workspace_deletion_list_incomplete") {
                     return Promise.resolve({ operations: [operation] });
                 }
@@ -240,22 +224,6 @@ describe("NativePersistenceGateway", () => {
             (await requestMock(...args)) as never;
         const gateway = new NativePersistenceGateway({ request });
 
-        await expect(gateway.listWorkspaceRecoveryLayouts()).resolves.toEqual([
-            recovery,
-        ]);
-        await expect(
-            gateway.applyWorkspaceRecoveryLayout({
-                expectedRevision: 2,
-                recoveryId: "recovery-a",
-                scopeKey: "project-a::worktree-a",
-            }),
-        ).resolves.toEqual(workspace);
-        await expect(
-            gateway.discardWorkspaceRecoveryLayout({
-                recoveryId: "recovery-a",
-                scopeKey: "project-a::worktree-a",
-            }),
-        ).resolves.toBeUndefined();
         await expect(
             gateway.reassociateWorkspace({
                 expectedRevision: 2,
@@ -288,108 +256,6 @@ describe("NativePersistenceGateway", () => {
         ).resolves.toEqual(operation);
     });
 
-    it("routes migration, diagnostics and rollback commands", async () => {
-        const navigation = navigationFixture();
-        const diagnostics = migrationDiagnosticsFixture();
-        const requestMock = vi.fn(
-            (command: string, args?: Record<string, unknown>) => {
-                void args;
-            if (command === "workspace_migration_run") {
-                return Promise.resolve({ applied: true, diagnostics, navigation });
-            }
-            if (command === "workspace_migration_sync_legacy") {
-                return Promise.resolve(navigation);
-            }
-            return Promise.resolve({
-                diagnostics,
-                recoveryLayouts: diagnostics.recoverySources,
-                v3Projection: [{ isOpen: true }],
-            });
-            },
-        );
-        const request: NativeBackendRequester["request"] = async (...args) =>
-            (await requestMock(...args)) as never;
-        const gateway = new NativePersistenceGateway({ request });
-        const input = {
-            applicationVersion: "0.2.1",
-            historicalLayoutCap: 30,
-            normalizationDroppedContextCount: 0,
-            normalizationRepairedWindowCount: 0,
-            sourceBackup: { windows: [] },
-            windows: [],
-        };
-
-        await expect(gateway.runWorkspaceMigration(input)).resolves.toMatchObject({
-            applied: true,
-            diagnostics: { workspaceCount: 1 },
-        });
-        await expect(
-            gateway.syncLegacyWorkspaceMigration(input),
-        ).resolves.toEqual(navigation);
-        await expect(
-            gateway.exportWorkspaceMigrationDiagnostics(),
-        ).resolves.toMatchObject({ v3Projection: [{ isOpen: true }] });
-        await expect(gateway.rollbackWorkspaceMigration()).resolves.toMatchObject(
-            { v3Projection: [{ isOpen: true }] },
-        );
-
-        expect(requestMock).toHaveBeenCalledWith(
-            "workspace_migration_sync_legacy",
-            input,
-        );
-        expect(requestMock).toHaveBeenCalledWith(
-            "workspace_migration_export_diagnostics",
-        );
-        expect(requestMock).toHaveBeenCalledWith("workspace_migration_rollback");
-    });
-
-    it("routes and validates durable workspace rollout policy", async () => {
-        const rollout = {
-            dualWriteEnabled: true,
-            legacyCleanupCompletedAt: null,
-            legacyRetentionUntil: "2026-11-01T00:00:00Z",
-            pendingRecoveryLayoutCount: 0,
-            rollbackAvailable: true,
-            sourceBackupRetained: true,
-            stableReleaseVerifiedAt: "2026-08-01T00:00:00Z",
-            stableReleaseVersion: "0.2.1",
-            stage: "stable_dual_write",
-            v4OnlySince: null,
-        };
-        const requestMock = vi.fn(
-            (command: string, args?: Record<string, unknown>) => {
-                void command;
-                void args;
-                return Promise.resolve(rollout);
-            },
-        );
-        const request: NativeBackendRequester["request"] = async (...args) =>
-            (await requestMock(...args)) as never;
-        const gateway = new NativePersistenceGateway({ request });
-
-        await expect(gateway.getWorkspaceRolloutStatus()).resolves.toEqual(rollout);
-        await gateway.markWorkspaceRolloutStable({
-            applicationVersion: "0.2.1",
-            retentionDays: 90,
-        });
-        await gateway.disableWorkspaceLegacyWrites({
-            applicationVersion: "0.3.0",
-        });
-        await gateway.cleanupWorkspaceLegacyCompatibility({ consent: true });
-
-        expect(requestMock).toHaveBeenCalledWith(
-            "workspace_rollout_mark_stable",
-            { applicationVersion: "0.2.1", retentionDays: 90 },
-        );
-        expect(requestMock).toHaveBeenCalledWith(
-            "workspace_rollout_disable_legacy_writes",
-            { applicationVersion: "0.3.0" },
-        );
-        expect(requestMock).toHaveBeenCalledWith(
-            "workspace_rollout_cleanup_legacy",
-            { consent: true },
-        );
-    });
 });
 
 function durableWorkspaceFixture(
@@ -434,42 +300,5 @@ function deletionOperationFixture(): Record<string, unknown> {
         status: "checkout_deleted",
         updatedAt: "2026-08-01T00:01:00Z",
         worktreeId: "worktree-a",
-    };
-}
-
-function migrationDiagnosticsFixture(): Record<string, unknown> {
-    return {
-        activeScopeKey: "project-a::__primary__",
-        activeSourceWindowId: "window-a",
-        applicationVersion: "0.2.1",
-        candidateCount: 2,
-        completedAt: "2026-07-31T00:02:00Z",
-        historicalLayoutCap: 30,
-        layoutSources: [
-            {
-                scopeKey: "project-a::__primary__",
-                sourceWindowId: "window-a",
-            },
-        ],
-        limitation: "Legacy closed layouts may already have been pruned.",
-        migrationId: "2026-07-31-workspaces-v3-to-v4",
-        normalizationDroppedContextCount: 0,
-        normalizationRepairedWindowCount: 1,
-        prunedLayoutsPossible: true,
-        recoveryLayoutCount: 1,
-        recoverySources: [
-            {
-                scopeKey: "project-a::__primary__",
-                snapshotHash: "hash-b",
-                sourceWindowId: "window-b",
-            },
-        ],
-        rollbackAt: null,
-        sourceBackupRef: "workspace-migrations/v3-checksum.json",
-        sourceChecksum: "checksum",
-        sourceWindowCount: 2,
-        startedAt: "2026-07-31T00:01:00Z",
-        status: "complete",
-        workspaceCount: 1,
     };
 }

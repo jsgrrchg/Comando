@@ -10,7 +10,6 @@ import type {
     NativeDurableWorkspaceLifecycle,
     NativeDurableWorkspaceSummary,
     NativeWorkspaceDeletionJournalEntry,
-    NativeWorkspaceRecoveryLayoutSummary,
 } from "@shared/native-backend";
 import {
     getWorkspaceScopeKey,
@@ -31,9 +30,6 @@ export interface WorkspaceCatalogEntry {
 interface WorkspaceCatalogState {
     readonly entriesByScopeKey: Readonly<Record<string, WorkspaceCatalogEntry>>;
     readonly error: string | null;
-    readonly recoveryByScopeKey: Readonly<
-        Record<string, readonly NativeWorkspaceRecoveryLayoutSummary[]>
-    >;
     readonly pendingDeletionByScopeKey: Readonly<
         Record<string, NativeWorkspaceDeletionJournalEntry>
     >;
@@ -50,9 +46,6 @@ interface WorkspaceCatalogState {
     ) => void;
     setError: (error: string) => void;
     setLoading: () => void;
-    setRecoveryLayouts: (
-        layouts: readonly NativeWorkspaceRecoveryLayoutSummary[],
-    ) => void;
     setPendingDeletions: (
         operations: readonly NativeWorkspaceDeletionJournalEntry[],
     ) => void;
@@ -65,7 +58,6 @@ export const workspaceCatalogStore = createStore<WorkspaceCatalogState>(
     (set) => ({
         entriesByScopeKey: {},
         error: null,
-        recoveryByScopeKey: {},
         pendingDeletionByScopeKey: {},
         status: "idle",
         surfaceDiagnostics: null,
@@ -140,16 +132,6 @@ export const workspaceCatalogStore = createStore<WorkspaceCatalogState>(
         },
         setError: (error) => set({ error, status: "error" }),
         setLoading: () => set({ error: null, status: "loading" }),
-        setRecoveryLayouts: (layouts) => {
-            const recoveryByScopeKey: Record<
-                string,
-                NativeWorkspaceRecoveryLayoutSummary[]
-            > = {};
-            for (const layout of layouts) {
-                (recoveryByScopeKey[layout.scopeKey] ??= []).push(layout);
-            }
-            set({ recoveryByScopeKey });
-        },
         setPendingDeletions: (operations) => {
             set({
                 pendingDeletionByScopeKey: Object.fromEntries(
@@ -177,7 +159,6 @@ export function resetWorkspaceCatalogStoreForTests(): void {
     workspaceCatalogStore.setState({
         entriesByScopeKey: {},
         error: null,
-        recoveryByScopeKey: {},
         pendingDeletionByScopeKey: {},
         status: "idle",
         surfaceDiagnostics: null,
@@ -200,9 +181,6 @@ export async function refreshDurableWorkspaceCatalog(
             api.getWorkspaceSurfaceDiagnostics(),
         ]);
         workspaceCatalogStore.getState().replaceDurable(catalog.workspaces);
-        workspaceCatalogStore
-            .getState()
-            .setRecoveryLayouts(catalog.recoveryLayouts);
         workspaceCatalogStore
             .getState()
             .setPendingDeletions(catalog.pendingDeletions);

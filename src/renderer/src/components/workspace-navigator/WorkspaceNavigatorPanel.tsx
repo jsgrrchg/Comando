@@ -217,39 +217,6 @@ export function WorkspaceNavigatorPanel({
                 await refreshGitProject(workspace.projectId);
                 await refreshCatalog();
             }}
-            onApplyRecoveryLayout={async (workspace, recoveryId) => {
-                const revision = workspace.catalogEntry.revision;
-                if (!window.comando || revision === null) {
-                    throw new Error("This recovery layout is unavailable.");
-                }
-                const closeResult = await window.comando.closeWorkspaceSurface(
-                    workspace.scopeKey,
-                );
-                if (closeResult.status === "blocked") {
-                    throw new Error(
-                        closeResult.leases.map((lease) => lease.message).join(" "),
-                    );
-                }
-                if (closeResult.status === "failed") {
-                    throw new Error(closeResult.message);
-                }
-                await window.comando.applyWorkspaceRecoveryLayout({
-                    expectedRevision: revision,
-                    recoveryId,
-                    scopeKey: workspace.scopeKey,
-                });
-                await refreshCatalog();
-            }}
-            onDiscardRecoveryLayout={async (workspace, recoveryId) => {
-                if (!window.comando) {
-                    throw new Error("This recovery layout is unavailable.");
-                }
-                await window.comando.discardWorkspaceRecoveryLayout({
-                    recoveryId,
-                    scopeKey: workspace.scopeKey,
-                });
-                await refreshCatalog();
-            }}
             onReassociateWorkspace={async (workspace, target) => {
                 const revision = workspace.catalogEntry.revision;
                 if (!window.comando || revision === null || !target.worktreeId) {
@@ -430,7 +397,6 @@ function createPendingWorkspace(
         isResident: false,
         label: worktreeId ?? "Primary",
         projectId,
-        recoveryLayouts: [],
         rootPath: null,
         scopeKey,
         status: "available",

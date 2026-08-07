@@ -89,16 +89,7 @@ import type { SettingsGateway } from "@main/settings/service";
 import type { WorkspaceGateway } from "@main/workspace/service";
 
 import { debugBenignError } from "@main/observability/logging";
-import { prepareLegacyWorkspaceMigration } from "@main/workspace/migration";
-import {
-    createWorkspaceMigrationTelemetry,
-    type WorkspaceMigrationTelemetry,
-} from "@main/workspace/rollout";
-
-import {
-    NativePersistenceGateway,
-    type NativeBackendRequester,
-} from "./persistence";
+import type { NativeBackendRequester } from "./persistence";
 
 const SETTINGS_KEY = "settings.snapshot";
 const PROJECT_SETTINGS_KEY = "settings.projects";
@@ -107,7 +98,6 @@ const HOST_PERSISTENCE_KEY = "persistence.mainWindow";
 const AI_CATALOGS_KEY = "ai.runtimeCatalogs";
 const AI_PREFERENCES_KEY = "ai.runtimePreferences";
 const AI_PROMPT_QUEUES_KEY = "ai.promptQueues";
-const LEGACY_WORKSPACE_RETENTION_DAYS = 90;
 const WORKSPACE_KEY_PREFIX = "workspace.";
 const AI_RUNTIME_IDS = [
     "claude",
@@ -155,13 +145,8 @@ const KNOWN_SECRET_KEYS = [
 ] as const;
 
 interface NativeAppDataClientOptions {
-    readonly applicationVersion?: string;
     readonly client: NativeBackendRequester;
     readonly databaseFile: string;
-    readonly onWorkspaceMigrationTelemetry?: (
-        telemetry: WorkspaceMigrationTelemetry,
-    ) => void;
-    readonly publishWorkspaceRollout?: boolean;
 }
 
 export interface NativeAppDataClient {
@@ -1982,7 +1967,6 @@ export async function createNativeAppDataClient(
         secretStore,
         store,
     });
-    const migrationGateway = new NativePersistenceGateway(options.client);
     const storedLegacyRecords = await store.load<unknown>(
         LEGACY_PERSISTENCE_KEY,
         [],
@@ -1990,43 +1974,6 @@ export async function createNativeAppDataClient(
     const records = Array.isArray(storedLegacyRecords)
         ? (storedLegacyRecords as readonly PersistedWindowRecord[])
         : [];
-    const applicationVersion = options.applicationVersion ?? "unknown";
-    const migrationInput = await prepareLegacyWorkspaceMigration({
-        applicationVersion,
-        loadFallbackLayout: (workspaceId) =>
-            store.loadNullable(workspaceKey(workspaceId)),
-        records,
-    });
-    // Migration is a startup gate now that v4 is the only runtime authority.
-    const migration = await migrationGateway.runWorkspaceMigration(migrationInput);
-    let rollout = await migrationGateway.getWorkspaceRolloutStatus();
-    if (
-        !migration.applied &&
-        rollout.dualWriteEnabled &&
-        records.length > 0
-    ) {
-        // A downgraded binary may have changed the canonical v3 projection.
-        await migrationGateway.syncLegacyWorkspaceMigration(migrationInput);
-        rollout = await migrationGateway.getWorkspaceRolloutStatus();
-    }
-    if (rollout.stage === "internal" && options.publishWorkspaceRollout === true) {
-        rollout = await migrationGateway.markWorkspaceRolloutStable({
-            applicationVersion,
-            retentionDays: LEGACY_WORKSPACE_RETENTION_DAYS,
-        });
-    }
-    try {
-        options.onWorkspaceMigrationTelemetry?.(
-            createWorkspaceMigrationTelemetry({
-                diagnostics: migration.diagnostics,
-                migrationApplied: migration.applied,
-                rollout,
-            }),
-        );
-    } catch (error) {
-        // Local observability must never weaken the migration commit gate.
-        debugBenignError("nativeAppData.workspaceMigrationTelemetry", error);
-    }
     await secretStore.hydrate(KNOWN_SECRET_KEYS);
 
     const settings = new NativeSettingsClient(
@@ -2040,7 +1987,7 @@ export async function createNativeAppDataClient(
         [],
     );
     if (hostRecords.length === 0 && records.length > 0) {
-        // Window state moves to a v4 host key so legacy projection cleanup cannot recreate it.
+        // Keep host state separate while normalizing the previous window record format.
         hostRecords = records.map((record) => ({
             isOpen: record.isOpen,
             lastOpenedAt: record.lastOpenedAt,

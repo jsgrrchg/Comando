@@ -101,7 +101,6 @@ impl SqlitePersistenceStore {
             "DELETE FROM workspace_layout_recovery WHERE id = ?1 AND scope_key = ?2",
             params![input.recovery_id, input.scope_key.0],
         )?;
-        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(workspace)
     }
@@ -241,7 +240,6 @@ impl SqlitePersistenceStore {
             "DELETE FROM durable_workspaces WHERE scope_key = ?1",
             [&input.source_scope_key.0],
         )?;
-        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         let workspace = load_workspace(&transaction, &input.target_scope_key)?
             .ok_or_else(|| PersistenceError::WorkspaceNotFound(input.target_scope_key.0.clone()))?;
         transaction.commit()?;
@@ -261,7 +259,6 @@ impl SqlitePersistenceStore {
             .connection_mut()
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let changed = forget_session_references(&transaction, &[input.session_id])?;
-        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(changed)
     }
@@ -424,7 +421,6 @@ impl SqlitePersistenceStore {
                 purge_project_data(&transaction, &operation.project_id.0)?;
             }
         }
-        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.execute(
             "UPDATE workspace_deletion_journal SET status = 'completed', error_code = NULL, updated_at = ?1 WHERE operation_id = ?2",
             params![crate::store::now_rfc3339(), operation.operation_id],

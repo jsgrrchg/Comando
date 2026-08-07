@@ -43,14 +43,6 @@ export interface WorkspaceNavigatorProps {
     readonly onPreflightDeleteWorktree: (
         workspace: WorkspaceNavigatorWorkspace,
     ) => Promise<DeleteWorktreePreflightResult>;
-    readonly onApplyRecoveryLayout: (
-        workspace: WorkspaceNavigatorWorkspace,
-        recoveryId: string,
-    ) => Promise<void>;
-    readonly onDiscardRecoveryLayout: (
-        workspace: WorkspaceNavigatorWorkspace,
-        recoveryId: string,
-    ) => Promise<void>;
     readonly onReassociateWorkspace: (
         workspace: WorkspaceNavigatorWorkspace,
         target: WorkspaceNavigatorWorkspace,
@@ -82,7 +74,6 @@ type NavigatorDialog =
           readonly workspace: WorkspaceNavigatorWorkspace;
       }
     | { readonly kind: "new-worktree"; readonly project: WorkspaceNavigatorProject }
-    | { readonly kind: "recovery"; readonly workspace: WorkspaceNavigatorWorkspace }
     | {
           readonly candidates: readonly WorkspaceNavigatorWorkspace[];
           readonly kind: "reassociate";
@@ -130,8 +121,6 @@ export function WorkspaceNavigator({
     onCreateWorktree,
     onDeleteWorktree,
     onPreflightDeleteWorktree,
-    onApplyRecoveryLayout,
-    onDiscardRecoveryLayout,
     onReassociateWorkspace,
     onRemoveSavedWorkspace,
     onOpenFolder,
@@ -482,8 +471,6 @@ export function WorkspaceNavigator({
             );
         } else if (action === "reset") {
             setDialog({ kind: "reset", workspace });
-        } else if (action === "recovery") {
-            setDialog({ kind: "recovery", workspace });
         } else if (action === "delete-worktree") {
             if (workspace.deletionOperation) {
                 await runOperation(
@@ -583,13 +570,6 @@ export function WorkspaceNavigator({
                 !workspace.deletionOperation,
             id: "reset",
             label: "Reset Workspace Layout…",
-        },
-        {
-            enabled:
-                workspace.recoveryLayouts.length > 0 &&
-                !workspace.deletionOperation,
-            id: "recovery",
-            label: `Recovery Layouts (${workspace.recoveryLayouts.length})`,
         },
         ...(workspace.deletionOperation
             ? [
@@ -942,7 +922,7 @@ export function WorkspaceNavigator({
                         <ConfirmationDialog
                             confirmLabel="Remove Saved Workspace"
                             danger
-                            description="This removes the saved layout, drafts, recovery layouts, and navigation references for this missing worktree. Chat history is preserved."
+                            description="This removes the saved layout, drafts, and navigation references for this missing worktree. Chat history is preserved."
                             onCancel={() => setDialog(null)}
                             onConfirm={async () => {
                                 await onRemoveSavedWorkspace(dialog.workspace);
@@ -963,26 +943,7 @@ export function WorkspaceNavigator({
                             }}
                             workspace={dialog.workspace}
                         />
-                    ) : (
-                        <RecoveryDialog
-                            onApply={async (recoveryId) => {
-                                await onApplyRecoveryLayout(
-                                    dialog.workspace,
-                                    recoveryId,
-                                );
-                                setDialog(null);
-                            }}
-                            onClose={() => setDialog(null)}
-                            onDiscard={async (recoveryId) => {
-                                await onDiscardRecoveryLayout(
-                                    dialog.workspace,
-                                    recoveryId,
-                                );
-                                setDialog(null);
-                            }}
-                            workspace={dialog.workspace}
-                        />
-                    )}
+                    ) : null}
                 </WorkspaceNavigatorDialog>
             ) : null}
         </nav>
@@ -1228,7 +1189,6 @@ function DeleteWorktreeDialog({
             <dl className="workspace-navigator-delete-inventory">
                 <div><dt>Checkout</dt><dd>{preflight.inventory.checkoutPath}</dd></div>
                 <div><dt>Saved layout</dt><dd>{preflight.inventory.workspaceLayoutCount}</dd></div>
-                <div><dt>Recovery layouts</dt><dd>{preflight.inventory.recoveryLayoutCount}</dd></div>
                 <div><dt>Chat sessions</dt><dd>{preflight.inventory.chatSessionCount}</dd></div>
                 <div><dt>Live runtimes</dt><dd>{preflight.inventory.runtimeCount}</dd></div>
             </dl>
@@ -1303,82 +1263,6 @@ function ReassociateDialog({
                 <div className="workspace-navigator-dialog-warning" role="status">No unassociated replacement worktree is available.</div>
             )}
         </NavigatorFormDialog>
-    );
-}
-
-function RecoveryDialog({
-    onApply,
-    onClose,
-    onDiscard,
-    workspace,
-}: {
-    readonly onApply: (recoveryId: string) => Promise<void>;
-    readonly onClose: () => void;
-    readonly onDiscard: (recoveryId: string) => Promise<void>;
-    readonly workspace: WorkspaceNavigatorWorkspace;
-}) {
-    const [applyingId, setApplyingId] = useState<string | null>(null);
-    const [error, setError] = useState<string | null>(null);
-    const apply = async (recoveryId: string) => {
-        setApplyingId(recoveryId);
-        setError(null);
-        try {
-            await onApply(recoveryId);
-        } catch (cause) {
-            setError(formatError(cause, "The recovery layout could not be applied."));
-        } finally {
-            setApplyingId(null);
-        }
-    };
-    const discard = async (recoveryId: string) => {
-        if (
-            !window.confirm(
-                "Discard this recovery layout permanently? This cannot be undone.",
-            )
-        ) {
-            return;
-        }
-        setApplyingId(recoveryId);
-        setError(null);
-        try {
-            await onDiscard(recoveryId);
-        } catch (cause) {
-            setError(formatError(cause, "The recovery layout could not be discarded."));
-        } finally {
-            setApplyingId(null);
-        }
-    };
-    return (
-        <div>
-            <h2>Recovery Layouts</h2>
-            <p>Applying an alternative replaces the current panes, tabs, and drafts. Chat transcripts remain unchanged.</p>
-            <ul className="workspace-navigator-recovery-list">
-                {workspace.recoveryLayouts.map((layout) => (
-                    <li key={layout.id}>
-                        <span>{layout.sourceWindowId ?? "Legacy workspace"}</span>
-                        <code>{layout.snapshotHash.slice(0, 12)}</code>
-                        <button
-                            disabled={applyingId !== null}
-                            onClick={() => void apply(layout.id)}
-                            type="button"
-                        >
-                            {applyingId === layout.id ? "Applying…" : "Apply"}
-                        </button>
-                        <button
-                            disabled={applyingId !== null}
-                            onClick={() => void discard(layout.id)}
-                            type="button"
-                        >
-                            Discard
-                        </button>
-                    </li>
-                ))}
-            </ul>
-            {error ? <div className="workspace-navigator-dialog-error" role="alert">{error}</div> : null}
-            <div className="workspace-navigator-dialog-actions">
-                <button disabled={applyingId !== null} onClick={onClose} type="button">Done</button>
-            </div>
-        </div>
     );
 }
 

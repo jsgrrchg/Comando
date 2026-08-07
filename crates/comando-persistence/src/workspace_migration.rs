@@ -1862,67 +1862,6 @@ mod tests {
     }
 
     #[test]
-    fn dual_write_keeps_v4_ownership_and_v3_projection_current() {
-        let (_temp_dir, mut store) = open_store();
-        store
-            .run_workspace_migration(migration_input())
-            .expect("migration succeeds");
-        let scope_key = WorkspaceScopeKey("project-a::__primary__".to_string());
-        let original_owner = store
-            .load_durable_workspace(&scope_key)
-            .expect("workspace loads")
-            .expect("workspace exists")
-            .runtime_owner_id;
-        store
-            .save_durable_workspace(comando_types::workspace::NativeDurableWorkspaceSaveInput {
-                scope_key: scope_key.clone(),
-                expected_revision: 0,
-                layout_snapshot: layout("v4 write"),
-            })
-            .expect("v4 save succeeds");
-        assert_eq!(
-            load_v3_projection(store.connection()).expect("projection")[0]["workspaceRestore"]["snapshot"]
-                ["contexts"][0]["workspace"],
-            layout("v4 write")
-        );
-
-        let mut legacy = migration_input();
-        legacy.windows[0].contexts[0].layout_snapshot = layout("v3 write");
-        legacy.windows.truncate(1);
-        store
-            .sync_legacy_workspace_migration(legacy)
-            .expect("legacy sync succeeds");
-        let workspace = store
-            .load_durable_workspace(&scope_key)
-            .expect("workspace loads")
-            .expect("workspace exists");
-        assert_eq!(workspace.runtime_owner_id, original_owner);
-        assert_eq!(workspace.layout_snapshot, layout("v3 write"));
-        assert_eq!(
-            load_v3_projection(store.connection()).expect("projection")[0]["workspaceRestore"]["snapshot"]
-                ["contexts"][0]["workspace"],
-            layout("v3 write")
-        );
-
-        let revision_before_recency_sync = workspace.revision;
-        let mut recency_only = migration_input();
-        recency_only.windows.truncate(1);
-        recency_only.windows[0].contexts[0].layout_snapshot = layout("v3 write");
-        recency_only.windows[0].contexts[0].last_activated_at = "2026-07-31T00:00:00Z".to_string();
-        store
-            .sync_legacy_workspace_migration(recency_only)
-            .expect("recency-only sync succeeds");
-        assert_eq!(
-            store
-                .load_durable_workspace(&scope_key)
-                .expect("workspace loads")
-                .expect("workspace exists")
-                .revision,
-            revision_before_recency_sync
-        );
-    }
-
-    #[test]
     fn rollout_keeps_dual_write_for_stable_and_gates_the_v4_only_transition() {
         let (_temp_dir, mut store) = open_store();
         store

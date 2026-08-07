@@ -42,7 +42,6 @@ export function useWorkspaceNavigatorModel(): WorkspaceNavigatorModel {
             projects,
             pendingDeletionByScopeKey: catalog.pendingDeletionByScopeKey,
             projectOrder,
-            recoveryByScopeKey: catalog.recoveryByScopeKey,
             worktreesByProject,
         });
     }, [

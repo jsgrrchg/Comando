@@ -1249,7 +1249,6 @@ async function confirmClearProjectAppData(
               `- ${summary.chatSessionCount} chat history session(s) and transcripts`,
               "- AI review artifacts linked to those sessions",
               `- ${summary.durableWorkspaceCount} durable workspace layout(s)`,
-              `- ${summary.recoveryLayoutCount} recovery layout(s)`,
               `- ${summary.projectSettingsCount} project-specific setting(s)`,
               `- ${summary.workspaceTabCount} restored workspace tab(s)`,
               `- ${summary.workspaceLayoutCount} workspace layout(s) linked to this project`,

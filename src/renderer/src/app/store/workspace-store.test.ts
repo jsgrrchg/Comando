@@ -2667,6 +2667,25 @@ describe("workspace file opening", () => {
         expect(persistWorkspaceLayoutMock).not.toHaveBeenCalled();
     });
 
+    it("does not persist pending workspace mutations as time passes", async () => {
+        vi.useFakeTimers();
+        try {
+            await useWorkspaceStore
+                .getState()
+                .requestWorkspaceNavigation("project-close-only");
+
+            await vi.advanceTimersByTimeAsync(60_000);
+
+            expect(persistWorkspaceLayoutMock).not.toHaveBeenCalled();
+
+            await flushWorkspacePersistenceNow();
+
+            expect(persistWorkspaceLayoutMock).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("does not report a successful close flush when persistence keeps failing", async () => {
         const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
         persistWorkspaceLayoutMock.mockRejectedValue(
@@ -2683,7 +2702,7 @@ describe("workspace file opening", () => {
         errorSpy.mockRestore();
     });
 
-    it("defers split resize persistence until the workspace is idle", async () => {
+    it("persists split resize only during a controlled flush", async () => {
         useWorkspaceStore.setState((state) => ({
             ...state,
             activePaneId: "pane-left",

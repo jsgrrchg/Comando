@@ -236,13 +236,8 @@ if (!hasSingleInstanceLock) {
             }
             const nativeClient = nativeBackendClient;
             nativeAppDataClient = await createNativeAppDataClient({
-                applicationVersion: app.getVersion(),
                 client: nativeClient,
                 databaseFile,
-                onWorkspaceMigrationTelemetry: (telemetry) => {
-                    console.info("[workspace-migration]", telemetry);
-                },
-                publishWorkspaceRollout: appChannel === "release",
             });
             persistenceService = nativeAppDataClient.persistence;
             secretStore = nativeAppDataClient.secretStore;

@@ -97,7 +97,6 @@ impl SqlitePersistenceStore {
         }
         let workspace = load_workspace(&transaction, &normalized.scope_key)?
             .ok_or_else(|| PersistenceError::WorkspaceNotFound(normalized.scope_key.0.clone()))?;
-        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(workspace)
     }
@@ -136,7 +135,6 @@ impl SqlitePersistenceStore {
             )?);
         }
         let workspace = required_workspace(&transaction, &input.scope_key)?;
-        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(workspace)
     }
@@ -171,7 +169,6 @@ impl SqlitePersistenceStore {
             )?);
         }
         let workspace = required_workspace(&transaction, &input.scope_key)?;
-        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(workspace)
     }
@@ -227,7 +224,6 @@ impl SqlitePersistenceStore {
             "DELETE FROM durable_workspaces WHERE scope_key = ?1",
             [&input.scope_key.0],
         )?;
-        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
 
         Ok(NativeDurableWorkspacePurgeOutput {
@@ -273,7 +269,6 @@ impl SqlitePersistenceStore {
         navigation.revision = navigation.revision.saturating_add(1);
         navigation.updated_at = updated_at;
         write_navigation_cas(&transaction, &navigation, input.expected_revision)?;
-        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(navigation)
     }
@@ -296,7 +291,6 @@ impl SqlitePersistenceStore {
         navigation.revision = navigation.revision.saturating_add(1);
         navigation.updated_at = crate::store::now_rfc3339();
         write_navigation_cas(&transaction, &navigation, input.expected_revision)?;
-        crate::workspace_migration::refresh_v3_projection(&transaction)?;
         transaction.commit()?;
         Ok(navigation)
     }

@@ -79,10 +79,9 @@ export class WorkspaceDestructiveCoordinator {
             input.projectId,
             input.worktreeId,
         );
-        const [workspaces, recoveries, sessions, status, resolution, gitWorktrees] =
+        const [workspaces, sessions, status, resolution, gitWorktrees] =
             await Promise.all([
                 this.#durableWorkspaceRepository.listDurableWorkspaces(),
-                this.#durableWorkspaceRepository.listWorkspaceRecoveryLayouts(),
                 this.#listScopeSessions(input.projectId, input.worktreeId),
                 this.#gitService.getStatus(worktree.rootPath),
                 this.#gitService.resolveRepository(worktree.rootPath),
@@ -149,9 +148,7 @@ export class WorkspaceDestructiveCoordinator {
             inventory: {
                 chatSessionCount: sessions.length,
                 checkoutPath: worktree.rootPath,
-                recoveryLayoutCount: recoveries.filter(
-                    (candidate) => candidate.scopeKey === input.scopeKey,
-                ).length,
+                recoveryLayoutCount: 0,
                 runtimeCount:
                     liveAiSessions.length +
                     terminalSessions.length +

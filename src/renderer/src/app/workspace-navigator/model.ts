@@ -4,10 +4,7 @@ import type {
     WorkspaceSurfaceDiagnostic,
     WorkspaceSurfacePoolDiagnostics,
 } from "@shared/ipc";
-import type {
-    NativeWorkspaceDeletionJournalEntry,
-    NativeWorkspaceRecoveryLayoutSummary,
-} from "@shared/native-backend";
+import type { NativeWorkspaceDeletionJournalEntry } from "@shared/native-backend";
 import {
     getWorkspaceScopeKey,
     normalizeWorkspaceWorktreeId,
@@ -31,7 +28,6 @@ export interface WorkspaceNavigatorWorkspace {
     readonly isResident: boolean;
     readonly label: string;
     readonly projectId: string;
-    readonly recoveryLayouts: readonly NativeWorkspaceRecoveryLayoutSummary[];
     readonly rootPath: string | null;
     readonly scopeKey: string;
     readonly status: WorkspaceNavigatorRowStatus;
@@ -61,9 +57,6 @@ export interface BuildWorkspaceNavigatorModelInput {
     readonly inventoryErrorsByProject?: Readonly<Record<string, string | null>>;
     readonly inventoryLoadingByProject?: Readonly<Record<string, boolean>>;
     readonly projects: readonly ProjectSummary[];
-    readonly recoveryByScopeKey?: Readonly<
-        Record<string, readonly NativeWorkspaceRecoveryLayoutSummary[]>
-    >;
     readonly pendingDeletionByScopeKey?: Readonly<
         Record<string, NativeWorkspaceDeletionJournalEntry>
     >;
@@ -81,7 +74,6 @@ export function buildWorkspaceNavigatorModel({
     projects,
     pendingDeletionByScopeKey = {},
     projectOrder = [],
-    recoveryByScopeKey = {},
     worktreesByProject,
 }: BuildWorkspaceNavigatorModelInput): WorkspaceNavigatorModel {
     const diagnosticsByScopeKey = new Map(
@@ -176,7 +168,6 @@ export function buildWorkspaceNavigatorModel({
                                   ? getWorktreeDisplayLabel(inventoryWorktree)
                                   : worktreeId ?? "Missing worktree",
                             projectId,
-                            recoveryLayouts: recoveryByScopeKey[scopeKey] ?? [],
                             rootPath:
                                 inventoryWorktree?.rootPath ??
                                 (isPrimary ? project?.rootPath ?? null : null),

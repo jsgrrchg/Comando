@@ -20,13 +20,10 @@ import type {
     NativeWorkspaceCleanupLegacyInput,
     NativeWorkspaceDisableLegacyWritesInput,
     NativeWorkspaceMarkStableInput,
-    NativeWorkspaceRecoveryDiscardInput,
     NativeWorkspaceRolloutStatus,
     NativeWorkspaceDeletionBeginInput,
     NativeWorkspaceDeletionJournalEntry,
     NativeWorkspaceDeletionUpdateInput,
-    NativeWorkspaceRecoveryApplyInput,
-    NativeWorkspaceRecoveryLayoutSummary,
     NativeWorkspaceReassociateInput,
 } from "@shared/native-backend";
 
@@ -120,37 +117,6 @@ export class NativePersistenceGateway {
         return parseNativeDurableWorkspacePurgeOutput(
             await this.#client.request("durable_workspace_purge", { ...input }),
         );
-    }
-
-    async listWorkspaceRecoveryLayouts(): Promise<readonly NativeWorkspaceRecoveryLayoutSummary[]> {
-        const output = requireRecord(
-            await this.#client.request("workspace_recovery_list"),
-            "Native workspace recovery list",
-        );
-        if (!Array.isArray(output.layouts)) {
-            throw new Error("Native workspace recovery list must contain layouts.");
-        }
-        return output.layouts.map(parseNativeWorkspaceRecoveryLayout);
-    }
-
-    async applyWorkspaceRecoveryLayout(
-        input: NativeWorkspaceRecoveryApplyInput,
-    ): Promise<NativeDurableWorkspace> {
-        return parseNativeDurableWorkspace(
-            await this.#client.request("workspace_recovery_apply", { ...input }),
-        );
-    }
-
-    async discardWorkspaceRecoveryLayout(
-        input: NativeWorkspaceRecoveryDiscardInput,
-    ): Promise<void> {
-        const output = requireRecord(
-            await this.#client.request("workspace_recovery_discard", { ...input }),
-            "Native workspace recovery discard output",
-        );
-        if (!requireBoolean(output.discarded, "discarded")) {
-            throw new Error("Native workspace recovery layout was not discarded.");
-        }
     }
 
     async reassociateWorkspace(
@@ -404,22 +370,6 @@ function parseNativeDurableWorkspacePurgeOutput(
     return {
         navigation: parseNativeAppWorkspaceNavigation(record.navigation),
         purgedScopeKey: requireString(record.purgedScopeKey, "purgedScopeKey"),
-    };
-}
-
-function parseNativeWorkspaceRecoveryLayout(
-    value: unknown,
-): NativeWorkspaceRecoveryLayoutSummary {
-    const record = requireRecord(value, "Native workspace recovery layout");
-    return {
-        createdAt: requireString(record.createdAt, "createdAt"),
-        id: requireString(record.id, "id"),
-        scopeKey: requireString(record.scopeKey, "scopeKey"),
-        snapshotHash: requireString(record.snapshotHash, "snapshotHash"),
-        sourceRevision: requireRevision(record.sourceRevision, "sourceRevision"),
-        sourceUpdatedAt: requireString(record.sourceUpdatedAt, "sourceUpdatedAt"),
-        sourceWindowId: requireNullableString(record.sourceWindowId, "sourceWindowId"),
-        sourceWorkspaceId: requireNullableString(record.sourceWorkspaceId, "sourceWorkspaceId"),
     };
 }
 

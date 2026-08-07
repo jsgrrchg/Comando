@@ -7,7 +7,6 @@ import type {
     NativeDurableWorkspace,
     NativeDurableWorkspaceSummary,
     NativeWorkspaceDeletionJournalEntry,
-    NativeWorkspaceRecoveryLayoutSummary,
 } from "./native-backend/workspace";
 
 export type { AppTerminalSettings } from "./terminal-settings";
@@ -144,8 +143,6 @@ export const IPC_CHANNELS = {
     searchProjectEntries: "projects:search-entries",
     getWorkspaceCatalog: "workspace:get-catalog",
     resetWorkspaceLayout: "workspace:reset-layout",
-    applyWorkspaceRecoveryLayout: "workspace:apply-recovery-layout",
-    discardWorkspaceRecoveryLayout: "workspace:discard-recovery-layout",
     reassociateWorkspace: "workspace:reassociate",
     removeSavedWorkspace: "workspace:remove-saved",
     preflightDeleteWorktree: "workspace:preflight-delete-worktree",
@@ -2348,7 +2345,6 @@ export interface WorkspaceSurfacePerformanceDiagnostic {
 
 export interface WorkspaceCatalogSnapshot {
     readonly navigation: NativeAppWorkspaceNavigation;
-    readonly recoveryLayouts: readonly NativeWorkspaceRecoveryLayoutSummary[];
     readonly pendingDeletions: readonly NativeWorkspaceDeletionJournalEntry[];
     readonly workspaces: readonly NativeDurableWorkspaceSummary[];
 }
@@ -2358,16 +2354,6 @@ export interface ResetWorkspaceLayoutInput {
     readonly scopeKey: string;
 }
 
-export interface ApplyWorkspaceRecoveryLayoutInput {
-    readonly expectedRevision: number;
-    readonly recoveryId: string;
-    readonly scopeKey: string;
-}
-
-export interface DiscardWorkspaceRecoveryLayoutInput {
-    readonly recoveryId: string;
-    readonly scopeKey: string;
-}
 
 export interface ReassociateWorkspaceInput {
     readonly expectedRevision: number;
@@ -4004,12 +3990,6 @@ export interface ComandoApi {
     resetWorkspaceLayout: (
         input: ResetWorkspaceLayoutInput,
     ) => Promise<NativeDurableWorkspace>;
-    applyWorkspaceRecoveryLayout: (
-        input: ApplyWorkspaceRecoveryLayoutInput,
-    ) => Promise<NativeDurableWorkspace>;
-    discardWorkspaceRecoveryLayout: (
-        input: DiscardWorkspaceRecoveryLayoutInput,
-    ) => Promise<void>;
     reassociateWorkspace: (
         input: ReassociateWorkspaceInput,
     ) => Promise<NativeDurableWorkspace>;
