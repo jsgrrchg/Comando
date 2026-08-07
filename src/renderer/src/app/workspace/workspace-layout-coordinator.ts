@@ -70,7 +70,7 @@ export class WorkspaceLayoutCoordinator {
         this.#store.setState({ error: null, status: "saving" });
 
         try {
-            const record = await this.#adapter.save(
+            const record = await this.#saveWithConflictRecovery(
                 binding,
                 layout,
                 lastActivatedAt,
@@ -108,6 +108,33 @@ export class WorkspaceLayoutCoordinator {
         this.#operation += 1;
     }
 
+    async #saveWithConflictRecovery(
+        binding: WorkspaceLayoutBinding,
+        layout: WorkspaceLayoutSnapshot,
+        lastActivatedAt: string,
+    ): Promise<WorkspaceLayoutRecord> {
+        try {
+            return await this.#adapter.save(binding, layout, lastActivatedAt);
+        } catch (error) {
+            if (!isWorkspaceRevisionConflict(error)) {
+                throw error;
+            }
+
+            // Refresh the CAS token before one retry so a completed save from
+            // a previous surface lifecycle cannot leave this renderer stale.
+            const current = await this.#adapter.load(binding);
+            this.#assertRecordMatchesBinding(current, binding);
+            return await this.#adapter.save(
+                {
+                    ...binding,
+                    revision: current.revision,
+                },
+                layout,
+                lastActivatedAt,
+            );
+        }
+    }
+
     #assertRecordMatchesBinding(
         record: WorkspaceLayoutRecord,
         binding: WorkspaceLayoutBinding,
@@ -136,4 +163,11 @@ export class WorkspaceLayoutCoordinator {
             current.revision === binding.revision
         );
     }
+}
+
+function isWorkspaceRevisionConflict(error: unknown): boolean {
+    return (
+        error instanceof Error &&
+        error.message.includes("The durable workspace revision changed")
+    );
 }

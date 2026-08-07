@@ -2683,7 +2683,7 @@ describe("workspace file opening", () => {
         errorSpy.mockRestore();
     });
 
-    it("flushes split resize immediately when the drag is committed", async () => {
+    it("defers split resize persistence until the workspace is idle", async () => {
         useWorkspaceStore.setState((state) => ({
             ...state,
             activePaneId: "pane-left",
@@ -2713,6 +2713,10 @@ describe("workspace file opening", () => {
         await useWorkspaceStore
             .getState()
             .resizeSplit("split-root", [0.68, 0.32]);
+
+        expect(persistWorkspaceLayoutMock).not.toHaveBeenCalled();
+
+        await flushWorkspacePersistenceForTests();
 
         expect(persistWorkspaceLayoutMock).toHaveBeenCalledTimes(1);
         const persistedSnapshot =

@@ -160,4 +160,73 @@ describe("WorkspaceLayoutCoordinator", () => {
         );
         expect(store.getState().binding.revision).toBe(5);
     });
+
+    it("reloads the revision and retries once after a durable revision conflict", async () => {
+        const conflict = new Error(
+            "The durable workspace revision changed (expected 4, actual 5).",
+        );
+        const save = vi
+            .fn<WorkspaceLayoutAdapter["save"]>()
+            .mockRejectedValueOnce(conflict)
+            .mockImplementationOnce((requestedBinding, requestedLayout, lastActivatedAt) =>
+                Promise.resolve({
+                    ...requestedBinding,
+                    lastActivatedAt,
+                    layout: requestedLayout,
+                    revision: 6,
+                }),
+            );
+        const load = vi.fn<WorkspaceLayoutAdapter["load"]>(() =>
+                Promise.resolve({
+                    ...binding,
+                    lastActivatedAt: "2026-07-31T12:00:00.000Z",
+                    layout,
+                    revision: 5,
+                }),
+            );
+        const adapter: WorkspaceLayoutAdapter = {
+            load,
+            save,
+        };
+        const store = createWorkspaceLayoutStore(binding);
+        const coordinator = new WorkspaceLayoutCoordinator(store, adapter);
+
+        await expect(coordinator.persist(layout)).resolves.toBe(true);
+
+        expect(load).toHaveBeenCalledWith(binding);
+        expect(save).toHaveBeenNthCalledWith(1, binding, layout, expect.any(String));
+        expect(save).toHaveBeenNthCalledWith(
+            2,
+            { ...binding, revision: 5 },
+            layout,
+            expect.any(String),
+        );
+        expect(store.getState().binding.revision).toBe(6);
+    });
+
+    it("stops after the single conflict recovery retry fails", async () => {
+        const conflict = new Error(
+            "The durable workspace revision changed (expected 4, actual 5).",
+        );
+        const save = vi
+            .fn<WorkspaceLayoutAdapter["save"]>()
+            .mockRejectedValue(conflict);
+        const load = vi.fn<WorkspaceLayoutAdapter["load"]>(() =>
+            Promise.resolve({
+                ...binding,
+                lastActivatedAt: "2026-07-31T12:00:00.000Z",
+                layout,
+                revision: 5,
+            }),
+        );
+        const coordinator = new WorkspaceLayoutCoordinator(
+            createWorkspaceLayoutStore(binding),
+            { load, save },
+        );
+
+        await expect(coordinator.persist(layout)).rejects.toBe(conflict);
+
+        expect(load).toHaveBeenCalledTimes(1);
+        expect(save).toHaveBeenCalledTimes(2);
+    });
 });
