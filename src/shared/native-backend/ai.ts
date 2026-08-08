@@ -518,6 +518,17 @@ export type NativeAiDeleteSessionInput = {
     readonly sessionId: NativeSessionId;
 };
 
+export type NativeAiPruneSessionHistoryOutput = {
+    readonly deletedRootIds: readonly NativeSessionId[];
+    readonly deletedSessionIds: readonly NativeSessionId[];
+    readonly failedRootIds: readonly NativeSessionId[];
+    readonly inspectedSessionCount: number;
+    readonly protectedTreeCount: number;
+    readonly invalidMetadataCount: number;
+    readonly invalidTimestampCount: number;
+    readonly policyChanged: boolean;
+};
+
 export type NativeAiRenameSessionInput = {
     readonly sessionId: NativeSessionId;
     readonly title: string;

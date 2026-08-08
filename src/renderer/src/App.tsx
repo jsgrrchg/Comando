@@ -31,6 +31,7 @@ import type {
 import { resolveEditorLanguage } from "@shared/editor-language";
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
+import { subscribeToAiHistoryPruned } from "./app/ai/historyRetentionEvents";
 import { writeClipboardText } from "./app/utils/clipboard";
 import { joinProjectPath } from "./app/utils/projectPath";
 import { setCachedAppEditorSettings } from "./app/settings/client";
@@ -263,6 +264,8 @@ function resolveStateAction<T>(action: SetStateAction<T>, current: T): T {
 
 export function WorkspaceHostApp() {
     useSystemTheme();
+
+    useEffect(() => subscribeToAiHistoryPruned(), []);
 
     const bootstrap = useAppStore((state) => state.bootstrap);
     const bootstrapError = useAppStore((state) => state.error);

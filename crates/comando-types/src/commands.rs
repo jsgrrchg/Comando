@@ -204,6 +204,7 @@ pub const AI_COMMANDS: &[&str] = &[
     "ai_list_session_runtime_mappings",
     "ai_set_session_pinned",
     "ai_delete_session",
+    "ai_prune_session_history",
     "ai_migrate_session_history",
     "ai_get_history_storage_health",
     "ai_capture_review_baseline",

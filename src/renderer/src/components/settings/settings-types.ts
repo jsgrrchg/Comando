@@ -7,6 +7,7 @@ import type {
     GitHubAuthStatus,
     SettingsWindowCategory,
 } from "@shared/ipc";
+import type { ChatHistoryRetentionDays } from "@shared/chat-history-retention";
 
 import type { AIProvidersSettingsProps } from "./AIProvidersSettings";
 
@@ -115,6 +116,7 @@ export interface ChatFontFamilyOption {
 }
 
 export interface SettingsAiChatState {
+    readonly error?: string | null;
     readonly chatFontFamily: string;
     readonly chatFontFamilies: readonly ChatFontFamilyOption[];
     readonly chatFontSize: number;
@@ -123,7 +125,7 @@ export interface SettingsAiChatState {
     readonly composerFontSize: number;
     readonly requireCmdEnterToSend: boolean;
     readonly screenshotRetentionSeconds: number;
-    readonly historyRetentionDays: number;
+    readonly historyRetentionDays: ChatHistoryRetentionDays;
     readonly contextUsageBarEnabled: boolean;
     readonly toolActivityDefaultExpansion: AiToolActivityDefaultExpansion;
     readonly onChatFontFamilyChange?: (id: string) => void;
@@ -132,7 +134,7 @@ export interface SettingsAiChatState {
     readonly onComposerFontSizeChange?: (size: number) => void;
     readonly onRequireCmdEnterChange?: (value: boolean) => void;
     readonly onScreenshotRetentionChange?: (seconds: number) => void;
-    readonly onHistoryRetentionChange?: (days: number) => void;
+    readonly onHistoryRetentionChange?: (days: ChatHistoryRetentionDays) => void;
     readonly onContextUsageBarEnabledChange?: (value: boolean) => void;
     readonly onToolActivityDefaultExpansionChange?: (
         value: AiToolActivityDefaultExpansion,

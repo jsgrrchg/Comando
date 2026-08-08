@@ -216,6 +216,22 @@ describe("SettingsWindow terminal settings", () => {
         expect(expandedMarkup).toContain("Expanded");
     });
 
+    it("shows an AI settings persistence error", () => {
+        const props = createSettingsWindowProps({ initialCategory: "ai" });
+        const markup = renderToStaticMarkup(
+            <SettingsWindow
+                {...props}
+                aiChat={{
+                    ...props.aiChat,
+                    error: "Could not save AI settings.",
+                }}
+            />,
+        );
+
+        expect(markup).toContain('role="alert"');
+        expect(markup).toContain("Could not save AI settings.");
+    });
+
     it("renders a release notes action in the Updates category", () => {
         const markup = renderToStaticMarkup(
             <SettingsWindow

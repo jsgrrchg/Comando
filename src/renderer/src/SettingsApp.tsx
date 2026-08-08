@@ -115,6 +115,9 @@ export function SettingsApp({
     const [aiChat, setAiChat] = useState<AppAiChatSettings>(
         getDefaultAiChatSettings(),
     );
+    const aiChatRef = useRef(aiChat);
+    const aiChatSaveRevisionRef = useRef(0);
+    const [aiChatSaveError, setAiChatSaveError] = useState<string | null>(null);
     const [terminal, setTerminal] = useState<AppTerminalSettings>(
         DEFAULT_APP_TERMINAL_SETTINGS,
     );
@@ -440,6 +443,7 @@ export function SettingsApp({
     }, []);
 
     useEffect(() => {
+        aiChatRef.current = storeAiChat;
         setAiChat(storeAiChat);
     }, [storeAiChat]);
 
@@ -661,9 +665,25 @@ export function SettingsApp({
     };
 
     const updateAiChat = (patch: Partial<AppAiChatSettings>) => {
-        const next: AppAiChatSettings = { ...aiChat, ...patch };
+        const previous = aiChatRef.current;
+        const next: AppAiChatSettings = { ...previous, ...patch };
+        const saveRevision = aiChatSaveRevisionRef.current + 1;
+        aiChatSaveRevisionRef.current = saveRevision;
+        aiChatRef.current = next;
         setAiChat(next);
-        void saveAiChatSettings(next);
+        setAiChatSaveError(null);
+        void saveAiChatSettings(next).catch((error: unknown) => {
+            if (aiChatSaveRevisionRef.current !== saveRevision) {
+                return;
+            }
+            aiChatRef.current = previous;
+            setAiChat(previous);
+            setAiChatSaveError(
+                error instanceof Error
+                    ? `Could not save AI settings: ${error.message}`
+                    : "Could not save AI settings.",
+            );
+        });
     };
 
     const updateTerminal = (patch: Partial<AppTerminalSettings>) => {
@@ -901,6 +921,7 @@ export function SettingsApp({
             initialCategoryRequestId={requestedCategory.requestId}
             onClose={onClose}
             aiChat={{
+                error: aiChatSaveError,
                 chatFontFamily: aiChat.chatFontFamily,
                 chatFontFamilies: chatFontFamilies,
                 chatFontSize: aiChat.chatFontSize,

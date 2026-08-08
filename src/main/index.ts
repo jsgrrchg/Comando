@@ -42,6 +42,10 @@ import {
 import { appChannel, appIdentity, configureMainProcessApp } from "./app-runtime";
 import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
+import {
+    applyPrunedHistorySideEffects,
+    HistoryRetentionCoordinator,
+} from "./ai/history-retention";
 import type { NormalizedSessionCatalogPayload } from "./ai/session-core";
 import {
     buildAiSessionStreamRecoveryFallbackPayloads,
@@ -125,6 +129,7 @@ void initReviewEngine();
 let nativeAppDataClient: NativeAppDataClient | null = null;
 let bootstrapSnapshot: AppBootstrapSnapshot | null = null;
 let aiService: AiService | null = null;
+let historyRetentionCoordinator: HistoryRetentionCoordinator | null = null;
 let persistenceService: PersistenceGateway | null = null;
 let projectService: ProjectService | null = null;
 let projectInvalidationCoordinator: ProjectInvalidationCoordinator | null = null;
@@ -320,6 +325,36 @@ if (!hasSingleInstanceLock) {
                 secretStore,
                 settingsService,
             });
+            historyRetentionCoordinator = new HistoryRetentionCoordinator({
+                getRetentionDays: () =>
+                    settingsService?.loadAiChatSettings().historyRetentionDays ?? 0,
+                onDiagnostic: (message) => {
+                    console.info(`[ai-history-retention] ${message}`);
+                },
+                onPruned: async (result) => {
+                    const repository = nativePersistenceGateway;
+                    await applyPrunedHistorySideEffects(result, {
+                        broadcast: (pruned) => {
+                            broadcastAiHistoryPruned({
+                                cutoff: pruned.cutoff,
+                                deletedSessionIds: pruned.deletedSessionIds,
+                                retentionDays: pruned.retentionDays,
+                            });
+                        },
+                        forgetSessionReferences: repository
+                            ? (sessionId) =>
+                                  repository.forgetWorkspaceSessionReferences(
+                                      sessionId,
+                                  )
+                            : undefined,
+                        onDiagnostic: (message) => {
+                            console.warn(`[ai-history-retention] ${message}`);
+                        },
+                    });
+                },
+                pruneExpiredHistory: (cutoff, retentionDays) =>
+                    aiService!.pruneExpiredHistory(cutoff, retentionDays),
+            });
             terminalService = createTerminalGateway({
                 nativeClient,
                 onData: broadcastTerminalData,
@@ -417,6 +452,7 @@ if (!hasSingleInstanceLock) {
                 persistenceService,
                 gitService,
                 githubService,
+                historyRetentionCoordinator,
                 activateProjectWorkspace,
                 openSettingsView,
                 projectService,
@@ -424,6 +460,7 @@ if (!hasSingleInstanceLock) {
                 terminalService,
                 workspaceService,
             });
+            historyRetentionCoordinator.start();
 
             installApplicationMenu({
                 adjustAppZoom: (direction) => {
@@ -572,6 +609,7 @@ async function shutdownApplication(): Promise<void> {
         detachAiSessionStream(windowId);
     }
 
+    historyRetentionCoordinator?.close();
     aiService?.close();
 
     const nativeAppDataClientToClose = nativeAppDataClient;
@@ -582,6 +620,7 @@ async function shutdownApplication(): Promise<void> {
     const terminalServiceToClose = terminalService;
 
     aiService = null;
+    historyRetentionCoordinator = null;
     nativeAppDataClient = null;
     gitService = null;
     githubService = null;
@@ -1512,6 +1551,14 @@ function broadcastNativeBackendEvent(event: NativeBackendEvent): void {
 function broadcastAiRuntimeStatus(payload: AiRuntimeStatus): void {
     windowRegistry.forEachLiveWebContents((webContents) => {
         webContents.send(IPC_EVENTS.aiRuntimeStatus, payload);
+    });
+}
+
+function broadcastAiHistoryPruned(
+    payload: import("@shared/ipc").AiHistoryPrunedEvent,
+): void {
+    windowRegistry.forEachLiveWebContents((webContents) => {
+        webContents.send(IPC_EVENTS.aiHistoryPruned, payload);
     });
 }
 

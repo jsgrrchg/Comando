@@ -5,6 +5,8 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
 use comando_types::ai::{
     AI_TRANSCRIPT_BLOCK_CAPABILITY_VERSION, AI_TRANSCRIPT_PAYLOAD_BATCH_MAX_REFS,
     NativeAiCheckpointOpenTranscriptTailInput, NativeAiHistorySessionSummary,
@@ -63,6 +65,21 @@ pub struct AiHistoryStore {
     legacy_transcript_backfill_indexes: Arc<Mutex<HashMap<String, AiTranscriptIndex>>>,
     work_metrics: Arc<StorageWorkMetrics>,
     durable_operation_interceptor: Option<DurableOperationInterceptorRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiExpiredSessionTree {
+    pub root_session_id: SessionId,
+    pub session_ids: Vec<SessionId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiExpiredSessionTrees {
+    pub trees: Vec<AiExpiredSessionTree>,
+    pub inspected_session_count: usize,
+    pub protected_tree_count: usize,
+    pub invalid_metadata_count: usize,
+    pub invalid_timestamp_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1757,8 +1774,14 @@ impl AiHistoryStore {
 
     pub fn delete_session(&self, session_id: &SessionId) -> AiResult<()> {
         let subtree_session_ids = self.collect_session_subtree_ids(session_id)?;
-        for subtree_session_id in subtree_session_ids.into_iter().rev() {
-            let session_dir = self.session_dir(&subtree_session_id);
+        self.delete_session_tree(&subtree_session_ids)
+    }
+
+    pub fn delete_session_tree(&self, session_ids: &[SessionId]) -> AiResult<()> {
+        // Retention already resolved the complete tree in one metadata scan;
+        // deleting that immutable candidate avoids rescanning all histories per root.
+        for subtree_session_id in session_ids.iter().rev() {
+            let session_dir = self.session_dir(subtree_session_id);
             if !session_dir.exists() {
                 continue;
             }
@@ -1766,6 +1789,152 @@ impl AiHistoryStore {
                 .map_err(|error| history_io("delete AI session dir", &session_dir, error))?;
         }
         Ok(())
+    }
+
+    pub fn list_expired_session_trees(
+        &self,
+        cutoff: &str,
+        protected_session_ids: &HashSet<String>,
+    ) -> AiResult<AiExpiredSessionTrees> {
+        let cutoff = OffsetDateTime::parse(cutoff, &Rfc3339).map_err(|error| {
+            AiError::InvalidInput(format!("Invalid AI history retention cutoff: {error}"))
+        })?;
+        let sessions_dir = self.sessions_dir();
+        if !sessions_dir.exists() {
+            return Ok(AiExpiredSessionTrees {
+                trees: Vec::new(),
+                inspected_session_count: 0,
+                protected_tree_count: 0,
+                invalid_metadata_count: 0,
+                invalid_timestamp_count: 0,
+            });
+        }
+
+        let mut metadata_by_id = HashMap::new();
+        let mut invalid_metadata_count = 0;
+        for entry in fs::read_dir(&sessions_dir)
+            .map_err(|error| history_io("read AI sessions dir", &sessions_dir, error))?
+        {
+            let entry = entry
+                .map_err(|error| history_io("read AI sessions dir entry", &sessions_dir, error))?;
+            if !entry
+                .file_type()
+                .map_err(|error| history_io("read AI session file type", &entry.path(), error))?
+                .is_dir()
+            {
+                continue;
+            }
+            match read_json_file::<AiHistorySessionMetadata>(&entry.path().join(SESSION_META_FILE))
+            {
+                Ok(metadata) => {
+                    let expected_dir_name = Self::storage_key(&metadata.session_id.0);
+                    if entry.file_name() != std::ffi::OsStr::new(&expected_dir_name) {
+                        invalid_metadata_count += 1;
+                        continue;
+                    }
+                    if metadata_by_id
+                        .insert(metadata.session_id.0.clone(), metadata)
+                        .is_some()
+                    {
+                        invalid_metadata_count += 1;
+                    }
+                }
+                Err(_) => invalid_metadata_count += 1,
+            }
+        }
+
+        // Unreadable metadata may hide a parent/child edge, so no tree can be
+        // proven independent until storage repair makes every record readable.
+        if invalid_metadata_count > 0 {
+            return Ok(AiExpiredSessionTrees {
+                trees: Vec::new(),
+                inspected_session_count: metadata_by_id.len(),
+                protected_tree_count: usize::from(!metadata_by_id.is_empty()),
+                invalid_metadata_count,
+                invalid_timestamp_count: 0,
+            });
+        }
+
+        let mut children_by_parent: HashMap<String, Vec<String>> = HashMap::new();
+        let mut roots = Vec::new();
+        for (session_id, metadata) in &metadata_by_id {
+            let parent_session_id = metadata
+                .subagent
+                .as_ref()
+                .map(|subagent| &subagent.parent_session_id)
+                .or(metadata.parent_session_id.as_ref())
+                .map(|parent| parent.0.clone());
+            if let Some(parent_session_id) = parent_session_id
+                && metadata_by_id.contains_key(&parent_session_id)
+            {
+                children_by_parent
+                    .entry(parent_session_id)
+                    .or_default()
+                    .push(session_id.clone());
+            } else {
+                roots.push(session_id.clone());
+            }
+        }
+        roots.sort();
+
+        let mut trees = Vec::new();
+        let mut protected_tree_count = 0;
+        let mut invalid_timestamp_count = 0;
+        let mut visited = HashSet::new();
+        for root_session_id in roots {
+            let mut pending = vec![root_session_id.clone()];
+            let mut tree_session_ids = Vec::new();
+            while let Some(session_id) = pending.pop() {
+                if !visited.insert(session_id.clone()) {
+                    continue;
+                }
+                tree_session_ids.push(session_id.clone());
+                if let Some(children) = children_by_parent.get(&session_id) {
+                    pending.extend(children.iter().cloned());
+                }
+            }
+
+            let mut eligible = true;
+            for session_id in &tree_session_ids {
+                let metadata = &metadata_by_id[session_id];
+                if protected_session_ids.contains(session_id) || metadata.pinned_at.is_some() {
+                    eligible = false;
+                    continue;
+                }
+                match OffsetDateTime::parse(&metadata.updated_at, &Rfc3339) {
+                    Ok(updated_at) if updated_at <= cutoff => {}
+                    Ok(_) => eligible = false,
+                    Err(_) => {
+                        invalid_timestamp_count += 1;
+                        eligible = false;
+                    }
+                }
+            }
+
+            if eligible {
+                tree_session_ids.sort();
+                trees.push(AiExpiredSessionTree {
+                    root_session_id: SessionId(root_session_id),
+                    session_ids: tree_session_ids.into_iter().map(SessionId).collect(),
+                });
+            } else {
+                protected_tree_count += 1;
+            }
+        }
+
+        // Cycles cannot be proven safe, so retain every disconnected malformed component.
+        if visited.len() < metadata_by_id.len() {
+            protected_tree_count += 1;
+            invalid_metadata_count += metadata_by_id.len() - visited.len();
+        }
+
+        Ok(AiExpiredSessionTrees {
+            trees,
+            inspected_session_count: metadata_by_id.len(),
+            protected_tree_count,
+            invalid_metadata_count,
+            invalid_timestamp_count,
+        })
     }
 
     fn collect_session_subtree_ids(&self, session_id: &SessionId) -> AiResult<Vec<SessionId>> {
@@ -2791,6 +2960,24 @@ impl<'a> LegacyAiHistoryReader<'a> {
             .filter(|row| row.message_count > 0 || row.parent_session_id.is_some())
             .map(summary_from_legacy_row)
             .collect())
+    }
+
+    pub fn delete_sessions(&self, session_ids: &[SessionId]) -> AiResult<()> {
+        if session_ids.is_empty() || !self.table_exists("chat_sessions")? {
+            return Ok(());
+        }
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|error| history_sql("start legacy AI history deletion", error))?;
+        for session_id in session_ids.iter().rev() {
+            transaction
+                .execute("DELETE FROM chat_sessions WHERE id = ?1", [&session_id.0])
+                .map_err(|error| history_sql("delete legacy AI session", error))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| history_sql("commit legacy AI history deletion", error))
     }
 
     pub fn load_transcript_page(
@@ -4904,6 +5091,134 @@ mod tests {
     }
 
     #[test]
+    fn expired_session_tree_is_eligible_at_the_cutoff_boundary() {
+        let (_temp, store) = store();
+        let mut root = metadata("expired-root");
+        root.updated_at = "2026-07-01T12:00:00.000Z".to_string();
+        store.create_session(root.clone()).unwrap();
+
+        let result = store
+            .list_expired_session_trees("2026-07-01T12:00:00.000Z", &HashSet::new())
+            .unwrap();
+
+        assert_eq!(result.inspected_session_count, 1);
+        assert_eq!(result.protected_tree_count, 0);
+        assert_eq!(result.trees.len(), 1);
+        assert_eq!(result.trees[0].root_session_id, root.session_id);
+        assert_eq!(result.trees[0].session_ids, vec![root.session_id]);
+    }
+
+    #[test]
+    fn recent_descendant_protects_the_complete_session_tree() {
+        let (_temp, store) = store();
+        let mut root = metadata("old-root");
+        root.updated_at = "2026-06-01T12:00:00.000Z".to_string();
+        store.create_session(root.clone()).unwrap();
+        let mut child = metadata("recent-child");
+        child.parent_session_id = Some(root.session_id.clone());
+        child.updated_at = "2026-07-02T12:00:00.000Z".to_string();
+        store.create_session(child).unwrap();
+
+        let result = store
+            .list_expired_session_trees("2026-07-01T12:00:00.000Z", &HashSet::new())
+            .unwrap();
+
+        assert!(result.trees.is_empty());
+        assert_eq!(result.inspected_session_count, 2);
+        assert_eq!(result.protected_tree_count, 1);
+    }
+
+    #[test]
+    fn pinned_or_live_descendant_protects_the_complete_session_tree() {
+        let (_temp, store) = store();
+        let mut pinned_root = metadata("pinned-root");
+        pinned_root.updated_at = "2026-06-01T12:00:00.000Z".to_string();
+        pinned_root.pinned_at = Some("2026-06-02T12:00:00.000Z".to_string());
+        store.create_session(pinned_root).unwrap();
+
+        let mut live_root = metadata("live-root");
+        live_root.updated_at = "2026-06-01T12:00:00.000Z".to_string();
+        store.create_session(live_root.clone()).unwrap();
+        let mut child = metadata("live-child");
+        child.parent_session_id = Some(live_root.session_id);
+        child.updated_at = "2026-06-01T12:00:00.000Z".to_string();
+        store.create_session(child.clone()).unwrap();
+
+        let result = store
+            .list_expired_session_trees(
+                "2026-07-01T12:00:00.000Z",
+                &HashSet::from([child.session_id.0]),
+            )
+            .unwrap();
+
+        assert!(result.trees.is_empty());
+        assert_eq!(result.protected_tree_count, 2);
+    }
+
+    #[test]
+    fn invalid_timestamp_is_retained_and_counted() {
+        let (_temp, store) = store();
+        let mut root = metadata("invalid-time");
+        root.updated_at = "not-a-timestamp".to_string();
+        store.create_session(root).unwrap();
+
+        let result = store
+            .list_expired_session_trees("2026-07-01T12:00:00.000Z", &HashSet::new())
+            .unwrap();
+
+        assert!(result.trees.is_empty());
+        assert_eq!(result.invalid_timestamp_count, 1);
+        assert_eq!(result.protected_tree_count, 1);
+    }
+
+    #[test]
+    fn unreadable_metadata_blocks_pruning_until_storage_is_repaired() {
+        let (_temp, store) = store();
+        let mut valid = metadata("valid-old-session");
+        valid.updated_at = "2026-06-01T12:00:00.000Z".to_string();
+        store.create_session(valid).unwrap();
+        let corrupt_dir = store.sessions_dir().join("corrupt-session");
+        fs::create_dir_all(&corrupt_dir).unwrap();
+        fs::write(corrupt_dir.join(SESSION_META_FILE), b"not-json").unwrap();
+
+        let result = store
+            .list_expired_session_trees("2026-07-01T12:00:00.000Z", &HashSet::new())
+            .unwrap();
+
+        assert!(result.trees.is_empty());
+        assert_eq!(result.invalid_metadata_count, 1);
+        assert_eq!(result.protected_tree_count, 1);
+    }
+
+    #[test]
+    fn noncanonical_duplicate_metadata_blocks_pruning() {
+        let (_temp, store) = store();
+        let mut recent = metadata("recent-canonical-session");
+        recent.updated_at = "2026-07-02T12:00:00.000Z".to_string();
+        store.create_session(recent.clone()).unwrap();
+
+        let rogue_dir = store.sessions_dir().join("rogue-duplicate");
+        fs::create_dir_all(&rogue_dir).unwrap();
+        let mut stale_duplicate = recent;
+        stale_duplicate.updated_at = "2026-06-01T12:00:00.000Z".to_string();
+        fs::write(
+            rogue_dir.join(SESSION_META_FILE),
+            serde_json::to_vec(&stale_duplicate).unwrap(),
+        )
+        .unwrap();
+
+        let result = store
+            .list_expired_session_trees("2026-07-01T12:00:00.000Z", &HashSet::new())
+            .unwrap();
+
+        assert!(result.trees.is_empty());
+        assert_eq!(result.inspected_session_count, 1);
+        assert_eq!(result.invalid_metadata_count, 1);
+        assert_eq!(result.protected_tree_count, 1);
+        assert!(store.has_session(&stale_duplicate.session_id));
+    }
+
+    #[test]
     fn list_treats_null_and_canonical_primary_worktrees_as_one_scope() {
         let (_temp, store) = store();
         let mut null_primary = metadata("null_primary");
@@ -5044,6 +5359,28 @@ mod tests {
         assert!(!store.has_session(&child.session_id));
         assert!(!store.has_session(&grandchild.session_id));
         assert!(store.has_session(&unrelated.session_id));
+    }
+
+    #[test]
+    fn deleting_a_known_tree_does_not_rescan_unrelated_metadata() {
+        let (_temp, store) = store();
+        let parent = metadata("known-parent");
+        store.create_session(parent.clone()).unwrap();
+        let mut child = metadata("known-child");
+        child.parent_session_id = Some(parent.session_id.clone());
+        store.create_session(child.clone()).unwrap();
+
+        let corrupt_dir = store.sessions_dir().join("corrupt-unrelated");
+        fs::create_dir_all(&corrupt_dir).unwrap();
+        fs::write(corrupt_dir.join(SESSION_META_FILE), b"not-json").unwrap();
+
+        store
+            .delete_session_tree(&[parent.session_id.clone(), child.session_id.clone()])
+            .unwrap();
+
+        assert!(!store.has_session(&parent.session_id));
+        assert!(!store.has_session(&child.session_id));
+        assert!(corrupt_dir.exists());
     }
 
     #[test]
@@ -5318,6 +5655,27 @@ mod tests {
         assert_eq!(
             history[0].runtime_session_id.as_ref().unwrap().0,
             "runtime_legacy_1"
+        );
+    }
+
+    #[test]
+    fn legacy_reader_deletes_retained_source_sessions() {
+        let connection = legacy_connection();
+        insert_legacy_session(
+            &connection,
+            "legacy-delete",
+            vec![message("message-1", "legacy")],
+        );
+        let reader = LegacyAiHistoryReader::new(&connection);
+
+        reader
+            .delete_sessions(&[SessionId("legacy-delete".to_string())])
+            .unwrap();
+
+        assert!(
+            !reader
+                .has_session(&SessionId("legacy-delete".to_string()))
+                .unwrap()
         );
     }
 

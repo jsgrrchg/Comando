@@ -2,6 +2,7 @@ import type { AppIdentity } from "@shared/app-identity";
 import type { AiReviewActionLogState } from "./ai-review-action-log";
 import type { AppTerminalSettings } from "./terminal-settings";
 import type { ChatFontFamily, EditorFontFamily } from "./typography";
+import type { ChatHistoryRetentionDays } from "./chat-history-retention";
 import type {
     NativeAppWorkspaceNavigation,
     NativeDurableWorkspace,
@@ -11,6 +12,7 @@ import type {
 
 export type { AppTerminalSettings } from "./terminal-settings";
 export type { ChatFontFamily, EditorFontFamily } from "./typography";
+export type { ChatHistoryRetentionDays } from "./chat-history-retention";
 
 export const IPC_CHANNELS = {
     getBootstrapSnapshot: "app:get-bootstrap-snapshot",
@@ -273,6 +275,7 @@ export const IPC_EVENTS = {
     aiRuntimeStatus: "ai:runtime-status",
     aiSessionSnapshot: "ai:session-snapshot",
     aiSessionEvent: "ai:session-event",
+    aiHistoryPruned: "ai:history-pruned",
     aiPromptQueue: "ai:prompt-queue",
     aiSessionStreamPort: "ai:session-stream-port",
     nativeBackendEvent: "native-backend:event",
@@ -325,9 +328,15 @@ export interface AppAiChatSettings {
     readonly reviewDiffZoom: number;
     readonly requireCmdEnterToSend: boolean;
     readonly screenshotRetentionSeconds: number;
-    readonly historyRetentionDays: number;
+    readonly historyRetentionDays: ChatHistoryRetentionDays;
     readonly contextUsageBarEnabled: boolean;
     readonly toolActivityDefaultExpansion: AiToolActivityDefaultExpansion;
+}
+
+export interface AiHistoryPrunedEvent {
+    readonly cutoff: string;
+    readonly deletedSessionIds: readonly string[];
+    readonly retentionDays: ChatHistoryRetentionDays;
 }
 
 export interface AppAppearanceSettings {
@@ -4510,6 +4519,9 @@ export interface ComandoApi {
     ) => () => void;
     onAiSessionEvent?: (
         listener: (event: AiSessionDomainEvent) => void,
+    ) => () => void;
+    onAiHistoryPruned?: (
+        listener: (event: AiHistoryPrunedEvent) => void,
     ) => () => void;
     onAiPromptQueue: (
         listener: (snapshot: AiPromptQueueSnapshot) => void,
