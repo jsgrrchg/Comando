@@ -19,6 +19,7 @@ import type {
 import type { SecretRecordPatch } from "@main/ai/secret-store";
 
 export interface SettingsGateway {
+    flush?(): Promise<void>;
     clearProjectSettings?(projectId: string): Promise<void> | void;
     runTransaction?(action: () => void): void;
     saveCodexAuth?(
@@ -43,6 +44,7 @@ export interface SettingsGateway {
     ): Promise<void>;
     loadSnapshot(): SettingsSnapshot;
     saveSnapshot(snapshot: SettingsSnapshot): void;
+    saveSnapshotNow?(snapshot: SettingsSnapshot): Promise<void>;
     loadAppAppearanceSettings(): AppAppearanceSettings;
     saveAppAppearanceSettings(settings: AppAppearanceSettings): void;
     loadAppEditorSettings(): AppEditorSettings;

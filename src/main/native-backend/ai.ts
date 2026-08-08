@@ -61,6 +61,7 @@ import {
     type NativeAiCloseSessionOutput,
     type NativeAiHistorySessionSummary,
     type NativeAiHistoryStorageHealth,
+    type NativeAiPruneSessionHistoryOutput,
     type NativeAiTranscriptCompatibilityCleanupResult,
     type NativeAiMigrateSessionHistoryOutput,
     type NativeAiLaunchRuntimeAuthOutput,
@@ -88,6 +89,8 @@ import {
 
 import { AI_SESSION_BUSY_MESSAGE } from "@shared/ai-errors";
 import type {
+    AiHistoryPruneInput,
+    AiHistoryPruneResult,
     AiReviewMutationResult,
     AiReviewSessionRpcInput,
     AiRuntimeSessionMapping,
@@ -714,6 +717,35 @@ export class NativeAiGateway implements NativeAiGatewayContract {
         }
         await this.#client.request("ai_delete_session", { sessionId });
         this.#forgetSession(sessionId);
+    }
+
+    async pruneSessionHistory(
+        input: AiHistoryPruneInput,
+    ): Promise<AiHistoryPruneResult> {
+        if (!this.#historyEnabled) {
+            return {
+                deletedRootIds: [],
+                deletedSessionIds: [],
+                failedRootIds: [],
+                inspectedSessionCount: 0,
+                protectedTreeCount: 0,
+                invalidMetadataCount: 0,
+                invalidTimestampCount: 0,
+                policyChanged: false,
+            };
+        }
+        const output = await this.#client.request<NativeAiPruneSessionHistoryOutput>(
+            "ai_prune_session_history",
+            {
+                cutoff: input.cutoff,
+                protectedSessionIds: input.protectedSessionIds,
+                retentionDays: input.retentionDays,
+            },
+        );
+        for (const sessionId of output.deletedSessionIds) {
+            this.#forgetSession(sessionId);
+        }
+        return output;
     }
 
     async renameSession(input: AiSessionRenameMutationInput): Promise<void> {

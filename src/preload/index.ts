@@ -11,6 +11,7 @@ import {
     type AppUpdateState,
     type AppBootstrapSnapshot,
     type AiHistorySessionSummary,
+    type AiHistoryPrunedEvent,
     type AiPromptQueueSnapshot,
     type AiQueuedPromptMutationInput,
     type AiSessionDomainEvent,
@@ -2003,6 +2004,20 @@ const comandoApi: ComandoApi = {
                     handleAiSessionEventFallback,
                 );
             }
+        };
+    },
+    onAiHistoryPruned: (listener) => {
+        const handleEvent = (
+            _event: Electron.IpcRendererEvent,
+            payload: AiHistoryPrunedEvent,
+        ) => {
+            listener(payload);
+        };
+
+        ipcRenderer.on(IPC_EVENTS.aiHistoryPruned, handleEvent);
+
+        return () => {
+            ipcRenderer.removeListener(IPC_EVENTS.aiHistoryPruned, handleEvent);
         };
     },
     onAiPromptQueue: (listener) => {

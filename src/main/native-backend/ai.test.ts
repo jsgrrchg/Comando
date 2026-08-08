@@ -945,6 +945,45 @@ describe("NativeAiGateway", () => {
         );
     });
 
+    it("routes history retention pruning and forgets deleted sessions", async () => {
+        const client = createClient();
+        client.request.mockImplementation(<T = unknown>(command: string): Promise<T> => {
+            if (command === "ai_prune_session_history") {
+                return Promise.resolve({
+                    deletedRootIds: ["session-1"],
+                    deletedSessionIds: ["session-1", "session-child"],
+                    failedRootIds: [],
+                    inspectedSessionCount: 2,
+                    protectedTreeCount: 0,
+                    invalidMetadataCount: 0,
+                    invalidTimestampCount: 0,
+                    policyChanged: false,
+                } as T);
+            }
+            return Promise.resolve(undefined as T);
+        });
+        const gateway = createGateway(client);
+
+        await expect(
+            gateway.pruneSessionHistory({
+                cutoff: "2026-08-01T12:00:00.000Z",
+                protectedSessionIds: ["session-live"],
+                retentionDays: 7,
+            }),
+        ).resolves.toMatchObject({
+            deletedSessionIds: ["session-1", "session-child"],
+        });
+
+        expect(client.request).toHaveBeenCalledWith(
+            "ai_prune_session_history",
+            {
+                cutoff: "2026-08-01T12:00:00.000Z",
+                protectedSessionIds: ["session-live"],
+                retentionDays: 7,
+            },
+        );
+    });
+
     it("exposes versioned paged transcript, payload and migration capabilities", async () => {
         const client = createClient();
         const tail = openTranscriptTail();

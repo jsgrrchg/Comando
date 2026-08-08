@@ -138,6 +138,23 @@ export interface AiSessionRetentionConfig {
     readonly maxHotSessionsPerWindow: number;
 }
 
+export interface AiHistoryPruneInput {
+    readonly cutoff: string;
+    readonly protectedSessionIds: readonly string[];
+    readonly retentionDays: number;
+}
+
+export interface AiHistoryPruneResult {
+    readonly deletedRootIds: readonly string[];
+    readonly deletedSessionIds: readonly string[];
+    readonly failedRootIds: readonly string[];
+    readonly inspectedSessionCount: number;
+    readonly protectedTreeCount: number;
+    readonly invalidMetadataCount: number;
+    readonly invalidTimestampCount: number;
+    readonly policyChanged: boolean;
+}
+
 export type AiSessionFreezeReason =
     | "budget"
     | "runtime_change"
@@ -166,6 +183,9 @@ export interface NativeAiGateway {
     closeOwnedByWindow(ownerWindowId: string): Promise<void> | void;
     closeSession(sessionId: string): Promise<void>;
     deleteSession(sessionId: string): Promise<void>;
+    pruneSessionHistory?(
+        input: AiHistoryPruneInput,
+    ): Promise<AiHistoryPruneResult>;
     countSessionHistoryByRuntime?(
         runtimeId: AiRuntimeId,
     ): Promise<number>;

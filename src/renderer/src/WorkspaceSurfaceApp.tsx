@@ -10,6 +10,7 @@ import type {
 } from "@shared/ipc";
 
 import { useSystemTheme } from "./app/hooks/use-system-theme";
+import { subscribeToAiHistoryPruned } from "./app/ai/historyRetentionEvents";
 import { parseWorkspaceSurfaceRendererDescriptor } from "./app/renderer-mode";
 import { setCachedAppEditorSettings } from "./app/settings/client";
 import {
@@ -146,6 +147,7 @@ function collectRuntimeWorkspaceSurfaceLeases(
 
 export function WorkspaceSurfaceApp() {
     useSystemTheme();
+    useEffect(() => subscribeToAiHistoryPruned(), []);
 
     const bootstrap = useAppStore((state) => state.bootstrap);
     const hydrateBootstrap = useAppStore((state) => state.hydrate);

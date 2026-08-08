@@ -248,6 +248,7 @@ impl NativeBackend {
             | "ai_list_session_runtime_mappings"
             | "ai_set_session_pinned"
             | "ai_delete_session"
+            | "ai_prune_session_history"
             | "ai_migrate_session_history"
             | "ai_get_history_storage_health"
             | "ai_capture_review_baseline"
@@ -407,6 +408,7 @@ impl NativeBackend {
             | "ai_list_session_runtime_mappings"
             | "ai_set_session_pinned"
             | "ai_delete_session"
+            | "ai_prune_session_history"
             | "ai_migrate_session_history"
             | "ai_get_history_storage_health"
             | "ai_capture_review_baseline"
@@ -2974,6 +2976,20 @@ impl NativeBackend {
                     Err(error) => error_only(request.id, error),
                 }
             }
+            "ai_prune_session_history" => {
+                let input =
+                    match parse_args::<native_ai::NativeAiPruneSessionHistoryInput>(&request) {
+                        Ok(input) => input,
+                        Err(error) => return error_only(request.id, error),
+                    };
+                match self.prune_ai_session_history(input) {
+                    Ok(output) => response_only(
+                        request.id,
+                        serde_json::to_value(output).expect("AI history prune output serializes"),
+                    ),
+                    Err(error) => error_only(request.id, error),
+                }
+            }
             "ai_rename_session" => {
                 let input = match parse_args::<native_ai::NativeAiRenameSessionInput>(&request) {
                     Ok(input) => input,
@@ -3286,6 +3302,89 @@ impl NativeBackend {
         store
             .delete_session(&session_id)
             .map_err(|error| error.to_native_error())
+    }
+
+    fn prune_ai_session_history(
+        &self,
+        input: native_ai::NativeAiPruneSessionHistoryInput,
+    ) -> Result<native_ai::NativeAiPruneSessionHistoryOutput, NativeError> {
+        let store = self.ai_history_store()?;
+        let persisted_retention_days = self
+            .persistence_store
+            .as_ref()
+            .and_then(|persistence_store| {
+                load_app_data_value(persistence_store, SETTINGS_SNAPSHOT_KEY).ok()
+            })
+            .and_then(|snapshot| {
+                snapshot
+                    .pointer("/aiChat/historyRetentionDays")
+                    .and_then(Value::as_u64)
+            })
+            .unwrap_or(0);
+        if persisted_retention_days != u64::from(input.retention_days) {
+            return Ok(native_ai::NativeAiPruneSessionHistoryOutput {
+                deleted_root_ids: Vec::new(),
+                deleted_session_ids: Vec::new(),
+                failed_root_ids: Vec::new(),
+                inspected_session_count: 0,
+                protected_tree_count: 0,
+                invalid_metadata_count: 0,
+                invalid_timestamp_count: 0,
+                policy_changed: true,
+            });
+        }
+        if let Some(persistence_store) = self.persistence_store.as_ref() {
+            let migrator = AiHistoryMigrator::new(
+                &store,
+                persistence_store.connection(),
+                Some(persistence_store.database_path().display().to_string()),
+            );
+            migrator
+                .copy_legacy_history_with_options(AiHistoryMigrationOptions {
+                    mode: AiHistoryMigrationMode::Copy,
+                    limit: None,
+                })
+                .map_err(|error| error.to_native_error())?;
+        }
+
+        let protected_session_ids = input
+            .protected_session_ids
+            .iter()
+            .map(|session_id| session_id.0.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let candidates = store
+            .list_expired_session_trees(&input.cutoff, &protected_session_ids)
+            .map_err(|error| error.to_native_error())?;
+        let mut deleted_root_ids = Vec::new();
+        let mut deleted_session_ids = Vec::new();
+        let mut failed_root_ids = Vec::new();
+
+        for tree in candidates.trees {
+            let legacy_delete =
+                self.persistence_store
+                    .as_ref()
+                    .map_or(Ok(()), |persistence_store| {
+                        LegacyAiHistoryReader::new(persistence_store.connection())
+                            .delete_sessions(&tree.session_ids)
+                    });
+            if legacy_delete.is_err() || store.delete_session_tree(&tree.session_ids).is_err() {
+                failed_root_ids.push(tree.root_session_id);
+                continue;
+            }
+            deleted_root_ids.push(tree.root_session_id);
+            deleted_session_ids.extend(tree.session_ids);
+        }
+
+        Ok(native_ai::NativeAiPruneSessionHistoryOutput {
+            deleted_root_ids,
+            deleted_session_ids,
+            failed_root_ids,
+            inspected_session_count: candidates.inspected_session_count,
+            protected_tree_count: candidates.protected_tree_count,
+            invalid_metadata_count: candidates.invalid_metadata_count,
+            invalid_timestamp_count: candidates.invalid_timestamp_count,
+            policy_changed: false,
+        })
     }
 
     fn rename_ai_session(
@@ -5721,6 +5820,42 @@ mod tests {
         assert_eq!(
             project_response.result.as_ref().unwrap()["snapshot"]["editor"]["fontSize"],
             14
+        );
+    }
+
+    #[test]
+    fn history_pruning_revalidates_the_persisted_retention_policy() {
+        let (_temp_dir, mut backend) = backend_with_memory_runtime_setup();
+        let save_settings = backend.handle_request(request(
+            "settings_save_snapshot",
+            json!({ "snapshot": { "aiChat": { "historyRetentionDays": 7 } } }),
+        ));
+        assert!(only_response(&save_settings).ok);
+
+        let stale_prune = backend.handle_request(request(
+            "ai_prune_session_history",
+            json!({
+                "cutoff": "2026-08-01T12:00:00.000Z",
+                "protectedSessionIds": [],
+                "retentionDays": 30,
+            }),
+        ));
+        assert_eq!(
+            only_response(&stale_prune).result.as_ref().unwrap()["policyChanged"],
+            true
+        );
+
+        let current_prune = backend.handle_request(request(
+            "ai_prune_session_history",
+            json!({
+                "cutoff": "2026-08-01T12:00:00.000Z",
+                "protectedSessionIds": [],
+                "retentionDays": 7,
+            }),
+        ));
+        assert_eq!(
+            only_response(&current_prune).result.as_ref().unwrap()["policyChanged"],
+            false
         );
     }
 

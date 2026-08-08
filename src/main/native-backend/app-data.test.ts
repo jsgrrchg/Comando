@@ -27,6 +27,87 @@ afterEach(() => {
 });
 
 describe("createNativeAppDataClient", () => {
+    it("normalizes unsupported chat history retention to Forever", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        const { createNativeAppDataClient } = await import("./app-data");
+        const client = await createNativeAppDataClient({
+            client: native.requester,
+            databaseFile,
+        });
+        const snapshot = client.settings.loadSnapshot();
+
+        client.settings.saveSnapshot({
+            ...snapshot,
+            aiChat: {
+                ...snapshot.aiChat!,
+                historyRetentionDays: -7,
+            } as never,
+        });
+
+        expect(
+            client.settings.loadAiChatSettings().historyRetentionDays,
+        ).toBe(0);
+        await client.close();
+    });
+
+    it("keeps the previous settings snapshot when a durable save fails", async () => {
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
+        tempDirs.push(tempDir);
+        const databaseFile = path.join(tempDir, "comando.sqlite");
+        new DatabaseSync(databaseFile).close();
+        const native = createFakeNativeRequester();
+        let rejectSettingsWrite = false;
+        const requester: NativeBackendRequester = {
+            request: <T = unknown>(
+                command: string,
+                args: Record<string, unknown> = {},
+            ): Promise<T> => {
+                if (
+                    rejectSettingsWrite &&
+                    command === "app_data_set_json" &&
+                    args.key === "settings.snapshot"
+                ) {
+                    rejectSettingsWrite = false;
+                    return Promise.reject(new Error("Injected settings write failure"));
+                }
+                return native.requester.request<T>(command, args);
+            },
+        };
+        const { createNativeAppDataClient } = await import("./app-data");
+        const client = await createNativeAppDataClient({
+            client: requester,
+            databaseFile,
+        });
+        const previous = client.settings.loadSnapshot();
+        rejectSettingsWrite = true;
+        const rejected = {
+            ...previous,
+            aiChat: {
+                ...previous.aiChat!,
+                historyRetentionDays: 7 as const,
+            },
+        };
+
+        await expect(client.settings.saveSnapshotNow!(rejected)).rejects.toThrow(
+            "Injected settings write failure",
+        );
+        expect(client.settings.loadAiChatSettings().historyRetentionDays).toBe(0);
+
+        await client.settings.saveSnapshotNow!({
+            ...previous,
+            aiChat: {
+                ...previous.aiChat!,
+                historyRetentionDays: 30,
+            },
+        });
+        expect(client.settings.loadAiChatSettings().historyRetentionDays).toBe(30);
+        await client.close();
+    });
+
     it("persists custom ACP CRUD without trusting renderer snapshots", async () => {
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "comando-app-data-"));
         tempDirs.push(tempDir);

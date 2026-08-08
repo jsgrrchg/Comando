@@ -110,6 +110,7 @@ import { createAiEnvironmentDiagnostics } from "./environment-diagnostics";
 import { AiPromptQueue } from "./prompt-queue";
 import { listOpenFileBuffers } from "./openFileBuffers";
 import {
+    type AiHistoryPruneResult,
     type AiReviewMutationResult,
     type AiReviewSessionContext,
     type AiRuntimeSessionMapping,
@@ -1416,6 +1417,52 @@ export class AiService {
             (await this.#nativeAi?.countSessionHistoryByRuntime?.(runtimeId)) ??
             0
         );
+    }
+
+    async pruneExpiredHistory(
+        cutoff: string,
+        retentionDays: number,
+    ): Promise<AiHistoryPruneResult> {
+        const nativeAi = this.#nativeAi;
+        if (!nativeAi?.pruneSessionHistory) {
+            return {
+                deletedRootIds: [],
+                deletedSessionIds: [],
+                failedRootIds: [],
+                inspectedSessionCount: 0,
+                protectedTreeCount: 0,
+                invalidMetadataCount: 0,
+                invalidTimestampCount: 0,
+                policyChanged: false,
+            };
+        }
+
+        const protectedSessionIds = new Set<string>([
+            ...this.#liveSessionContexts.keys(),
+            ...this.#freezingSessionIds,
+            ...this.#frozenSessionIds,
+            ...this.#retentionCloseEventSessionIds,
+            ...this.#transcriptRecoveryPromises.keys(),
+            ...this.#promptQueue.getSessionIdsWithQueuedWork(),
+        ]);
+        const result = await nativeAi.pruneSessionHistory({
+            cutoff,
+            protectedSessionIds: [...protectedSessionIds],
+            retentionDays,
+        });
+
+        for (const sessionId of result.deletedSessionIds) {
+            this.#deletedSessionIds.add(sessionId);
+            this.#frozenSessionIds.delete(sessionId);
+            this.#freezingSessionIds.delete(sessionId);
+            this.#retentionCloseEventSessionIds.delete(sessionId);
+            this.#forgetRetentionCloseRuntimeSessions(sessionId);
+            this.#nativeSessionIds.delete(sessionId);
+            this.#liveSnapshots.delete(sessionId);
+            this.#liveSessionTouches.delete(sessionId);
+            await this.#promptQueue.deleteSession(sessionId);
+        }
+        return result;
     }
 
     async setSessionPinned(

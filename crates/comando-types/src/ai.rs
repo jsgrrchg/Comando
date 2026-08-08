@@ -870,6 +870,28 @@ pub struct NativeAiDeleteSessionInput {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeAiPruneSessionHistoryInput {
+    pub cutoff: String,
+    pub retention_days: u16,
+    #[serde(default)]
+    pub protected_session_ids: Vec<SessionId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeAiPruneSessionHistoryOutput {
+    pub deleted_root_ids: Vec<SessionId>,
+    pub deleted_session_ids: Vec<SessionId>,
+    pub failed_root_ids: Vec<SessionId>,
+    pub inspected_session_count: usize,
+    pub protected_tree_count: usize,
+    pub invalid_metadata_count: usize,
+    pub invalid_timestamp_count: usize,
+    pub policy_changed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeAiRenameSessionInput {
     pub session_id: SessionId,
     pub title: String,

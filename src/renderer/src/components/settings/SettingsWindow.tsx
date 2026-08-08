@@ -32,6 +32,10 @@ import {
     CHAT_CONTENT_WIDTH_STEP,
 } from "@shared/chat-content-width";
 import {
+    CHAT_HISTORY_RETENTION_OPTIONS,
+    normalizeChatHistoryRetentionDays,
+} from "@shared/chat-history-retention";
+import {
     AI_CHAT_FONT_SIZE_MAX,
     AI_CHAT_FONT_SIZE_MIN,
     AI_COMPOSER_FONT_SIZE_MAX,
@@ -2583,6 +2587,25 @@ function AiChatContent({
 
     return (
         <div>
+            {state.error ? (
+                <div
+                    role="alert"
+                    style={{
+                        background:
+                            "color-mix(in srgb, var(--color-danger, #f87171) 10%, transparent)",
+                        border:
+                            "1px solid color-mix(in srgb, var(--color-danger, #f87171) 35%, transparent)",
+                        borderRadius: 6,
+                        color: "var(--color-text-primary)",
+                        fontSize: 11,
+                        lineHeight: 1.5,
+                        marginBottom: 10,
+                        padding: "8px 10px",
+                    }}
+                >
+                    {state.error}
+                </div>
+            ) : null}
             {showChat ? <SectionLabel>Chat</SectionLabel> : null}
             <SearchableRow
                 searchQuery={searchQuery}
@@ -2659,16 +2682,11 @@ function AiChatContent({
                 control={
                     <SelectField
                         value={state.historyRetentionDays}
-                        options={[
-                            { value: 0, label: "Forever" },
-                            { value: 1, label: "1 day" },
-                            { value: 7, label: "7 days" },
-                            { value: 30, label: "30 days" },
-                            { value: 90, label: "90 days" },
-                            { value: 365, label: "1 year" },
-                        ]}
+                        options={CHAT_HISTORY_RETENTION_OPTIONS}
                         onChange={(v) =>
-                            state.onHistoryRetentionChange?.(Number(v))
+                            state.onHistoryRetentionChange?.(
+                                normalizeChatHistoryRetentionDays(v),
+                            )
                         }
                     />
                 }
