@@ -103,6 +103,10 @@ import { TranscriptPayloadCache } from "@renderer/app/ai/transcriptPayloadCache"
 import { resolveTranscriptPrefetchBlockId } from "@renderer/app/ai/transcriptWindowNavigation";
 import { matchesTrackedFilePath } from "@renderer/app/ai/trackedFilePath";
 import {
+    AiSessionEventFrameBuffer,
+    isFrameBufferableAiSessionEvent,
+} from "@renderer/app/ai/aiSessionEventFrameBuffer";
+import {
     getChatPerformanceTimestamp,
     measureChatPerformance,
     measureChatPerformanceAsync,
@@ -451,22 +455,22 @@ interface AiStore {
 type SetAiState = typeof useAiStore.setState;
 type GetAiState = () => AiStore;
 
-type BufferedSessionDeltaEvent = Extract<
-    AiSessionDomainEvent,
-    { kind: "message-delta" | "thinking-delta" }
->;
-
-interface BufferedSessionDeltaBuffer {
-    readonly events: Map<string, BufferedSessionDeltaEvent>;
-    cancelScheduledFlush: (() => void) | null;
-    firstQueuedAt: number | null;
-}
-
-const bufferedSessionDeltasBySessionId = new Map<
-    string,
-    BufferedSessionDeltaBuffer
->();
-let isFlushingBufferedSessionDeltas = false;
+const sessionEventFrameBuffer = new AiSessionEventFrameBuffer({
+    apply: (event) => useAiStore.getState().applySessionEvent(event),
+    now: getChatPerformanceTimestamp,
+    onCoalesced: (event) => {
+        if (event.kind === "tool-activity") {
+            incrementChatPerformanceCounter("ai_stream_payloads_coalesced");
+        }
+    },
+    onFlush: ({ eventCount, firstQueuedAt, sessionId }) => {
+        recordChatPerformanceMetric("delta_buffer_wait_ms", {
+            durationMs: performance.now() - firstQueuedAt,
+            sessionId,
+            values: { payloadDepth: eventCount },
+        });
+    },
+});
 const AI_SESSION_RESYNC_SILENCE_MS = 20_000;
 const AI_SESSION_RESYNC_RETRY_DELAYS_MS = [20_000, 30_000, 45_000, 60_000];
 
@@ -479,133 +483,6 @@ interface AiSessionResyncWatchdog {
 }
 
 const aiSessionResyncWatchdogs = new Map<string, AiSessionResyncWatchdog>();
-
-function isSessionDeltaEvent(
-    event: AiSessionDomainEvent,
-): event is BufferedSessionDeltaEvent {
-    return event.kind === "message-delta" || event.kind === "thinking-delta";
-}
-
-function sessionDeltaBufferKey(event: BufferedSessionDeltaEvent): string {
-    return event.kind === "message-delta"
-        ? `${event.sessionId}\u{1f}${event.kind}\u{1f}${event.messageKind}\u{1f}${event.messageId}`
-        : `${event.sessionId}\u{1f}${event.kind}\u{1f}${event.messageId}`;
-}
-
-function mergeBufferedSessionDelta(
-    existing: BufferedSessionDeltaEvent,
-    incoming: BufferedSessionDeltaEvent,
-): BufferedSessionDeltaEvent {
-    const nextContent =
-        incoming.content.length >= existing.content.length
-            ? incoming.content
-            : `${existing.content}${incoming.delta}`;
-    return {
-        ...incoming,
-        content: nextContent,
-        delta: `${existing.delta}${incoming.delta}`,
-    };
-}
-
-function getBufferedSessionDeltaBuffer(
-    sessionId: string,
-): BufferedSessionDeltaBuffer {
-    const existing = bufferedSessionDeltasBySessionId.get(sessionId);
-    if (existing) {
-        return existing;
-    }
-
-    const buffer: BufferedSessionDeltaBuffer = {
-        cancelScheduledFlush: null,
-        events: new Map(),
-        firstQueuedAt: null,
-    };
-    bufferedSessionDeltasBySessionId.set(sessionId, buffer);
-    return buffer;
-}
-
-function scheduleBufferedSessionDeltaFlush(
-    sessionId: string,
-    buffer: BufferedSessionDeltaBuffer,
-    get: GetAiState,
-): void {
-    if (buffer.cancelScheduledFlush !== null) {
-        return;
-    }
-
-    const flush = () => {
-        const currentBuffer = bufferedSessionDeltasBySessionId.get(sessionId);
-        if (currentBuffer === buffer) {
-            currentBuffer.cancelScheduledFlush = null;
-        }
-        flushBufferedSessionDeltas(get, sessionId);
-    };
-    if (typeof globalThis.requestAnimationFrame === "function") {
-        const frameId = globalThis.requestAnimationFrame(flush);
-        buffer.cancelScheduledFlush = () => {
-            globalThis.cancelAnimationFrame(frameId);
-        };
-        return;
-    }
-
-    const timer = setTimeout(flush, 16);
-    buffer.cancelScheduledFlush = () => {
-        clearTimeout(timer);
-    };
-}
-
-function bufferSessionDeltaEvent(
-    event: BufferedSessionDeltaEvent,
-    get: GetAiState,
-): void {
-    const buffer = getBufferedSessionDeltaBuffer(event.sessionId);
-    const key = sessionDeltaBufferKey(event);
-    const existing = buffer.events.get(key);
-    if (buffer.firstQueuedAt === null) {
-        buffer.firstQueuedAt = getChatPerformanceTimestamp();
-    }
-    buffer.events.set(
-        key,
-        existing ? mergeBufferedSessionDelta(existing, event) : event,
-    );
-    scheduleBufferedSessionDeltaFlush(event.sessionId, buffer, get);
-}
-
-function flushBufferedSessionDeltas(get: GetAiState, sessionId: string): void {
-    const buffer = bufferedSessionDeltasBySessionId.get(sessionId);
-    if (!buffer || buffer.events.size === 0) {
-        return;
-    }
-
-    buffer.cancelScheduledFlush?.();
-    buffer.cancelScheduledFlush = null;
-    const events = Array.from(buffer.events.values());
-    const queuedAt = buffer.firstQueuedAt;
-    bufferedSessionDeltasBySessionId.delete(sessionId);
-    if (queuedAt !== null) {
-        recordChatPerformanceMetric("delta_buffer_wait_ms", {
-            durationMs: performance.now() - queuedAt,
-            sessionId,
-            values: { payloadDepth: events.length },
-        });
-    }
-    isFlushingBufferedSessionDeltas = true;
-    try {
-        for (const event of events) {
-            get().applySessionEvent(event);
-        }
-    } finally {
-        isFlushingBufferedSessionDeltas = false;
-    }
-}
-
-function resetBufferedSessionDeltas(): void {
-    for (const buffer of bufferedSessionDeltasBySessionId.values()) {
-        buffer.cancelScheduledFlush?.();
-    }
-    bufferedSessionDeltasBySessionId.clear();
-    isFlushingBufferedSessionDeltas = false;
-}
 
 function isAiSessionResyncWatchdogActive(snapshot: AiSessionSnapshot): boolean {
     return (
@@ -780,7 +657,7 @@ async function requestAiSessionResyncAfterSilence(
 }
 
 export function resetAiStoreRuntimeBuffersForTests(): void {
-    resetBufferedSessionDeltas();
+    sessionEventFrameBuffer.reset();
     resetAiSessionResyncWatchdogs();
     optimisticSnapshotMutationStates.clear();
     reviewDeltaHydrations.clear();
@@ -1327,14 +1204,20 @@ export const useAiStore = create<AiStore>((set, get) => ({
             activePromptMessageAlias,
         );
         if (
-            !isFlushingBufferedSessionDeltas &&
-            isSessionDeltaEvent(normalizedEvent)
+            normalizedEvent.kind === "tool-activity" &&
+            !sessionEventFrameBuffer.isFlushing
         ) {
-            bufferSessionDeltaEvent(normalizedEvent, get);
+            incrementChatPerformanceCounter("tool_activity_events_received");
+        }
+        if (
+            !sessionEventFrameBuffer.isFlushing &&
+            isFrameBufferableAiSessionEvent(normalizedEvent)
+        ) {
+            sessionEventFrameBuffer.buffer(normalizedEvent);
             return;
         }
-        if (!isSessionDeltaEvent(normalizedEvent)) {
-            flushBufferedSessionDeltas(get, normalizedEvent.sessionId);
+        if (!isFrameBufferableAiSessionEvent(normalizedEvent)) {
+            sessionEventFrameBuffer.flushSession(normalizedEvent.sessionId);
         }
 
         let syncedTitle: string | null = null;
@@ -1344,13 +1227,16 @@ export const useAiStore = create<AiStore>((set, get) => ({
                 sessionId: normalizedEvent.sessionId,
                 values: {
                     payloadDepth:
-                        bufferedSessionDeltasBySessionId.get(
+                        sessionEventFrameBuffer.pendingCount(
                             normalizedEvent.sessionId,
-                        )?.events.size ?? 0,
+                        ),
                 },
             },
             () =>
                 set((state) => {
+            if (normalizedEvent.kind === "tool-activity") {
+                incrementChatPerformanceCounter("tool_activity_store_applies");
+            }
             const session =
                 state.sessions[normalizedEvent.sessionId] ?? createSessionState();
             const existingCatalog =
@@ -1429,7 +1315,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
             update.kind === "snapshot"
                 ? update.snapshot.sessionId
                 : update.patch.sessionId;
-        flushBufferedSessionDeltas(get, sessionId);
+        sessionEventFrameBuffer.flushSession(sessionId);
         if (update.kind === "snapshot") {
             get().applySessionSnapshot(update.snapshot);
             return;
@@ -1599,7 +1485,7 @@ export const useAiStore = create<AiStore>((set, get) => ({
     },
 
     applySessionSnapshot: (snapshot) => {
-        flushBufferedSessionDeltas(get, snapshot.sessionId);
+        sessionEventFrameBuffer.flushSession(snapshot.sessionId);
         let syncedTitle: string | null = null;
         let shouldRefreshSealedTranscript = false;
         set((state) => {
