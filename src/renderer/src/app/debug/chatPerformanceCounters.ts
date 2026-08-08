@@ -26,7 +26,8 @@ export type ChatPerformanceCounter =
     | "transcript_payload_bytes"
     | "transcript_payload_ipc_count"
     | "tool_payload_bytes_loaded"
-    | "tool_payloads_requested";
+    | "tool_payloads_requested"
+    | "workspace_presence_publishes";
 
 export type ChatPerformanceCounterSnapshot = Readonly<
     Record<ChatPerformanceCounter, number>
@@ -59,6 +60,7 @@ const EMPTY_COUNTERS: ChatPerformanceCounterSnapshot = {
     transcript_payload_ipc_count: 0,
     tool_payload_bytes_loaded: 0,
     tool_payloads_requested: 0,
+    workspace_presence_publishes: 0,
 };
 
 let counters: Record<ChatPerformanceCounter, number> = { ...EMPTY_COUNTERS };

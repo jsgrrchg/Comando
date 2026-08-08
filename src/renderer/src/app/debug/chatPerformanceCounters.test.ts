@@ -77,6 +77,7 @@ describe("chatPerformanceCounters", () => {
             transcript_payload_ipc_count: 0,
             tool_payload_bytes_loaded: 0,
             tool_payloads_requested: 0,
+            workspace_presence_publishes: 0,
         });
     });
 });

@@ -111,6 +111,7 @@ import {
     updateWorkspaceActiveFilePaths,
     type WorkspaceActiveFilePaths,
 } from "./app/workspace/surface-active-file";
+import { workspaceSurfaceAgentPresenceSignature } from "./app/workspace/surface-agent-presence";
 import { findPaneById } from "./app/workspace/tree";
 import {
     compactGitTreeEntriesByAncestor,
@@ -954,7 +955,12 @@ export function WorkspaceHostApp() {
         }
         return api.onWorkspaceSurfaceAgentPresenceChanged((presence) => {
             setAgentPresenceByContext((current) => {
-                if (current[presence.contextKey] === presence) {
+                const existing = current[presence.contextKey];
+                if (
+                    existing &&
+                    workspaceSurfaceAgentPresenceSignature(existing) ===
+                        workspaceSurfaceAgentPresenceSignature(presence)
+                ) {
                     return current;
                 }
                 return {
