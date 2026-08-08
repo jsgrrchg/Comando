@@ -1,6 +1,8 @@
 import type {
     AiFileDiff,
     AiMessage,
+    AiRuntimeId,
+    AiSessionToolActivityEvent,
     AiToolActivity,
 } from "../ipc";
 
@@ -24,8 +26,146 @@ export interface ChatLoadFixture {
     readonly sessions: readonly ChatLoadSessionFixture[];
 }
 
+export interface TerminalStreamPressureScenario {
+    readonly chunkBytes: number;
+    readonly chunkCount: number;
+    readonly durationMs: number;
+    readonly runtimeId: AiRuntimeId;
+    readonly sessionId?: string;
+    readonly terminalOutputLimitBytes?: number;
+    readonly toolCallId?: string;
+}
+
+export interface TerminalStreamPressureFixture {
+    readonly chunks: readonly string[];
+    readonly diagnostic: {
+        readonly chunkBytes: number;
+        readonly chunkCount: number;
+        readonly durationMs: number;
+        readonly eventCount: number;
+        readonly finalOutputBytes: number;
+    };
+    readonly events: readonly AiSessionToolActivityEvent[];
+    readonly expectedFinalOutput: string;
+}
+
 const FIXTURE_EPOCH_MS = Date.UTC(2026, 0, 1, 0, 0, 0);
 const ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789";
+const DEFAULT_TERMINAL_OUTPUT_LIMIT_BYTES = 10_000;
+
+export function createTerminalStreamPressureFixture(
+    input: TerminalStreamPressureScenario,
+): TerminalStreamPressureFixture {
+    const chunkCount = normalizeFixtureCount(input.chunkCount);
+    const chunkBytes = normalizeFixtureCount(input.chunkBytes);
+    const durationMs = normalizeFixtureCount(input.durationMs);
+    const terminalOutputLimitBytes = normalizeFixtureCount(
+        input.terminalOutputLimitBytes ?? DEFAULT_TERMINAL_OUTPUT_LIMIT_BYTES,
+    );
+    const sessionId = input.sessionId ?? "terminal-pressure-session";
+    const toolCallId = input.toolCallId ?? "terminal-pressure-tool";
+    const random = createSeededChatLoadRandom(0x51deca7);
+    const chunks = Array.from({ length: chunkCount }, () =>
+        createSizedText(random, chunkBytes),
+    );
+    let terminalOutput = "";
+    const events: AiSessionToolActivityEvent[] = [
+        createTerminalPressureEvent({
+            input,
+            sessionId,
+            status: "in_progress",
+            terminalOutput: null,
+            timestampMs: 0,
+            toolCallId,
+        }),
+    ];
+
+    chunks.forEach((chunk, index) => {
+        terminalOutput = `${terminalOutput}${chunk}`.slice(
+            -terminalOutputLimitBytes,
+        );
+        events.push(
+            createTerminalPressureEvent({
+                input,
+                sessionId,
+                status: "in_progress",
+                terminalOutput,
+                timestampMs:
+                    chunkCount === 0
+                        ? 0
+                        : Math.floor(((index + 1) * durationMs) / chunkCount),
+                toolCallId,
+            }),
+        );
+    });
+    events.push(
+        createTerminalPressureEvent({
+            exitCode: 0,
+            input,
+            sessionId,
+            status: "completed",
+            terminalOutput,
+            timestampMs: durationMs + 1,
+            toolCallId,
+        }),
+    );
+
+    return {
+        chunks,
+        diagnostic: {
+            chunkBytes,
+            chunkCount,
+            durationMs,
+            eventCount: events.length,
+            finalOutputBytes: terminalOutput.length,
+        },
+        events,
+        expectedFinalOutput: terminalOutput,
+    };
+}
+
+function createTerminalPressureEvent(input: {
+    readonly exitCode?: number;
+    readonly input: TerminalStreamPressureScenario;
+    readonly sessionId: string;
+    readonly status: AiToolActivity["status"];
+    readonly terminalOutput: string | null;
+    readonly timestampMs: number;
+    readonly toolCallId: string;
+}): AiSessionToolActivityEvent {
+    const updatedAt = new Date(FIXTURE_EPOCH_MS + input.timestampMs).toISOString();
+    return {
+        activity: {
+            createdAt: new Date(FIXTURE_EPOCH_MS).toISOString(),
+            diffs: [],
+            exitCode: input.exitCode ?? null,
+            id: input.toolCallId,
+            kind: "shell",
+            locations: [],
+            rawInputJson: null,
+            rawOutputJson: null,
+            sessionId: input.sessionId,
+            status: input.status,
+            summary:
+                input.status === "completed" ? "Command completed" : null,
+            terminalOutput: input.terminalOutput,
+            title: "Run command",
+            updatedAt,
+        },
+        kind: "tool-activity",
+        origin: "live",
+        parentSessionId: null,
+        runtimeId: input.input.runtimeId,
+        runtimeSessionId: `${input.input.runtimeId}-runtime-session`,
+        sessionId: input.sessionId,
+        updatedAt,
+    };
+}
+
+function normalizeFixtureCount(value: number): number {
+    if (!Number.isFinite(value)) return 0;
+    return Math.min(1_000_000, Math.max(0, Math.floor(value)));
+}
 
 export function createChatLoadFixture(
     input: ChatLoadScenario,

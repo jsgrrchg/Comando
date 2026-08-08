@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { createChatLoadFixture } from "./chatLoadFactories";
+import {
+    createChatLoadFixture,
+    createTerminalStreamPressureFixture,
+} from "./chatLoadFactories";
 import {
     createChatLoadDiagnosticSummary,
     normalizeChatLoadScenario,
@@ -146,5 +149,48 @@ describe("chatLoadScenario", () => {
                 .filter((tool) => tool.diffs.length > 0)
                 .every((tool) => tool.kind === "edit"),
         ).toBe(true);
+    });
+
+    it("generates a provider-independent terminal pressure stream", () => {
+        for (const runtimeId of ["codex", "claude", "custom:fixture"] as const) {
+            const fixture = createTerminalStreamPressureFixture({
+                chunkBytes: 7,
+                chunkCount: 10_000,
+                durationMs: 10_000,
+                runtimeId,
+            });
+
+            expect(fixture.chunks).toHaveLength(10_000);
+            expect(fixture.events).toHaveLength(10_002);
+            expect(fixture.events[0]?.activity.status).toBe("in_progress");
+            expect(fixture.events.at(-1)?.activity).toMatchObject({
+                exitCode: 0,
+                status: "completed",
+                terminalOutput: fixture.expectedFinalOutput,
+            });
+            expect(fixture.expectedFinalOutput).toHaveLength(10_000);
+            expect(fixture.diagnostic).toEqual({
+                chunkBytes: 7,
+                chunkCount: 10_000,
+                durationMs: 10_000,
+                eventCount: 10_002,
+                finalOutputBytes: 10_000,
+            });
+        }
+    });
+
+    it("keeps terminal pressure diagnostics numeric and content-free", () => {
+        const fixture = createTerminalStreamPressureFixture({
+            chunkBytes: 32,
+            chunkCount: 8,
+            durationMs: 250,
+            runtimeId: "opencode",
+        });
+        const diagnostic = JSON.stringify(fixture.diagnostic);
+
+        expect(Object.values(fixture.diagnostic).every(Number.isFinite)).toBe(true);
+        expect(diagnostic).not.toContain(fixture.chunks[0] ?? "fixture-content");
+        expect(diagnostic).not.toContain("terminal-pressure-session");
+        expect(diagnostic).not.toContain("Run command");
     });
 });
