@@ -626,7 +626,9 @@ impl AiHistoryStore {
                 error,
             )
         })?;
-        self.atomic_write_json(&path, &AiToolActivityDetail { hash, payload })
+        self.atomic_write_json(&path, &AiToolActivityDetail { hash, payload })?;
+        self.work_metrics.record_tool_activity_detail_write();
+        Ok(())
     }
 
     pub fn load_tool_activity_detail(
@@ -4560,6 +4562,26 @@ mod tests {
             store.work_metrics(),
             AiStorageWorkMetricsSnapshot::default()
         );
+    }
+
+    #[test]
+    fn storage_work_metrics_count_only_changed_tool_activity_details() {
+        let (_temp, store) = store();
+        let session_id = SessionId("tool-detail-work-metrics".to_string());
+        store.create_session(metadata(&session_id.0)).unwrap();
+        store.set_work_metrics_enabled(true);
+
+        for terminal_output in ["first", "first", "second"] {
+            store
+                .store_tool_activity_detail(
+                    &session_id,
+                    "tool-1",
+                    json!({ "terminalOutput": terminal_output }),
+                )
+                .unwrap();
+        }
+
+        assert_eq!(store.work_metrics().tool_activity_detail_write_count, 2);
     }
 
     fn legacy_connection() -> Connection {
