@@ -1743,7 +1743,12 @@ function sendAiSessionStreamPayload(
     payload: AiSessionStreamPayload,
 ): boolean {
     const message = nextAiSessionStreamMessage(state, payload);
-    preserveAiSessionStreamPayload(windowId, state, payload, message.seq);
+    const preservedForRecovery = preserveAiSessionStreamPayload(
+        windowId,
+        state,
+        payload,
+        message.seq,
+    );
     state.pendingInFlightPayloadSeqs.add(message.seq);
     state.peakInFlightPayloadCount = Math.max(
         state.peakInFlightPayloadCount,
@@ -1756,7 +1761,9 @@ function sendAiSessionStreamPayload(
     } catch (error) {
         debugBenignError("aiSessionStreamPort.postMessage", error);
         recoverAiSessionStreamPort(windowId, "post-error");
-        return false;
+        // Only preserved payloads were included in recovery; other events need
+        // the caller's direct IPC fallback.
+        return preservedForRecovery;
     }
 }
 
@@ -1797,7 +1804,7 @@ function preserveAiSessionStreamPayload(
     state: AiSessionStreamPortState,
     payload: AiSessionStreamPayload,
     seq: number,
-): void {
+): boolean {
     const result = rememberAiSessionStreamPayloadForRecovery({
         maxPayloads: AI_SESSION_STREAM_MAX_PRESERVED_PAYLOADS,
         payload,
@@ -1805,7 +1812,7 @@ function preserveAiSessionStreamPayload(
         seq,
     });
     if (!result.droppedOldest) {
-        return;
+        return result.preserved;
     }
 
     debugBenignError(
@@ -1818,6 +1825,7 @@ function preserveAiSessionStreamPayload(
             }),
         ),
     );
+    return result.preserved;
 }
 
 function sendAiSessionStreamHeartbeat(windowId: string): void {
@@ -2000,7 +2008,9 @@ function postAiSessionStreamPayload(
             ),
         );
         recoverAiSessionStreamPort(windowId, "post-error");
-        return false;
+        // An inserted payload is part of recovery; only a rejected payload
+        // still needs the caller's direct IPC fallback.
+        return result.preserved;
     }
 
     if (sendAiSessionStreamPayload(windowId, state, payload)) {

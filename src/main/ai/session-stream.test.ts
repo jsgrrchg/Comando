@@ -570,6 +570,139 @@ describe("AI session stream helpers", () => {
         });
     });
 
+    it("keeps one delivery slot while patch criticity changes", () => {
+        const queue: AiSessionStreamDeliveryQueue = new Map();
+        const revisions = [
+            createPatchUpdateWithChanges({ title: "A" }),
+            createPatchUpdateWithChanges({ status: "idle", title: "B" }),
+            createPatchUpdateWithChanges({ title: "C" }),
+        ];
+
+        for (const [order, payload] of revisions.entries()) {
+            rememberAiSessionStreamPayloadForDelivery({
+                maxPayloads: 10,
+                order,
+                payload,
+                queue,
+            });
+        }
+
+        expect(queue).toHaveLength(1);
+        expect(takeNextAiSessionStreamDelivery(queue)?.payload).toEqual(
+            createPatchUpdateWithChanges({ status: "idle", title: "C" }),
+        );
+    });
+
+    it("keeps one delivery slot while snapshot criticity changes", () => {
+        const queue: AiSessionStreamDeliveryQueue = new Map();
+        const idle = createSnapshotUpdate("idle");
+        const streaming = createSnapshotUpdate("streaming");
+
+        rememberAiSessionStreamPayloadForDelivery({
+            maxPayloads: 10,
+            order: 0,
+            payload: idle,
+            queue,
+        });
+        rememberAiSessionStreamPayloadForDelivery({
+            maxPayloads: 10,
+            order: 1,
+            payload: streaming,
+            queue,
+        });
+
+        expect(queue).toHaveLength(1);
+        expect(takeNextAiSessionStreamDelivery(queue)?.payload).toEqual(
+            streaming,
+        );
+    });
+
+    it("prioritizes critical work across sessions without overtaking same-session deltas", () => {
+        const queue: AiSessionStreamDeliveryQueue = new Map();
+        const otherSessionDelta = {
+            ...createVisibleTranscriptEvent("message-delta"),
+            sessionId: "session-other",
+        } as AiSessionStreamPayload;
+        const sameSessionDelta = createVisibleTranscriptEvent("message-delta");
+        const completion = createCompletedEvent("message-completed");
+
+        for (const [order, payload] of [
+            otherSessionDelta,
+            sameSessionDelta,
+            completion,
+        ].entries()) {
+            rememberAiSessionStreamPayloadForDelivery({
+                maxPayloads: 10,
+                order,
+                payload,
+                queue,
+            });
+        }
+
+        expect(takeNextAiSessionStreamDelivery(queue)?.payload).toEqual(
+            sameSessionDelta,
+        );
+        expect(takeNextAiSessionStreamDelivery(queue)?.payload).toEqual(
+            completion,
+        );
+        expect(takeNextAiSessionStreamDelivery(queue)?.payload).toEqual(
+            otherSessionDelta,
+        );
+    });
+
+    it("recovers a failed posted payload exactly once", () => {
+        const payload = {
+            ...BASE_EVENT,
+            activity: createToolActivity(),
+            kind: "tool-activity",
+        } satisfies AiSessionStreamPayload;
+        const recoveryQueue: AiSessionStreamPreservationQueue = new Map();
+        const result = rememberAiSessionStreamPayloadForRecovery({
+            maxPayloads: 10,
+            payload,
+            queue: recoveryQueue,
+            seq: 7,
+        });
+        const recovered = buildAiSessionStreamRecoveryFallbackPayloads({
+            pendingPreservedPayloads: [...recoveryQueue.values()],
+            resyncSnapshots: [],
+        });
+        const callerFallback = result.preserved ? [] : [payload];
+
+        expect([...recovered, ...callerFallback]).toEqual([payload]);
+    });
+
+    it("recovers an overflow-inserted payload exactly once", () => {
+        const queue: AiSessionStreamDeliveryQueue = new Map();
+        rememberAiSessionStreamPayloadForDelivery({
+            maxPayloads: 1,
+            order: 0,
+            payload: {
+                ...createStatusEvent("streaming"),
+                sessionId: "session-other",
+            },
+            queue,
+        });
+        const payload = createStatusEvent("idle");
+        const result = rememberAiSessionStreamPayloadForDelivery({
+            maxPayloads: 1,
+            order: 1,
+            payload,
+            queue,
+        });
+        const recovered = buildAiSessionStreamRecoveryFallbackPayloads({
+            pendingPreservedPayloads: [...queue.values()].map((pending) => ({
+                payload: pending.payload,
+                seq: pending.order,
+            })),
+            resyncSnapshots: [],
+        });
+        const callerFallback = result.preserved ? [] : [payload];
+
+        expect(result.droppedOldest).toBe(true);
+        expect([...recovered, ...callerFallback]).toEqual([payload]);
+    });
+
     it("evicts noncritical pending work before terminal state", () => {
         const queue: AiSessionStreamDeliveryQueue = new Map();
         for (let index = 0; index < 2; index += 1) {

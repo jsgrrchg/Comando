@@ -181,6 +181,14 @@ export function getAiSessionStreamPreservationKey(
 export function getAiSessionStreamDeliveryKey(
     payload: AiSessionStreamPayload,
 ): string {
+    // Session updates must keep one stable slot even when their status changes
+    // whether the payload is currently classified as critical.
+    if (payload.kind === "patch") {
+        return `${payload.patch.sessionId}:patch`;
+    }
+    if (payload.kind === "snapshot") {
+        return `${payload.snapshot.sessionId}:snapshot`;
+    }
     const preservedKey = getAiSessionStreamPreservationKey(payload);
     if (preservedKey !== null) return preservedKey;
     if (payload.kind === "image-generation") {
@@ -195,9 +203,7 @@ export function getAiSessionStreamDeliveryKey(
     if (payload.kind === "subagent-breadcrumb") {
         return `${payload.sessionId}:${payload.childSessionId}:${payload.kind}`;
     }
-    return isAiSessionUpdate(payload)
-        ? `${payload.kind}:${payload.kind === "patch" ? payload.patch.sessionId : payload.snapshot.sessionId}`
-        : `${payload.sessionId}:${payload.kind}`;
+    return `${payload.sessionId}:${payload.kind}`;
 }
 
 export function rememberAiSessionStreamPayloadForDelivery(input: {
@@ -268,16 +274,50 @@ export function rememberAiSessionStreamPayloadForDelivery(input: {
 export function takeNextAiSessionStreamDelivery(
     queue: AiSessionStreamDeliveryQueue,
 ): PendingAiSessionStreamDelivery | null {
-    let nextKey: string | null = null;
-    let next: PendingAiSessionStreamDelivery | null = null;
+    let oldestKey: string | null = null;
+    let oldest: PendingAiSessionStreamDelivery | null = null;
+    let criticalKey: string | null = null;
+    let critical: PendingAiSessionStreamDelivery | null = null;
     for (const [key, candidate] of queue) {
-        if (!next || candidate.order < next.order) {
-            nextKey = key;
-            next = candidate;
+        if (!oldest || candidate.order < oldest.order) {
+            oldestKey = key;
+            oldest = candidate;
+        }
+        if (candidate.critical && (!critical || candidate.order < critical.order)) {
+            criticalKey = key;
+            critical = candidate;
         }
     }
+    let dependencyKey: string | null = null;
+    let dependency: PendingAiSessionStreamDelivery | null = null;
+    if (critical) {
+        const criticalSessionId = getAiSessionStreamPayloadSessionId(
+            critical.payload,
+        );
+        for (const [key, candidate] of queue) {
+            if (
+                candidate.order < critical.order &&
+                getAiSessionStreamPayloadSessionId(candidate.payload) ===
+                    criticalSessionId &&
+                (!dependency || candidate.order < dependency.order)
+            ) {
+                dependencyKey = key;
+                dependency = candidate;
+            }
+        }
+    }
+    const nextKey = dependencyKey ?? criticalKey ?? oldestKey;
+    const next = dependency ?? critical ?? oldest;
     if (nextKey !== null) queue.delete(nextKey);
     return next;
+}
+
+function getAiSessionStreamPayloadSessionId(
+    payload: AiSessionStreamPayload,
+): string {
+    if (payload.kind === "patch") return payload.patch.sessionId;
+    if (payload.kind === "snapshot") return payload.snapshot.sessionId;
+    return payload.sessionId;
 }
 
 export function releaseAcknowledgedAiSessionStreamPayloads(
