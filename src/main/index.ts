@@ -15,7 +15,6 @@ import {
     type AiRuntimeStatus,
     type AiPromptQueueSnapshot,
     type AiSessionDomainEvent,
-    type AiSessionStreamMessage,
     type AiSessionStreamPayload,
     type AiSessionUpdate,
     type AppBootstrapSnapshot,
@@ -44,18 +43,10 @@ import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import type { NormalizedSessionCatalogPayload } from "./ai/session-core";
 import {
-    AI_SESSION_STREAM_MAX_IN_FLIGHT,
-    AI_SESSION_STREAM_MAX_PENDING_PAYLOADS,
+    AiSessionStreamController,
     buildAiSessionStreamRecoveryFallbackPayloads,
     buildAiSessionStreamRecoveryDiagnostic,
-    isAiSessionStreamAckStale,
     isAiSessionUpdate,
-    rememberAiSessionStreamPayloadForDelivery,
-    rememberAiSessionStreamPayloadForRecovery,
-    releaseAcknowledgedAiSessionStreamPayloads,
-    takeNextAiSessionStreamDelivery,
-    type AiSessionStreamDeliveryQueue,
-    type AiSessionStreamPreservationQueue,
     type AiSessionStreamRecoveryReason,
 } from "./ai/session-stream";
 import { GitHubService } from "./github/service";
@@ -181,20 +172,9 @@ const AI_SESSION_STREAM_HEARTBEAT_MS = 1_000;
 const AI_SESSION_STREAM_MAX_PRESERVED_PAYLOADS = 100;
 
 type AiSessionStreamPortState = {
-    coalescedPendingPayloadCount: number;
+    readonly controller: AiSessionStreamController;
     readonly port: MessagePortMain;
     heartbeatTimer: ReturnType<typeof setInterval> | null;
-    lastAckAt: number;
-    lastAckSeq: number;
-    lastSentAt: number;
-    lastSentSeq: number;
-    nextPendingOrder: number;
-    nextSeq: number;
-    peakInFlightPayloadCount: number;
-    readonly pendingDeliveryPayloads: AiSessionStreamDeliveryQueue;
-    readonly pendingInFlightPayloadSeqs: Set<number>;
-    readonly pendingAckSentAtBySeq: Map<number, number>;
-    readonly pendingPreservedPayloads: AiSessionStreamPreservationQueue;
     staleTimer: ReturnType<typeof setTimeout> | null;
     readonly runtimeOwnerId: string;
     readonly webContents: WebContents;
@@ -1630,21 +1610,26 @@ function attachAiSessionStream(
         webContents.postMessage(IPC_EVENTS.aiSessionStreamPort, null, [
             channel.port2,
         ]);
-        const now = Date.now();
+        const controller = new AiSessionStreamController({
+            maxPreservedPayloads: AI_SESSION_STREAM_MAX_PRESERVED_PAYLOADS,
+            onMessageSent: () => {
+                scheduleAiSessionStreamStaleCheck(subscriberId);
+            },
+            onRecovery: ({ additionalPayloads, reason }) => {
+                recoverAiSessionStreamPort(
+                    subscriberId,
+                    reason,
+                    additionalPayloads,
+                );
+            },
+            postMessage: (message) => {
+                channel.port1.postMessage(message);
+            },
+            staleMs: AI_SESSION_STREAM_ACK_STALE_MS,
+        });
         const state: AiSessionStreamPortState = {
-            coalescedPendingPayloadCount: 0,
+            controller,
             heartbeatTimer: null,
-            lastAckAt: now,
-            lastAckSeq: 0,
-            lastSentAt: now,
-            lastSentSeq: 0,
-            nextPendingOrder: 1,
-            nextSeq: 1,
-            peakInFlightPayloadCount: 0,
-            pendingAckSentAtBySeq: new Map(),
-            pendingDeliveryPayloads: new Map(),
-            pendingInFlightPayloadSeqs: new Set(),
-            pendingPreservedPayloads: new Map(),
             port: channel.port1,
             runtimeOwnerId,
             staleTimer: null,
@@ -1705,127 +1690,7 @@ function handleAiSessionStreamPortMessage(
         return;
     }
 
-    state.lastAckAt = Date.now();
-    state.lastAckSeq = Math.max(state.lastAckSeq, candidate.seq);
-    // ACKs are exact so a later ping cannot hide a failed payload dispatch.
-    state.pendingAckSentAtBySeq.delete(candidate.seq);
-    releaseAcknowledgedAiSessionStreamPayloads(
-        state.pendingInFlightPayloadSeqs,
-        candidate.seq,
-    );
-    for (const [key, pendingPayload] of state.pendingPreservedPayloads) {
-        if (pendingPayload.seq === candidate.seq) {
-            state.pendingPreservedPayloads.delete(key);
-        }
-    }
-    drainPendingAiSessionStreamPayloads(windowId, state);
-}
-
-function nextAiSessionStreamMessage(
-    state: AiSessionStreamPortState,
-    payload: AiSessionStreamPayload,
-): AiSessionStreamMessage {
-    const seq = state.nextSeq;
-    state.nextSeq += 1;
-    state.lastSentAt = Date.now();
-    state.lastSentSeq = seq;
-    state.pendingAckSentAtBySeq.set(seq, state.lastSentAt);
-    return {
-        payload,
-        seq,
-        type: "payload",
-    };
-}
-
-function sendAiSessionStreamPayload(
-    windowId: string,
-    state: AiSessionStreamPortState,
-    payload: AiSessionStreamPayload,
-): boolean {
-    const message = nextAiSessionStreamMessage(state, payload);
-    const preservedForRecovery = preserveAiSessionStreamPayload(
-        windowId,
-        state,
-        payload,
-        message.seq,
-    );
-    state.pendingInFlightPayloadSeqs.add(message.seq);
-    state.peakInFlightPayloadCount = Math.max(
-        state.peakInFlightPayloadCount,
-        state.pendingInFlightPayloadSeqs.size,
-    );
-    try {
-        state.port.postMessage(message);
-        scheduleAiSessionStreamStaleCheck(windowId);
-        return true;
-    } catch (error) {
-        debugBenignError("aiSessionStreamPort.postMessage", error);
-        recoverAiSessionStreamPort(windowId, "post-error");
-        // Only preserved payloads were included in recovery; other events need
-        // the caller's direct IPC fallback.
-        return preservedForRecovery;
-    }
-}
-
-function drainPendingAiSessionStreamPayloads(
-    windowId: string,
-    state: AiSessionStreamPortState,
-): void {
-    while (
-        aiSessionStreamPorts.get(windowId) === state &&
-        state.pendingInFlightPayloadSeqs.size <
-            AI_SESSION_STREAM_MAX_IN_FLIGHT
-    ) {
-        const pending = takeNextAiSessionStreamDelivery(
-            state.pendingDeliveryPayloads,
-        );
-        if (!pending) return;
-        if (!sendAiSessionStreamPayload(windowId, state, pending.payload)) return;
-    }
-}
-
-function nextAiSessionStreamPing(
-    state: AiSessionStreamPortState,
-): AiSessionStreamMessage {
-    const seq = state.nextSeq;
-    state.nextSeq += 1;
-    state.lastSentAt = Date.now();
-    state.lastSentSeq = seq;
-    state.pendingAckSentAtBySeq.set(seq, state.lastSentAt);
-    return {
-        sentAt: state.lastSentAt,
-        seq,
-        type: "ping",
-    };
-}
-
-function preserveAiSessionStreamPayload(
-    windowId: string,
-    state: AiSessionStreamPortState,
-    payload: AiSessionStreamPayload,
-    seq: number,
-): boolean {
-    const result = rememberAiSessionStreamPayloadForRecovery({
-        maxPayloads: AI_SESSION_STREAM_MAX_PRESERVED_PAYLOADS,
-        payload,
-        queue: state.pendingPreservedPayloads,
-        seq,
-    });
-    if (!result.droppedOldest) {
-        return result.preserved;
-    }
-
-    debugBenignError(
-        "aiSessionStreamPort.preservedPayloads",
-        new Error(
-            JSON.stringify({
-                limit: AI_SESSION_STREAM_MAX_PRESERVED_PAYLOADS,
-                pendingPreservedPayloadCount: result.pendingCount,
-                windowId,
-            }),
-        ),
-    );
-    return result.preserved;
+    state.controller.acknowledge(candidate.seq);
 }
 
 function sendAiSessionStreamHeartbeat(windowId: string): void {
@@ -1834,24 +1699,7 @@ function sendAiSessionStreamHeartbeat(windowId: string): void {
         return;
     }
 
-    if (
-        isAiSessionStreamAckStale(
-            state,
-            Date.now(),
-            AI_SESSION_STREAM_ACK_STALE_MS,
-        )
-    ) {
-        recoverAiSessionStreamPort(windowId, "heartbeat-stale");
-        return;
-    }
-
-    try {
-        state.port.postMessage(nextAiSessionStreamPing(state));
-        scheduleAiSessionStreamStaleCheck(windowId);
-    } catch (error) {
-        debugBenignError("aiSessionStreamPort.heartbeat", error);
-        recoverAiSessionStreamPort(windowId, "heartbeat-error");
-    }
+    state.controller.postHeartbeat();
 }
 
 function scheduleAiSessionStreamStaleCheck(windowId: string): void {
@@ -1865,14 +1713,7 @@ function scheduleAiSessionStreamStaleCheck(windowId: string): void {
     }
     state.staleTimer = setTimeout(() => {
         const latestState = aiSessionStreamPorts.get(windowId);
-        if (
-            !latestState ||
-            !isAiSessionStreamAckStale(
-                latestState,
-                Date.now(),
-                AI_SESSION_STREAM_ACK_STALE_MS,
-            )
-        ) {
+        if (!latestState || !latestState.controller.isAckStale()) {
             return;
         }
         recoverAiSessionStreamPort(windowId, "ack-timeout");
@@ -1883,13 +1724,16 @@ function scheduleAiSessionStreamStaleCheck(windowId: string): void {
 function recoverAiSessionStreamPort(
     windowId: string,
     reason: AiSessionStreamRecoveryReason,
+    additionalPayloads: readonly AiSessionStreamPayload[] = [],
 ): void {
     const state = aiSessionStreamPorts.get(windowId);
     const targetContents = state?.webContents ?? null;
-    const pendingPreservedPayloadCount = state
-        ? state.pendingPreservedPayloads.size +
-          state.pendingDeliveryPayloads.size
-        : 0;
+    const ackState = state?.controller.ackState;
+    const streamMetrics = state?.controller.metrics;
+    const pendingPreservedPayloads = state?.controller.takeRecoveryPayloads(
+        additionalPayloads,
+    ) ?? [];
+    const pendingPreservedPayloadCount = pendingPreservedPayloads.length;
     const canSendFallback = Boolean(
         targetContents && !targetContents.isDestroyed(),
     );
@@ -1902,36 +1746,26 @@ function recoverAiSessionStreamPort(
 
     if (targetContents && canSendFallback) {
         const fallbackPayloads = buildAiSessionStreamRecoveryFallbackPayloads({
-            pendingPreservedPayloads: state
-                ? [
-                      ...state.pendingPreservedPayloads.values(),
-                      ...[...state.pendingDeliveryPayloads.values()].map(
-                          (pending) => ({
-                              payload: pending.payload,
-                              seq: state.nextSeq + pending.order,
-                          }),
-                      ),
-                  ]
-                : [],
+            pendingPreservedPayloads,
             resyncSnapshots,
         });
-        state?.pendingPreservedPayloads.clear();
         for (const payload of fallbackPayloads) {
             sendAiSessionStreamPayloadOverIpc(targetContents, payload);
         }
     }
 
-    const message = state
+    const message = state && ackState && streamMetrics
         ? JSON.stringify(
               buildAiSessionStreamRecoveryDiagnostic({
                   nowMs: Date.now(),
                   pendingPreservedPayloadCount,
                   coalescedPendingPayloadCount:
-                      state.coalescedPendingPayloadCount,
-                  peakInFlightPayloadCount: state.peakInFlightPayloadCount,
+                      streamMetrics.coalescedPendingPayloadCount,
+                  peakInFlightPayloadCount:
+                      streamMetrics.peakInFlightPayloadCount,
                   reason,
                   resyncSnapshotCount: resyncSnapshots.length,
-                  state,
+                  state: ackState,
               }),
           )
         : reason;
@@ -1966,57 +1800,8 @@ function postAiSessionStreamPayload(
         return false;
     }
 
-    if (
-        isAiSessionStreamAckStale(
-            state,
-            Date.now(),
-            AI_SESSION_STREAM_ACK_STALE_MS,
-        )
-    ) {
-        recoverAiSessionStreamPort(windowId, "pre-send-stale");
-        return false;
-    }
-
-    if (
-        state.pendingInFlightPayloadSeqs.size >=
-        AI_SESSION_STREAM_MAX_IN_FLIGHT
-    ) {
-        // Keep producer pressure behind a bounded, key-coalesced queue.
-        const result = rememberAiSessionStreamPayloadForDelivery({
-            maxPayloads: AI_SESSION_STREAM_MAX_PENDING_PAYLOADS,
-            order: state.nextPendingOrder,
-            payload,
-            queue: state.pendingDeliveryPayloads,
-        });
-        state.nextPendingOrder += 1;
-        if (result.coalesced) {
-            state.coalescedPendingPayloadCount += 1;
-        }
-        if (result.preserved && !result.droppedOldest) {
-            scheduleAiSessionStreamStaleCheck(windowId);
-            return true;
-        }
-        debugBenignError(
-            "aiSessionStreamPort.pendingPayloads",
-            new Error(
-                JSON.stringify({
-                    droppedCritical: result.droppedCritical,
-                    limit: AI_SESSION_STREAM_MAX_PENDING_PAYLOADS,
-                    pendingCount: result.pendingCount,
-                    windowId,
-                }),
-            ),
-        );
-        recoverAiSessionStreamPort(windowId, "post-error");
-        // An inserted payload is part of recovery; only a rejected payload
-        // still needs the caller's direct IPC fallback.
-        return result.preserved;
-    }
-
-    if (sendAiSessionStreamPayload(windowId, state, payload)) {
-        return true;
-    }
-    return false;
+    state.controller.postPayload(payload);
+    return true;
 }
 
 function dispatchAiSessionSnapshot(

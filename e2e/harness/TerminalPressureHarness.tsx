@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type {
     AiSessionDomainEvent,
     AiSessionSnapshot,
+    AiSessionStreamMessage,
     AiSessionStreamPayload,
     AiSessionToolActivityEvent,
     WorkspaceChatTab,
@@ -22,12 +23,9 @@ import {
 import { createWorkspaceSurfaceAgentPresencePublisher } from "@renderer/app/workspace/workspaceSurfaceAgentPresencePublisher";
 import type { WorkspaceSurfaceAgentPresencePublisher } from "@renderer/app/workspace/workspaceSurfaceAgentPresencePublisher";
 import {
-    AI_SESSION_STREAM_MAX_IN_FLIGHT,
-    AI_SESSION_STREAM_MAX_PENDING_PAYLOADS,
+    AiSessionStreamController,
+    buildAiSessionStreamRecoveryFallbackPayloads,
     isAiSessionUpdate,
-    rememberAiSessionStreamPayloadForDelivery,
-    takeNextAiSessionStreamDelivery,
-    type AiSessionStreamDeliveryQueue,
 } from "../../src/main/ai/session-stream";
 import { deliverAiSessionStreamMessage } from "../../src/preload/ai-session-stream";
 
@@ -80,32 +78,28 @@ class BrowserAiSessionPressureTransport {
     readonly criticalKindsDelivered = new Set<string>();
     private ackBeforeIngestion = false;
     private acknowledgedPayloads = 0;
-    private coalesced = 0;
+    private controller: AiSessionStreamController;
     private duplicatePayloads = 0;
     private readonly deliveredSeqs = new Set<number>();
-    private readonly inFlight: Array<{
-        readonly payload: AiSessionStreamPayload;
-        readonly seq: number;
-    }> = [];
-    private nextOrder = 0;
-    private nextSeq = 1;
-    private readonly pending: AiSessionStreamDeliveryQueue = new Map();
-    private peakInFlight = 0;
     private producerComplete = false;
     private scheduled = false;
+    private readonly wireMessages: AiSessionStreamMessage[] = [];
 
     constructor(
         private readonly deliverPayload: (payload: AiSessionStreamPayload) => void,
         private readonly onIdle: () => void,
-    ) {}
+    ) {
+        this.controller = this.createController();
+    }
 
     get metrics() {
         return {
             ackBeforeIngestion: this.ackBeforeIngestion,
             acknowledgedPayloads: this.acknowledgedPayloads,
             duplicatePayloads: this.duplicatePayloads,
-            peakInFlight: this.peakInFlight,
-            transportCoalesced: this.coalesced,
+            peakInFlight: this.controller.metrics.peakInFlightPayloadCount,
+            transportCoalesced:
+                this.controller.metrics.coalescedPendingPayloadCount,
         };
     }
 
@@ -115,51 +109,48 @@ class BrowserAiSessionPressureTransport {
     }
 
     post(payload: AiSessionStreamPayload): void {
-        if (this.inFlight.length < AI_SESSION_STREAM_MAX_IN_FLIGHT) {
-            this.send(payload);
-            return;
-        }
-        const result = rememberAiSessionStreamPayloadForDelivery({
-            maxPayloads: AI_SESSION_STREAM_MAX_PENDING_PAYLOADS,
-            order: this.nextOrder,
-            payload,
-            queue: this.pending,
-        });
-        this.nextOrder += 1;
-        if (result.coalesced) this.coalesced += 1;
-        if (!result.preserved || result.droppedOldest) {
-            throw new Error("Pressure transport could not preserve a payload.");
-        }
-        this.scheduleDrain();
+        this.controller.postPayload(payload);
     }
 
-    private deliver(envelope: {
-        readonly payload: AiSessionStreamPayload;
-        readonly seq: number;
-    }): void {
-        let ingested = false;
+    private createController(): AiSessionStreamController {
+        return new AiSessionStreamController({
+            onRecovery: ({ additionalPayloads }) => {
+                const recovered = this.controller.takeRecoveryPayloads(
+                    additionalPayloads,
+                );
+                this.wireMessages.length = 0;
+                this.controller = this.createController();
+                for (const payload of buildAiSessionStreamRecoveryFallbackPayloads({
+                    pendingPreservedPayloads: recovered,
+                    resyncSnapshots: [],
+                })) {
+                    this.recordCriticalKind(payload);
+                    this.deliverPayload(payload);
+                }
+            },
+            postMessage: (message) => {
+                this.wireMessages.push(message);
+                this.scheduleDrain();
+            },
+        });
+    }
+
+    private deliver(message: AiSessionStreamMessage): void {
+        let ingested = message.type === "ping";
         deliverAiSessionStreamMessage(
-            { payload: envelope.payload, seq: envelope.seq, type: "payload" },
+            message,
             {
                 acknowledge: (seq) => {
                     if (!ingested) this.ackBeforeIngestion = true;
                     this.acknowledgedPayloads += 1;
                     if (this.deliveredSeqs.has(seq)) this.duplicatePayloads += 1;
                     this.deliveredSeqs.add(seq);
+                    this.controller.acknowledge(seq);
                 },
                 notifyPayload: (payload) => {
                     ingested = true;
                     const typedPayload = payload as AiSessionStreamPayload;
-                    if (!isAiSessionUpdate(typedPayload)) {
-                        if (
-                            typedPayload.kind === "permission-request" ||
-                            typedPayload.kind === "user-input-request" ||
-                            typedPayload.kind === "turn-status" ||
-                            typedPayload.kind === "status"
-                        ) {
-                            this.criticalKindsDelivered.add(typedPayload.kind);
-                        }
-                    }
+                    this.recordCriticalKind(typedPayload);
                     this.deliverPayload(typedPayload);
                 },
                 reportDispatchError: (_message, error) => {
@@ -174,14 +165,14 @@ class BrowserAiSessionPressureTransport {
 
     private drain = () => {
         this.scheduled = false;
-        const delivered = this.inFlight.splice(0);
-        for (const envelope of delivered) this.deliver(envelope);
-        while (this.inFlight.length < AI_SESSION_STREAM_MAX_IN_FLIGHT) {
-            const pending = takeNextAiSessionStreamDelivery(this.pending);
-            if (!pending) break;
-            this.send(pending.payload);
-        }
-        if (this.inFlight.length > 0 || this.pending.size > 0) {
+        const delivered = this.wireMessages.splice(0);
+        for (const message of delivered) this.deliver(message);
+        const metrics = this.controller.metrics;
+        if (
+            this.wireMessages.length > 0 ||
+            metrics.pendingInFlightPayloadCount > 0 ||
+            metrics.pendingDeliveryPayloadCount > 0
+        ) {
             this.scheduleDrain();
             return;
         }
@@ -194,11 +185,16 @@ class BrowserAiSessionPressureTransport {
         requestAnimationFrame(this.drain);
     }
 
-    private send(payload: AiSessionStreamPayload): void {
-        this.inFlight.push({ payload, seq: this.nextSeq });
-        this.nextSeq += 1;
-        this.peakInFlight = Math.max(this.peakInFlight, this.inFlight.length);
-        this.scheduleDrain();
+    private recordCriticalKind(payload: AiSessionStreamPayload): void {
+        if (isAiSessionUpdate(payload)) return;
+        if (
+            payload.kind === "permission-request" ||
+            payload.kind === "user-input-request" ||
+            payload.kind === "turn-status" ||
+            payload.kind === "status"
+        ) {
+            this.criticalKindsDelivered.add(payload.kind);
+        }
     }
 }
 

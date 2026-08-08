@@ -12,6 +12,7 @@ import type {
 
 import {
     AI_SESSION_STREAM_MAX_IN_FLIGHT,
+    AiSessionStreamController,
     buildAiSessionStreamRecoveryDiagnostic,
     buildAiSessionStreamRecoveryFallbackPayloads,
     getAiSessionStreamPayloadKind,
@@ -136,6 +137,42 @@ function createToolActivity(
         title: "Run command",
         updatedAt: "2026-04-14T00:00:00.000Z",
         ...overrides,
+    };
+}
+
+function createPermissionRequest(
+    toolCallId: string,
+): Extract<AiSessionDomainEvent, { kind: "permission-request" }> {
+    return {
+        ...BASE_EVENT,
+        kind: "permission-request",
+        request: {
+            description: "Allow the command",
+            options: [],
+            requestId: `permission-${toolCallId}`,
+            sessionId: BASE_EVENT.sessionId,
+            title: "Permission",
+            toolCallId,
+            updatedAt: BASE_EVENT.updatedAt,
+        },
+    };
+}
+
+function createUserInputRequest(
+    toolCallId: string,
+): Extract<AiSessionDomainEvent, { kind: "user-input-request" }> {
+    return {
+        ...BASE_EVENT,
+        kind: "user-input-request",
+        request: {
+            questions: [],
+            requestId: `input-${toolCallId}`,
+            sessionId: BASE_EVENT.sessionId,
+            title: "Input",
+            toolCallId,
+            turnId: "turn-1",
+            updatedAt: BASE_EVENT.updatedAt,
+        },
     };
 }
 
@@ -647,6 +684,150 @@ describe("AI session stream helpers", () => {
         );
         expect(takeNextAiSessionStreamDelivery(queue)?.payload).toEqual(
             otherSessionDelta,
+        );
+    });
+
+    it.each([
+        ["permission", createPermissionRequest("tool-49")],
+        ["user input", createUserInputRequest("tool-49")],
+    ])(
+        "prioritizes %s after only its causal tool activity",
+        (_label, request) => {
+            const queue: AiSessionStreamDeliveryQueue = new Map();
+            for (let index = 0; index < 50; index += 1) {
+                rememberAiSessionStreamPayloadForDelivery({
+                    maxPayloads: 100,
+                    order: index,
+                    payload: {
+                        ...BASE_EVENT,
+                        activity: createToolActivity({ id: `tool-${index}` }),
+                        kind: "tool-activity",
+                    },
+                    queue,
+                });
+            }
+            rememberAiSessionStreamPayloadForDelivery({
+                maxPayloads: 100,
+                order: 50,
+                payload: request,
+                queue,
+            });
+
+            expect(takeNextAiSessionStreamDelivery(queue)?.payload).toMatchObject(
+                {
+                    activity: { id: "tool-49" },
+                    kind: "tool-activity",
+                },
+            );
+            expect(takeNextAiSessionStreamDelivery(queue)?.payload).toEqual(
+                request,
+            );
+            expect(queue.size).toBe(49);
+        },
+    );
+
+    it("runs the bounded window and partial ACK drain through the production controller", () => {
+        const posted: Array<{
+            readonly payload: AiSessionStreamPayload;
+            readonly seq: number;
+        }> = [];
+        const controller = new AiSessionStreamController({
+            onRecovery: () => {
+                throw new Error("Unexpected recovery");
+            },
+            postMessage: (message) => {
+                if (message.type === "payload") posted.push(message);
+            },
+        });
+        for (let index = 0; index < AI_SESSION_STREAM_MAX_IN_FLIGHT; index += 1) {
+            controller.postPayload(
+                createVisibleTranscriptEvent(
+                    "message-delta",
+                    `message-${index}`,
+                    `Delta ${index}`,
+                ),
+            );
+        }
+        for (let index = 0; index < 10_000; index += 1) {
+            controller.postPayload({
+                ...BASE_EVENT,
+                activity: createToolActivity({
+                    summary: `Revision ${index}`,
+                    updatedAt: new Date(index).toISOString(),
+                }),
+                kind: "tool-activity",
+            });
+        }
+
+        expect(controller.metrics).toMatchObject({
+            coalescedPendingPayloadCount: 9_999,
+            peakInFlightPayloadCount: AI_SESSION_STREAM_MAX_IN_FLIGHT,
+            pendingDeliveryPayloadCount: 1,
+            pendingInFlightPayloadCount: AI_SESSION_STREAM_MAX_IN_FLIGHT,
+        });
+        controller.acknowledge(posted[0]?.seq ?? -1);
+        expect(posted).toHaveLength(AI_SESSION_STREAM_MAX_IN_FLIGHT + 1);
+        expect(posted.at(-1)?.payload).toMatchObject({
+            activity: { summary: "Revision 9999" },
+            kind: "tool-activity",
+        });
+        for (const message of posted.slice(1)) {
+            controller.acknowledge(message.seq);
+        }
+        expect(controller.metrics).toMatchObject({
+            pendingDeliveryPayloadCount: 0,
+            pendingInFlightPayloadCount: 0,
+        });
+    });
+
+    it("recovers a production-controller post error without duplicating the current payload", () => {
+        const payload = {
+            ...BASE_EVENT,
+            activity: createToolActivity(),
+            kind: "tool-activity",
+        } satisfies AiSessionStreamPayload;
+        let recovered: readonly AiSessionStreamPayload[] = [];
+        const controller = new AiSessionStreamController({
+            onRecovery: ({ additionalPayloads }) => {
+                recovered = controller
+                    .takeRecoveryPayloads(additionalPayloads)
+                    .map((pending) => pending.payload);
+            },
+            postMessage: () => {
+                throw new Error("Closed port");
+            },
+        });
+
+        controller.postPayload(payload);
+
+        expect(recovered).toEqual([payload]);
+    });
+
+    it("recovers a rejected overflow payload exactly once", () => {
+        const pendingCritical = createPermissionRequest("tool-pending");
+        const rejected = createVisibleTranscriptEvent(
+            "message-delta",
+            "message-rejected",
+            "Keep me",
+        );
+        let recovered: readonly AiSessionStreamPayload[] = [];
+        const controller = new AiSessionStreamController({
+            maxInFlight: 1,
+            maxPendingPayloads: 1,
+            onRecovery: ({ additionalPayloads }) => {
+                recovered = controller
+                    .takeRecoveryPayloads(additionalPayloads)
+                    .map((pending) => pending.payload);
+            },
+            postMessage: () => undefined,
+        });
+        controller.postPayload(createStatusEvent("streaming"));
+        controller.postPayload(pendingCritical);
+        controller.postPayload(rejected);
+
+        expect(recovered).toEqual([pendingCritical, rejected]);
+        expect(recovered.filter((payload) => payload === rejected)).toHaveLength(
+            1,
         );
     });
 
