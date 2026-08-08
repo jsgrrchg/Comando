@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
     AiRuntimeStatus,
     AiReviewDeltaSummary,
+    AiSessionDomainEvent,
     AiSessionSnapshot,
     AiSessionUpdate,
     AiTrackedFile,
@@ -2293,6 +2294,9 @@ describe("AiService OpenCode branch", () => {
             const onSessionSnapshot = vi.fn<
                 (ownerWindowId: string, update: AiSessionUpdate) => void
             >();
+            const onSessionEvent = vi.fn<
+                (ownerWindowId: string, event: AiSessionDomainEvent) => void
+            >();
             const nativeAi = createNativeAi({
                 cancelSession: vi.fn(),
                 close: vi.fn(),
@@ -2324,6 +2328,7 @@ describe("AiService OpenCode branch", () => {
             });
             const service = createService({
                 nativeAi,
+                onSessionEvent,
                 onSessionSnapshot,
                 persistence: {
                     saveSessionSnapshot,
@@ -2366,6 +2371,7 @@ describe("AiService OpenCode branch", () => {
                 sessionId: "session-opencode",
                 updatedAt: "2026-06-20T00:00:01.000Z",
             });
+            const snapshotCallsAfterStarted = onSessionSnapshot.mock.calls.length;
             service.handleNativeSessionEvent("window-1", {
                 content: "Hello",
                 delta: "Hello",
@@ -2381,18 +2387,15 @@ describe("AiService OpenCode branch", () => {
             });
 
             expect(saveSessionSnapshot).not.toHaveBeenCalled();
-            const snapshotCall = onSessionSnapshot.mock.calls.at(-1);
-            expect(snapshotCall?.[0]).toBe("window-1");
-            const update = snapshotCall?.[1];
-            expect(update?.kind).toBe("patch");
-            if (update?.kind !== "patch") {
-                throw new Error("Expected a patch update.");
-            }
-            expect(update.patch.changes.messages).toEqual([
+            expect(onSessionSnapshot).toHaveBeenCalledTimes(
+                snapshotCallsAfterStarted,
+            );
+            expect(onSessionEvent.mock.lastCall).toEqual([
+                "window-1",
                 expect.objectContaining({
                     content: "Hello",
-                    id: "assistant-1",
-                    status: "streaming",
+                    kind: "message-delta",
+                    messageId: "assistant-1",
                 }),
             ]);
             const liveTail =
@@ -5000,6 +5003,10 @@ describe("AiService OpenCode branch", () => {
 function createService(overrides: {
     readonly nativeAi?: NativeAiGateway;
     readonly onRuntimeStatus?: (status: AiRuntimeStatus) => void;
+    readonly onSessionEvent?: (
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ) => void;
     readonly onSessionSnapshot?: (
         ownerWindowId: string,
         update: AiSessionUpdate,
@@ -5026,6 +5033,7 @@ function createService(overrides: {
     return new AiService({
         nativeAi: overrides.nativeAi ?? null,
         onRuntimeStatus: overrides.onRuntimeStatus ?? vi.fn(),
+        onSessionEvent: overrides.onSessionEvent,
         onSessionSnapshot: overrides.onSessionSnapshot ?? vi.fn(),
         persistence: persistence as never,
         projectService: {
