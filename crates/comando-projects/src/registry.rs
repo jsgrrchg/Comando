@@ -111,8 +111,6 @@ impl<'a> ProjectRegistry<'a> {
             params![comando_persistence::store::now_rfc3339(), project_id.0],
         )?;
         remove_navigation_scopes(&transaction, &archived_scope_keys)?;
-        comando_persistence::refresh_v3_projection(&transaction)
-            .map_err(|error| ProjectRegistryError::Lifecycle(error.to_string()))?;
         transaction.commit()?;
 
         load_project_state(self.connection)
@@ -273,6 +271,7 @@ impl<'a> ProjectRegistry<'a> {
         let worktree_ids = list_project_worktree_ids(self.connection, &project_id.0)?;
         let workspace_layout_ids =
             list_project_workspace_layout_ids(self.connection, &project_id.0, &worktree_ids)?;
+        let has_legacy_recovery = has_legacy_recovery_table(self.connection)?;
         let transaction = self.connection.transaction()?;
 
         transaction.execute(
@@ -373,16 +372,17 @@ impl<'a> ProjectRegistry<'a> {
         }
         let scope_keys = project_scope_keys(&transaction, &project_id.0)?;
         remove_navigation_scopes(&transaction, &scope_keys)?;
-        transaction.execute(
-            "DELETE FROM workspace_layout_recovery WHERE scope_key IN (SELECT scope_key FROM durable_workspaces WHERE project_id = ?1)",
-            [&project_id.0],
-        )?;
+        if has_legacy_recovery {
+            // Older databases can retain recovery rows after the feature is retired.
+            transaction.execute(
+                "DELETE FROM workspace_layout_recovery WHERE scope_key IN (SELECT scope_key FROM durable_workspaces WHERE project_id = ?1)",
+                [&project_id.0],
+            )?;
+        }
         transaction.execute(
             "DELETE FROM durable_workspaces WHERE project_id = ?1",
             [&project_id.0],
         )?;
-        comando_persistence::refresh_v3_projection(&transaction)
-            .map_err(|error| ProjectRegistryError::Lifecycle(error.to_string()))?;
         transaction.commit()?;
 
         Ok(NativeProjectClearAppDataResult {
@@ -512,8 +512,6 @@ impl<'a> ProjectRegistry<'a> {
             )?;
         }
 
-        comando_persistence::refresh_v3_projection(&transaction)
-            .map_err(|error| ProjectRegistryError::Lifecycle(error.to_string()))?;
         transaction.commit()?;
         list_project_worktrees(self.connection, &project_id.0)
     }
@@ -631,8 +629,6 @@ fn add_project_path(
         "UPDATE durable_workspaces SET lifecycle = 'active', updated_at = ?1 WHERE project_id = ?2 AND lifecycle = 'archived'",
         params![now, project_id],
     )?;
-    comando_persistence::refresh_v3_projection(transaction)
-        .map_err(|error| ProjectRegistryError::Lifecycle(error.to_string()))?;
 
     ensure_project_roots(transaction, &project_id, metadata)?;
     ensure_primary_worktree(
@@ -1077,11 +1073,15 @@ fn project_app_data_summary(
             "SELECT COUNT(*) FROM recent_projects WHERE project_id = ?1",
             project_id,
         )?,
-        recovery_layout_count: count_project_rows(
-            connection,
-            "SELECT COUNT(*) FROM workspace_layout_recovery WHERE scope_key IN (SELECT scope_key FROM durable_workspaces WHERE project_id = ?1)",
-            project_id,
-        )?,
+        recovery_layout_count: if has_legacy_recovery_table(connection)? {
+            count_project_rows(
+                connection,
+                "SELECT COUNT(*) FROM workspace_layout_recovery WHERE scope_key IN (SELECT scope_key FROM durable_workspaces WHERE project_id = ?1)",
+                project_id,
+            )?
+        } else {
+            0
+        },
         workspace_layout_count,
         workspace_session_count: count_workspace_sessions(connection, project_id, &worktree_ids)?,
         workspace_tab_count: count_workspace_tabs(connection, project_id, &worktree_ids)?,
@@ -1095,6 +1095,14 @@ fn count_project_rows(
 ) -> Result<u64, ProjectRegistryError> {
     let count: i64 = connection.query_row(sql, [project_id], |row| row.get(0))?;
     Ok(u64::try_from(count).unwrap_or(0))
+}
+
+fn has_legacy_recovery_table(connection: &Connection) -> Result<bool, ProjectRegistryError> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace_layout_recovery')",
+        [],
+        |row| row.get(0),
+    )?)
 }
 
 fn count_workspace_sessions(
@@ -1670,18 +1678,6 @@ mod tests {
                     last_activated_at TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
-                );
-                CREATE TABLE workspace_v3_compatibility (
-                    singleton_id TEXT PRIMARY KEY,
-                    projection_template_json TEXT NOT NULL,
-                    projection_revision INTEGER NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    dual_write_enabled INTEGER NOT NULL DEFAULT 1,
-                    stable_release_version TEXT,
-                    stable_release_verified_at TEXT,
-                    legacy_retention_until TEXT,
-                    v4_only_since TEXT,
-                    legacy_cleanup_completed_at TEXT
                 );
                 CREATE TABLE app_workspace_navigation (
                     singleton_id TEXT PRIMARY KEY,

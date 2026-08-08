@@ -87,7 +87,6 @@ pub fn backend_capabilities() -> NativeCapabilitySet {
             "json-fixtures".to_string(),
             "native-persistence".to_string(),
             "durable-workspaces-v4-repository".to_string(),
-            "durable-workspaces-v3-migration".to_string(),
             "native-project-registry".to_string(),
             "native-fs".to_string(),
             "native-watchers".to_string(),

@@ -50,7 +50,7 @@ describe("workspace host domain stores", () => {
         expect(entries["project-2::worktree-2"]).not.toHaveProperty("layout");
     });
 
-    it("stores durable catalog, recovery, and residency independently", () => {
+    it("stores durable catalog and residency independently", () => {
         workspaceCatalogStore.getState().replaceDurable([
             {
                 createdAt: "2026-08-01T00:00:00.000Z",
@@ -62,18 +62,6 @@ describe("workspace host domain stores", () => {
                 scopeKey: "project-1::__primary__",
                 updatedAt: "2026-08-01T00:00:00.000Z",
                 worktreeId: null,
-            },
-        ]);
-        workspaceCatalogStore.getState().setRecoveryLayouts([
-            {
-                createdAt: "2026-08-01T00:00:00.000Z",
-                id: "recovery-a",
-                scopeKey: "project-1::__primary__",
-                snapshotHash: "hash-a",
-                sourceRevision: 1,
-                sourceUpdatedAt: "2026-08-01T00:00:00.000Z",
-                sourceWindowId: "legacy-window",
-                sourceWorkspaceId: null,
             },
         ]);
         workspaceCatalogStore.getState().setSurfaceDiagnostics({
@@ -89,11 +77,6 @@ describe("workspace host domain stores", () => {
                 "project-1::__primary__"
             ],
         ).toMatchObject({ revision: 3, source: "durable" });
-        expect(
-            workspaceCatalogStore.getState().recoveryByScopeKey[
-                "project-1::__primary__"
-            ],
-        ).toHaveLength(1);
         expect(
             workspaceCatalogStore.getState().surfaceDiagnostics,
         ).toMatchObject({ activeScopeKey: "project-1::__primary__" });
@@ -111,7 +94,6 @@ describe("workspace host domain stores", () => {
                         updatedAt: "2026-08-01T00:00:00.000Z",
                     },
                     pendingDeletions: [],
-                    recoveryLayouts: [],
                     workspaces: [],
                 }),
             ),

@@ -1285,10 +1285,6 @@ const comandoApi: ComandoApi = {
         ipcRenderer.invoke(IPC_CHANNELS.getWorkspaceCatalog),
     resetWorkspaceLayout: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.resetWorkspaceLayout, input),
-    applyWorkspaceRecoveryLayout: (input) =>
-        ipcRenderer.invoke(IPC_CHANNELS.applyWorkspaceRecoveryLayout, input),
-    discardWorkspaceRecoveryLayout: (input) =>
-        ipcRenderer.invoke(IPC_CHANNELS.discardWorkspaceRecoveryLayout, input),
     reassociateWorkspace: (input) =>
         ipcRenderer.invoke(IPC_CHANNELS.reassociateWorkspace, input),
     removeSavedWorkspace: (input) =>

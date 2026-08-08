@@ -47,20 +47,6 @@ describe("workspace navigator model", () => {
             },
             diagnostics: null,
             projects: [project],
-            recoveryByScopeKey: {
-                [durableMissing.scopeKey]: [
-                    {
-                        createdAt: "2026-08-01T00:00:00.000Z",
-                        id: "recovery-a",
-                        scopeKey: durableMissing.scopeKey,
-                        snapshotHash: "hash-a",
-                        sourceRevision: 1,
-                        sourceUpdatedAt: "2026-08-01T00:00:00.000Z",
-                        sourceWindowId: "legacy-window",
-                        sourceWorkspaceId: null,
-                    },
-                ],
-            },
             worktreesByProject: {
                 [project.id]: [
                     worktreeFixture(project.id, null, true, "main"),
@@ -83,7 +69,6 @@ describe("workspace navigator model", () => {
         expect(model.projects[0]?.workspaces[2]).toMatchObject({
             isMissing: true,
             isPrimary: false,
-            recoveryLayouts: [expect.objectContaining({ snapshotHash: "hash-a" })],
         });
     });
 

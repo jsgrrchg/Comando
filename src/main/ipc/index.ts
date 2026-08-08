@@ -8,8 +8,6 @@ import {
     type AppUpdateState,
     type AppBootstrapSnapshot,
     type AppWindowKind,
-    type ApplyWorkspaceRecoveryLayoutInput,
-    type DiscardWorkspaceRecoveryLayoutInput,
     type AiPermissionResponseInput,
     type AiRuntimeAuthDisconnectInput,
     type AiRuntimeAuthLaunchInput,
@@ -353,8 +351,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     ipcMain.removeHandler(IPC_CHANNELS.saveShellState);
     ipcMain.removeHandler(IPC_CHANNELS.getWorkspaceCatalog);
     ipcMain.removeHandler(IPC_CHANNELS.resetWorkspaceLayout);
-    ipcMain.removeHandler(IPC_CHANNELS.applyWorkspaceRecoveryLayout);
-    ipcMain.removeHandler(IPC_CHANNELS.discardWorkspaceRecoveryLayout);
     ipcMain.removeHandler(IPC_CHANNELS.reassociateWorkspace);
     ipcMain.removeHandler(IPC_CHANNELS.removeSavedWorkspace);
     ipcMain.removeHandler(IPC_CHANNELS.preflightDeleteWorktree);
@@ -1999,17 +1995,14 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
         if (workspaceSurfaceManager.isSurface(event.sender)) {
             throw new Error("The workspace catalog is available only to the host.");
         }
-        const [workspaces, navigation, recoveryLayouts, pendingDeletions] = await Promise.all([
+        const [workspaces, navigation, pendingDeletions] = await Promise.all([
             options.durableWorkspaceRepository.listDurableWorkspaces(),
             options.durableWorkspaceRepository.getWorkspaceNavigation(),
-            options.durableWorkspaceRepository
-                .listWorkspaceRecoveryLayouts(),
             options.durableWorkspaceRepository.listIncompleteWorkspaceDeletions(),
         ]);
         return {
             navigation,
             pendingDeletions,
-            recoveryLayouts,
             workspaces,
         };
     });
@@ -2044,36 +2037,6 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     >,
                 scopeKey: input.scopeKey,
             });
-        },
-    );
-    ipcMain.handle(
-        IPC_CHANNELS.applyWorkspaceRecoveryLayout,
-        async (event, input: ApplyWorkspaceRecoveryLayoutInput) => {
-            const context = requireWindowContext(event.sender, "main");
-            if (workspaceSurfaceManager.isSurface(event.sender)) {
-                throw new Error("Recovery layouts are available only to the host.");
-            }
-            assertWorkspaceSurfaceClosed(
-                await workspaceSurfaceManager.closeWorkspaceSurface(
-                    context.windowId,
-                    input.scopeKey,
-                ),
-            );
-            return options.durableWorkspaceRepository.applyWorkspaceRecoveryLayout(
-                input,
-            );
-        },
-    );
-    ipcMain.handle(
-        IPC_CHANNELS.discardWorkspaceRecoveryLayout,
-        async (event, input: DiscardWorkspaceRecoveryLayoutInput) => {
-            requireWindowContext(event.sender, "main");
-            if (workspaceSurfaceManager.isSurface(event.sender)) {
-                throw new Error("Recovery layouts are available only to the host.");
-            }
-            await options.durableWorkspaceRepository.discardWorkspaceRecoveryLayout(
-                input,
-            );
         },
     );
     ipcMain.handle(

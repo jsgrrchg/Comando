@@ -124,7 +124,6 @@ fn reports_capabilities() {
             "json-fixtures",
             "native-persistence",
             "durable-workspaces-v4-repository",
-            "durable-workspaces-v3-migration",
             "native-project-registry",
             "native-fs",
             "native-watchers",

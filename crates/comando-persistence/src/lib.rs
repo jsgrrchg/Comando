@@ -6,7 +6,6 @@ pub mod redaction;
 pub mod sqlite;
 pub mod store;
 pub mod workspace_lifecycle;
-pub mod workspace_migration;
 
 pub use error::PersistenceError;
 pub use health::{closed_storage_health, storage_health};
@@ -14,4 +13,3 @@ pub use sqlite::{
     NativeStorageConfig, STORAGE_MODE_SQLITE_CURRENT, STORAGE_SCHEMA_VERSION,
     SqlitePersistenceStore,
 };
-pub use workspace_migration::refresh_v3_projection;

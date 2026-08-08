@@ -2549,15 +2549,12 @@ if (import.meta.hot) {
 
 type WorkspaceSetState = typeof useWorkspaceStore.setState;
 
-const WORKSPACE_PERSIST_DEBOUNCE_MS = 10_000;
 const MAX_RECENTLY_CLOSED_TABS = 20;
 
-let pendingWorkspacePersistTimer: ReturnType<typeof setTimeout> | null = null;
 let workspacePersistDirty = false;
 let workspacePersistGet: GetWorkspaceState | null = null;
 let workspacePersistInFlight: Promise<void> | null = null;
 let workspacePersistFailureCount = 0;
-let workspacePersistBlocked = false;
 const pendingFileDocumentLoads = new Map<string, Promise<ProjectFileDocument>>();
 const latestFileLoadRequestIds = new Map<string, number>();
 
@@ -3707,16 +3704,12 @@ function persistWorkspaceState(get: GetWorkspaceState): Promise<void> {
 }
 
 export async function flushWorkspacePersistenceForTests(): Promise<void> {
-    await flushWorkspacePersistence(undefined, { force: true });
+    await flushWorkspacePersistence();
 }
 
 export async function flushWorkspacePersistenceNow(): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
-        if (pendingWorkspacePersistTimer !== null) {
-            clearTimeout(pendingWorkspacePersistTimer);
-            pendingWorkspacePersistTimer = null;
-        }
-        await flushWorkspacePersistence(undefined, { force: true });
+        await flushWorkspacePersistence();
         if (!workspacePersistDirty) {
             return;
         }
@@ -3725,45 +3718,21 @@ export async function flushWorkspacePersistenceNow(): Promise<void> {
 }
 
 export function resetWorkspacePersistenceForTests(): void {
-    if (pendingWorkspacePersistTimer !== null) {
-        clearTimeout(pendingWorkspacePersistTimer);
-        pendingWorkspacePersistTimer = null;
-    }
-
     workspacePersistDirty = false;
     workspacePersistGet = null;
     workspacePersistInFlight = null;
     workspacePersistFailureCount = 0;
-    workspacePersistBlocked = false;
     pendingFileDocumentLoads.clear();
     latestFileLoadRequestIds.clear();
 }
 
 function scheduleWorkspacePersistence(get: GetWorkspaceState): void {
+    // Keep mutations in memory until a controlled workspace or app close.
     workspacePersistGet = get;
     workspacePersistDirty = true;
-
-    if (
-        workspacePersistBlocked ||
-        pendingWorkspacePersistTimer !== null ||
-        workspacePersistInFlight !== null
-    ) {
-        return;
-    }
-
-    // Buffer persistence to avoid serializing snapshots for every transient UI mutation.
-    pendingWorkspacePersistTimer = setTimeout(() => {
-        pendingWorkspacePersistTimer = null;
-        void flushWorkspacePersistence();
-    }, WORKSPACE_PERSIST_DEBOUNCE_MS);
 }
 
-async function flushWorkspacePersistence(
-    get?: GetWorkspaceState,
-    options: {
-        readonly force?: boolean;
-    } = {},
-): Promise<void> {
+async function flushWorkspacePersistence(get?: GetWorkspaceState): Promise<void> {
     if (get) {
         workspacePersistGet = get;
     }
@@ -3772,16 +3741,6 @@ async function flushWorkspacePersistence(
         // A freshly hydrated surface is already durable until its first mutation.
         workspacePersistDirty = false;
         return;
-    }
-
-    if (options.force) {
-        workspacePersistDirty = true;
-        workspacePersistBlocked = false;
-    }
-
-    if (pendingWorkspacePersistTimer !== null) {
-        clearTimeout(pendingWorkspacePersistTimer);
-        pendingWorkspacePersistTimer = null;
     }
 
     if (workspacePersistInFlight) {
@@ -3836,10 +3795,8 @@ async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
             );
         }
         workspacePersistFailureCount = 0;
-        workspacePersistBlocked = false;
     } catch (error) {
-        // Workspace persistence failure silently loses layout/tabs on restart;
-        // surface it at error level so diagnostics don't start from scratch.
+        // A close flush must surface persistence failures instead of discarding state.
         console.error(
             "[workspace-store] durable layout save failed",
             error,
@@ -3848,7 +3805,6 @@ async function persistWorkspaceStateNow(get: GetWorkspaceState): Promise<void> {
         workspacePersistFailureCount += 1;
         // A stale revision cannot recover by retrying the same snapshot. Keep
         // the change for an explicit close flush or a future surface hydrate.
-        workspacePersistBlocked = true;
     }
 }
 

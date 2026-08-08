@@ -12,9 +12,7 @@ pub const STORAGE_SCHEMA_VERSION: &str = "5";
 pub const STORAGE_MODE_SQLITE_CURRENT: &str = "sqlite-current";
 
 const DURABLE_WORKSPACE_SCHEMA_MIGRATION_ID: &str = "2026-07-31-durable-workspaces-v4";
-const WORKSPACE_COMPATIBILITY_SCHEMA_MIGRATION_ID: &str = "2026-07-31-workspace-v3-compatibility";
 const WORKSPACE_LIFECYCLE_SCHEMA_MIGRATION_ID: &str = "2026-08-01-workspace-lifecycle";
-const WORKSPACE_ROLLOUT_SCHEMA_MIGRATION_ID: &str = "2026-08-01-workspace-rollout";
 
 const REQUIRED_TABLES: &[(&str, &[&str])] = &[
     (
@@ -79,49 +77,6 @@ const REQUIRED_TABLES: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "workspace_layout_recovery",
-        &[
-            "id",
-            "scope_key",
-            "source_window_id",
-            "source_workspace_id",
-            "source_revision",
-            "source_updated_at",
-            "snapshot_hash",
-            "layout_snapshot_json",
-            "created_at",
-        ],
-    ),
-    (
-        "workspace_migrations",
-        &[
-            "migration_id",
-            "source_checksum",
-            "source_backup_ref",
-            "status",
-            "diagnostics_json",
-            "started_at",
-            "completed_at",
-        ],
-    ),
-    (
-        "workspace_v3_compatibility",
-        &[
-            "singleton_id",
-            "migration_id",
-            "projection_template_json",
-            "projection_revision",
-            "updated_at",
-            "rollback_at",
-            "dual_write_enabled",
-            "stable_release_version",
-            "stable_release_verified_at",
-            "legacy_retention_until",
-            "v4_only_since",
-            "legacy_cleanup_completed_at",
-        ],
-    ),
-    (
         "workspace_deletion_journal",
         &[
             "operation_id",
@@ -179,9 +134,7 @@ impl SqlitePersistenceStore {
         configure_connection(&connection)?;
         ensure_current_schema(&connection)?;
         ensure_durable_workspace_schema(&mut connection)?;
-        ensure_workspace_compatibility_schema(&mut connection)?;
         ensure_workspace_lifecycle_schema(&mut connection)?;
-        ensure_workspace_rollout_schema(&mut connection)?;
         validate_schema(&connection)?;
         crate::metadata::ensure_metadata(&connection, STORAGE_SCHEMA_VERSION, &config.mode)?;
 
@@ -225,67 +178,6 @@ impl SqlitePersistenceStore {
     pub fn mode(&self) -> &NativePersistenceMode {
         &self.mode
     }
-}
-
-fn ensure_workspace_rollout_schema(connection: &mut Connection) -> Result<(), PersistenceError> {
-    let already_applied = connection
-        .query_row(
-            "SELECT 1 FROM schema_migrations WHERE id = ?1",
-            [WORKSPACE_ROLLOUT_SCHEMA_MIGRATION_ID],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    if already_applied {
-        return Ok(());
-    }
-
-    let transaction = connection.transaction()?;
-    ensure_column(
-        &transaction,
-        "workspace_v3_compatibility",
-        "dual_write_enabled",
-        "INTEGER NOT NULL DEFAULT 1 CHECK(dual_write_enabled IN (0, 1))",
-    )?;
-    ensure_column(
-        &transaction,
-        "workspace_v3_compatibility",
-        "stable_release_version",
-        "TEXT",
-    )?;
-    ensure_column(
-        &transaction,
-        "workspace_v3_compatibility",
-        "stable_release_verified_at",
-        "TEXT",
-    )?;
-    ensure_column(
-        &transaction,
-        "workspace_v3_compatibility",
-        "legacy_retention_until",
-        "TEXT",
-    )?;
-    ensure_column(
-        &transaction,
-        "workspace_v3_compatibility",
-        "v4_only_since",
-        "TEXT",
-    )?;
-    ensure_column(
-        &transaction,
-        "workspace_v3_compatibility",
-        "legacy_cleanup_completed_at",
-        "TEXT",
-    )?;
-    transaction.execute(
-        "INSERT INTO schema_migrations (id, applied_at) VALUES (?1, ?2)",
-        rusqlite::params![
-            WORKSPACE_ROLLOUT_SCHEMA_MIGRATION_ID,
-            crate::store::now_rfc3339(),
-        ],
-    )?;
-    transaction.commit()?;
-    Ok(())
 }
 
 fn ensure_workspace_lifecycle_schema(connection: &mut Connection) -> Result<(), PersistenceError> {
@@ -346,48 +238,6 @@ fn ensure_workspace_lifecycle_schema(connection: &mut Connection) -> Result<(), 
         "INSERT INTO schema_migrations (id, applied_at) VALUES (?1, ?2)",
         rusqlite::params![
             WORKSPACE_LIFECYCLE_SCHEMA_MIGRATION_ID,
-            crate::store::now_rfc3339(),
-        ],
-    )?;
-    transaction.commit()?;
-    Ok(())
-}
-
-fn ensure_workspace_compatibility_schema(
-    connection: &mut Connection,
-) -> Result<(), PersistenceError> {
-    let already_applied = connection
-        .query_row(
-            "SELECT 1 FROM schema_migrations WHERE id = ?1",
-            [WORKSPACE_COMPATIBILITY_SCHEMA_MIGRATION_ID],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    if already_applied {
-        return Ok(());
-    }
-
-    let transaction = connection.transaction()?;
-    transaction.execute_batch(
-        "
-        ALTER TABLE workspace_migrations
-            ADD COLUMN diagnostics_json TEXT NOT NULL DEFAULT '{}';
-
-        CREATE TABLE workspace_v3_compatibility (
-            singleton_id TEXT PRIMARY KEY CHECK(singleton_id = 'main'),
-            migration_id TEXT NOT NULL REFERENCES workspace_migrations(migration_id),
-            projection_template_json TEXT NOT NULL,
-            projection_revision INTEGER NOT NULL DEFAULT 0 CHECK(projection_revision >= 0),
-            updated_at TEXT NOT NULL,
-            rollback_at TEXT
-        );
-        ",
-    )?;
-    transaction.execute(
-        "INSERT INTO schema_migrations (id, applied_at) VALUES (?1, ?2)",
-        rusqlite::params![
-            WORKSPACE_COMPATIBILITY_SCHEMA_MIGRATION_ID,
             crate::store::now_rfc3339(),
         ],
     )?;
@@ -711,27 +561,6 @@ fn ensure_durable_workspace_schema_with_failpoint(
             updated_at TEXT NOT NULL
         );
 
-        CREATE TABLE workspace_layout_recovery (
-            id TEXT PRIMARY KEY,
-            scope_key TEXT NOT NULL REFERENCES durable_workspaces(scope_key) ON DELETE CASCADE,
-            source_window_id TEXT,
-            source_workspace_id TEXT,
-            source_revision INTEGER NOT NULL CHECK(source_revision >= 0),
-            source_updated_at TEXT NOT NULL,
-            snapshot_hash TEXT NOT NULL,
-            layout_snapshot_json TEXT NOT NULL,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE workspace_migrations (
-            migration_id TEXT PRIMARY KEY,
-            source_checksum TEXT NOT NULL,
-            source_backup_ref TEXT NOT NULL,
-            status TEXT NOT NULL CHECK(status IN ('not_started', 'running', 'complete', 'failed')),
-            started_at TEXT NOT NULL,
-            completed_at TEXT
-        );
-
         CREATE TABLE workspace_deletion_journal (
             operation_id TEXT PRIMARY KEY,
             scope_key TEXT NOT NULL,
@@ -749,8 +578,6 @@ fn ensure_durable_workspace_schema_with_failpoint(
             ON durable_workspaces(project_id);
         CREATE INDEX idx_durable_workspaces_lifecycle_recency
             ON durable_workspaces(lifecycle, last_activated_at DESC, updated_at DESC);
-        CREATE INDEX idx_workspace_layout_recovery_scope_key
-            ON workspace_layout_recovery(scope_key, created_at DESC);
         CREATE INDEX idx_workspace_deletion_journal_scope_status
             ON workspace_deletion_journal(scope_key, status);
         ",
@@ -1046,7 +873,7 @@ mod tests {
         .expect("phase two schema upgrade");
 
         assert_eq!(output.schema_version, STORAGE_SCHEMA_VERSION);
-        assert!(table_exists(store.connection(), "workspace_v3_compatibility").unwrap());
+        assert!(!table_exists(store.connection(), "workspace_v3_compatibility").unwrap());
         assert_eq!(
             store
                 .connection()
