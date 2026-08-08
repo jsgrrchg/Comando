@@ -3,6 +3,10 @@ import type {
     AiSessionStreamPayload,
     AiSessionUpdate,
 } from "@shared/ipc";
+import { mergeAiTranscriptToolActivity } from "@shared/ai-transcript";
+
+export const AI_SESSION_STREAM_MAX_IN_FLIGHT = 32;
+export const AI_SESSION_STREAM_MAX_PENDING_PAYLOADS = 100;
 
 export type AiSessionStreamRecoveryReason =
     | "ack-timeout"
@@ -22,6 +26,8 @@ export interface AiSessionStreamRecoveryDiagnostic {
     readonly ackLagMs: number;
     readonly lastAckSeq: number;
     readonly lastSentSeq: number;
+    readonly coalescedPendingPayloadCount: number;
+    readonly peakInFlightPayloadCount: number;
     readonly pendingPreservedPayloadCount: number;
     readonly reason: AiSessionStreamRecoveryReason;
     readonly resyncSnapshotCount: number;
@@ -44,6 +50,25 @@ export type AiSessionStreamPreservationQueue = Map<
 >;
 
 export type AiSessionStreamPayloadKind = AiSessionStreamPayload["kind"];
+
+export interface PendingAiSessionStreamDelivery {
+    readonly critical: boolean;
+    readonly order: number;
+    readonly payload: AiSessionStreamPayload;
+}
+
+export type AiSessionStreamDeliveryQueue = Map<
+    string,
+    PendingAiSessionStreamDelivery
+>;
+
+export interface AiSessionStreamDeliveryQueueResult {
+    readonly coalesced: boolean;
+    readonly droppedCritical: boolean;
+    readonly droppedOldest: boolean;
+    readonly pendingCount: number;
+    readonly preserved: boolean;
+}
 
 export function getAiSessionStreamPayloadKind(
     payload: AiSessionStreamPayload,
@@ -70,9 +95,20 @@ export function isCriticalAiSessionStreamPayload(
 
     if (
         payload.kind === "message-completed" ||
-        payload.kind === "thinking-completed"
+        payload.kind === "thinking-completed" ||
+        payload.kind === "permission-request" ||
+        payload.kind === "session-closed" ||
+        payload.kind === "turn-status" ||
+        payload.kind === "user-input-request"
     ) {
         return true;
+    }
+
+    if (payload.kind === "tool-activity") {
+        return (
+            payload.activity.status === "completed" ||
+            payload.activity.status === "failed"
+        );
     }
 
     return (
@@ -99,7 +135,8 @@ export function isPreservableAiSessionStreamPayload(
         payload.kind === "message-started" ||
         payload.kind === "message-delta" ||
         payload.kind === "thinking-started" ||
-        payload.kind === "thinking-delta"
+        payload.kind === "thinking-delta" ||
+        payload.kind === "tool-activity"
     );
 }
 
@@ -134,7 +171,166 @@ export function getAiSessionStreamPreservationKey(
         return `${payload.sessionId}:${payload.messageId}:${payload.kind}`;
     }
 
+    if (payload.kind === "tool-activity") {
+        return `${payload.sessionId}:${payload.activity.id}:${payload.kind}`;
+    }
+
     return `${payload.sessionId}:${payload.kind}`;
+}
+
+export function getAiSessionStreamDeliveryKey(
+    payload: AiSessionStreamPayload,
+): string {
+    const preservedKey = getAiSessionStreamPreservationKey(payload);
+    if (preservedKey !== null) return preservedKey;
+    if (payload.kind === "image-generation") {
+        return `${payload.sessionId}:${payload.message.id}:${payload.kind}`;
+    }
+    if (payload.kind === "review-delta") {
+        return `${payload.sessionId}:${payload.delta.toolCallId}:${payload.kind}`;
+    }
+    if (payload.kind === "subagent-created") {
+        return `${payload.sessionId}:${payload.childSessionId}:${payload.kind}`;
+    }
+    if (payload.kind === "subagent-breadcrumb") {
+        return `${payload.sessionId}:${payload.childSessionId}:${payload.kind}`;
+    }
+    return isAiSessionUpdate(payload)
+        ? `${payload.kind}:${payload.kind === "patch" ? payload.patch.sessionId : payload.snapshot.sessionId}`
+        : `${payload.sessionId}:${payload.kind}`;
+}
+
+export function rememberAiSessionStreamPayloadForDelivery(input: {
+    readonly maxPayloads: number;
+    readonly order: number;
+    readonly payload: AiSessionStreamPayload;
+    readonly queue: AiSessionStreamDeliveryQueue;
+}): AiSessionStreamDeliveryQueueResult {
+    const key = getAiSessionStreamDeliveryKey(input.payload);
+    const existing = input.queue.get(key);
+    const critical = isCriticalAiSessionStreamPayload(input.payload);
+    if (existing) {
+        input.queue.set(key, {
+            critical: existing.critical || critical,
+            order: existing.order,
+            payload: mergePendingDeliveryPayload(existing.payload, input.payload),
+        });
+        return {
+            coalesced: true,
+            droppedCritical: false,
+            droppedOldest: false,
+            pendingCount: input.queue.size,
+            preserved: true,
+        };
+    }
+
+    let droppedCritical = false;
+    let droppedOldest = false;
+    if (input.queue.size >= input.maxPayloads) {
+        const evictable = [...input.queue].find(
+            ([, pending]) => !pending.critical,
+        );
+        if (evictable) {
+            input.queue.delete(evictable[0]);
+            droppedOldest = true;
+        } else if (!critical) {
+            return {
+                coalesced: false,
+                droppedCritical: false,
+                droppedOldest: false,
+                pendingCount: input.queue.size,
+                preserved: false,
+            };
+        } else {
+            const oldest = input.queue.keys().next().value;
+            if (oldest !== undefined) {
+                input.queue.delete(oldest);
+                droppedCritical = true;
+                droppedOldest = true;
+            }
+        }
+    }
+
+    input.queue.set(key, {
+        critical,
+        order: input.order,
+        payload: input.payload,
+    });
+    return {
+        coalesced: false,
+        droppedCritical,
+        droppedOldest,
+        pendingCount: input.queue.size,
+        preserved: true,
+    };
+}
+
+export function takeNextAiSessionStreamDelivery(
+    queue: AiSessionStreamDeliveryQueue,
+): PendingAiSessionStreamDelivery | null {
+    let nextKey: string | null = null;
+    let next: PendingAiSessionStreamDelivery | null = null;
+    for (const [key, candidate] of queue) {
+        if (!next || candidate.order < next.order) {
+            nextKey = key;
+            next = candidate;
+        }
+    }
+    if (nextKey !== null) queue.delete(nextKey);
+    return next;
+}
+
+export function releaseAcknowledgedAiSessionStreamPayloads(
+    inFlightPayloadSeqs: Set<number>,
+    acknowledgedSeq: number,
+): number {
+    return inFlightPayloadSeqs.delete(acknowledgedSeq) ? 1 : 0;
+}
+
+function mergePendingDeliveryPayload(
+    existing: AiSessionStreamPayload,
+    incoming: AiSessionStreamPayload,
+): AiSessionStreamPayload {
+    if (existing.kind === "patch" && incoming.kind === "patch") {
+        return {
+            kind: "patch",
+            patch: {
+                ...incoming.patch,
+                changes: {
+                    ...existing.patch.changes,
+                    ...incoming.patch.changes,
+                },
+            },
+        };
+    }
+    if (existing.kind === "tool-activity" && incoming.kind === "tool-activity") {
+        const merged = mergeAiTranscriptToolActivity(
+            existing.activity,
+            incoming.activity,
+        );
+        return {
+            ...incoming,
+            activity: {
+                ...merged,
+                locations:
+                    incoming.activity.locations.length > 0
+                        ? incoming.activity.locations
+                        : existing.activity.locations,
+                rawInputJson:
+                    incoming.activity.rawInputJson ??
+                    existing.activity.rawInputJson,
+                rawOutputJson:
+                    incoming.activity.rawOutputJson ??
+                    existing.activity.rawOutputJson,
+                summary:
+                    incoming.activity.summary ?? existing.activity.summary,
+                toolActivityDetailId:
+                    incoming.activity.toolActivityDetailId ??
+                    existing.activity.toolActivityDetailId,
+            },
+        };
+    }
+    return incoming;
 }
 
 export function rememberAiSessionStreamPayloadForRecovery(input: {
@@ -168,6 +364,17 @@ export function rememberAiSessionStreamPayloadForRecovery(input: {
                     },
                 },
             },
+            seq: input.seq,
+        });
+    } else if (
+        existing?.payload.kind === "tool-activity" &&
+        input.payload.kind === "tool-activity"
+    ) {
+        input.queue.set(key, {
+            payload: mergePendingDeliveryPayload(
+                existing.payload,
+                input.payload,
+            ),
             seq: input.seq,
         });
     } else {
@@ -213,7 +420,9 @@ export function isAiSessionStreamAckStale(
 }
 
 export function buildAiSessionStreamRecoveryDiagnostic(input: {
+    readonly coalescedPendingPayloadCount?: number;
     readonly nowMs: number;
+    readonly peakInFlightPayloadCount?: number;
     readonly pendingPreservedPayloadCount: number;
     readonly reason: AiSessionStreamRecoveryReason;
     readonly resyncSnapshotCount: number;
@@ -229,6 +438,9 @@ export function buildAiSessionStreamRecoveryDiagnostic(input: {
                 : Math.max(0, input.nowMs - oldestPendingSentAt),
         lastAckSeq: input.state.lastAckSeq,
         lastSentSeq: input.state.lastSentSeq,
+        coalescedPendingPayloadCount:
+            input.coalescedPendingPayloadCount ?? 0,
+        peakInFlightPayloadCount: input.peakInFlightPayloadCount ?? 0,
         pendingPreservedPayloadCount: input.pendingPreservedPayloadCount,
         reason: input.reason,
         resyncSnapshotCount: input.resyncSnapshotCount,
@@ -256,10 +468,7 @@ function getOldestPendingAiSessionStreamAckSentAt(
     state: AiSessionStreamAckState,
 ): number | null {
     let oldestPendingSentAt: number | null = null;
-    for (const [seq, sentAt] of state.pendingAckSentAtBySeq) {
-        if (seq <= state.lastAckSeq) {
-            continue;
-        }
+    for (const sentAt of state.pendingAckSentAtBySeq.values()) {
         if (oldestPendingSentAt === null || sentAt < oldestPendingSentAt) {
             oldestPendingSentAt = sentAt;
         }

@@ -404,53 +404,73 @@ function isAiSessionDomainEvent(value: unknown): value is AiSessionDomainEvent {
     );
 }
 
-function notifyAiSessionSnapshotListeners(update: unknown): void {
+function notifyAiSessionSnapshotListeners(
+    update: unknown,
+    propagateListenerError = false,
+): void {
     if (!isAiSessionUpdate(update)) {
         console.warn(
             "[comando] Dropped AiSessionUpdate with unexpected shape.",
         );
         return;
     }
+    let firstError: unknown;
+    let listenerFailed = false;
     for (const listener of aiSessionSnapshotListeners) {
         try {
             listener(update);
         } catch (error) {
-            console.error("[comando] AiSessionUpdate listener failed.", error);
+            if (!listenerFailed) firstError = error;
+            listenerFailed = true;
+            if (!propagateListenerError) {
+                console.error("[comando] AiSessionUpdate listener failed.", error);
+            }
         }
     }
+    if (propagateListenerError && listenerFailed) throw firstError;
 }
 
-function notifyAiSessionEventListeners(event: unknown): void {
+function notifyAiSessionEventListeners(
+    event: unknown,
+    propagateListenerError = false,
+): void {
     if (!isAiSessionDomainEvent(event)) {
         console.warn(
             "[comando] Dropped AiSessionDomainEvent with unexpected shape.",
         );
         return;
     }
+    let firstError: unknown;
+    let listenerFailed = false;
     for (const listener of aiSessionEventListeners) {
         try {
             listener(event);
         } catch (error) {
-            console.error(
-                "[comando] AiSessionDomainEvent listener failed.",
-                error,
-            );
+            if (!listenerFailed) firstError = error;
+            listenerFailed = true;
+            if (!propagateListenerError) {
+                console.error(
+                    "[comando] AiSessionDomainEvent listener failed.",
+                    error,
+                );
+            }
         }
     }
+    if (propagateListenerError && listenerFailed) throw firstError;
 }
 
 function notifyAiSessionStreamPayload(payload: unknown): void {
     if (isAiSessionUpdate(payload)) {
-        notifyAiSessionSnapshotListeners(payload);
+        notifyAiSessionSnapshotListeners(payload, true);
         return;
     }
 
     if (isAiSessionDomainEvent(payload)) {
-        notifyAiSessionEventListeners(payload);
+        notifyAiSessionEventListeners(payload, true);
         return;
     }
 
-    console.warn("[comando] Dropped AI session stream payload.");
+    throw new Error("Dropped AI session stream payload with an invalid shape.");
 }
 
 function acknowledgeAiSessionStreamPort(seq: number): void {

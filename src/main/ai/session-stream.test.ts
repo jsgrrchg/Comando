@@ -11,6 +11,7 @@ import type {
 } from "@shared/ipc";
 
 import {
+    AI_SESSION_STREAM_MAX_IN_FLIGHT,
     buildAiSessionStreamRecoveryDiagnostic,
     buildAiSessionStreamRecoveryFallbackPayloads,
     getAiSessionStreamPayloadKind,
@@ -19,7 +20,11 @@ import {
     isAiSessionUpdate,
     isCriticalAiSessionStreamPayload,
     isPreservableAiSessionStreamPayload,
+    releaseAcknowledgedAiSessionStreamPayloads,
+    rememberAiSessionStreamPayloadForDelivery,
     rememberAiSessionStreamPayloadForRecovery,
+    takeNextAiSessionStreamDelivery,
+    type AiSessionStreamDeliveryQueue,
     type AiSessionStreamPreservationQueue,
 } from "./session-stream";
 
@@ -34,7 +39,7 @@ const BASE_EVENT = {
 
 function createStatusEvent(
     status: "error" | "idle" | "starting" | "streaming",
-): AiSessionStreamPayload {
+): Extract<AiSessionDomainEvent, { kind: "status" }> {
     return {
         ...BASE_EVENT,
         activeTurnStartedAt: null,
@@ -112,7 +117,9 @@ function createVisibleTranscriptEvent(
     };
 }
 
-function createToolActivity(): AiToolActivity {
+function createToolActivity(
+    overrides: Partial<AiToolActivity> = {},
+): AiToolActivity {
     return {
         createdAt: "2026-04-14T00:00:00.000Z",
         diffs: [],
@@ -128,6 +135,7 @@ function createToolActivity(): AiToolActivity {
         terminalOutput: null,
         title: "Run command",
         updatedAt: "2026-04-14T00:00:00.000Z",
+        ...overrides,
     };
 }
 
@@ -526,12 +534,94 @@ describe("AI session stream helpers", () => {
             }),
         ).toEqual({
             ackLagMs: 2_500,
+            coalescedPendingPayloadCount: 0,
             lastAckSeq: 7,
             lastSentSeq: 9,
+            peakInFlightPayloadCount: 0,
             pendingPreservedPayloadCount: 2,
             reason: "ack-timeout",
             resyncSnapshotCount: 1,
         });
+    });
+
+    it("coalesces pending tool activity while the delivery window is full", () => {
+        const queue: AiSessionStreamDeliveryQueue = new Map();
+
+        for (let index = 0; index < 10_000; index += 1) {
+            rememberAiSessionStreamPayloadForDelivery({
+                maxPayloads: 100,
+                order: index,
+                payload: {
+                    ...BASE_EVENT,
+                    activity: createToolActivity({
+                        summary: `Revision ${index}`,
+                        updatedAt: new Date(index).toISOString(),
+                    }),
+                    kind: "tool-activity",
+                },
+                queue,
+            });
+        }
+
+        expect(queue).toHaveLength(1);
+        expect(takeNextAiSessionStreamDelivery(queue)?.payload).toMatchObject({
+            activity: { summary: "Revision 9999" },
+            kind: "tool-activity",
+        });
+    });
+
+    it("evicts noncritical pending work before terminal state", () => {
+        const queue: AiSessionStreamDeliveryQueue = new Map();
+        for (let index = 0; index < 2; index += 1) {
+            rememberAiSessionStreamPayloadForDelivery({
+                maxPayloads: 2,
+                order: index,
+                payload: {
+                    ...createStatusEvent("streaming"),
+                    sessionId: `session-${index}`,
+                },
+                queue,
+            });
+        }
+
+        const result = rememberAiSessionStreamPayloadForDelivery({
+            maxPayloads: 2,
+            order: 3,
+            payload: { ...createStatusEvent("idle"), sessionId: "terminal" },
+            queue,
+        });
+
+        expect(result).toMatchObject({
+            droppedCritical: false,
+            droppedOldest: true,
+            preserved: true,
+        });
+        expect(
+            [...queue.values()].some(
+                (pending) =>
+                    pending.payload.kind === "status" &&
+                    pending.payload.status === "idle",
+            ),
+        ).toBe(true);
+    });
+
+    it("releases exactly the payload capacity covered by a partial ACK", () => {
+        const inFlight = new Set(
+            Array.from(
+                { length: AI_SESSION_STREAM_MAX_IN_FLIGHT },
+                (_, index) => index + 1,
+            ),
+        );
+
+        let released = 0;
+        for (let seq = 1; seq <= 7; seq += 1) {
+            released += releaseAcknowledgedAiSessionStreamPayloads(inFlight, seq);
+        }
+        expect(released).toBe(7);
+        expect(inFlight.size).toBe(AI_SESSION_STREAM_MAX_IN_FLIGHT - 7);
+        expect(Math.min(...inFlight)).toBe(8);
+        expect(releaseAcknowledgedAiSessionStreamPayloads(inFlight, 40)).toBe(0);
+        expect(inFlight.size).toBe(AI_SESSION_STREAM_MAX_IN_FLIGHT - 7);
     });
 
     it("builds recovery fallback payloads with critical entries before resync snapshots", () => {

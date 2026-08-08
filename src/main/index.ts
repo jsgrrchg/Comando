@@ -44,11 +44,17 @@ import type { SecretStoreGateway } from "./ai/secret-store";
 import { AiService } from "./ai/service";
 import type { NormalizedSessionCatalogPayload } from "./ai/session-core";
 import {
+    AI_SESSION_STREAM_MAX_IN_FLIGHT,
+    AI_SESSION_STREAM_MAX_PENDING_PAYLOADS,
     buildAiSessionStreamRecoveryFallbackPayloads,
     buildAiSessionStreamRecoveryDiagnostic,
     isAiSessionStreamAckStale,
     isAiSessionUpdate,
+    rememberAiSessionStreamPayloadForDelivery,
     rememberAiSessionStreamPayloadForRecovery,
+    releaseAcknowledgedAiSessionStreamPayloads,
+    takeNextAiSessionStreamDelivery,
+    type AiSessionStreamDeliveryQueue,
     type AiSessionStreamPreservationQueue,
     type AiSessionStreamRecoveryReason,
 } from "./ai/session-stream";
@@ -175,13 +181,18 @@ const AI_SESSION_STREAM_HEARTBEAT_MS = 1_000;
 const AI_SESSION_STREAM_MAX_PRESERVED_PAYLOADS = 100;
 
 type AiSessionStreamPortState = {
+    coalescedPendingPayloadCount: number;
     readonly port: MessagePortMain;
     heartbeatTimer: ReturnType<typeof setInterval> | null;
     lastAckAt: number;
     lastAckSeq: number;
     lastSentAt: number;
     lastSentSeq: number;
+    nextPendingOrder: number;
     nextSeq: number;
+    peakInFlightPayloadCount: number;
+    readonly pendingDeliveryPayloads: AiSessionStreamDeliveryQueue;
+    readonly pendingInFlightPayloadSeqs: Set<number>;
     readonly pendingAckSentAtBySeq: Map<number, number>;
     readonly pendingPreservedPayloads: AiSessionStreamPreservationQueue;
     staleTimer: ReturnType<typeof setTimeout> | null;
@@ -1621,13 +1632,18 @@ function attachAiSessionStream(
         ]);
         const now = Date.now();
         const state: AiSessionStreamPortState = {
+            coalescedPendingPayloadCount: 0,
             heartbeatTimer: null,
             lastAckAt: now,
             lastAckSeq: 0,
             lastSentAt: now,
             lastSentSeq: 0,
+            nextPendingOrder: 1,
             nextSeq: 1,
+            peakInFlightPayloadCount: 0,
             pendingAckSentAtBySeq: new Map(),
+            pendingDeliveryPayloads: new Map(),
+            pendingInFlightPayloadSeqs: new Set(),
             pendingPreservedPayloads: new Map(),
             port: channel.port1,
             runtimeOwnerId,
@@ -1691,16 +1707,18 @@ function handleAiSessionStreamPortMessage(
 
     state.lastAckAt = Date.now();
     state.lastAckSeq = Math.max(state.lastAckSeq, candidate.seq);
-    for (const seq of [...state.pendingAckSentAtBySeq.keys()]) {
-        if (seq <= state.lastAckSeq) {
-            state.pendingAckSentAtBySeq.delete(seq);
-        }
-    }
+    // ACKs are exact so a later ping cannot hide a failed payload dispatch.
+    state.pendingAckSentAtBySeq.delete(candidate.seq);
+    releaseAcknowledgedAiSessionStreamPayloads(
+        state.pendingInFlightPayloadSeqs,
+        candidate.seq,
+    );
     for (const [key, pendingPayload] of state.pendingPreservedPayloads) {
-        if (pendingPayload.seq <= state.lastAckSeq) {
+        if (pendingPayload.seq === candidate.seq) {
             state.pendingPreservedPayloads.delete(key);
         }
     }
+    drainPendingAiSessionStreamPayloads(windowId, state);
 }
 
 function nextAiSessionStreamMessage(
@@ -1717,6 +1735,46 @@ function nextAiSessionStreamMessage(
         seq,
         type: "payload",
     };
+}
+
+function sendAiSessionStreamPayload(
+    windowId: string,
+    state: AiSessionStreamPortState,
+    payload: AiSessionStreamPayload,
+): boolean {
+    const message = nextAiSessionStreamMessage(state, payload);
+    preserveAiSessionStreamPayload(windowId, state, payload, message.seq);
+    state.pendingInFlightPayloadSeqs.add(message.seq);
+    state.peakInFlightPayloadCount = Math.max(
+        state.peakInFlightPayloadCount,
+        state.pendingInFlightPayloadSeqs.size,
+    );
+    try {
+        state.port.postMessage(message);
+        scheduleAiSessionStreamStaleCheck(windowId);
+        return true;
+    } catch (error) {
+        debugBenignError("aiSessionStreamPort.postMessage", error);
+        recoverAiSessionStreamPort(windowId, "post-error");
+        return false;
+    }
+}
+
+function drainPendingAiSessionStreamPayloads(
+    windowId: string,
+    state: AiSessionStreamPortState,
+): void {
+    while (
+        aiSessionStreamPorts.get(windowId) === state &&
+        state.pendingInFlightPayloadSeqs.size <
+            AI_SESSION_STREAM_MAX_IN_FLIGHT
+    ) {
+        const pending = takeNextAiSessionStreamDelivery(
+            state.pendingDeliveryPayloads,
+        );
+        if (!pending) return;
+        if (!sendAiSessionStreamPayload(windowId, state, pending.payload)) return;
+    }
 }
 
 function nextAiSessionStreamPing(
@@ -1820,8 +1878,10 @@ function recoverAiSessionStreamPort(
 ): void {
     const state = aiSessionStreamPorts.get(windowId);
     const targetContents = state?.webContents ?? null;
-    const pendingPreservedPayloadCount =
-        state?.pendingPreservedPayloads.size ?? 0;
+    const pendingPreservedPayloadCount = state
+        ? state.pendingPreservedPayloads.size +
+          state.pendingDeliveryPayloads.size
+        : 0;
     const canSendFallback = Boolean(
         targetContents && !targetContents.isDestroyed(),
     );
@@ -1835,7 +1895,15 @@ function recoverAiSessionStreamPort(
     if (targetContents && canSendFallback) {
         const fallbackPayloads = buildAiSessionStreamRecoveryFallbackPayloads({
             pendingPreservedPayloads: state
-                ? [...state.pendingPreservedPayloads.values()]
+                ? [
+                      ...state.pendingPreservedPayloads.values(),
+                      ...[...state.pendingDeliveryPayloads.values()].map(
+                          (pending) => ({
+                              payload: pending.payload,
+                              seq: state.nextSeq + pending.order,
+                          }),
+                      ),
+                  ]
                 : [],
             resyncSnapshots,
         });
@@ -1850,6 +1918,9 @@ function recoverAiSessionStreamPort(
               buildAiSessionStreamRecoveryDiagnostic({
                   nowMs: Date.now(),
                   pendingPreservedPayloadCount,
+                  coalescedPendingPayloadCount:
+                      state.coalescedPendingPayloadCount,
+                  peakInFlightPayloadCount: state.peakInFlightPayloadCount,
                   reason,
                   resyncSnapshotCount: resyncSnapshots.length,
                   state,
@@ -1898,18 +1969,44 @@ function postAiSessionStreamPayload(
         return false;
     }
 
-    const message = nextAiSessionStreamMessage(state, payload);
-    preserveAiSessionStreamPayload(windowId, state, payload, message.seq);
-
-    try {
-        state.port.postMessage(message);
-        scheduleAiSessionStreamStaleCheck(windowId);
-        return true;
-    } catch (error) {
-        debugBenignError("aiSessionStreamPort.postMessage", error);
+    if (
+        state.pendingInFlightPayloadSeqs.size >=
+        AI_SESSION_STREAM_MAX_IN_FLIGHT
+    ) {
+        // Keep producer pressure behind a bounded, key-coalesced queue.
+        const result = rememberAiSessionStreamPayloadForDelivery({
+            maxPayloads: AI_SESSION_STREAM_MAX_PENDING_PAYLOADS,
+            order: state.nextPendingOrder,
+            payload,
+            queue: state.pendingDeliveryPayloads,
+        });
+        state.nextPendingOrder += 1;
+        if (result.coalesced) {
+            state.coalescedPendingPayloadCount += 1;
+        }
+        if (result.preserved && !result.droppedOldest) {
+            scheduleAiSessionStreamStaleCheck(windowId);
+            return true;
+        }
+        debugBenignError(
+            "aiSessionStreamPort.pendingPayloads",
+            new Error(
+                JSON.stringify({
+                    droppedCritical: result.droppedCritical,
+                    limit: AI_SESSION_STREAM_MAX_PENDING_PAYLOADS,
+                    pendingCount: result.pendingCount,
+                    windowId,
+                }),
+            ),
+        );
         recoverAiSessionStreamPort(windowId, "post-error");
         return false;
     }
+
+    if (sendAiSessionStreamPayload(windowId, state, payload)) {
+        return true;
+    }
+    return false;
 }
 
 function dispatchAiSessionSnapshot(

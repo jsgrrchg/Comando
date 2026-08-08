@@ -38,17 +38,15 @@ export function deliverAiSessionStreamMessage(
         return;
     }
 
-    // ACK confirms delivery to preload, not completed renderer rendering.
-    try {
-        handlers.acknowledge(message.seq);
-    } catch (error) {
-        handlers.reportWarning(
-            "[comando] Failed to acknowledge AI session stream.",
-            error,
-        );
-    }
-
     if (message.type !== "payload") {
+        try {
+            handlers.acknowledge(message.seq);
+        } catch (error) {
+            handlers.reportWarning(
+                "[comando] Failed to acknowledge AI session stream.",
+                error,
+            );
+        }
         return;
     }
 
@@ -57,6 +55,17 @@ export function deliverAiSessionStreamMessage(
     } catch (error) {
         handlers.reportDispatchError(
             "[comando] AI session stream listener dispatch failed.",
+            error,
+        );
+        return;
+    }
+
+    // ACK confirms synchronous listener ingestion, not a completed React paint.
+    try {
+        handlers.acknowledge(message.seq);
+    } catch (error) {
+        handlers.reportWarning(
+            "[comando] Failed to acknowledge AI session stream.",
             error,
         );
     }

@@ -43,14 +43,14 @@ function createHandlers() {
 }
 
 describe("AI session stream preload delivery", () => {
-    it("acknowledges valid payloads before notifying listeners", () => {
+    it("acknowledges valid payloads after notifying listeners", () => {
         const handlers = createHandlers();
 
         deliverAiSessionStreamMessage(createMessage(), handlers);
 
         expect(handlers.acknowledge).toHaveBeenCalledWith(7);
         expect(handlers.notifyPayload).toHaveBeenCalledTimes(1);
-        expect(handlers.acknowledge.mock.invocationCallOrder[0]).toBeLessThan(
+        expect(handlers.acknowledge.mock.invocationCallOrder[0]).toBeGreaterThan(
             handlers.notifyPayload.mock.invocationCallOrder[0],
         );
     });
@@ -71,7 +71,7 @@ describe("AI session stream preload delivery", () => {
         expect(handlers.notifyPayload).not.toHaveBeenCalled();
     });
 
-    it("acknowledges a valid payload even when listener dispatch fails", () => {
+    it("does not acknowledge a payload when listener dispatch fails", () => {
         const error = new Error("listener failed");
         const handlers = createHandlers();
         handlers.notifyPayload.mockImplementation(() => {
@@ -80,7 +80,7 @@ describe("AI session stream preload delivery", () => {
 
         deliverAiSessionStreamMessage(createMessage(), handlers);
 
-        expect(handlers.acknowledge).toHaveBeenCalledWith(7);
+        expect(handlers.acknowledge).not.toHaveBeenCalled();
         expect(handlers.reportDispatchError).toHaveBeenCalledWith(
             "[comando] AI session stream listener dispatch failed.",
             error,
@@ -99,7 +99,7 @@ describe("AI session stream preload delivery", () => {
         );
     });
 
-    it("logs ACK failures and still notifies valid payload listeners", () => {
+    it("logs ACK failures after notifying valid payload listeners", () => {
         const error = new Error("port closed");
         const handlers = createHandlers();
         handlers.acknowledge.mockImplementation(() => {
