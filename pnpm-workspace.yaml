@@ -6,8 +6,8 @@ onlyBuiltDependencies:
   - esbuild
 
 overrides:
-  dompurify: 3.4.12
-  js-yaml: 4.3.0
+  dompurify: 3.4.13
+  js-yaml: 4.3.1
   fast-uri: 3.1.5
   "esbuild@0.27.7": 0.28.1
   "@babel/core@7.29.0": 7.29.6
