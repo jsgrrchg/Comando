@@ -27,10 +27,12 @@ describe("chatPerformanceCounters", () => {
     });
 
     it("records peak counters without retaining payload data", () => {
-        recordChatPerformanceCounterPeak("ai_stream_peak_in_flight", 7);
-        recordChatPerformanceCounterPeak("ai_stream_peak_in_flight", 3);
+        recordChatPerformanceCounterPeak("ai_frame_peak_pending_per_session", 7);
+        recordChatPerformanceCounterPeak("ai_frame_peak_pending_per_session", 3);
 
-        expect(readChatPerformanceCounters().ai_stream_peak_in_flight).toBe(7);
+        expect(
+            readChatPerformanceCounters().ai_frame_peak_pending_per_session,
+        ).toBe(7);
     });
 
     it("can disable counters without allocating diagnostic payloads", () => {
@@ -51,8 +53,8 @@ describe("chatPerformanceCounters", () => {
         resetChatPerformanceCounters();
 
         expect(readChatPerformanceCounters()).toEqual({
-            ai_stream_payloads_coalesced: 0,
-            ai_stream_peak_in_flight: 0,
+            ai_frame_payloads_coalesced: 0,
+            ai_frame_peak_pending_per_session: 0,
             activity_segments_rebuilt: 0,
             activity_items_mounted: 0,
             code_highlight_chars_reparsed: 0,

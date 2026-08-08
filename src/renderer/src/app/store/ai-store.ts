@@ -112,7 +112,10 @@ import {
     measureChatPerformanceAsync,
     recordChatPerformanceMetric,
 } from "@renderer/app/debug/chatPerformanceProbe";
-import { incrementChatPerformanceCounter } from "@renderer/app/debug/chatPerformanceCounters";
+import {
+    incrementChatPerformanceCounter,
+    recordChatPerformanceCounterPeak,
+} from "@renderer/app/debug/chatPerformanceCounters";
 import type {
     RuntimeWorkspaceChatTab,
     RuntimeWorkspaceReviewTab,
@@ -460,7 +463,7 @@ const sessionEventFrameBuffer = new AiSessionEventFrameBuffer({
     now: getChatPerformanceTimestamp,
     onCoalesced: (event) => {
         if (event.kind === "tool-activity") {
-            incrementChatPerformanceCounter("ai_stream_payloads_coalesced");
+            incrementChatPerformanceCounter("ai_frame_payloads_coalesced");
         }
     },
     onFlush: ({ eventCount, firstQueuedAt, sessionId }) => {
@@ -1214,6 +1217,10 @@ export const useAiStore = create<AiStore>((set, get) => ({
             isFrameBufferableAiSessionEvent(normalizedEvent)
         ) {
             sessionEventFrameBuffer.buffer(normalizedEvent);
+            recordChatPerformanceCounterPeak(
+                "ai_frame_peak_pending_per_session",
+                sessionEventFrameBuffer.pendingCount(normalizedEvent.sessionId),
+            );
             return;
         }
         if (!isFrameBufferableAiSessionEvent(normalizedEvent)) {

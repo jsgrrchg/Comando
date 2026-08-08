@@ -125,6 +125,58 @@ describe("workspaceSurfaceAgentPresencePublisher", () => {
         await settle();
         publisher.dispose();
     });
+
+    it("suppresses temporal churn while suspended but publishes semantic changes", async () => {
+        let sessions = { "session-1": sessionState() };
+        const listeners = new Set<() => void>();
+        const published: WorkspaceSurfaceAgentPresenceState[] = [];
+        const setTimer = vi.fn(() => 1);
+        const publisher = createWorkspaceSurfaceAgentPresencePublisher({
+            getAiSessions: () => sessions,
+            getWorkspaceProjection: workspaceProjection,
+            publish: (state) => {
+                published.push(state);
+                return Promise.resolve({ delivered: true });
+            },
+            setTimer,
+            subscribeAiSessions: (listener) => subscribe(listeners, listener),
+            subscribeWorkspace: () => () => undefined,
+        });
+        publisher.updateContext({
+            ...publisherContext(),
+            lifecycle: "suspended",
+        });
+        await settle();
+
+        for (let index = 1; index <= 10_000; index += 1) {
+            sessions = {
+                "session-1": sessionState({
+                    updatedAt: new Date(index).toISOString(),
+                }),
+            };
+            for (const listener of listeners) listener();
+        }
+        await settle();
+
+        expect(published).toHaveLength(1);
+        expect(setTimer).not.toHaveBeenCalled();
+
+        sessions = {
+            "session-1": sessionState({
+                status: "streaming",
+                title: "Semantic update",
+            }),
+        };
+        for (const listener of listeners) listener();
+        await settle();
+
+        expect(published).toHaveLength(2);
+        expect(published[1]?.sessions[0]).toMatchObject({
+            status: "streaming",
+            title: "Semantic update",
+        });
+        publisher.dispose();
+    });
 });
 
 function publisherContext() {

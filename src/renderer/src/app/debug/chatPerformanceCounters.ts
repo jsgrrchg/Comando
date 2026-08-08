@@ -1,8 +1,8 @@
 import { isChatPerformanceProbeEnabled } from "./chatPerformanceProbe";
 
 export type ChatPerformanceCounter =
-    | "ai_stream_payloads_coalesced"
-    | "ai_stream_peak_in_flight"
+    | "ai_frame_payloads_coalesced"
+    | "ai_frame_peak_pending_per_session"
     | "activity_segments_rebuilt"
     | "activity_items_mounted"
     | "code_highlight_chars_reparsed"
@@ -34,8 +34,8 @@ export type ChatPerformanceCounterSnapshot = Readonly<
 >;
 
 const EMPTY_COUNTERS: ChatPerformanceCounterSnapshot = {
-    ai_stream_payloads_coalesced: 0,
-    ai_stream_peak_in_flight: 0,
+    ai_frame_payloads_coalesced: 0,
+    ai_frame_peak_pending_per_session: 0,
     activity_segments_rebuilt: 0,
     activity_items_mounted: 0,
     code_highlight_chars_reparsed: 0,
