@@ -3150,13 +3150,13 @@ impl NotificationContextInner {
         let keys = self
             .terminal_output_buffers
             .iter()
-            .filter_map(|(key, state)| {
+            .filter(|(_, state)| {
                 state
                     .pending_activity
                     .as_ref()
                     .is_some_and(|pending| &pending.runtime_session_id == runtime_session_id)
-                    .then(|| key.clone())
             })
+            .map(|(key, _)| key.clone())
             .collect::<Vec<_>>();
         for key in keys {
             self.flush_terminal_activity(&key);
