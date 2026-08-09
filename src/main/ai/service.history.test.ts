@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type {
     AiHistorySessionSummary,
     AiOpenTranscriptTail,
+    AiPromptQueueSnapshot,
     AiSessionDomainEvent,
     AiSessionSnapshot,
     AiSessionTranscriptPage,
@@ -823,6 +824,98 @@ describe("AiService history", () => {
         expect(deleteSession).toHaveBeenCalledWith("session-1");
     });
 
+    it("prunes expired native history and ignores later snapshots", async () => {
+        const pruneSessionHistory = vi.fn(() =>
+            Promise.resolve({
+                deletedRootIds: ["session-1"],
+                deletedSessionIds: ["session-1", "session-child"],
+                failedRootIds: [],
+                inspectedSessionCount: 3,
+                protectedTreeCount: 1,
+                invalidMetadataCount: 0,
+                invalidTimestampCount: 0,
+                policyChanged: false,
+            }),
+        );
+        const onSessionSnapshot = vi.fn();
+        const service = createService({
+            nativeAi: createNativeAiGateway({ pruneSessionHistory }),
+            onSessionSnapshot,
+        });
+
+        const result = await service.pruneExpiredHistory(
+            "2026-08-01T12:00:00.000Z",
+            7,
+        );
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot: createSnapshot({ sessionId: "session-child" }),
+        });
+
+        expect(pruneSessionHistory).toHaveBeenCalledWith({
+            cutoff: "2026-08-01T12:00:00.000Z",
+            protectedSessionIds: [],
+            retentionDays: 7,
+        });
+        expect(result.deletedSessionIds).toEqual([
+            "session-1",
+            "session-child",
+        ]);
+        expect(onSessionSnapshot).not.toHaveBeenCalled();
+    });
+
+    it("protects restored prompt queues from retention pruning", async () => {
+        const pruneSessionHistory = vi.fn(() =>
+            Promise.resolve({
+                deletedRootIds: [],
+                deletedSessionIds: [],
+                failedRootIds: [],
+                inspectedSessionCount: 1,
+                protectedTreeCount: 1,
+                invalidMetadataCount: 0,
+                invalidTimestampCount: 0,
+                policyChanged: false,
+            }),
+        );
+        const restoredPrompt = {
+            additionalRoots: [],
+            attachments: [],
+            composerPartsSnapshot: [{ text: "Keep this prompt", type: "text" as const }],
+            createdAt: "2026-07-01T12:00:00.000Z",
+            error: null,
+            fileContextsSnapshot: [],
+            id: "queued-1",
+            messageId: "message-1",
+            projectId: "project-1",
+            prompt: "Keep this prompt",
+            runtimeId: "codex" as const,
+            sessionId: "queued-session",
+            status: "queued" as const,
+            title: "Queued session",
+            worktreeId: null,
+        };
+        const restoredQueue: AiPromptQueueSnapshot = {
+            activeItem: null,
+            editingItem: null,
+            items: [restoredPrompt],
+            paused: true,
+            revision: 1,
+            sessionId: "queued-session",
+        };
+        const service = createService({
+            loadPromptQueueSnapshots: vi.fn(() => [restoredQueue]),
+            nativeAi: createNativeAiGateway({ pruneSessionHistory }),
+        });
+
+        await service.pruneExpiredHistory("2026-08-01T12:00:00.000Z", 7);
+
+        expect(pruneSessionHistory).toHaveBeenCalledWith({
+            cutoff: "2026-08-01T12:00:00.000Z",
+            protectedSessionIds: ["queued-session"],
+            retentionDays: 7,
+        });
+    });
+
     it("deletes every persisted descendant from leaf to root", async () => {
         const deleteSession = vi.fn();
         const listSessionRuntimeMappingsForParent = vi.fn(() => [
@@ -1543,6 +1636,7 @@ function createTrackedFile(
 function createService(overrides: {
     readonly deleteSession?: ReturnType<typeof vi.fn>;
     readonly loadLatestRuntimeCatalog?: ReturnType<typeof vi.fn>;
+    readonly loadPromptQueueSnapshots?: ReturnType<typeof vi.fn>;
     readonly listSessionHistory?: ReturnType<typeof vi.fn>;
     readonly listSessionRuntimeMappingsForParent?: ReturnType<typeof vi.fn>;
     readonly loadSessionSnapshot?: ReturnType<typeof vi.fn>;
@@ -1573,6 +1667,8 @@ function createService(overrides: {
             listSessionHistory: overrides.listSessionHistory ?? vi.fn(() => []),
             loadLatestRuntimeCatalog:
                 overrides.loadLatestRuntimeCatalog ?? vi.fn(() => null),
+            loadPromptQueueSnapshots:
+                overrides.loadPromptQueueSnapshots ?? vi.fn(() => []),
             loadRuntimeSelectionPreferences: vi.fn(() => ({
                 configOptions: {},
                 modeId: null,

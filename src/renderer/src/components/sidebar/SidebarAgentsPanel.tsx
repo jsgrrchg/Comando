@@ -413,6 +413,23 @@ export function SidebarAgentsPanel({
         [historyScopeKey, loadedHistoryScopeKey, projectId, worktreeId],
     );
 
+    useEffect(() => {
+        const api = getComandoApi();
+        return (
+            api?.onAiHistoryPruned?.((event) => {
+                const deletedSessionIds = new Set(event.deletedSessionIds);
+                for (const sessionId of deletedSessionIds) {
+                    deletedSessionIdsRef.current.add(sessionId);
+                }
+                setSessionsAndCache((current) =>
+                    current.filter(
+                        (session) => !deletedSessionIds.has(session.sessionId),
+                    ),
+                );
+            }) ?? (() => undefined)
+        );
+    }, [setSessionsAndCache]);
+
     const updateFolderState = useCallback(
         (
             updater: (

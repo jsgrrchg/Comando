@@ -11,6 +11,7 @@ import {
     CHAT_CONTENT_WIDTH_DEFAULT,
     clampChatContentWidth,
 } from "@shared/chat-content-width";
+import { normalizeChatHistoryRetentionDays } from "@shared/chat-history-retention";
 import {
     DEFAULT_APP_TERMINAL_SETTINGS,
     normalizeWindowsTerminalShell,
@@ -559,6 +560,7 @@ class NativeSettingsClient implements SettingsGateway {
     readonly #store: NativeJsonStore;
     readonly #secretStore: SecretStoreGateway;
     readonly #projectSettingsById = new Map<string, ProjectSettingsSnapshot>();
+    #durableSnapshotSave: Promise<void> = Promise.resolve();
     #snapshot: SettingsSnapshot;
 
     constructor(
@@ -581,6 +583,10 @@ class NativeSettingsClient implements SettingsGateway {
         return structuredClone(this.#snapshot);
     }
 
+    async flush(): Promise<void> {
+        await this.#store.flush();
+    }
+
     saveSnapshot(snapshot: SettingsSnapshot): void {
         // Dedicated CRUD keeps renderer snapshots from choosing IDs, revisions,
         // fingerprints, or silently replacing the custom runtime collection.
@@ -589,6 +595,25 @@ class NativeSettingsClient implements SettingsGateway {
             customAcpRuntimes: this.#snapshot.customAcpRuntimes,
         });
         this.#persistSoon();
+    }
+
+    saveSnapshotNow(snapshot: SettingsSnapshot): Promise<void> {
+        const save = this.#durableSnapshotSave.then(async () => {
+            const currentSnapshot = this.#snapshot;
+            const nextSnapshot = normalizeSettingsSnapshot({
+                ...snapshot,
+                customAcpRuntimes: currentSnapshot.customAcpRuntimes,
+            });
+            await this.#store.saveNow(SETTINGS_KEY, nextSnapshot);
+            // A synchronous dedicated mutation may have happened while the
+            // native write was pending; its newer in-memory state must win.
+            if (this.#snapshot === currentSnapshot) {
+                this.#snapshot = nextSnapshot;
+            }
+        });
+        // Keep later durable saves ordered even when one caller observes a failure.
+        this.#durableSnapshotSave = save.catch(() => undefined);
+        return save;
     }
 
     loadAppAppearanceSettings(): AppAppearanceSettings {
@@ -1413,10 +1438,12 @@ function createLegacySettingsSnapshot(
                     "ai.composer.context_usage_bar_enabled",
                 ) ?? defaults.aiChat.contextUsageBarEnabled,
             historyRetentionDays:
-                readLegacyNumberSetting(
-                    settings,
-                    "ai.chat.history_retention_days",
-                ) ?? defaults.aiChat.historyRetentionDays,
+                normalizeChatHistoryRetentionDays(
+                    readLegacyNumberSetting(
+                        settings,
+                        "ai.chat.history_retention_days",
+                    ),
+                ),
             requireCmdEnterToSend:
                 readLegacyBooleanSetting(
                     settings,
@@ -2135,6 +2162,9 @@ function normalizeSettingsSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot
         aiChat: {
             ...defaults.aiChat,
             ...aiChat,
+            historyRetentionDays: normalizeChatHistoryRetentionDays(
+                persistedAiChat?.historyRetentionDays,
+            ),
             toolActivityDefaultExpansion:
                 persistedAiChat?.toolActivityDefaultExpansion === "expanded"
                     ? "expanded"

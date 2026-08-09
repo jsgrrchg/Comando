@@ -108,6 +108,18 @@ export class AiPromptQueue {
         }
     }
 
+    getSessionIdsWithQueuedWork(): readonly string[] {
+        const sessionIds: string[] = [];
+        for (const [sessionId, record] of this.#records) {
+            // Queue state is user-authored durable data, so any retained item
+            // protects its history until the user clears or dispatches it.
+            if (record.activeItem || record.editingItem || record.items.length > 0) {
+                sessionIds.push(sessionId);
+            }
+        }
+        return sessionIds;
+    }
+
     bindSession(sessionId: string, ownerWindowId: string): AiPromptQueueSnapshot {
         const record = this.#getRecord(sessionId);
         record.ownerWindowId = ownerWindowId;

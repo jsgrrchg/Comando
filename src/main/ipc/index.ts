@@ -221,6 +221,7 @@ import { resolveCodexGeneratedImageFilePath } from "@main/file-preview-protocol"
 import { isNativeBackendOperationCancelled } from "@main/native-backend/client";
 
 import type { AiService } from "@main/ai/service";
+import type { HistoryRetentionCoordinator } from "@main/ai/history-retention";
 import { createCustomAcpRuntimeDefinition } from "@main/ai/custom-acp-runtimes";
 import { resolveCustomAcpRuntime } from "@main/ai/custom-acp-launch";
 import {
@@ -272,6 +273,7 @@ interface RegisterIpcHandlersOptions {
     readonly aiService: AiService;
     readonly gitService: GitGateway;
     readonly githubService: GitHubGateway;
+    readonly historyRetentionCoordinator: HistoryRetentionCoordinator;
     readonly getSnapshot: () => AppBootstrapSnapshot;
     readonly durableWorkspaceRepository: NativePersistenceGateway;
     readonly focusMainWindow: () => void;
@@ -785,8 +787,13 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
     );
     ipcMain.handle(
         IPC_CHANNELS.saveSettingsSnapshot,
-        (_event, snapshot: SettingsSnapshot) => {
-            options.settingsService.saveSnapshot(snapshot);
+        async (_event, snapshot: SettingsSnapshot) => {
+            if (options.settingsService.saveSnapshotNow) {
+                await options.settingsService.saveSnapshotNow(snapshot);
+            } else {
+                options.settingsService.saveSnapshot(snapshot);
+                await options.settingsService.flush?.();
+            }
             const effects = resolveSettingsSnapshotSaveEffects(snapshot);
             if (effects.broadcastSettingsUpdated) {
                 const persisted = options.settingsService.loadSnapshot();
@@ -805,6 +812,9 @@ export function registerIpcHandlers(options: RegisterIpcHandlersOptions): void {
                     persisted.editor ?? null,
                     persisted.aiChat ?? null,
                     persisted.terminal ?? null,
+                );
+                options.historyRetentionCoordinator.updateRetentionDays(
+                    persisted.aiChat?.historyRetentionDays,
                 );
             }
         },
