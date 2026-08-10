@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 
 import type {
-    WorkspaceSurfaceAgentPresenceState,
     WorkspaceSurfaceActionEnvelope,
     WorkspaceSurfaceHardLease,
     WorkspaceSurfaceLifecycleState,
@@ -32,7 +31,11 @@ import {
     resolveCommittedProjectWorktreeId,
 } from "./app/git/context-key";
 import { executeWorkspaceSurfaceAction } from "./app/workspace/surface-actions";
-import { collectWorkspaceSurfaceAiAgentPresence } from "./app/workspace/surface-agent-presence";
+import {
+    createWorkspaceSurfaceAgentPresencePublisher,
+    type WorkspaceSurfaceAgentPresencePublisher,
+} from "./app/workspace/workspaceSurfaceAgentPresencePublisher";
+import { incrementChatPerformanceCounter } from "./app/debug/chatPerformanceCounters";
 import { resolveWorkspaceSurfaceActiveFileState } from "./app/workspace/surface-active-file";
 import { isWorkspaceSurfaceLifecycleCurrent } from "./app/workspace/surface-presentation-lifecycle";
 import {
@@ -164,7 +167,6 @@ export function WorkspaceSurfaceApp() {
     const applyAiPromptQueueSnapshot = useAiStore(
         (state) => state.applyPromptQueueSnapshot,
     );
-    const aiSessions = useAiStore((state) => state.sessions);
     const hydrateProjects = useProjectsStore((state) => state.hydrate);
     const projects = useProjectsStore((state) => state.projects);
     const addProjects = useProjectsStore((state) => state.addProjects);
@@ -180,7 +182,6 @@ export function WorkspaceSurfaceApp() {
     );
     const openFileTab = useWorkspaceStore((state) => state.openFileTab);
     const activePaneId = useWorkspaceStore((state) => state.activePaneId);
-    const rootNode = useWorkspaceStore((state) => state.rootNode);
     const tabsById = useWorkspaceStore((state) => state.tabsById);
     const [terminalAgentSessions, setTerminalAgentSessions] = useState(() =>
         getClaudeCodeSidebarSessions(),
@@ -222,68 +223,8 @@ export function WorkspaceSurfaceApp() {
               activeContext?.worktreeId ?? descriptor?.worktreeId ?? null,
           )
         : null;
-    const agentPresence = useMemo<WorkspaceSurfaceAgentPresenceState | null>(
-        () => {
-            if (!activeContext || !activeProjectId) {
-                return null;
-            }
-
-            const terminalSessionsByTerminalId = new Map(
-                terminalAgentSessions.map((session) => [
-                    session.terminalId,
-                    session,
-                ]),
-            );
-            const activePane = findPaneById(rootNode, activePaneId);
-            const activeTab = activePane?.activeTabId
-                ? tabsById[activePane.activeTabId]
-                : null;
-            const aiSessionPresence = collectWorkspaceSurfaceAiAgentPresence({
-                aiSessions,
-                projectId: activeProjectId,
-                tabsById,
-                worktreeId: activeWorktreeId,
-            });
-            const terminalSessions = terminalAgentSessions.map((session) => ({
-                createdAt: session.createdAt,
-                kind: "terminal" as const,
-                preview: session.preview,
-                runtimeId: session.runtimeId,
-                runtimeSessionId: session.runtimeSessionId ?? null,
-                sessionId: session.sessionId,
-                status: null,
-                terminalId: session.terminalId,
-                title: session.title,
-                updatedAt: session.updatedAt,
-            }));
-
-            return {
-                activeSessionId:
-                    activeTab?.kind === "chat" || activeTab?.kind === "review"
-                        ? activeTab.sessionId
-                        : activeTab?.kind === "terminal"
-                          ? (terminalSessionsByTerminalId.get(
-                                activeTab.terminalId,
-                            )?.sessionId ?? null)
-                        : null,
-                contextKey: activeContext.key,
-                projectId: activeProjectId,
-                sessions: [...aiSessionPresence, ...terminalSessions],
-                worktreeId: activeWorktreeId,
-            };
-        },
-        [
-            activeContext,
-            activePaneId,
-            activeProjectId,
-            activeWorktreeId,
-            aiSessions,
-            rootNode,
-            tabsById,
-            terminalAgentSessions,
-        ],
-    );
-    const publishedAgentPresenceSignatureRef = useRef("");
+    const agentPresencePublisherRef =
+        useRef<WorkspaceSurfaceAgentPresencePublisher | null>(null);
     const runtimeBinding = useMemo<WorkspaceSurfaceRuntimeBinding | null>(
         () =>
             descriptor
@@ -623,23 +564,73 @@ export function WorkspaceSurfaceApp() {
     }, [surfaceLifecycle, terminalAgentSessions]);
 
     useEffect(() => {
-        if (surfaceStatus !== "ready" || !agentPresence) {
+        const publisher = createWorkspaceSurfaceAgentPresencePublisher({
+            getAiSessions: () => useAiStore.getState().sessions,
+            getWorkspaceProjection: () => {
+                const state = useWorkspaceStore.getState();
+                const activePane = findPaneById(
+                    state.rootNode,
+                    state.activePaneId,
+                );
+                return {
+                    activeTab: activePane?.activeTabId
+                        ? (state.tabsById[activePane.activeTabId] ?? null)
+                        : null,
+                    tabsById: state.tabsById,
+                };
+            },
+            publish: (presence) => {
+                incrementChatPerformanceCounter(
+                    "workspace_presence_publishes",
+                );
+                return window.comando.publishWorkspaceSurfaceAgentPresence(
+                    presence,
+                );
+            },
+            subscribeAiSessions: (listener) => useAiStore.subscribe(listener),
+            subscribeWorkspace: (listener) =>
+                useWorkspaceStore.subscribe(listener),
+        });
+        agentPresencePublisherRef.current = publisher;
+        return () => {
+            agentPresencePublisherRef.current = null;
+            publisher.dispose();
+        };
+    }, []);
+
+    useEffect(() => {
+        const publisher = agentPresencePublisherRef.current;
+        if (!publisher) return;
+        if (surfaceStatus !== "ready" || !activeContext || !activeProjectId) {
+            publisher.updateContext(null);
             return;
         }
-        const signature = JSON.stringify(agentPresence);
-        if (publishedAgentPresenceSignatureRef.current === signature) {
-            return;
-        }
-        // Keep the host informed without duplicating message or transcript payloads.
-        void window.comando
-            .publishWorkspaceSurfaceAgentPresence(agentPresence)
-            .then((result) => {
-                if (result.delivered) {
-                    publishedAgentPresenceSignatureRef.current = signature;
-                }
-            })
-            .catch(() => undefined);
-    }, [agentPresence, surfaceLifecycle, surfaceStatus]);
+        publisher.updateContext({
+            contextKey: activeContext.key,
+            lifecycle: surfaceLifecycle,
+            projectId: activeProjectId,
+            terminalSessions: terminalAgentSessions.map((session) => ({
+                createdAt: session.createdAt,
+                kind: "terminal",
+                preview: session.preview,
+                runtimeId: session.runtimeId,
+                runtimeSessionId: session.runtimeSessionId ?? null,
+                sessionId: session.sessionId,
+                status: null,
+                terminalId: session.terminalId,
+                title: session.title,
+                updatedAt: session.updatedAt,
+            })),
+            worktreeId: activeWorktreeId,
+        });
+    }, [
+        activeContext,
+        activeProjectId,
+        activeWorktreeId,
+        surfaceLifecycle,
+        surfaceStatus,
+        terminalAgentSessions,
+    ]);
 
     useEffect(() => {
         if (surfaceLifecycle !== "visible") {

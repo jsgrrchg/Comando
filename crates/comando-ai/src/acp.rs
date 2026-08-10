@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc as std_mpsc};
+use std::time::{Duration, Instant};
 
 use agent_client_protocol::schema::v1::{
     AuthenticateRequest, AvailableCommand, AvailableCommandsUpdate, CancelNotification,
@@ -91,6 +92,9 @@ const ACP_TERMINAL_OUTPUT_DATA_META_KEY: &str = "data";
 const ACP_TERMINAL_OUTPUT_MODE_META_KEY: &str = "mode";
 const ACP_TERMINAL_EXIT_CODE_META_KEY: &str = "exit_code";
 const TERMINAL_OUTPUT_MAX_LENGTH: usize = 10_000;
+const TERMINAL_ACTIVITY_EMIT_INTERVAL_MS: u64 = 250;
+
+type MonotonicClock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 type PermissionWaiterMap = Arc<Mutex<HashMap<String, PendingPermissionRequest>>>;
 type PromptCapabilitiesState = Arc<Mutex<AcpPromptCapabilities>>;
@@ -2104,15 +2108,36 @@ impl NotificationContext {
         supports_subagents: bool,
         session_registry: Option<Arc<Mutex<SessionRegistry>>>,
     ) -> Self {
+        let started_at = Instant::now();
         let inner = NotificationContextInner::new(
             session,
             event_sender,
             persisted_subagent_session_mappings,
             supports_subagents,
             session_registry,
+            Arc::new(move || u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)),
         );
         Self {
             inner: Arc::new(Mutex::new(inner)),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_clock(
+        session: NativeAiSession,
+        event_sender: Option<std_mpsc::SyncSender<AiRuntimeEvent>>,
+        supports_subagents: bool,
+        clock: MonotonicClock,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(NotificationContextInner::new(
+                session,
+                event_sender,
+                Vec::new(),
+                supports_subagents,
+                None,
+                clock,
+            ))),
         }
     }
 
@@ -2129,9 +2154,50 @@ impl NotificationContext {
     }
 
     fn handle(&self, notification: SessionNotification) {
-        if let Ok(mut inner) = self.inner.lock() {
+        let schedules = if let Ok(mut inner) = self.inner.lock() {
             inner.handle(notification);
+            inner.take_terminal_flush_schedules()
+        } else {
+            Vec::new()
+        };
+        for schedule in schedules {
+            self.schedule_terminal_flush(schedule);
         }
+    }
+
+    fn schedule_terminal_flush(&self, schedule: ScheduledTerminalFlush) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let context = self.clone();
+        runtime.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(schedule.delay_ms)).await;
+            context.run_terminal_flush(schedule);
+        });
+    }
+
+    fn run_terminal_flush(&self, schedule: ScheduledTerminalFlush) {
+        let retry = self.inner.lock().ok().and_then(|mut inner| {
+            inner.flush_scheduled_terminal_activity(&schedule.buffer_key, schedule.generation)
+        });
+        if let Some(retry) = retry {
+            self.schedule_terminal_flush(retry);
+        }
+    }
+
+    #[cfg(test)]
+    fn flush_due_terminal_activities(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.flush_due_terminal_activities();
+        }
+    }
+
+    #[cfg(test)]
+    fn terminal_activity_metrics(&self) -> TerminalActivityMetrics {
+        self.inner
+            .lock()
+            .map(|inner| inner.terminal_activity_metrics)
+            .unwrap_or_default()
     }
 
     #[cfg(test)]
@@ -2193,7 +2259,9 @@ struct NotificationContextInner {
     synthetic_message_epoch: String,
     synthetic_message_ids: HashMap<String, String>,
     synthetic_message_next_id: usize,
-    terminal_output_buffers: HashMap<String, String>,
+    terminal_clock: MonotonicClock,
+    terminal_activity_metrics: TerminalActivityMetrics,
+    terminal_output_buffers: HashMap<String, TerminalOutputState>,
     tool_calls: HashMap<String, ToolCall>,
 }
 
@@ -2221,6 +2289,35 @@ struct PendingToolActivity {
 struct TerminalToolUpdate {
     terminal_output: Option<String>,
     exit_code: Option<i32>,
+    output_buffer_key: Option<String>,
+}
+
+#[derive(Clone)]
+struct PendingTerminalActivity {
+    runtime_session_id: RuntimeSessionId,
+    tool_call_id: NativeToolCallId,
+}
+
+struct ScheduledTerminalFlush {
+    buffer_key: String,
+    delay_ms: u64,
+    generation: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct TerminalActivityMetrics {
+    coalesced: u64,
+    emitted: u64,
+    received: u64,
+    trailing_flushes: u64,
+}
+
+struct TerminalOutputState {
+    flush_generation: u64,
+    flush_scheduled: bool,
+    last_emitted_at_ms: Option<u64>,
+    output: String,
+    pending_activity: Option<PendingTerminalActivity>,
 }
 
 #[derive(Clone)]
@@ -2269,6 +2366,7 @@ impl NotificationContextInner {
         persisted_subagent_session_mappings: Vec<NativeAiRuntimeSessionMapping>,
         supports_subagents: bool,
         session_registry: Option<Arc<Mutex<SessionRegistry>>>,
+        terminal_clock: MonotonicClock,
     ) -> Self {
         let mut app_session_id_by_runtime_session_id = HashMap::new();
         let mut subagents_by_runtime_session_id = HashMap::new();
@@ -2344,12 +2442,20 @@ impl NotificationContextInner {
             synthetic_message_epoch: Uuid::new_v4().to_string(),
             synthetic_message_ids: HashMap::new(),
             synthetic_message_next_id: 1,
+            terminal_clock,
+            terminal_activity_metrics: TerminalActivityMetrics::default(),
             terminal_output_buffers: HashMap::new(),
             tool_calls: HashMap::new(),
         }
     }
 
     fn set_root_runtime_session_id(&mut self, runtime_session_id: RuntimeSessionId) {
+        if let Some(previous_runtime_session_id) = self.runtime_session_id.clone()
+            && previous_runtime_session_id != runtime_session_id
+        {
+            self.flush_terminal_activities_for_session(&previous_runtime_session_id);
+            self.clear_terminal_output_buffers(&previous_runtime_session_id);
+        }
         self.runtime_session_id = Some(runtime_session_id.clone());
         self.app_session_id_by_runtime_session_id.insert(
             runtime_session_id.0.clone(),
@@ -2595,33 +2701,8 @@ impl NotificationContextInner {
             return;
         }
         let terminal_update = self.consume_terminal_meta(runtime_session_id, meta);
-        let diffs = self.tool_call_activity_diffs_for_runtime_session(
-            runtime_session_id,
-            tool_call_id.clone(),
-            &tool_call,
-            tool_call.meta.as_ref().unwrap_or(meta),
-            terminal_update.clone(),
-        );
-        self.emit(
-            AI_TOOL_ACTIVITY_EVENT,
-            &NativeAiToolActivityPayload {
-                base: self.event_base_for_runtime_session(runtime_session_id),
-                kind: serde_label(&tool_call.kind),
-                status: serde_label(&tool_call.status),
-                summary: tool_call_summary(&tool_call),
-                tool_activity_detail_id: None,
-                change_stats: None,
-                raw_input: tool_call.raw_input.clone(),
-                raw_output: tool_call.raw_output.clone(),
-                title: tool_call.title,
-                tool_call_id: tool_call_id.clone(),
-                diffs,
-                locations: native_tool_activity_locations(&tool_call.locations),
-                terminal_output: terminal_update.terminal_output,
-                exit_code: terminal_update.exit_code,
-            },
-        );
-        self.emit_subagent_breadcrumb(runtime_session_id, tool_call_id, meta);
+        self.mark_terminal_activity_emitted(&terminal_update);
+        self.emit_tool_call_activity(runtime_session_id, tool_call, terminal_update, meta);
     }
 
     fn handle_tool_call_update(
@@ -2634,6 +2715,7 @@ impl NotificationContextInner {
             return;
         }
 
+        let previous_tool_call = self.tool_call_for_update(runtime_session_id, &tool_call_update);
         let Some(tool_call) =
             self.apply_tool_call_update(runtime_session_id, tool_call_update, meta)
         else {
@@ -2645,7 +2727,36 @@ impl NotificationContextInner {
             self.emit_image_generation(runtime_session_id, &tool_call_id, &tool_call);
             return;
         }
-        let terminal_update = self.consume_terminal_meta(runtime_session_id, meta);
+        let mut terminal_update = self.consume_terminal_meta(runtime_session_id, meta);
+        let terminal_only = terminal_update.output_buffer_key.is_some()
+            && terminal_update.exit_code.is_none()
+            && !tool_call_has_semantic_change(previous_tool_call.as_ref(), &tool_call)
+            && meta.keys().all(|key| key == ACP_TERMINAL_OUTPUT_META_KEY);
+        if terminal_only && !self.should_emit_terminal_activity(&terminal_update) {
+            self.defer_terminal_activity(runtime_session_id, &tool_call_id, &terminal_update);
+            return;
+        }
+        self.attach_pending_terminal_output(
+            runtime_session_id,
+            &tool_call_id,
+            &mut terminal_update,
+        );
+        self.mark_terminal_activity_emitted(&terminal_update);
+        self.emit_tool_call_activity(runtime_session_id, tool_call, terminal_update, meta);
+    }
+
+    fn emit_tool_call_activity(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        tool_call: ToolCall,
+        terminal_update: TerminalToolUpdate,
+        meta: &Meta,
+    ) {
+        let tool_call_id = NativeToolCallId(tool_call.tool_call_id.to_string());
+        if terminal_update.terminal_output.is_some() {
+            self.terminal_activity_metrics.emitted =
+                self.terminal_activity_metrics.emitted.saturating_add(1);
+        }
         let diffs = self.tool_call_activity_diffs_for_runtime_session(
             runtime_session_id,
             tool_call_id.clone(),
@@ -2784,6 +2895,9 @@ impl NotificationContextInner {
     ) -> TerminalToolUpdate {
         let mut terminal_output = self.consume_terminal_output_meta(runtime_session_id, meta);
         let mut exit_code = None;
+        let mut output_buffer_key = terminal_output
+            .as_ref()
+            .map(|(_, buffer_key)| buffer_key.clone());
 
         if let Some(exit_meta) = meta
             .get(ACP_TERMINAL_EXIT_META_KEY)
@@ -2801,15 +2915,17 @@ impl NotificationContextInner {
             }
             if let Some(terminal_id) = terminal_id {
                 let buffer_key = terminal_output_buffer_key(runtime_session_id, terminal_id);
+                output_buffer_key = Some(buffer_key.clone());
                 if let Some(final_output) = self.terminal_output_buffers.remove(&buffer_key) {
-                    terminal_output = Some(final_output);
+                    terminal_output = Some((final_output.output, buffer_key));
                 }
             }
         }
 
         TerminalToolUpdate {
-            terminal_output,
+            terminal_output: terminal_output.map(|(output, _)| output),
             exit_code,
+            output_buffer_key,
         }
     }
 
@@ -2817,7 +2933,7 @@ impl NotificationContextInner {
         &mut self,
         runtime_session_id: &RuntimeSessionId,
         meta: &Meta,
-    ) -> Option<String> {
+    ) -> Option<(String, String)> {
         let output_meta = meta
             .get(ACP_TERMINAL_OUTPUT_META_KEY)
             .and_then(serde_json::Value::as_object)?;
@@ -2830,16 +2946,239 @@ impl NotificationContextInner {
         let mode = output_meta
             .get(ACP_TERMINAL_OUTPUT_MODE_META_KEY)
             .and_then(serde_json::Value::as_str);
+        self.terminal_activity_metrics.received =
+            self.terminal_activity_metrics.received.saturating_add(1);
         let buffer_key = terminal_output_buffer_key(runtime_session_id, terminal_id);
         let previous = self
             .terminal_output_buffers
             .get(&buffer_key)
-            .map(String::as_str)
+            .map(|state| state.output.as_str())
             .unwrap_or_default();
         let next = merge_terminal_output_buffer(previous, data, mode);
         self.terminal_output_buffers
-            .insert(buffer_key, next.clone());
-        Some(next)
+            .entry(buffer_key.clone())
+            .and_modify(|state| state.output.clone_from(&next))
+            .or_insert_with(|| TerminalOutputState {
+                flush_generation: 0,
+                flush_scheduled: false,
+                last_emitted_at_ms: None,
+                output: next.clone(),
+                pending_activity: None,
+            });
+        Some((next, buffer_key))
+    }
+
+    fn should_emit_terminal_activity(&self, update: &TerminalToolUpdate) -> bool {
+        let Some(buffer_key) = update.output_buffer_key.as_ref() else {
+            return true;
+        };
+        let Some(last_emitted_at_ms) = self
+            .terminal_output_buffers
+            .get(buffer_key)
+            .and_then(|state| state.last_emitted_at_ms)
+        else {
+            return true;
+        };
+        (self.terminal_clock)().saturating_sub(last_emitted_at_ms)
+            >= TERMINAL_ACTIVITY_EMIT_INTERVAL_MS
+    }
+
+    fn mark_terminal_activity_emitted(&mut self, update: &TerminalToolUpdate) {
+        let Some(buffer_key) = update.output_buffer_key.as_ref() else {
+            return;
+        };
+        let now_ms = (self.terminal_clock)();
+        if let Some(state) = self.terminal_output_buffers.get_mut(buffer_key) {
+            state.last_emitted_at_ms = Some(now_ms);
+            state.pending_activity = None;
+            state.flush_scheduled = false;
+            state.flush_generation = state.flush_generation.saturating_add(1);
+        }
+    }
+
+    fn defer_terminal_activity(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        tool_call_id: &NativeToolCallId,
+        update: &TerminalToolUpdate,
+    ) {
+        let Some(buffer_key) = update.output_buffer_key.as_ref() else {
+            return;
+        };
+        if let Some(state) = self.terminal_output_buffers.get_mut(buffer_key) {
+            state.pending_activity = Some(PendingTerminalActivity {
+                runtime_session_id: runtime_session_id.clone(),
+                tool_call_id: tool_call_id.clone(),
+            });
+            self.terminal_activity_metrics.coalesced =
+                self.terminal_activity_metrics.coalesced.saturating_add(1);
+        }
+    }
+
+    fn attach_pending_terminal_output(
+        &mut self,
+        runtime_session_id: &RuntimeSessionId,
+        tool_call_id: &NativeToolCallId,
+        update: &mut TerminalToolUpdate,
+    ) {
+        let matching_key = self
+            .terminal_output_buffers
+            .iter()
+            .find_map(|(key, state)| {
+                state.pending_activity.as_ref().and_then(|pending| {
+                    (&pending.runtime_session_id == runtime_session_id
+                        && &pending.tool_call_id == tool_call_id)
+                        .then(|| key.clone())
+                })
+            });
+        let Some(buffer_key) = matching_key else {
+            return;
+        };
+        if update.output_buffer_key.is_none()
+            && let Some(state) = self.terminal_output_buffers.get(&buffer_key)
+        {
+            update.terminal_output = Some(state.output.clone());
+            update.output_buffer_key = Some(buffer_key);
+        }
+    }
+
+    fn take_terminal_flush_schedules(&mut self) -> Vec<ScheduledTerminalFlush> {
+        let now_ms = (self.terminal_clock)();
+        self.terminal_output_buffers
+            .iter_mut()
+            .filter_map(|(buffer_key, state)| {
+                if state.pending_activity.is_none() || state.flush_scheduled {
+                    return None;
+                }
+                let deadline_ms = state
+                    .last_emitted_at_ms
+                    .unwrap_or(now_ms)
+                    .saturating_add(TERMINAL_ACTIVITY_EMIT_INTERVAL_MS);
+                state.flush_scheduled = true;
+                Some(ScheduledTerminalFlush {
+                    buffer_key: buffer_key.clone(),
+                    delay_ms: deadline_ms.saturating_sub(now_ms),
+                    generation: state.flush_generation,
+                })
+            })
+            .collect()
+    }
+
+    fn flush_scheduled_terminal_activity(
+        &mut self,
+        buffer_key: &str,
+        generation: u64,
+    ) -> Option<ScheduledTerminalFlush> {
+        let now_ms = (self.terminal_clock)();
+        let state = self.terminal_output_buffers.get(buffer_key)?;
+        if state.flush_generation != generation || state.pending_activity.is_none() {
+            return None;
+        }
+        let deadline_ms = state
+            .last_emitted_at_ms
+            .unwrap_or(now_ms)
+            .saturating_add(TERMINAL_ACTIVITY_EMIT_INTERVAL_MS);
+        if now_ms < deadline_ms {
+            return Some(ScheduledTerminalFlush {
+                buffer_key: buffer_key.to_string(),
+                delay_ms: deadline_ms - now_ms,
+                generation,
+            });
+        }
+        self.flush_terminal_activity(buffer_key);
+        None
+    }
+
+    #[cfg(test)]
+    fn flush_due_terminal_activities(&mut self) {
+        let now_ms = (self.terminal_clock)();
+        let due_keys = self
+            .terminal_output_buffers
+            .iter()
+            .filter_map(|(key, state)| {
+                let deadline_ms = state
+                    .last_emitted_at_ms
+                    .unwrap_or(now_ms)
+                    .saturating_add(TERMINAL_ACTIVITY_EMIT_INTERVAL_MS);
+                (state.pending_activity.is_some() && now_ms >= deadline_ms).then(|| key.clone())
+            })
+            .collect::<Vec<_>>();
+        for key in due_keys {
+            self.flush_terminal_activity(&key);
+        }
+    }
+
+    fn flush_terminal_activity(&mut self, buffer_key: &str) {
+        let Some((pending, output)) =
+            self.terminal_output_buffers
+                .get(buffer_key)
+                .and_then(|state| {
+                    state
+                        .pending_activity
+                        .clone()
+                        .map(|pending| (pending, state.output.clone()))
+                })
+        else {
+            return;
+        };
+        let tool_call_key =
+            tool_call_state_key(&pending.runtime_session_id, &pending.tool_call_id.0);
+        let Some(tool_call) = self.tool_calls.get(&tool_call_key).cloned() else {
+            self.terminal_output_buffers.remove(buffer_key);
+            return;
+        };
+        let meta = tool_call.meta.clone().unwrap_or_default();
+        let terminal_update = TerminalToolUpdate {
+            exit_code: None,
+            output_buffer_key: Some(buffer_key.to_string()),
+            terminal_output: Some(output),
+        };
+        self.terminal_activity_metrics.trailing_flushes = self
+            .terminal_activity_metrics
+            .trailing_flushes
+            .saturating_add(1);
+        self.mark_terminal_activity_emitted(&terminal_update);
+        self.emit_tool_call_activity(
+            &pending.runtime_session_id,
+            tool_call,
+            terminal_update,
+            &meta,
+        );
+    }
+
+    fn flush_terminal_activities_for_session(&mut self, runtime_session_id: &RuntimeSessionId) {
+        let keys = self
+            .terminal_output_buffers
+            .iter()
+            .filter(|(_, state)| {
+                state
+                    .pending_activity
+                    .as_ref()
+                    .is_some_and(|pending| &pending.runtime_session_id == runtime_session_id)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for key in keys {
+            self.flush_terminal_activity(&key);
+        }
+    }
+
+    fn tool_call_for_update(
+        &self,
+        runtime_session_id: &RuntimeSessionId,
+        tool_call_update: &ToolCallUpdate,
+    ) -> Option<ToolCall> {
+        let tool_call_id =
+            self.resolve_tool_call_id_for_update(runtime_session_id, tool_call_update);
+        self.tool_calls
+            .get(&tool_call_state_key(runtime_session_id, &tool_call_id))
+            .cloned()
+    }
+
+    fn clear_terminal_output_buffers(&mut self, runtime_session_id: &RuntimeSessionId) {
+        let prefix = format!("{}:", runtime_session_id.0);
+        self.terminal_output_buffers
+            .retain(|key, _| !key.starts_with(&prefix));
     }
 
     fn emit_image_generation(
@@ -3748,6 +4087,15 @@ impl NotificationContextInner {
         runtime_session_id: &RuntimeSessionId,
         status: NativeAiSessionStatus,
     ) {
+        if matches!(
+            status,
+            NativeAiSessionStatus::Idle
+                | NativeAiSessionStatus::Error
+                | NativeAiSessionStatus::Closed
+        ) {
+            self.flush_terminal_activities_for_session(runtime_session_id);
+            self.clear_terminal_output_buffers(runtime_session_id);
+        }
         match status {
             NativeAiSessionStatus::Streaming => {
                 if self
@@ -3786,6 +4134,8 @@ impl NotificationContextInner {
         self.structured_subagent_runtime_session_ids
             .remove(&runtime_session_id.0);
         self.subagent_active_turn_ids.remove(&runtime_session_id.0);
+        self.flush_terminal_activities_for_session(runtime_session_id);
+        self.clear_terminal_output_buffers(runtime_session_id);
 
         if !self.is_known_runtime_session(runtime_session_id) {
             return;
@@ -4327,6 +4677,19 @@ fn is_generic_subagent_title(title: &str) -> bool {
 
 fn terminal_output_buffer_key(runtime_session_id: &RuntimeSessionId, terminal_id: &str) -> String {
     format!("{}:{terminal_id}", runtime_session_id.0)
+}
+
+fn tool_call_has_semantic_change(previous: Option<&ToolCall>, next: &ToolCall) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    previous.kind != next.kind
+        || previous.status != next.status
+        || previous.title != next.title
+        || previous.content != next.content
+        || previous.locations != next.locations
+        || previous.raw_input != next.raw_input
+        || previous.raw_output != next.raw_output
 }
 
 fn merge_terminal_output_buffer(previous: &str, data: &str, mode: Option<&str>) -> String {
@@ -8222,6 +8585,285 @@ mod tests {
         assert_eq!(completed.event_name, AI_TOOL_ACTIVITY_EVENT);
         assert_eq!(completed.payload["terminalOutput"], "hello world");
         assert_eq!(completed.payload["exitCode"], 0);
+    }
+
+    #[test]
+    fn notification_context_coalesces_terminal_only_updates_per_window() {
+        let now_ms = Arc::new(AtomicU64::new(0));
+        let clock_state = now_ms.clone();
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new_with_clock(
+            native_test_session(),
+            Some(sender),
+            true,
+            Arc::new(move || clock_state.load(Ordering::Relaxed)),
+        );
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "Run command").status(ToolCallStatus::InProgress),
+            ),
+        ));
+
+        for index in 0..10_000 {
+            context.handle(SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new("tool-1", ToolCallUpdateFields::new()).meta(
+                        terminal_output_meta("tool-1", &format!("{index}\n"), "delta"),
+                    ),
+                ),
+            ));
+        }
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCallUpdate(
+                ToolCallUpdate::new(
+                    "tool-1",
+                    ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
+                )
+                .meta(terminal_exit_meta("tool-1", 0)),
+            ),
+        ));
+
+        let events = receiver.try_iter().collect::<Vec<_>>();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].payload["status"], "in_progress");
+        assert_eq!(events[1].payload["terminalOutput"], "0\n");
+        assert_eq!(events[2].payload["status"], "completed");
+        assert_eq!(events[2].payload["exitCode"], 0);
+        assert!(
+            events[2].payload["terminalOutput"]
+                .as_str()
+                .is_some_and(|output| output.ends_with("9999\n") && output.len() <= 10_000)
+        );
+        let metrics = context.terminal_activity_metrics();
+        assert_eq!(metrics.received, 10_000);
+        assert_eq!(metrics.coalesced, 9_999);
+        assert_eq!(metrics.emitted, 2);
+    }
+
+    #[test]
+    fn notification_context_flushes_a_silent_trailing_terminal_window() {
+        let now_ms = Arc::new(AtomicU64::new(0));
+        let clock_state = now_ms.clone();
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context = NotificationContext::new_with_clock(
+            native_test_session(),
+            Some(sender),
+            true,
+            Arc::new(move || clock_state.load(Ordering::Relaxed)),
+        );
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "Run command").status(ToolCallStatus::InProgress),
+            ),
+        ));
+        for data in ["a", "b"] {
+            context.handle(SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new("tool-1", ToolCallUpdateFields::new())
+                        .meta(terminal_output_meta("tool-1", data, "delta")),
+                ),
+            ));
+        }
+
+        now_ms.store(249, Ordering::Relaxed);
+        context.flush_due_terminal_activities();
+        let leading = receiver.try_iter().collect::<Vec<_>>();
+        assert_eq!(leading.len(), 2);
+        now_ms.store(250, Ordering::Relaxed);
+        context.flush_due_terminal_activities();
+
+        let trailing = receiver.recv().unwrap();
+        assert_eq!(trailing.event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(trailing.payload["terminalOutput"], "ab");
+        let metrics = context.terminal_activity_metrics();
+        assert_eq!(metrics.received, 2);
+        assert_eq!(metrics.coalesced, 1);
+        assert_eq!(metrics.emitted, 2);
+        assert_eq!(metrics.trailing_flushes, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn notification_context_schedules_a_product_trailing_flush() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "Run command").status(ToolCallStatus::InProgress),
+            ),
+        ));
+        for data in ["a", "b"] {
+            context.handle(SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new("tool-1", ToolCallUpdateFields::new())
+                        .meta(terminal_output_meta("tool-1", data, "delta")),
+                ),
+            ));
+        }
+
+        assert_eq!(receiver.recv().unwrap().event_name, AI_TOOL_ACTIVITY_EVENT);
+        assert_eq!(receiver.recv().unwrap().payload["terminalOutput"], "a");
+        let trailing = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(trailing.payload["terminalOutput"], "ab");
+    }
+
+    #[test]
+    fn notification_context_flushes_and_clears_terminal_on_terminal_statuses() {
+        for status in [
+            NativeAiSessionStatus::Idle,
+            NativeAiSessionStatus::Error,
+            NativeAiSessionStatus::Closed,
+        ] {
+            let now_ms = Arc::new(AtomicU64::new(0));
+            let clock_state = now_ms.clone();
+            let (sender, receiver) = std_mpsc::sync_channel(8);
+            let context = NotificationContext::new_with_clock(
+                native_test_session(),
+                Some(sender),
+                true,
+                Arc::new(move || clock_state.load(Ordering::Relaxed)),
+            );
+            let runtime_session_id = RuntimeSessionId("runtime-parent".to_string());
+            context.set_runtime_session_id(runtime_session_id.clone());
+            context.handle(SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCall(
+                    ToolCall::new("tool-1", "Run command").status(ToolCallStatus::InProgress),
+                ),
+            ));
+            for data in ["a", "b"] {
+                context.handle(SessionNotification::new(
+                    "runtime-parent",
+                    SessionUpdate::ToolCallUpdate(
+                        ToolCallUpdate::new("tool-1", ToolCallUpdateFields::new())
+                            .meta(terminal_output_meta("tool-1", data, "delta")),
+                    ),
+                ));
+            }
+            if let Ok(mut inner) = context.inner.lock() {
+                inner.emit_runtime_session_status(&runtime_session_id, status);
+                assert!(inner.terminal_output_buffers.is_empty());
+            }
+
+            let events = receiver.try_iter().collect::<Vec<_>>();
+            assert_eq!(events.len(), 4);
+            assert_eq!(events[2].payload["terminalOutput"], "ab");
+            assert_eq!(events[3].event_name, AI_SESSION_UPDATED_EVENT);
+        }
+    }
+
+    #[test]
+    fn notification_context_flushes_terminal_before_runtime_replacement() {
+        let (sender, receiver) = std_mpsc::sync_channel(8);
+        let context =
+            NotificationContext::new(native_test_session(), Some(sender), Vec::new(), true);
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "Run command").status(ToolCallStatus::InProgress),
+            ),
+        ));
+        for data in ["a", "b"] {
+            context.handle(SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new("tool-1", ToolCallUpdateFields::new())
+                        .meta(terminal_output_meta("tool-1", data, "delta")),
+                ),
+            ));
+        }
+
+        context.set_runtime_session_id(RuntimeSessionId("runtime-replacement".to_string()));
+
+        let events = receiver.try_iter().collect::<Vec<_>>();
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[2].payload["terminalOutput"], "ab");
+        assert!(
+            context
+                .inner
+                .lock()
+                .is_ok_and(|inner| inner.terminal_output_buffers.is_empty())
+        );
+    }
+
+    #[test]
+    fn notification_context_emits_terminal_windows_and_semantic_updates_immediately() {
+        let now_ms = Arc::new(AtomicU64::new(0));
+        let clock_state = now_ms.clone();
+        let (sender, receiver) = std_mpsc::sync_channel(16);
+        let context = NotificationContext::new_with_clock(
+            native_test_session(),
+            Some(sender),
+            true,
+            Arc::new(move || clock_state.load(Ordering::Relaxed)),
+        );
+        context.set_runtime_session_id(RuntimeSessionId("runtime-parent".to_string()));
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCall(
+                ToolCall::new("tool-1", "Run command").status(ToolCallStatus::InProgress),
+            ),
+        ));
+
+        for (at_ms, data) in [(0, "a"), (249, "b"), (250, "c"), (251, "d")] {
+            now_ms.store(at_ms, Ordering::Relaxed);
+            context.handle(SessionNotification::new(
+                "runtime-parent",
+                SessionUpdate::ToolCallUpdate(
+                    ToolCallUpdate::new("tool-1", ToolCallUpdateFields::new())
+                        .meta(terminal_output_meta("tool-1", data, "delta")),
+                ),
+            ));
+        }
+        context.handle(SessionNotification::new(
+            "runtime-parent",
+            SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                "tool-1",
+                ToolCallUpdateFields::new().title("Run tests".to_string()),
+            )),
+        ));
+
+        let events = receiver.try_iter().collect::<Vec<_>>();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[1].payload["terminalOutput"], "a");
+        assert_eq!(events[2].payload["terminalOutput"], "abc");
+        assert_eq!(events[3].payload["title"], "Run tests");
+    }
+
+    fn terminal_output_meta(terminal_id: &str, data: &str, mode: &str) -> Meta {
+        let mut meta = Meta::default();
+        meta.insert(
+            ACP_TERMINAL_OUTPUT_META_KEY.to_string(),
+            serde_json::json!({
+                "terminal_id": terminal_id,
+                "data": data,
+                "mode": mode,
+            }),
+        );
+        meta
+    }
+
+    fn terminal_exit_meta(terminal_id: &str, exit_code: i32) -> Meta {
+        let mut meta = Meta::default();
+        meta.insert(
+            ACP_TERMINAL_EXIT_META_KEY.to_string(),
+            serde_json::json!({
+                "terminal_id": terminal_id,
+                "exit_code": exit_code,
+            }),
+        );
+        meta
     }
 
     #[test]

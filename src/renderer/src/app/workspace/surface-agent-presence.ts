@@ -1,11 +1,83 @@
 import type {
     AiSessionSnapshot,
+    WorkspaceSurfaceAgentPresenceState,
     WorkspaceSurfaceAiAgentPresence,
 } from "@shared/ipc";
 import { getAiSessionDisplayTitle } from "@shared/ai-session-title";
 
 import { areGitWorktreeIdsEquivalent } from "@renderer/app/git/context-key";
 import type { RuntimeWorkspaceTab } from "@renderer/app/workspace/tree";
+
+export function workspaceSurfaceAgentPresenceSignature(
+    state: WorkspaceSurfaceAgentPresenceState,
+): string {
+    return JSON.stringify({
+        activeSessionId: state.activeSessionId,
+        contextKey: state.contextKey,
+        projectId: state.projectId,
+        sessions: state.sessions.map((session) =>
+            session.kind === "ai"
+                ? [
+                      session.kind,
+                      session.createdAt,
+                      session.parentSessionId,
+                      session.runtimeId,
+                      session.runtimeSessionId,
+                      session.sessionId,
+                      session.status,
+                      session.title,
+                      session.updatedAt,
+                  ]
+                : [
+                      session.kind,
+                      session.createdAt,
+                      session.preview,
+                      session.runtimeId,
+                      session.runtimeSessionId,
+                      session.sessionId,
+                      session.status,
+                      session.terminalId,
+                      session.title,
+                      session.updatedAt,
+                  ],
+        ),
+        worktreeId: state.worktreeId,
+    });
+}
+
+export function workspaceSurfaceAgentPresenceSemanticSignature(
+    state: WorkspaceSurfaceAgentPresenceState,
+): string {
+    return JSON.stringify({
+        activeSessionId: state.activeSessionId,
+        contextKey: state.contextKey,
+        projectId: state.projectId,
+        sessions: state.sessions.map((session) =>
+            session.kind === "ai"
+                ? [
+                      session.kind,
+                      session.createdAt,
+                      session.parentSessionId,
+                      session.runtimeId,
+                      session.runtimeSessionId,
+                      session.sessionId,
+                      session.status,
+                      session.title,
+                  ]
+                : [
+                      session.kind,
+                      session.createdAt,
+                      session.runtimeId,
+                      session.runtimeSessionId,
+                      session.sessionId,
+                      session.status,
+                      session.terminalId,
+                      session.title,
+                  ],
+        ),
+        worktreeId: state.worktreeId,
+    });
+}
 
 export interface WorkspaceSurfaceAiSessionState {
     readonly isDispatching: boolean;

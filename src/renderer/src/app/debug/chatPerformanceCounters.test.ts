@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
     incrementChatPerformanceCounter,
     readChatPerformanceCounters,
+    recordChatPerformanceCounterPeak,
     resetChatPerformanceCounters,
     setChatPerformanceCountersEnabledForTests,
 } from "./chatPerformanceCounters";
@@ -25,6 +26,15 @@ describe("chatPerformanceCounters", () => {
         });
     });
 
+    it("records peak counters without retaining payload data", () => {
+        recordChatPerformanceCounterPeak("ai_frame_peak_pending_per_session", 7);
+        recordChatPerformanceCounterPeak("ai_frame_peak_pending_per_session", 3);
+
+        expect(
+            readChatPerformanceCounters().ai_frame_peak_pending_per_session,
+        ).toBe(7);
+    });
+
     it("can disable counters without allocating diagnostic payloads", () => {
         setChatPerformanceCountersEnabledForTests(false);
         incrementChatPerformanceCounter("transcript_entries_visited", 1_024);
@@ -43,6 +53,8 @@ describe("chatPerformanceCounters", () => {
         resetChatPerformanceCounters();
 
         expect(readChatPerformanceCounters()).toEqual({
+            ai_frame_payloads_coalesced: 0,
+            ai_frame_peak_pending_per_session: 0,
             activity_segments_rebuilt: 0,
             activity_items_mounted: 0,
             code_highlight_chars_reparsed: 0,
@@ -57,6 +69,8 @@ describe("chatPerformanceCounters", () => {
             timeline_full_rebuilds: 0,
             timeline_rows_reconciled: 0,
             timeline_tail_patches: 0,
+            tool_activity_events_received: 0,
+            tool_activity_store_applies: 0,
             transcript_blocks_evicted: 0,
             transcript_blocks_loaded: 0,
             transcript_blocks_projected: 0,
@@ -65,6 +79,7 @@ describe("chatPerformanceCounters", () => {
             transcript_payload_ipc_count: 0,
             tool_payload_bytes_loaded: 0,
             tool_payloads_requested: 0,
+            workspace_presence_publishes: 0,
         });
     });
 });

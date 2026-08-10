@@ -1,6 +1,8 @@
 import { isChatPerformanceProbeEnabled } from "./chatPerformanceProbe";
 
 export type ChatPerformanceCounter =
+    | "ai_frame_payloads_coalesced"
+    | "ai_frame_peak_pending_per_session"
     | "activity_segments_rebuilt"
     | "activity_items_mounted"
     | "code_highlight_chars_reparsed"
@@ -15,6 +17,8 @@ export type ChatPerformanceCounter =
     | "timeline_full_rebuilds"
     | "timeline_rows_reconciled"
     | "timeline_tail_patches"
+    | "tool_activity_events_received"
+    | "tool_activity_store_applies"
     | "transcript_blocks_evicted"
     | "transcript_blocks_loaded"
     | "transcript_blocks_projected"
@@ -22,13 +26,16 @@ export type ChatPerformanceCounter =
     | "transcript_payload_bytes"
     | "transcript_payload_ipc_count"
     | "tool_payload_bytes_loaded"
-    | "tool_payloads_requested";
+    | "tool_payloads_requested"
+    | "workspace_presence_publishes";
 
 export type ChatPerformanceCounterSnapshot = Readonly<
     Record<ChatPerformanceCounter, number>
 >;
 
 const EMPTY_COUNTERS: ChatPerformanceCounterSnapshot = {
+    ai_frame_payloads_coalesced: 0,
+    ai_frame_peak_pending_per_session: 0,
     activity_segments_rebuilt: 0,
     activity_items_mounted: 0,
     code_highlight_chars_reparsed: 0,
@@ -43,6 +50,8 @@ const EMPTY_COUNTERS: ChatPerformanceCounterSnapshot = {
     timeline_full_rebuilds: 0,
     timeline_rows_reconciled: 0,
     timeline_tail_patches: 0,
+    tool_activity_events_received: 0,
+    tool_activity_store_applies: 0,
     transcript_blocks_evicted: 0,
     transcript_blocks_loaded: 0,
     transcript_blocks_projected: 0,
@@ -51,6 +60,7 @@ const EMPTY_COUNTERS: ChatPerformanceCounterSnapshot = {
     transcript_payload_ipc_count: 0,
     tool_payload_bytes_loaded: 0,
     tool_payloads_requested: 0,
+    workspace_presence_publishes: 0,
 };
 
 let counters: Record<ChatPerformanceCounter, number> = { ...EMPTY_COUNTERS };
@@ -62,6 +72,14 @@ export function incrementChatPerformanceCounter(
 ): void {
     if (!isChatPerformanceCounterEnabled()) return;
     counters[counter] += amount;
+}
+
+export function recordChatPerformanceCounterPeak(
+    counter: ChatPerformanceCounter,
+    value: number,
+): void {
+    if (!isChatPerformanceCounterEnabled()) return;
+    counters[counter] = Math.max(counters[counter], value);
 }
 
 export function readChatPerformanceCounters(): ChatPerformanceCounterSnapshot {

@@ -5,6 +5,8 @@ import type { RuntimeWorkspaceChatTab } from "@renderer/app/workspace/tree";
 
 import {
     collectWorkspaceSurfaceAiAgentPresence,
+    workspaceSurfaceAgentPresenceSemanticSignature,
+    workspaceSurfaceAgentPresenceSignature,
 } from "./surface-agent-presence";
 
 function createSnapshot(
@@ -113,5 +115,46 @@ describe("collectWorkspaceSurfaceAiAgentPresence", () => {
                 title: "Live idle session",
             }),
         ]);
+    });
+
+    it("distinguishes structural equality from temporal-only presence changes", () => {
+        const state = {
+            activeSessionId: "session-1",
+            contextKey: "project-1:worktree-1",
+            projectId: "project-1",
+            sessions: [
+                {
+                    createdAt: "2026-08-04T11:00:00.000Z",
+                    kind: "ai" as const,
+                    parentSessionId: null,
+                    runtimeId: "codex" as const,
+                    runtimeSessionId: "runtime-session-1",
+                    sessionId: "session-1",
+                    status: "streaming" as const,
+                    title: "Session",
+                    updatedAt: "2026-08-04T12:00:00.000Z",
+                },
+            ],
+            worktreeId: "worktree-1",
+        };
+        const temporalRevision = {
+            ...state,
+            sessions: [
+                {
+                    ...state.sessions[0],
+                    updatedAt: "2026-08-04T12:00:01.000Z",
+                },
+            ],
+        };
+
+        expect(workspaceSurfaceAgentPresenceSignature({ ...state })).toBe(
+            workspaceSurfaceAgentPresenceSignature(state),
+        );
+        expect(workspaceSurfaceAgentPresenceSignature(temporalRevision)).not.toBe(
+            workspaceSurfaceAgentPresenceSignature(state),
+        );
+        expect(
+            workspaceSurfaceAgentPresenceSemanticSignature(temporalRevision),
+        ).toBe(workspaceSurfaceAgentPresenceSemanticSignature(state));
     });
 });

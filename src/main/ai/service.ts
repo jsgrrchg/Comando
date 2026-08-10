@@ -482,6 +482,30 @@ interface PendingNativeCatalogPatch {
     readonly updatedAt: string;
 }
 
+export function isRedundantStreamingRendererUpdate(
+    event: AiSessionDomainEvent,
+    update: AiSessionUpdate,
+): boolean {
+    if (update.kind !== "patch") return false;
+
+    const frameBuffered =
+        event.kind === "message-delta" ||
+        event.kind === "thinking-delta" ||
+        (event.kind === "tool-activity" &&
+            (event.activity.status === "pending" ||
+                event.activity.status === "in_progress"));
+    if (!frameBuffered) return false;
+
+    // ai-store applies these fields from the domain event itself. Sending the
+    // equivalent patch first would flush every buffered live revision.
+    return Object.keys(update.patch.changes).every(
+        (key) =>
+            key === "messages" ||
+            key === "toolActivity" ||
+            key === "updatedAt",
+    );
+}
+
 export class AiService {
     readonly #deletedSessionIds = new Set<string>();
     readonly #freezingSessionIds = new Set<string>();
@@ -906,10 +930,13 @@ export class AiService {
                     event.delta,
                 );
             }
-            this.#onSessionSnapshot(
-                ownerWindowId,
-                this.#buildRendererSessionUpdate(previousSnapshot, cachedSnapshot),
+            const rendererUpdate = this.#buildRendererSessionUpdate(
+                previousSnapshot,
+                cachedSnapshot,
             );
+            if (!isRedundantStreamingRendererUpdate(event, rendererUpdate)) {
+                this.#onSessionSnapshot(ownerWindowId, rendererUpdate);
+            }
             if (this.#isNativeAiSession(event.sessionId)) {
                 if (event.kind === "status" && event.status === "streaming") {
                     this.#markNativeReviewTurnStarted(event.sessionId);

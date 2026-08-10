@@ -4,6 +4,7 @@ import type {
     AiHistorySessionSummary,
     AiOpenTranscriptTail,
     AiPromptQueueSnapshot,
+    AiSessionDomainEvent,
     AiSessionSnapshot,
     AiSessionTranscriptPage,
     AiSessionUpdate,
@@ -17,6 +18,60 @@ import { AiService } from "./service";
 import type { NativeAiGateway } from "./contracts";
 
 describe("AiService history", () => {
+    it("publishes one renderer path for noisy live tool revisions", async () => {
+        const onSessionEvent = vi.fn();
+        const onSessionSnapshot = vi.fn();
+        const service = createService({ onSessionEvent, onSessionSnapshot });
+        const snapshot = createSnapshot({ status: "streaming" });
+        service.handleNativeSessionSnapshot("window-1", {
+            kind: "snapshot",
+            snapshot,
+        });
+        onSessionEvent.mockClear();
+        onSessionSnapshot.mockClear();
+
+        for (let index = 0; index < 10_000; index += 1) {
+            const updatedAt = new Date(index + 1).toISOString();
+            service.handleNativeSessionEvent("window-1", {
+                activity: {
+                    createdAt: snapshot.updatedAt,
+                    diffs: [],
+                    exitCode: null,
+                    id: "tool-pressure",
+                    kind: "shell",
+                    locations: [],
+                    rawInputJson: null,
+                    rawOutputJson: null,
+                    sessionId: snapshot.sessionId,
+                    status: "in_progress",
+                    summary: null,
+                    terminalOutput: null,
+                    title: "Run tests",
+                    updatedAt,
+                },
+                kind: "tool-activity",
+                origin: "live",
+                parentSessionId: null,
+                runtimeId: snapshot.runtimeId,
+                runtimeSessionId: snapshot.runtimeSessionId,
+                sessionId: snapshot.sessionId,
+                updatedAt,
+            });
+        }
+
+        expect(onSessionEvent).toHaveBeenCalledTimes(10_000);
+        expect(onSessionSnapshot).not.toHaveBeenCalled();
+        expect(await service.getSessionSnapshot(snapshot.sessionId)).toMatchObject({
+            toolActivity: [
+                expect.objectContaining({
+                    id: "tool-pressure",
+                    status: "in_progress",
+                }),
+            ],
+        });
+        service.close();
+    });
+
     it("returns session history from persistence", async () => {
         const expectedHistory: readonly AiHistorySessionSummary[] = [
             {
@@ -1590,6 +1645,10 @@ function createService(overrides: {
         ownerWindowId: string,
         update: AiSessionUpdate,
     ) => void;
+    readonly onSessionEvent?: (
+        ownerWindowId: string,
+        event: AiSessionDomainEvent,
+    ) => void;
     readonly saveSessionSnapshot?: (
         snapshot: AiSessionSnapshot,
         draft?: string,
@@ -1601,6 +1660,7 @@ function createService(overrides: {
     return new AiService({
         nativeAi: overrides.nativeAi ?? null,
         onRuntimeStatus: vi.fn(),
+        onSessionEvent: overrides.onSessionEvent,
         onSessionSnapshot: overrides.onSessionSnapshot ?? vi.fn(),
         persistence: {
             deleteSession: overrides.deleteSession ?? vi.fn(),

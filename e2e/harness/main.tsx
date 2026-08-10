@@ -43,6 +43,7 @@ import {
 import "@renderer/styles.css";
 import "./transcript-harness.css";
 import { ShellHarness } from "./ShellHarness";
+import { TerminalPressureHarness } from "./TerminalPressureHarness";
 
 const INITIAL_HISTORY_SIZE = 2_000;
 const INITIAL_HISTORY_SCENARIO = {
@@ -1161,5 +1162,11 @@ function TranscriptHarness() {
 
 const harness = new URLSearchParams(window.location.search).get("harness");
 createRoot(document.getElementById("root")!).render(
-    harness === "shell" ? <ShellHarness /> : <TranscriptHarness />,
+    harness === "shell" ? (
+        <ShellHarness />
+    ) : harness === "terminal-pressure" ? (
+        <TerminalPressureHarness />
+    ) : (
+        <TranscriptHarness />
+    ),
 );
