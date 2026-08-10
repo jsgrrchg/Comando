@@ -591,6 +591,65 @@ describe("toolActivityReviewModel", () => {
         expect(activity.diffs[0]?.hunks[0]?.id).toBe("snippet-hunk");
     });
 
+    it("preserves a valid tool diff when the matched review file is unavailable", () => {
+        const activity = createActivity({
+            diffs: [
+                {
+                    hunks: [
+                        {
+                            id: "external-tool-hunk",
+                            lines: [
+                                {
+                                    id: "external-remove",
+                                    text: "before",
+                                    type: "remove",
+                                },
+                                {
+                                    id: "external-add",
+                                    text: "after",
+                                    type: "add",
+                                },
+                            ],
+                            newCount: 1,
+                            newStart: 1,
+                            oldCount: 1,
+                            oldStart: 1,
+                            visualEndLine: 1,
+                            visualStartLine: 1,
+                        },
+                    ],
+                    isText: true,
+                    kind: "update",
+                    newText: "after",
+                    oldText: "before",
+                    path: "/tmp/external.ts",
+                    previousPath: null,
+                    reversible: true,
+                },
+            ],
+        });
+        const trackedFile = createTrackedFile({
+            conflict: "content_unavailable",
+            hunks: [],
+            isText: false,
+            nativeReviewState: "unavailable",
+            newText: null,
+            oldText: null,
+            path: "/tmp/external.ts",
+            reviewState: "conflict",
+            reversible: false,
+        });
+
+        const [item] = deriveChangeReviewItems(activity, [trackedFile]);
+
+        expect(item?.file).toBe(trackedFile);
+        expect(item?.file?.reviewState).toBe("conflict");
+        expect(item?.diff).toBe(activity.diffs[0]);
+        expect(item?.diff.hunks[0]?.id).toBe("external-tool-hunk");
+        expect(item?.diff.oldText).toBe("before");
+        expect(item?.diff.newText).toBe("after");
+    });
+
     it("does not show accepted cumulative activity hunks after the action log rebases pending text", () => {
         const activity = createActivity({
             diffs: [
