@@ -125,7 +125,7 @@
         "@types/react-dom": "^19.2.3",
         "@vitejs/plugin-react": "^6.0.2",
         "app-builder-bin": "5.0.0-alpha.12",
-        "electron": "^42.5.2",
+        "electron": "^42.10.0",
         "electron-builder": "26.15.3",
         "electron-vite": "^5.0.0",
         "eslint": "^10.4.0",
